@@ -8,7 +8,6 @@
 ---@field public to_stop {[uint]: LuaEntity}
 ---@field public stations {[uint]: Station}
 ---@field public active_station_ids uint[]
----@field public warmup_station_ids uint[]
 ---@field public warmup_station_cycles {[uint]: int}
 ---@field public queue_station_update {[uint]: true?}?
 ---@field public depots {[uint]: Depot}
@@ -152,6 +151,7 @@
 ---@field public stuck_train_time double
 ---@field public fuel_threshold double
 ---@field public allow_cargo_in_depot boolean
+---@field public alert_unexpected_cargo boolean --interface setting
 ---@field public missing_train_alert_enabled boolean --interface setting
 ---@field public stuck_train_alert_enabled boolean --interface setting
 ---@field public react_to_train_at_incorrect_station boolean --interface setting
@@ -183,7 +183,6 @@ function init_global()
 	storage.to_stop = {}
 	storage.stations = {}
 	storage.active_station_ids = {}
-	storage.warmup_station_ids = {}
 	storage.warmup_station_cycles = {}
 	storage.depots = {}
 	storage.trains = {}

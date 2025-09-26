@@ -1128,21 +1128,18 @@ function tick_init(map_data, mod_settings)
 	map_data.economy.all_r_stops = {}
 	map_data.economy.all_names = {}
 
-	while #map_data.warmup_station_ids > 0 do
-		local id = map_data.warmup_station_ids[1]
+	for id, cycles in pairs(map_data.warmup_station_cycles) do
 		local station = map_data.stations[id]
 		if station then
-			local cycles = map_data.warmup_station_cycles[id]
 			--force a station to wait at least 1 cycle so we can be sure active_station_ids was flushed of duplicates
 			if cycles > 0 then
 				if station.entity_stop and station.entity_stop.valid and station.entity_stop.connected_rail == nil then
-					break -- Wait for station to be connected to a rail
+					goto warmup_continue -- Wait for station to be connected to a rail
 				end
 
 				if station.last_delivery_tick + mod_settings.warmup_time * mod_settings.tps < map_data.total_ticks then
 					station.is_warming_up = nil
 					map_data.active_station_ids[#map_data.active_station_ids + 1] = id
-					table_remove(map_data.warmup_station_ids, 1)
 					map_data.warmup_station_cycles[id] = nil
 					if station.entity_stop.valid and station.entity_comb1.valid then
 						combinator_update(map_data, station.entity_comb1)
@@ -1150,16 +1147,16 @@ function tick_init(map_data, mod_settings)
 						on_station_broken(map_data, id, station)
 					end
 				else
-					break
+					goto warmup_continue
 				end
 			else
 				map_data.warmup_station_cycles[id] = cycles + 1
-				break
+				goto warmup_continue
 			end
 		else
-			table_remove(map_data.warmup_station_ids, 1)
 			map_data.warmup_station_cycles[id] = nil
 		end
+		::warmup_continue::
 	end
 
 	if map_data.queue_station_update then

@@ -155,18 +155,6 @@ local function on_station_built(map_data, stop, comb1, comb2, secondary_inv_comb
 	local id = stop.unit_number --[[@as uint]]
 
 	map_data.stations[id] = station
-
-	--prevent the same station from warming up multiple times
-	if map_data.warmup_station_cycles[id] then
-		--enforce FIFO
-		for i, v in ipairs(map_data.warmup_station_ids) do
-			if v == id then
-				table_remove(map_data.warmup_station_ids, i)
-				break
-			end
-		end
-	end
-	map_data.warmup_station_ids[#map_data.warmup_station_ids + 1] = id
 	map_data.warmup_station_cycles[id] = 0
 
 	queue_station_for_combinator_update(map_data, id)
@@ -865,6 +853,7 @@ local function grab_all_settings()
 	mod_settings.allow_cargo_in_depot = settings.global["cybersyn-allow-cargo-in-depot"].value --[[@as boolean]]
 	mod_settings.manager_ups = settings.global["cybersyn-manager-updates-per-second"].value --[[@as double]]
 	mod_settings.manager_enabled = settings.startup["cybersyn-manager-enabled"].value --[[@as boolean]]
+	mod_settings.alert_unexpected_cargo = settings.global["cybersyn-alert-unexpected-cargo"].value --[[@as boolean]]
 end
 local function register_tick()
 	script.on_nth_tick(nil)
@@ -923,6 +912,7 @@ local filter_broken = {
 }
 local function main()
 	grab_all_settings()
+
 
 	mod_settings.missing_train_alert_enabled = true
 	mod_settings.stuck_train_alert_enabled = true

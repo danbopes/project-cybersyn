@@ -254,6 +254,47 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		remove_manifest(map_data, station, train.manifest, 1)
 		set_comb1(map_data, station, nil)
 		unset_wagon_combs(map_data, station)
+
+		-- Check for unexpected cargo if the setting is enabled
+		if mod_settings.alert_unexpected_cargo and train.manifest then
+			local actual_contents = train.entity.get_contents()
+			local actual_fluid_contents = train.entity.get_fluid_contents()
+			local manifest_items = {}
+
+			-- Build a lookup table of expected items from the manifest
+			for _, item in ipairs(train.manifest) do
+				local key = item.type .. ":" .. item.name
+				if item.quality then
+					key = key .. ":" .. item.quality
+				else
+					key = key .. ":normal"
+				end
+				manifest_items[key] = true
+			end
+
+			if not manifest_items["item:cybersyn-fuel:normal"] then
+				-- Check for unexpected solid cargo
+				for _, actual_item in pairs(actual_contents) do
+					local key = "item:" .. actual_item.name .. ":" .. actual_item.quality
+					if not manifest_items[key] then
+						send_alert_unexpected_cargo(map_data, train.entity, station.entity_stop.backer_name, 
+							station.entity_stop.position, station.entity_stop.surface)
+						break
+					end
+				end
+			end
+
+			-- Check for unexpected fluid cargo
+			
+			-- for fluid_name, _ in pairs(actual_fluid_contents) do
+			-- 	local key = "fluid:" .. fluid_name .. ":normal"
+			-- 	if not manifest_items[key] then
+			-- 		send_alert_unexpected_cargo(map_data, train.entity, station.entity_stop.backer_name, 
+			-- 			station.entity_stop.position, station.entity_stop.surface)
+			-- 		break
+			-- 	end
+			-- end
+		end
 		if train.has_filtered_wagon then
 			train.has_filtered_wagon = nil
 			for carriage_i, carriage in ipairs(train.entity.cargo_wagons) do

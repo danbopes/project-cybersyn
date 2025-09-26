@@ -377,6 +377,9 @@ local migrations_table = {
 			all_p_stops = {},
 			all_names = {},
 		}
+	end,
+	["2.0.28"] = function()
+		storage.warmup_station_ids = nil
 	end
 }
 --STATUS_R_TO_D = 5
