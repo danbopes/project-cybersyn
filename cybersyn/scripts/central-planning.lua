@@ -12,8 +12,47 @@ local random = math.random
 
 local HASH_STRING = "|"
 
+-- Request tracking functions
+-- These functions manage tracking of when item requests started, allowing the GUI
+-- to display how long items have been waiting to be delivered. The tracking is:
+-- - Started when a station begins requesting an item
+-- - Maintained while the request is active (even if deliveries fail)
+-- - Cleared when a successful delivery is made or the request stops
+
+---@param station Station
+local function init_request_tracking(station)
+	if not station.request_start_ticks then
+		station.request_start_ticks = {}
+	end
+end
+
+---@param station Station
+---@param item_hash string
+local function track_request_start(station, item_hash)
+	if not mod_settings.track_request_wait_times then
+		return
+	end
+	init_request_tracking(station)
+	if not station.request_start_ticks[item_hash] then
+		station.request_start_ticks[item_hash] = game.tick
+	end
+end
+
+---@param station Station
+---@param item_hash string
+local function clear_request_tracking(station, item_hash)
+	if station.request_start_ticks then
+		station.request_start_ticks[item_hash] = nil
+	end
+end
+
+---@param station Station
+function clear_all_request_tracking(station)
+	station.request_start_ticks = nil
+end
+
 ---@param name string The name of the item
----@param quality string The name of the quality of the item or nil if it is common
+---@param quality string? The name of the quality of the item or nil if it is common
 ---@return string
 function hash_item(name, quality)
 	if quality == nil or quality == "normal" then
@@ -46,7 +85,7 @@ end
 ---@param network_name string Name of the virutal signal prototype identifying the station's network.
 ---@param item_hash string
 ---@return Cybersyn.Economy.ItemNetworkName
-local function create_item_network_name(network_name, item_hash)
+function create_item_network_name(network_name, item_hash)
 	return network_name .. ":" .. item_hash
 end
 
@@ -58,15 +97,58 @@ local function get_network_name_from_item_network_name(item_network_name)
 	return network_name
 end
 
----Determine if the two given entities could have a train routed between them.
----The entities may be either train stops or rolling stock of trains.
----@param e1 LuaEntity?
----@param e2 LuaEntity?
+---@param item_network_name Cybersyn.Economy.ItemNetworkName
+---@return string network_name
+---@return string item_name
+---@return string? item_quality
+function parse_item_network_name(item_network_name)
+	local s, e = string.find(item_network_name, ":", 1, true)
+	if not (s and e) then
+		error(item_network_name.." is no ItemNetworkName")
+	end
+
+	local network_name = string.sub(item_network_name, 1, s - 1)
+	local item_hash = string.sub(item_network_name, e + 1)
+	local item_name, item_quality = unhash_signal(item_hash)
+
+	return network_name, item_name, item_quality
+end
+
+---Trains are not allowed to move further than one surface away from their home surface.
+---This only checks if the train would be allowed to travel, not if travel is actually possible.
+---@param train_surface uint surface index of the train
+---@param stop_surface uint surface index of a destination
+---@param home_surface uint surface index of the depot
 ---@return boolean
-function is_train_routable(e1, e2)
-	if (not e1) or (not e2) then return false end
-	--(NOTE: currently does not support train teleportation/space elevators)
-	return (e1.surface == e2.surface)
+function is_train_allowed_to_travel(train_surface, stop_surface, home_surface)
+	return train_surface == stop_surface
+		or home_surface == stop_surface
+		or train_surface == home_surface
+end
+
+---Deliveries must be on the home surface, from the home surface or to the home surface.
+---This only checks if the delivery would be allowed, not if the surfaces are actually connected.
+---@param train_surface uint surface index of the train
+---@param provider_surface uint surface index of the provider stop
+---@param requester_surface uint surface index of the requester stop
+---@param home_surface uint surface index of the depot
+---@return boolean
+function is_delivery_allowed_for_train(train_surface, provider_surface, requester_surface, home_surface)
+	if requester_surface == provider_surface then
+		-- Same surface deliveries must be pure home surface deliveries.
+		-- Otherwise surface_connections won't be calculated and the train would not know how to find home.
+		-- This is not a problem because the train is still TO_D_BYPASS.
+		-- The state just doesn't take effect for home surface deliveries until the train is back on the home surface.
+		return train_surface == requester_surface and home_surface == requester_surface
+	end
+
+	if provider_surface == home_surface then -- from the home surface
+		return train_surface == home_surface
+	end
+	if requester_surface == home_surface then -- to the home surface
+		return train_surface == provider_surface or train_surface == home_surface
+	end
+	return false
 end
 
 ---Checks that the train has a base schedule it can return to after a delivery.
@@ -112,9 +194,11 @@ function remove_manifest(map_data, station, manifest, sign)
 	local deliveries = station.deliveries
 	for i, item in ipairs(manifest) do
 		local item_hash = hash_item(item.name, item.quality)
-		deliveries[item_hash] = deliveries[item_hash] + sign * item.count
-		if deliveries[item_hash] == 0 then
-			deliveries[item_hash] = nil
+		if deliveries[item_hash] then -- only updates deliveries the station still knows about
+			deliveries[item_hash] = deliveries[item_hash] + sign * item.count
+			if deliveries[item_hash] == 0 then
+				deliveries[item_hash] = nil
+			end
 		end
 	end
 	station.deliveries_total = station.deliveries_total - 1
@@ -130,7 +214,8 @@ end
 ---@param p_station_id uint
 ---@param train_id uint
 ---@param manifest Manifest
-function create_delivery(map_data, r_station_id, p_station_id, train_id, manifest)
+---@param surface_connections Cybersyn.SurfaceConnection[]
+function create_delivery(map_data, r_station_id, p_station_id, train_id, manifest, surface_connections)
 	local economy = map_data.economy
 	local r_station = map_data.stations[r_station_id]
 	local p_station = map_data.stations[p_station_id]
@@ -161,7 +246,7 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 	local is_at_depot = remove_available_train(map_data, train_id, train)
 	--NOTE: we assume that the train is not being teleported at this time
 	--NOTE: set_manifest_schedule is allowed to cancel the delivery at the last second if applying the schedule to the train makes it lost and is_at_depot == false
-	if set_manifest_schedule(map_data, train.entity, depot.entity_stop, not train.use_any_depot, p_station.entity_stop, p_station, r_station.entity_stop, r_station, manifest, is_at_depot) then
+	if set_manifest_schedule(map_data, train, depot.entity_stop, not train.use_any_depot, p_station.entity_stop, p_station, r_station.entity_stop, r_station, manifest, surface_connections, is_at_depot) then
 		local old_status = train.status
 		train.status = STATUS_TO_P
 		train.p_station_id = p_station_id
@@ -174,6 +259,12 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 
 		r_station.deliveries_total = r_station.deliveries_total + 1
 		p_station.deliveries_total = p_station.deliveries_total + 1
+
+		-- Reset request tracking times for delivered items
+		for _, item in ipairs(manifest) do
+			local item_hash = hash_item(item.name, item.quality)
+			clear_request_tracking(r_station, item_hash)
+		end
 
 		local r_is_each = r_station.network_name == NETWORK_EACH
 		local p_is_each = p_station.network_name == NETWORK_EACH
@@ -492,16 +583,19 @@ local function tick_dispatch(map_data, mod_settings)
 		local correctness = 0
 		local closest_to_correct_p_station = nil
 
+		local r_surface_id = r_station.entity_stop.surface_index
+
 		---@type uint?
 		local p_stop_i = nil
 		local best_train_id = nil
 		local best_p_prior = -INF
+		local best_surface_connections = {}
 		local best_dist = INF
 		--if no available trains in the network, skip search
 		---@type uint
 		local j = 1
 		while j <= #p_stops do
-			local p_flag, r_flag, netand, best_p_train_id, best_t_prior, best_capacity, best_t_to_p_dist, effective_count, override_threshold, p_prior, best_p_to_r_dist, effective_threshold, slot_threshold, item_deliveries
+			local p_flag, r_flag, netand, best_p_train_id, best_t_prior, best_capacity, best_t_to_p_dist, effective_count, override_threshold, p_prior, best_p_to_r_dist, effective_threshold, slot_threshold, item_deliveries, surface_connections, p_surface_id
 
 			local p_stop = p_stops[j]
 			local p_station = stations[p_stop.station_id]
@@ -523,7 +617,16 @@ local function tick_dispatch(map_data, mod_settings)
 			end
 
 			-- Verify provider->requester routability. (NOTE: also check validity because station was just pulled from cache.)
-			if (not p_station.entity_stop.valid) or (not is_train_routable(p_station.entity_stop, r_station.entity_stop)) then
+			if not p_station.entity_stop.valid then
+				goto p_continue
+			end
+			p_surface_id = p_station.entity_stop.surface_index
+
+			surface_connections = Surfaces.find_surface_connections_masked(
+				p_station.entity_stop.surface_index,
+				r_station.entity_stop.surface_index,
+				network_name, netand)
+			if not surface_connections then
 				goto p_continue
 			end
 
@@ -557,6 +660,7 @@ local function tick_dispatch(map_data, mod_settings)
 				goto p_continue
 			end
 
+			-- get_dist() also handles cross-surface distance by penalizing it
 			best_p_to_r_dist =
 					p_station.entity_stop.valid and
 					r_station.entity_stop.valid and
@@ -583,6 +687,7 @@ local function tick_dispatch(map_data, mod_settings)
 			best_t_prior = -INF
 			best_capacity = 0
 			best_t_to_p_dist = INF
+			best_t_to_r_is_return_home_surface = false
 			if trains then
 				for train_id, _ in pairs(trains) do
 					local train = map_data.trains[train_id]
@@ -604,8 +709,8 @@ local function tick_dispatch(map_data, mod_settings)
 						goto train_continue
 					end
 
-					-- Verify train is routable to requester.
-					if not is_train_routable(train_stock, r_station.entity_stop) then
+					local t_surface_id = train_stock.surface_index
+					if not is_delivery_allowed_for_train(t_surface_id, p_surface_id, r_surface_id, train.depot_surface_id) then
 						goto train_continue
 					end
 
@@ -651,6 +756,14 @@ local function tick_dispatch(map_data, mod_settings)
 						goto train_continue
 					end
 
+					-- favor trains for which this would be a trip back to their home surface
+					local t_to_r_is_return_home_surface =
+							r_surface_id ~= t_surface_id and
+							r_surface_id == train.depot_surface_id
+					if best_t_to_r_is_return_home_surface and not t_to_r_is_return_home_surface then
+						goto train_continue
+					end
+
 					--check if path is shortest so we prioritize locality
 					local t_to_p_dist =
 							train_stock and p_station.entity_stop.valid and
@@ -670,6 +783,7 @@ local function tick_dispatch(map_data, mod_settings)
 					best_capacity = capacity
 					best_t_prior = train.priority
 					best_t_to_p_dist = t_to_p_dist
+					best_t_to_r_is_return_home_surface = t_to_r_is_return_home_surface
 					::train_continue::
 				end
 			end
@@ -680,6 +794,7 @@ local function tick_dispatch(map_data, mod_settings)
 			p_stop_i = j
 			best_train_id = best_p_train_id
 			best_p_prior = p_prior
+			best_surface_connections = surface_connections
 			best_dist = best_p_to_r_dist
 			::p_continue::
 			j = j + 1
@@ -691,7 +806,7 @@ local function tick_dispatch(map_data, mod_settings)
 			local p_station_id = p_stop.station_id
 			move_stations_to_end_of_polling_queue(map_data, p_station_id, r_station_id)
 			local manifest = create_manifest(map_data, r_stop, p_stop, best_train_id, item_name)
-			create_delivery(map_data, r_station_id, p_station_id, best_train_id, manifest)
+			create_delivery(map_data, r_station_id, p_station_id, best_train_id, manifest, best_surface_connections)
 			return false
 		else
 			if closest_to_correct_p_station then
@@ -999,6 +1114,10 @@ local function tick_poll_station(map_data, mod_settings)
 				if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 					is_not_requesting = false
 					is_requesting_nothing = false
+					
+					-- Track when this item request started
+					track_request_start(station, item_hash)
+					
 					local f, a
 					if station.network_name == NETWORK_EACH then
 						f, a = pairs(station.network_mask --[[@as {[string]: int}]])
@@ -1017,6 +1136,9 @@ local function tick_poll_station(map_data, mod_settings)
 						end
 						stops[#stops + 1] = stop
 					end
+				else
+					-- Request no longer needed, clear the tracking
+					clear_request_tracking(station, item_hash)
 				end
 			end
 			if is_not_requesting then
@@ -1041,6 +1163,30 @@ local function tick_poll_station(map_data, mod_settings)
 				else
 					comb1_signals[k] = nil
 				end
+			end
+		end
+		
+		-- Clean up request_start_ticks for items no longer being requested
+		if mod_settings.track_request_wait_times and station.request_start_ticks and next(station.request_start_ticks) then
+			local requested_items = {}
+			-- Build set of currently requested items
+			for k, v in pairs(comb1_signals) do
+				if v.count < 0 then  -- Negative means requesting
+					local item_hash = hash_signal(v.signal)
+					requested_items[item_hash] = true
+				end
+			end
+			
+			-- Remove tracking for items no longer requested
+			for item_hash, _ in pairs(station.request_start_ticks) do
+				if not requested_items[item_hash] then
+					clear_request_tracking(station, item_hash)
+				end
+			end
+			
+			-- If no items are being requested, clear all tracking
+			if not next(requested_items) then
+				clear_all_request_tracking(station)
 			end
 		end
 	end
@@ -1069,10 +1215,11 @@ function tick_poll_entities(map_data, mod_settings)
 	local tick_data = map_data.tick_data
 
 	if map_data.total_ticks % 5 == 0 then
+		local tick = game.tick
 		if tick_data.last_train == nil or map_data.trains[tick_data.last_train] then
 			local train_id, train = next(map_data.trains, tick_data.last_train)
 			tick_data.last_train = train_id
-			if train then
+			if train and not train.se_is_being_teleported then
 				if (not train.entity or not train.entity.valid) then
 					game.print(
 						"Cybersyn: Lost track of invalid train after migration. You need to check for lost trains manually. You might get a few of these messages.")
@@ -1085,6 +1232,8 @@ function tick_poll_entities(map_data, mod_settings)
 						send_alert_stuck_train(map_data, train.entity)
 					end
 					interface_raise_train_stuck(train_id)
+				elseif train.status == STATUS_TO_D_BYPASS and tick >= (train.skip_path_checks_until or 0) then
+					add_available_train(map_data, train_id, train)
 				end
 			end
 		else

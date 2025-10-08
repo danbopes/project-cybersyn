@@ -371,25 +371,107 @@ local migrations_table = {
 		end
 	end,
 	["2.0.27"] = function()
+		local map_data = storage --[[@as MapData]]
+
 		-- Reset the economy data
 		storage.economy = {
 			all_r_stops = {},
 			all_p_stops = {},
 			all_names = {},
 		}
+
+		get_or_create(map_data, "se_elevators")
+		get_or_create(map_data, "connected_surfaces")
+
+		for _, cybersyn_train in pairs(map_data.trains) do
+			local train = cybersyn_train.entity
+			if train and train.valid then
+				local depot = map_data.depots[cybersyn_train.depot_id]
+				local depot_stop = depot and depot.entity_stop
+				cybersyn_train.depot_surface_id = depot_stop and depot_stop.surface_index or train.front_stock.surface_index
+			end
+		end
+	end,
+	["2.0.33"] = function()
+		-- Add request_start_ticks field to existing stations
+		---@type MapData
+		local map_data = storage
+		for _, station in pairs(map_data.stations) do
+			if not station.request_start_ticks then
+				station.request_start_ticks = {}
+			end
+		end
 	end
 }
+
+---@param config_change_data ConfigurationChangedData
+function sanitize_economy_names(config_change_data)
+	local migrations = config_change_data.migrations --[[@as {[string]: {[string]: string}}]]
+
+	-- migrations seems to have empty tables even for IDTypes without changes but there's no documented guarantee for it
+	migrations.fluid = migrations.fluid or {}
+	migrations.item = migrations.item or {}
+	migrations.quality = migrations.quality or {}
+	if not (next(migrations.fluid) or next(migrations.item) or next(migrations.quality)) then return end
+
+	---@type MapData
+	local map_data = storage
+	local removed = {}
+
+	-- no need to migrate map_data.economy, on_config_changed() sets map_data.tick_state = STATE_INIT which will wipe it
+
+	for _, station in pairs(map_data.stations) do
+		local deliveries = station.deliveries
+		if deliveries then
+			for item_hash, count in pairs(deliveries) do
+				local item_name, quality = unhash_signal(item_hash)
+				local new_name = migrations.item[item_name] or migrations.fluid[item_name]
+				local new_quality = quality and migrations.quality[quality]
+				if new_name == "" or new_quality == "" then
+					deliveries[item_hash] = nil
+					removed[item_name] = true
+				elseif new_name or new_quality then
+					local new_hash = hash_item(new_name or item_name, new_quality or quality)
+					deliveries[new_hash] = count
+					deliveries[item_hash] = nil
+				end
+			end
+		end
+	end
+
+	if next(removed) then
+		log("Migrated names removed from economy: "..serpent.block(removed, {sortkeys = true}))
+	end
+
+	for train_id, train in pairs(map_data.trains) do
+		if train.manifest then
+			for _, entry in pairs(train.manifest) do
+				local new_name = migrations[entry.type][entry.name]
+				local new_quality = entry.quality and migrations.quality[entry.quality]
+				if new_name == "" or new_quality == "" then
+					local msg = string.format("%s delivery aborted: %s/%s no longer exists", train_richtext(train.entity), entry.name, entry.quality or "normal")
+					log(msg)
+					game.print(msg)
+					remove_train(map_data, train_id, train)
+				elseif new_name or new_quality then
+					entry.name = new_name or entry.name
+					entry.quality = new_quality or entry.quality
+				end
+			end
+		end
+	end
+end
+
 --STATUS_R_TO_D = 5
----@param data ConfigurationChangedData
-function on_config_changed(data)
+---@param config_change_data ConfigurationChangedData
+function on_config_changed(config_change_data)
 	storage.tick_state = STATE_INIT
 	storage.tick_data = {}
 	storage.perf_cache = {}
 
-	flib_migration.on_config_changed(data, migrations_table)
+	flib_migration.on_config_changed(config_change_data, migrations_table)
 
-	-- needs to be re-visited when SE gets Factorio 2.0 support
-	IS_SE_PRESENT = false -- remote.interfaces["space-exploration"] ~= nil
+	IS_SE_PRESENT = remote.interfaces["space-exploration"] ~= nil
 
 	if storage.debug_revision ~= debug_revision then
 		storage.debug_revision = debug_revision
@@ -397,7 +479,11 @@ function on_config_changed(data)
 			on_debug_revision_change()
 		end
 	end
-	
+
+	if config_change_data.migration_applied then
+		sanitize_economy_names(config_change_data)
+	end
+
 	retrigger_train_calculation(false)
 end
 

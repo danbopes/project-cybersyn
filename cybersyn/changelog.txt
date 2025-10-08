@@ -1,4 +1,54 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.0.35
+Date: 2025-10-08
+  Changes:
+    - Avoid no path to first schedule entry
+    - Use different colors for in-transit and not-in-transit items
+    - Add optional Wait Time Tracking to Station GUI
+---------------------------------------------------------------------------------------------------
+Version: 2.0.33
+Date: 2025-09-07
+  Changes:
+    - SE Integration - Warn about elevators with the same name
+  Bugfixes:
+    - Fix crash when updating a station's layout.
+    - SE Integration - Fix crash when elevator travel happens out of order
+---------------------------------------------------------------------------------------------------
+Version: 2.0.32
+Date: 2025-08-13
+  Bugfixes:
+    - Lock train only for missing stations and refuelers
+---------------------------------------------------------------------------------------------------
+Version: 2.0.31
+Date: 2025-08-12
+  Bugfixes:
+    - Avoid crash when station is gone on arrival
+---------------------------------------------------------------------------------------------------
+Version: 2.0.30
+Date: 2025-07-29
+  Bugfixes:
+    - fixed #291 crush when migrating economy on mods update
+---------------------------------------------------------------------------------------------------
+Version: 2.0.29
+Date: 2025-07-28
+  Bugfixes:
+    - fix #245 event filters for ghost entities are incorrect
+    - fix layout check for pickup/dropoff position if large inserters
+    - fix #187 Building Cyber Combinator over Arithmetic Combinator Causing Crash
+    - Update migrated names in economy and deliveries
+---------------------------------------------------------------------------------------------------
+Version: 2.0.28
+Date: 2025-06-23
+  Bugfixes:
+    - Fixed misshap with 2.0.27 release. It didnt contained advertised fixes, instead it was SE elevator support - changelog for .27 have been modified
+    - Check if station exists to avoid crashes when station = nil
+    - Don't update deliveries a station no longer knows about - fixes #281
+---------------------------------------------------------------------------------------------------
+Version: 2.0.27
+Date: 2025-06-20
+  Changes:
+    - Adds back support of SE Elevators for upcoming 2.0 version of SE
+---------------------------------------------------------------------------------------------------
 Version: 2.0.26
 Date: 2025-05-11
   Changes:
