@@ -370,154 +370,108 @@ local migrations_table = {
 			::next_train::
 		end
 	end,
-	["2.0.27"] = function()
+	["2.0.28"] = function()
+		local map_data = storage --[[@as MapData]]
+
 		-- Reset the economy data
 		storage.economy = {
 			all_r_stops = {},
 			all_p_stops = {},
 			all_names = {},
 		}
+
+		get_or_create(map_data, "se_elevators")
+		get_or_create(map_data, "connected_surfaces")
+
+		for _, cybersyn_train in pairs(map_data.trains) do
+			local train = cybersyn_train.entity
+			if train and train.valid then
+				local depot = map_data.depots[cybersyn_train.depot_id]
+				local depot_stop = depot and depot.entity_stop
+				cybersyn_train.depot_surface_id = depot_stop and depot_stop.surface_index or train.front_stock.surface_index
+			end
+		end
 	end,
-	["2.0.28"] = function()
-		storage.warmup_station_ids = nil
+	["2.0.33"] = function()
+		-- Add request_start_ticks field to existing stations
+		---@type MapData
+		local map_data = storage
+		for _, station in pairs(map_data.stations) do
+			if not station.request_start_ticks then
+				station.request_start_ticks = {}
+			end
+		end
 	end
 }
---STATUS_R_TO_D = 5
----Migrate train manifests and station deliveries when prototypes change
----@param migrations {[string]: {[string]: string}} Prototype migrations mapping
-local function migrate_train_manifests(migrations)
-	local map_data = storage --[[@as MapData]]
-	
-	-- Get fluid and item migrations
-	local fluid_migrations = migrations.fluid or {}
-	local item_migrations = migrations.item or {}
-	
-	local migrated_trains = 0
-	local migrated_entries = 0
-	local migrated_stations = 0
-	local migrated_deliveries = 0
-	
-	-- Helper function to get new name for a prototype
-	local function get_migrated_name(name, prototype_type)
-		if prototype_type == "fluid" and fluid_migrations[name] then
-			return fluid_migrations[name]
-		elseif prototype_type == "item" and item_migrations[name] then
-			return item_migrations[name]
+
+---@param config_change_data ConfigurationChangedData
+function sanitize_economy_names(config_change_data)
+	local migrations = config_change_data.migrations --[[@as {[string]: {[string]: string}}]]
+
+	-- migrations seems to have empty tables even for IDTypes without changes but there's no documented guarantee for it
+	migrations.fluid = migrations.fluid or {}
+	migrations.item = migrations.item or {}
+	migrations.quality = migrations.quality or {}
+	if not (next(migrations.fluid) or next(migrations.item) or next(migrations.quality)) then return end
+
+	---@type MapData
+	local map_data = storage
+	local removed = {}
+
+	-- no need to migrate map_data.economy, on_config_changed() sets map_data.tick_state = STATE_INIT which will wipe it
+
+	for _, station in pairs(map_data.stations) do
+		local deliveries = station.deliveries
+		if deliveries then
+			for item_hash, count in pairs(deliveries) do
+				local item_name, quality = unhash_signal(item_hash)
+				local new_name = migrations.item[item_name] or migrations.fluid[item_name]
+				local new_quality = quality and migrations.quality[quality]
+				if new_name == "" or new_quality == "" then
+					deliveries[item_hash] = nil
+					removed[item_name] = true
+				elseif new_name or new_quality then
+					local new_hash = hash_item(new_name or item_name, new_quality or quality)
+					deliveries[new_hash] = count
+					deliveries[item_hash] = nil
+				end
+			end
 		end
-		return nil
 	end
-	
-	-- Iterate through all trains and update their manifests
+
+	if next(removed) then
+		log("Migrated names removed from economy: "..serpent.block(removed, {sortkeys = true}))
+	end
+
 	for train_id, train in pairs(map_data.trains) do
 		if train.manifest then
-			local manifest_changed = false
-			
-			-- Check each manifest entry
 			for _, entry in pairs(train.manifest) do
-				local old_name = entry.name
-				local new_name = get_migrated_name(old_name, entry.type)
-				
-				-- Update the entry if migration is needed
-				if new_name then
-					if new_name == "" then
-						-- Prototype was removed - print warning but keep the entry
-						-- The game will handle invalid prototypes gracefully
-						game.print("Warning: Train " .. train_id .. " manifest contains removed prototype: " .. old_name)
-					else
-						-- Update to new name
-						entry.name = new_name
-						manifest_changed = true
-						migrated_entries = migrated_entries + 1
-					end
+				local new_name = migrations[entry.type][entry.name]
+				local new_quality = entry.quality and migrations.quality[entry.quality]
+				if new_name == "" or new_quality == "" then
+					local msg = string.format("%s delivery aborted: %s/%s no longer exists", train_richtext(train.entity), entry.name, entry.quality or "normal")
+					log(msg)
+					game.print(msg)
+					remove_train(map_data, train_id, train)
+				elseif new_name or new_quality then
+					entry.name = new_name or entry.name
+					entry.quality = new_quality or entry.quality
 				end
 			end
-			
-			if manifest_changed then
-				migrated_trains = migrated_trains + 1
-			end
 		end
-	end
-	
-	-- Create reverse migration lookup (new_name -> old_name) for comprehensive migration
-	local reverse_fluid_migrations = {}
-	local reverse_item_migrations = {}
-	for old_name, new_name in pairs(fluid_migrations) do
-		if new_name ~= "" then
-			reverse_fluid_migrations[new_name] = old_name
-		end
-	end
-	for old_name, new_name in pairs(item_migrations) do
-		if new_name ~= "" then
-			reverse_item_migrations[new_name] = old_name
-		end
-	end
-	
-	-- Migrate station deliveries hash keys - handle both forward and reverse mappings
-	for station_id, station in pairs(map_data.stations) do
-		if station.deliveries and next(station.deliveries) then
-			local deliveries_changed = false
-			local new_deliveries = {}
-			
-			-- Copy deliveries with updated hash keys
-			for item_hash, count in pairs(station.deliveries) do
-				local item_name, item_quality = unhash_signal(item_hash)
-				
-				-- Check if this name exists in either migration table (old -> new)
-				local new_name = nil
-				if fluid_migrations[item_name] then
-					new_name = fluid_migrations[item_name]
-				elseif item_migrations[item_name] then
-					new_name = item_migrations[item_name]
-				end
-				
-				if new_name and new_name ~= "" then
-					-- Migrate old name to new name
-					final_name = new_name
-					final_hash = hash_item(new_name, item_quality)
-					deliveries_changed = true
-					migrated_deliveries = migrated_deliveries + 1
-
-					if new_deliveries[final_hash] then
-						new_deliveries[final_hash] = new_deliveries[final_hash] + count
-					else
-						new_deliveries[final_hash] = count
-					end
-				else
-					new_deliveries[item_hash] = count
-				end
-			end
-			
-			if deliveries_changed then
-				station.deliveries = new_deliveries
-				migrated_stations = migrated_stations + 1
-			end
-		end
-	end
-	
-	if migrated_trains > 0 or migrated_stations > 0 then
-		local message = "Cybersyn: Migrated " .. migrated_entries .. " manifest entries across " .. migrated_trains .. " trains"
-		if migrated_stations > 0 then
-			message = message .. " and " .. migrated_deliveries .. " delivery entries across " .. migrated_stations .. " stations"
-		end
-		game.print(message)
 	end
 end
 
----@param data ConfigurationChangedData
-function on_config_changed(data)
+--STATUS_R_TO_D = 5
+---@param config_change_data ConfigurationChangedData
+function on_config_changed(config_change_data)
 	storage.tick_state = STATE_INIT
 	storage.tick_data = {}
 	storage.perf_cache = {}
 
-	flib_migration.on_config_changed(data, migrations_table)
+	flib_migration.on_config_changed(config_change_data, migrations_table)
 
-	-- Migrate train manifests for changed prototypes
-	if data.migration_applied and data.migrations then
-		migrate_train_manifests(data.migrations)
-	end
-
-	-- needs to be re-visited when SE gets Factorio 2.0 support
-	IS_SE_PRESENT = false -- remote.interfaces["space-exploration"] ~= nil
+	IS_SE_PRESENT = remote.interfaces["space-exploration"] ~= nil
 
 	if storage.debug_revision ~= debug_revision then
 		storage.debug_revision = debug_revision
@@ -525,7 +479,11 @@ function on_config_changed(data)
 			on_debug_revision_change()
 		end
 	end
-	
+
+	if config_change_data.migration_applied then
+		sanitize_economy_names(config_change_data)
+	end
+
 	retrigger_train_calculation(false)
 end
 
