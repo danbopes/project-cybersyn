@@ -4,3 +4,6 @@
 
 # Krita autosave files
 *-autosave.kra
+
+# macOS
+.DS_Store

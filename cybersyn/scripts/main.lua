@@ -1,10 +1,8 @@
 --By Mami
 local manager = require("gui.main")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
-local se_compat = require("scripts.mod-compatibility.space-exploration")
 
 local ceil = math.ceil
-local table_insert = table.insert
 local table_remove = table.remove
 
 ---@param map_data MapData
@@ -143,6 +141,7 @@ local function on_station_built(map_data, stop, comb1, comb2, secondary_inv_comb
 		network_mask = 0,
 		wagon_combs = nil,
 		deliveries = {},
+		request_start_ticks = {},
 		accepted_layouts = {},
 		layout_pattern = nil,
 		tick_signals = nil,
@@ -186,6 +185,7 @@ function on_station_broken(map_data, station_id, station)
 			end
 		end
 	end
+	clear_all_request_tracking(station)
 	map_data.stations[station_id] = nil
 	interface_raise_station_removed(station_id, station)
 end
@@ -821,6 +821,9 @@ local function on_surface_removed(event)
 	end
 end
 
+local function on_object_destroyed(event)
+	Elevators.on_object_destroyed(event)
+end
 
 local function on_paste(event)
 	local entity = event.destination
@@ -850,6 +853,7 @@ local function grab_all_settings()
 	mod_settings.fuel_threshold = settings.global["cybersyn-fuel-threshold"].value --[[@as double]]
 	mod_settings.warmup_time = settings.global["cybersyn-warmup-time"].value --[[@as double]]
 	mod_settings.stuck_train_time = settings.global["cybersyn-stuck-train-time"].value --[[@as double]]
+	mod_settings.track_request_wait_times = settings.global["cybersyn-track-request-wait-times"].value --[[@as boolean]]
 	mod_settings.allow_cargo_in_depot = settings.global["cybersyn-allow-cargo-in-depot"].value --[[@as boolean]]
 	mod_settings.manager_ups = settings.global["cybersyn-manager-updates-per-second"].value --[[@as double]]
 	mod_settings.manager_enabled = settings.startup["cybersyn-manager-enabled"].value --[[@as boolean]]
@@ -889,20 +893,22 @@ local function on_settings_changed(event)
 end
 
 
+---@type LuaPlayerBuiltEntityEventFilter[]
 local filter_built = {
 	{ filter = "name", name = "train-stop" },
 	{ filter = "name", name = COMBINATOR_NAME },
-	{ filter = "ghost", ghost_name = COMBINATOR_NAME },
+	{ filter = "ghost_name", name = COMBINATOR_NAME },
 	{ filter = "type", type = "inserter" },
 	{ filter = "type", type = "pump" },
 	{ filter = "type", type = "straight-rail" },
 	{ filter = "type", type = "curved-rail" },
 	{ filter = "type", type = "loader-1x1" },
 }
+---@type LuaPlayerMinedEntityEventFilter[]
 local filter_broken = {
 	{ filter = "name", name = "train-stop" },
 	{ filter = "name", name = COMBINATOR_NAME },
-	{ filter = "ghost", name = COMBINATOR_NAME },
+	{ filter = "ghost_name", name = COMBINATOR_NAME },
 	{ filter = "type", type = "inserter" },
 	{ filter = "type", type = "pump" },
 	{ filter = "type", type = "straight-rail" },
@@ -938,6 +944,8 @@ local function main()
 	script.on_event(defines.events.on_entity_died, on_broken, filter_broken)
 	script.on_event(defines.events.script_raised_destroy, on_broken)
 
+	script.on_event(defines.events.on_object_destroyed, on_object_destroyed)
+
 	script.on_event({ defines.events.on_pre_surface_deleted, defines.events.on_pre_surface_cleared }, on_surface_removed)
 
 	script.on_event(defines.events.on_entity_settings_pasted, on_paste)
@@ -955,7 +963,7 @@ local function main()
 
 	script.on_init(function()
 		init_global()
-		se_compat.setup_se_compat()
+		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
 		if MANAGER_ENABLED then
 			manager.on_init()
@@ -970,7 +978,7 @@ local function main()
 	end)
 
 	script.on_load(function()
-		se_compat.setup_se_compat()
+		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
 	end)
 
