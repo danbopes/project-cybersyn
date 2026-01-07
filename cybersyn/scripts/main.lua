@@ -3,7 +3,6 @@ local manager = require("gui.main")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 
 local ceil = math.ceil
-local table_remove = table.remove
 
 ---@param map_data MapData
 ---@param stop LuaEntity
@@ -210,7 +209,7 @@ local function search_for_station_combinators(map_data, stop, comb_operation, co
 				if not all then
 					return entity
 				end
-				table_insert(found, entity)
+				table.insert(found, entity)
 			end
 		end
 	end
