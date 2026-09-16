@@ -7,10 +7,18 @@ local DEFINES_WORKING = defines.entity_status.working
 local DEFINES_LOW_POWER = defines.entity_status.low_power
 --local DEFINES_COMBINATOR_INPUT = defines.circuit_connector_id.combinator_input
 
+--Stack sizes never change at runtime, and prototypes.item lookups are hot enough in
+--the dispatch loop to be worth paying for once at load.
+local stack_size_cache = {}
+
+for name, prototype in pairs(prototypes.item) do
+	stack_size_cache[name] = prototype.stack_size
+end
+
 ---@param map_data MapData
 ---@param item_name string
 function get_stack_size(map_data, item_name)
-	return prototypes.item[item_name].stack_size
+	return stack_size_cache[item_name]
 end
 
 ---@param item_order table<string, int>
