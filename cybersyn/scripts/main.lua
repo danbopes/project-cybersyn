@@ -4,7 +4,6 @@ local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies"
 local analytics = require("scripts.analytics")
 
 local ceil = math.ceil
-local table_remove = table.remove
 
 ---@param map_data MapData
 ---@param stop LuaEntity
@@ -153,18 +152,6 @@ local function on_station_built(map_data, stop, comb1, comb2)
 	local id = stop.unit_number --[[@as uint]]
 
 	map_data.stations[id] = station
-
-	--prevent the same station from warming up multiple times
-	if map_data.warmup_station_cycles[id] then
-		--enforce FIFO
-		for i, v in ipairs(map_data.warmup_station_ids) do
-			if v == id then
-				table_remove(map_data.warmup_station_ids, i)
-				break
-			end
-		end
-	end
-	map_data.warmup_station_ids[#map_data.warmup_station_ids + 1] = id
 	map_data.warmup_station_cycles[id] = 0
 
 	queue_station_for_combinator_update(map_data, id)

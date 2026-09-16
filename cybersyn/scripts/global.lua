@@ -8,7 +8,6 @@
 ---@field public to_stop {[uint]: LuaEntity}
 ---@field public stations {[uint]: Station}
 ---@field public active_station_ids uint[]
----@field public warmup_station_ids uint[]
 ---@field public warmup_station_cycles {[uint]: int}
 ---@field public queue_station_update {[uint]: true?}?
 ---@field public depots {[uint]: Depot}
@@ -214,7 +213,6 @@ function init_global()
 	storage.to_stop = {}
 	storage.stations = {}
 	storage.active_station_ids = {}
-	storage.warmup_station_ids = {}
 	storage.warmup_station_cycles = {}
 	storage.depots = {}
 	storage.trains = {}
