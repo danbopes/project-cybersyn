@@ -182,6 +182,7 @@
 ---@field public track_request_wait_times boolean
 ---@field public fuel_threshold double
 ---@field public allow_cargo_in_depot boolean
+---@field public alert_unexpected_cargo boolean
 ---@field public missing_train_alert_enabled boolean --interface setting
 ---@field public stuck_train_alert_enabled boolean --interface setting
 ---@field public react_to_train_at_incorrect_station boolean --interface setting

@@ -128,6 +128,13 @@ data:extend({
 		default_value = false,
 	},
 	{
+		type = "bool-setting",
+		name = "cybersyn-alert-unexpected-cargo",
+		order = "cf",
+		setting_type = "runtime-global",
+		default_value = false,
+	},
+	{
 		type = "double-setting",
 		name = "cybersyn-manager-updates-per-second",
 		order = "ad",

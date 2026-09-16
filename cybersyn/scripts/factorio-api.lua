@@ -1222,6 +1222,25 @@ function send_alert_unexpected_train(train)
 end
 
 ---@param map_data MapData
+---@param train LuaTrain
+---@param station_name string?
+---@param station_position MapPosition?
+---@param station_surface LuaSurface?
+function send_alert_unexpected_cargo(map_data, train, station_name, station_position, station_surface)
+	send_alert_for_train(train, send_lost_train_alert_icon, "cybersyn-messages.unexpected-cargo")
+	send_alert_sounds(train)
+	map_data.active_alerts = map_data.active_alerts or {}
+	map_data.active_alerts[train.id] = { train, 10, map_data.total_ticks }
+
+	if station_name and station_position and station_surface then
+		local gps_tag = "[gps=" .. station_position.x .. "," .. station_position.y .. "," .. station_surface.name .. "]"
+		game.print({ "", "Cybersyn: Train picked up unexpected cargo at ", station_name, " ", gps_tag })
+	else
+		game.print("Cybersyn: Train picked up unexpected cargo")
+	end
+end
+
+---@param map_data MapData
 function process_active_alerts(map_data)
 	for train_id, data in pairs(map_data.active_alerts) do
 		local train = data[1]
@@ -1248,6 +1267,8 @@ function process_active_alerts(map_data)
 				send_alert_for_train(train, send_lost_train_alert_icon, "cybersyn-messages.train-at-incorrect")
 			elseif id == 7 then
 				send_alert_for_train(train, send_lost_train_alert_icon, "cybersyn-messages.cannot-path-between-surfaces")
+			elseif id == 10 then
+				send_alert_for_train(train, send_lost_train_alert_icon, "cybersyn-messages.unexpected-cargo")
 			end
 		else
 			map_data.active_alerts[train_id] = nil

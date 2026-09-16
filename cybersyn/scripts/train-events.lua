@@ -261,6 +261,24 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 			remove_manifest(map_data, p_station, train.manifest, 1)
 			set_comb1(map_data, p_station, nil)
 			unset_wagon_combs(map_data, p_station)
+
+			if mod_settings.alert_unexpected_cargo and train.manifest then
+				local manifest_items = {}
+				for _, item in ipairs(train.manifest) do
+					manifest_items[item.type .. ":" .. item.name .. ":" .. (item.quality or "normal")] = true
+				end
+
+				--a refuel stop puts fuel in the cargo on purpose, so it is never a surprise
+				if not manifest_items["item:cybersyn-fuel:normal"] then
+					for _, actual_item in pairs(train.entity.get_contents()) do
+						if not manifest_items["item:" .. actual_item.name .. ":" .. actual_item.quality] then
+							send_alert_unexpected_cargo(map_data, train.entity, p_station.entity_stop.backer_name,
+								p_station.entity_stop.position, p_station.entity_stop.surface)
+							break
+						end
+					end
+				end
+			end
 		end
 		if train.has_filtered_wagon then
 			train.has_filtered_wagon = nil
