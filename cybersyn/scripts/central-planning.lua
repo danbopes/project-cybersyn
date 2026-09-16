@@ -176,20 +176,14 @@ end
 ---@param r_station_id integer?
 local function move_stations_to_end_of_polling_queue(map_data, p_station_id, r_station_id)
 	if p_station_id == r_station_id then r_station_id = nil end
-	local found_p, found_r = false, false
-	local next_station_ids = filter(map_data.active_station_ids, function(id)
-		if id == p_station_id then
-			found_p = true
-			return false
-		elseif id == r_station_id then
-			found_r = true
-			return false
-		else
-			return true
+	local next_station_ids = {}
+	for _, id in ipairs(map_data.active_station_ids) do
+		if id ~= p_station_id and id ~= r_station_id then
+			table_insert(next_station_ids, id)
 		end
-	end)
-	if found_p and p_station_id then table_insert(next_station_ids, p_station_id) end
-	if found_r and r_station_id then table_insert(next_station_ids, r_station_id) end
+	end
+	if p_station_id then table_insert(next_station_ids, p_station_id) end
+	if r_station_id then table_insert(next_station_ids, r_station_id) end
 	map_data.active_station_ids = next_station_ids
 end
 
@@ -815,12 +809,10 @@ local function tick_dispatch(map_data, mod_settings)
 		end
 
 		if best_train_id then
-			local p_station_id = p_stations[p_station_i]
+			local p_station_id = table_remove(p_stations, p_station_i)
+			move_stations_to_end_of_polling_queue(map_data, p_station_id, r_station_id)
 			local manifest = create_manifest(map_data, r_station_id, p_station_id, best_train_id, item_name)
-			if create_delivery(map_data, r_station_id, p_station_id, best_train_id, manifest, best_surface_connections) then
-				table_remove(p_stations, p_station_i)
-				move_stations_to_end_of_polling_queue(map_data, p_station_id, r_station_id)
-			end
+			create_delivery(map_data, r_station_id, p_station_id, best_train_id, manifest, best_surface_connections)
 			return false
 		else
 			if closest_to_correct_p_station then
