@@ -1,0 +1,73 @@
+--- One-time conversion of a stock Cybersyn save to this fork's storage shape.
+---
+--- This fork's info.json version tracks upstream's exactly and never moves on its own,
+--- so installing the fork over stock Cybersyn is not a version change and Factorio
+--- raises no migration event at all. The conversion is therefore keyed on a flag in
+--- storage and checked once per load, on the first tick -- on_load may not write to
+--- storage, and on_configuration_changed cannot be relied on to fire.
+---
+--- Running on the first tick also means upstream's own migration chain has already
+--- finished by the time this sees the save, so it always works on a well-formed
+--- upstream save rather than an arbitrarily old one. Nothing Cybersyn runs between
+--- on_configuration_changed and the first tick reads the fields changed here.
+---
+--- Keep this idempotent: the flag is written last, so a conversion that errors part
+--- way is retried on the next load.
+
+local function migrate_to_fork()
+	if storage.fork_migrated then return end
+
+	-- The fork once shipped its own 2.0.27 before upstream shipped a different one, and
+	-- saves that recorded a fork version then skipped every upstream migration below it.
+	-- Recreate whatever those skipped migrations would have added.
+	local tables = {
+		"tick_data", "to_comb", "to_comb_params", "to_output", "to_stop",
+		"stations", "active_station_ids", "warmup_station_ids", "warmup_station_cycles",
+		"depots", "trains", "available_trains", "layouts", "layout_train_count",
+		"refuelers", "to_refuelers", "each_refuelers", "perf_cache",
+		"se_elevators", "connected_surfaces",
+	}
+	for _, key in pairs(tables) do
+		if storage[key] == nil then storage[key] = {} end
+	end
+	if storage.total_ticks == nil then storage.total_ticks = 0 end
+	if storage.layout_top_id == nil then storage.layout_top_id = 1 end
+
+	-- all_*_stations became all_*_stops when entries changed from station ids to
+	-- StopInfo. tick_init rebuilds all three every cycle, so this only drops the old keys.
+	storage.economy = { all_r_stops = {}, all_p_stops = {}, all_names = {} }
+
+	for _, station in pairs(storage.stations) do
+		station.secondary_inv_combs = station.secondary_inv_combs or {}
+		station.tick_signals = nil -- both moved onto StopInfo
+		station.item_p_counts = nil
+	end
+
+	-- Body of upstream's ["2.0.27"] entry, which saves on a fork version never ran.
+	-- is_delivery_allowed_for_train reads depot_surface_id unguarded.
+	for _, cybersyn_train in pairs(storage.trains) do
+		if cybersyn_train.depot_surface_id == nil then
+			local train = cybersyn_train.entity
+			if train and train.valid then
+				local depot = storage.depots[cybersyn_train.depot_id]
+				local depot_stop = depot and depot.entity_stop
+				cybersyn_train.depot_surface_id =
+					depot_stop and depot_stop.surface_index or train.front_stock.surface_index
+			end
+		end
+	end
+
+	storage.fork_migrated = true
+
+	-- the economy was just replaced under a dispatcher that may be part-way through a
+	-- cycle, so restart it the same way on_config_changed does
+	storage.tick_state = STATE_INIT
+	storage.tick_data = {}
+end
+
+local function migrate_on_first_tick()
+	script.on_event(defines.events.on_tick, nil)
+	migrate_to_fork()
+end
+
+script.on_event(defines.events.on_tick, migrate_on_first_tick)

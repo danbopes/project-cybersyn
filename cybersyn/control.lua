@@ -14,6 +14,7 @@ require("scripts.central-planning")
 require("scripts.train-events")
 require("scripts.gui")
 require("scripts.migrations")
+require("scripts.fork-migrations")
 require("scripts.main")
 require("scripts.remote-interface")
 
