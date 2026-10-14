@@ -266,15 +266,17 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 
 		-- Reset request tracking times for delivered items
 		-- Also record delivery start for analytics
+		local request_start_ticks = r_station.request_start_ticks
 		for i, item in ipairs(manifest) do
 			local item_hash = hash_item(item.name, item.quality)
+			-- Calculate fulfillment time BEFORE clearing request tracking
+			local start_tick = request_start_ticks and request_start_ticks[item_hash]
+			local fulfillment_time = start_tick and game.tick - start_tick or nil
+			if fulfillment_time then
+				stats.record_fulfilment(fulfillment_time, r_station_id, item_hash)
+			end
 			-- Record delivery start for analytics (only for first item to avoid duplicates)
 			if i == 1 then
-				-- Calculate fulfillment time BEFORE clearing request tracking
-				local fulfillment_time = nil
-				if r_station.request_start_ticks and r_station.request_start_ticks[item_hash] then
-					fulfillment_time = game.tick - r_station.request_start_ticks[item_hash]
-				end
 				analytics.record_delivery_start(map_data, train_id, item_hash, fulfillment_time)
 			end
 			clear_request_tracking(r_station, item_hash)

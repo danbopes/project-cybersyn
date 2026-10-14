@@ -918,6 +918,102 @@ function util.close_manager_window(player, player_data, refs, force)
 	collector.release_if_unused()
 end
 
+--- util.sync_children for a `table` element whose rows are `columns` cells wide. The first `first` children (a
+--- header row, say) are left alone. Each entry's `build` returns one GuiElemDef per cell and `update` receives the
+--- row's cells as an array; keys, sigs and `hold` work as in util.sync_children.
+--- @param tbl LuaGuiElement
+--- @param columns integer
+--- @param first integer
+--- @param entries {key: string|number, build: fun(): flib.GuiElemDef[], update: fun(cells: LuaGuiElement[], entry: table, index: integer)?, sig: (string|number)?}[]
+--- @param state {keys: (string|number)[]?, sigs: {[string|number]: string|number}?, dirty: true?} from util.gui_state
+--- @param hold boolean?
+--- @return "updated"|"held"|"rebuilt"
+function util.sync_table_rows(tbl, columns, first, entries, state, hold)
+	local n = #entries
+	local keys = {}
+	for i = 1, n do
+		keys[i] = entries[i].key
+	end
+	local children = tbl.children
+	local old = state.keys
+	if old and first + #old * columns ~= #children then
+		old = nil
+	end
+	local sigs = state.sigs
+	if not old or not sigs then
+		sigs = {}
+		state.sigs = sigs
+	end
+
+	local function update(entry, row, index)
+		local fn = entry.update
+		if not fn then return end
+		local sig = entry.sig
+		if sig ~= nil then
+			if sigs[entry.key] == sig then return end
+			sigs[entry.key] = sig
+		end
+		local cells = {}
+		local base = first + (row - 1) * columns
+		for c = 1, columns do
+			cells[c] = children[base + c]
+		end
+		fn(cells, entry, index)
+	end
+
+	local prefix = 0
+	if old then
+		local m = math.min(#old, n)
+		while prefix < m and old[prefix + 1] == keys[prefix + 1] do
+			prefix = prefix + 1
+		end
+		if prefix == n and #old == n then
+			for i = 1, n do
+				update(entries[i], i, i)
+			end
+			state.dirty = nil
+			return "updated"
+		end
+		if hold then
+			local index_of = {}
+			for i = 1, n do
+				index_of[keys[i]] = i
+			end
+			for j = 1, #old do
+				local i = index_of[old[j]]
+				if i then
+					update(entries[i], j, i)
+				end
+			end
+			state.dirty = true
+			return "held"
+		end
+	end
+
+	for i = 1, prefix do
+		update(entries[i], i, i)
+	end
+	for j = #children, first + prefix * columns + 1, -1 do
+		children[j].destroy()
+	end
+	local new_sigs = {}
+	for i = 1, prefix do
+		local key = keys[i]
+		new_sigs[key] = sigs[key]
+	end
+	for i = prefix + 1, n do
+		local entry = entries[i]
+		for _, def in ipairs(entry.build()) do
+			gui.add(tbl, def)
+		end
+		if entry.sig ~= nil then new_sigs[entry.key] = entry.sig end
+	end
+	state.sigs = new_sigs
+	state.keys = keys
+	state.dirty = nil
+	return "rebuilt"
+end
+
 gui.add_handlers(util.handle, util.wrapper, "cybersyn_util")
 
 return util
