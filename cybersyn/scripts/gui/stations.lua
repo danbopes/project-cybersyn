@@ -220,12 +220,17 @@ local function status_filter(player_data)
 	return s
 end
 
---- Everything the sorted order depends on besides the data itself.
-local function order_sig(f, wanted, column, ascending, snapshot)
+--- Everything the sorted order depends on besides the data itself. The status filter is left out: it is applied
+--- after the cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
+local function view_sig(f, column, ascending)
 	return table.concat({
-		column, ascending and "+" or "-", wanted or "", f.terms and table.concat(f.terms, " ") or "", f.item or "",
-		f.network or "", f.mask, f.surface or "", snapshot.tick or "", snapshot.station_count or 0,
+		column, ascending and "+" or "-", f.terms and table.concat(f.terms, " ") or "", f.item or "",
+		f.network or "", f.mask, f.surface or "",
 	}, "\1")
+end
+
+local function order_sig(f, column, ascending, snapshot)
+	return view_sig(f, column, ascending) .. "\1" .. (snapshot.tick or "") .. "\1" .. (snapshot.station_count or 0)
 end
 
 --- Filters, classifies and sorts the snapshot stations. The status filter applies after counting so the chips
@@ -265,7 +270,7 @@ function stations_tab.query(player_data)
 	end
 	local ctx = { status = status, now = game.tick, snapshot = snapshot }
 
-	local sig = order_sig(f, wanted, column, ascending, snapshot)
+	local sig = order_sig(f, column, ascending, snapshot)
 	local cache = player_data.stations_order
 	local rows = {}
 	if cache and cache.sig == sig then
@@ -276,14 +281,14 @@ function stations_tab.query(player_data)
 			end
 		end
 	else
-		for id, s in pairs(status) do
-			if not wanted or wanted == s then
-				rows[#rows + 1] = stations[id]
-			end
-		end
-		util.sort_by(rows, function(st) return key_fn(st, ctx) end, ascending, tiebreak)
+		local all = {}
+		for id in pairs(status) do all[#all + 1] = stations[id] end
+		util.sort_by(all, function(st) return key_fn(st, ctx) end, ascending, tiebreak)
 		local ids = {}
-		for i, st in ipairs(rows) do ids[i] = st.id end
+		for i, st in ipairs(all) do
+			ids[i] = st.id
+			if not wanted or wanted == status[st.id] then rows[#rows + 1] = st end
+		end
 		player_data.stations_order = { sig = sig, ids = ids }
 	end
 	return rows, counts, ctx, column, ascending
@@ -292,15 +297,20 @@ end
 --- Compact so it fits a narrow column; full precision is in the tooltip.
 --- @param ticks number
 --- @return string
+--- @return LocalisedString caption
+--- @return string sig plain value to compare between updates, since LocalisedStrings are fresh tables
 local function short_duration(ticks)
 	local s = math.floor(ticks / 60)
-	if s < 60 then return s .. "s" end
+	if s < 60 then return { "cybersyn-gui.duration-short-s", s }, "s" .. s end
 	local m = math.floor(s / 60)
-	if m < 60 then return m .. "m" end
+	if m < 60 then return { "cybersyn-gui.duration-short-m", m }, "m" .. m end
 	local h = math.floor(m / 60)
-	if h < 24 then return string.format("%dh %dm", h, m % 60) end
-	return string.format("%dd %dh", math.floor(h / 24), h % 24)
+	if h < 24 then return { "cybersyn-gui.duration-short-hm", h, m % 60 }, "h" .. m end
+	local d = math.floor(h / 24)
+	return { "cybersyn-gui.duration-short-dh", d, h % 24 }, "d" .. h
 end
+
+local NONE_CAPTION = { "cybersyn-gui.none-short" }
 
 --- Everything a row shows that is not a slot table, as plain values comparable between updates.
 --- @param st SnapshotStation
@@ -341,7 +351,7 @@ local function row_model(st, ctx)
 			if i <= 20 then lines[#lines + 1] = (i > 1 and "\n" or "") .. line end
 		end
 		m.net_sprite = "virtual-signal/" .. NETWORK_EACH
-		m.net_caption = "×" .. #names
+		m.net_caption = { "cybersyn-gui.network-each-count", #names }
 		m.net_sig = table.concat(parts, ",")
 		m.net_tooltip = lines
 	else
@@ -354,14 +364,23 @@ local function row_model(st, ctx)
 	end
 
 	local limit = finite_limit(st)
-	m.dl_caption = st.deliveries_total .. "/" .. (limit and tostring(limit) or "∞")
+	m.dl_caption = { "", st.deliveries_total, "/", limit or { "cybersyn-gui.no-limit-short" } }
+	m.dl_sig = st.deliveries_total .. "/" .. (limit or "")
 
 	local start = st.longest_wait_start
-	m.wait_caption = start and short_duration(now - start) or "–"
+	if start then
+		m.wait_caption, m.wait_sig = short_duration(now - start)
+	else
+		m.wait_caption, m.wait_sig = NONE_CAPTION, ""
+	end
 	m.wait_full = start and util.format_duration(now - start) or nil
 
 	local age = delivery_age(st)
-	m.last_caption = age and short_duration(age) or "–"
+	if age then
+		m.last_caption, m.last_sig = short_duration(age)
+	else
+		m.last_caption, m.last_sig = NONE_CAPTION, ""
+	end
 	m.last_full = age and util.format_duration(age) or nil
 	return m
 end
@@ -388,6 +407,16 @@ local function slot_key(def)
 	return def.tags and def.tags.item_hash or def.sprite
 end
 
+--- Flattens a LocalisedString so the slot sig follows exact amounts that the abbreviated caption hides.
+local function flatten(ls, out)
+	if type(ls) == "table" then
+		for _, v in ipairs(ls) do flatten(v, out) end
+	elseif ls ~= nil then
+		out[#out + 1] = tostring(ls)
+	end
+	return out
+end
+
 local function update_slot(elem, entry)
 	local def = entry.def
 	if elem.style.name ~= def.style then elem.style = def.style end
@@ -408,7 +437,7 @@ local function sync_slots(table_elem, defs, state, hold, minute)
 		entries[i] = {
 			key = slot_key(def),
 			def = def,
-			sig = def.style .. "|" .. tostring(def.children[1].caption) .. "|" .. minute,
+			sig = def.style .. "|" .. tostring(def.children[1].caption) .. "|" .. minute .. "|" .. table.concat(flatten(def.tooltip, {}), "\1"),
 			build = function() return def end,
 			update = update_slot,
 		}
@@ -464,9 +493,9 @@ local function update_row(row, st, m, cell, item, hold, minute)
 	end
 
 	local dl_children = c[5].children
-	set_if_changed(dl_children[1], "caption", m.dl_caption, cell.dl_caption)
-	set_if_changed(c[7], "caption", m.wait_caption, cell.wait_caption)
-	set_if_changed(c[8], "caption", m.last_caption, cell.last_caption)
+	if cell.dl_sig ~= m.dl_sig then dl_children[1].caption = m.dl_caption end
+	if cell.wait_sig ~= m.wait_sig then c[7].caption = m.wait_caption end
+	if cell.last_sig ~= m.last_sig then c[8].caption = m.last_caption end
 	c[7].tooltip = m.wait_full and { "cybersyn-gui.waiting-for", m.wait_full } or { "cybersyn-gui.stations-wait-none" }
 	c[8].tooltip = m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" }
 
@@ -612,8 +641,13 @@ function stations_tab.build(map_data, player_data)
 
 	local item = player_data.search_item
 	local minute = math.floor(ctx.now / 3600)
-	local hold = util.hold_active(player_data, SCROLL)
 	local state = util.gui_state(player_data, SCROLL)
+	-- A hold must only defer data-driven reshuffles; a filter, sort, status or page change the user just made
+	-- (often by clicking inside a hovered row) has to apply at once.
+	local view = view_sig(util.get_filters(player_data), util.get_sort(player_data, TAB, "name")) .. "\1"
+		.. (status_filter(player_data) or "") .. "\1" .. tostring(player_data.page and player_data.page[TAB])
+	local hold = state.view == view and util.hold_active(player_data, SCROLL)
+	state.view = view
 	local old_cells = state.cells or {}
 	local cells = {}
 	local entries = {}
@@ -635,7 +669,7 @@ function stations_tab.build(map_data, player_data)
 				end
 				cells[id] = {
 					slots = slots, st = st, item = item, minute = minute, name = st.name, status = m.status,
-					net_sig = m.net_sig, dl_caption = m.dl_caption, wait_caption = m.wait_caption, last_caption = m.last_caption,
+					net_sig = m.net_sig, dl_sig = m.dl_sig, wait_sig = m.wait_sig, last_sig = m.last_sig,
 				}
 				return def
 			end,
@@ -643,7 +677,7 @@ function stations_tab.build(map_data, player_data)
 				local cell = old_cells[id] or {}
 				local settled = update_row(elem, st, m, cell, item, hold, minute)
 				cell.st, cell.item, cell.minute, cell.name, cell.status = settled and st or nil, item, minute, st.name, m.status
-				cell.net_sig, cell.dl_caption, cell.wait_caption, cell.last_caption = m.net_sig, m.dl_caption, m.wait_caption, m.last_caption
+				cell.net_sig, cell.dl_sig, cell.wait_sig, cell.last_sig = m.net_sig, m.dl_sig, m.wait_sig, m.last_sig
 				cells[id] = cell
 			end,
 		}
