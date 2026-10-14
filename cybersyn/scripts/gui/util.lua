@@ -943,6 +943,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	-- Cleared first: releasing player.opened re-enters the close path through on_gui_closed.
 	player_data.is_manager_open = false
 	player_data.hover = nil
+	player_data.inventory_cache = nil
 
 	if player.opened == refs.manager_window then
 		player.opened = nil

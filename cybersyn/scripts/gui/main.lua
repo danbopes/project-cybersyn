@@ -39,6 +39,8 @@ local util = require("scripts.gui.util")
 --- @field delivery_times_selected {[string]: boolean}?
 --- @field utilization_interval uint?
 --- @field utilization_selected {[string]: boolean}?
+--- @field inventory_cache table? inventory tab aggregate + top stations for one snapshot pass and filter set; dropped on close
+--- @field inventory_version integer? bumped per inventory_cache rebuild, see inventory.get_cache
 
 local function top_left_button_update(player, player_data)
 	local button_flow = mod_gui.get_button_flow(player)
