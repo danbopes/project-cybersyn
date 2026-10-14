@@ -3,13 +3,17 @@
 --- This fork's info.json version tracks upstream's exactly and never moves on its own,
 --- so installing the fork over stock Cybersyn is not a version change and Factorio
 --- raises no migration event at all. The conversion is therefore keyed on a flag in
---- storage and checked once per load, on the first tick -- on_load may not write to
---- storage, and on_configuration_changed cannot be relied on to fire.
+--- storage and checked at the start of the mod's scheduled ticks -- on_load may not
+--- write to storage, and on_configuration_changed cannot be relied on to fire.
 ---
---- Running on the first tick also means upstream's own migration chain has already
---- finished by the time this sees the save, so it always works on a well-formed
+--- Running from the scheduled tick also means upstream's own migration chain has
+--- already finished by the time this sees the save, so it always works on a well-formed
 --- upstream save rather than an arbitrarily old one. Nothing Cybersyn runs between
---- on_configuration_changed and the first tick reads the fields changed here.
+--- on_configuration_changed and the first scheduled tick reads the fields changed here.
+---
+--- It must not hook on_tick just for the first tick: unregistering the handler after it
+--- ran left the event registered on load but not in the save, and Factorio refuses
+--- every multiplayer join over that difference (multiplayer.script-event-mismatch).
 ---
 --- Keep this idempotent: the flag is written last, so a conversion that errors part
 --- way is retried on the next load.
@@ -65,9 +69,12 @@ local function migrate_to_fork()
 	storage.tick_data = {}
 end
 
-local function migrate_on_first_tick()
-	script.on_event(defines.events.on_tick, nil)
-	migrate_to_fork()
+local fork_migrations = {}
+
+function fork_migrations.run_once()
+	if not storage.fork_migrated then
+		migrate_to_fork()
+	end
 end
 
-script.on_event(defines.events.on_tick, migrate_on_first_tick)
+return fork_migrations

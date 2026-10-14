@@ -4,6 +4,7 @@ local manager_dev = require("scripts.gui.dev")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 local analytics = require("scripts.analytics")
 local stats = require("scripts.stats")
+local fork_migrations = require("scripts.fork-migrations")
 
 local ceil = math.ceil
 
@@ -873,6 +874,7 @@ local function register_tick()
 	if mod_settings.manager_ups == mod_settings.tps and mod_settings.tps > DELTA then
 		local nth_tick = ceil(60 / mod_settings.tps) --[[@as uint]]
 		script.on_nth_tick(nth_tick, function()
+			fork_migrations.run_once()
 			tick(storage, mod_settings)
 			analytics.tick(storage)
 			manager.tick(storage)
@@ -881,6 +883,7 @@ local function register_tick()
 		if mod_settings.tps > DELTA then
 			local nth_tick_main = ceil(60 / mod_settings.tps) --[[@as uint]]
 			script.on_nth_tick(nth_tick_main, function()
+				fork_migrations.run_once()
 				tick(storage, mod_settings)
 				analytics.tick(storage)
 			end)
@@ -888,6 +891,7 @@ local function register_tick()
 		if mod_settings.manager_ups > DELTA then
 			local nth_tick_manager = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
 			script.on_nth_tick(nth_tick_manager, function()
+				fork_migrations.run_once()
 				manager.tick(storage)
 			end)
 		end

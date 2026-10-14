@@ -325,6 +325,15 @@ function interface.check_dispatch()
 	}
 end
 
+--- Writes a runtime-global setting of this mod from the mod's own context, which script-driven tests
+--- cannot do from level scope. Fires on_runtime_mod_setting_changed like a change from the settings GUI.
+--- @param name string
+--- @param value boolean|number|string
+function interface.set_setting(name, value)
+	settings.global[name] = { value = value }
+	return settings.global[name].value
+end
+
 --- @param gui_main table scripts/gui/main.lua module (manager_gui)
 --- @param gui_manager table scripts/gui/manager.lua module
 function dev.register(gui_main, gui_manager)
