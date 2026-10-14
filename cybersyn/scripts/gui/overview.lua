@@ -186,7 +186,7 @@ local function tile_def(tile)
 			{ type = "empty-widget", style = "flib_horizontal_pusher" },
 			{
 				type = "label",
-				name = "overview_" .. tile.name .. "_total",
+				name = "overview_" .. tile.name .. "_headline",
 				style = "cybersyn_overview_big_number",
 				caption = NO_VALUE,
 			},
@@ -557,7 +557,7 @@ function overview_tab.model(player_data)
 
 	local d10 = stats.window(10)
 	local d60, p60, delivered_items = stats.window(60, true)
-	local cycle = stats.cycle_average(stats.HOUR)
+	local cycle = stats.cycle_average(60)
 	local flow = {
 		headline = d60,
 		last_10m = d10,
@@ -570,9 +570,21 @@ function overview_tab.model(player_data)
 
 	local lists = {}
 
-	-- Starved requests: oldest wait first, then the largest shortfall.
-	local starved_rows = {}
+	-- Starved requests: oldest wait first, then the largest shortfall. Rows (and their tooltips) are built for the
+	-- visible top only.
+	local starved_hashes = {}
 	for hash, agg in pairs(starved_items) do
+		starved_hashes[#starved_hashes + 1] = hash
+		agg.tiebreak = string.format("%020.0f|%s", 1e15 - math.min(agg.count, 1e15 - 1), hash)
+	end
+	util.sort_by(starved_hashes, function(hash)
+		local agg = starved_items[hash]
+		return agg.earliest or (1e12 - agg.count)
+	end, true, function(hash) return starved_items[hash].tiebreak end)
+	local starved_rows = {}
+	for _, hash in ipairs(starved_hashes) do
+		if #starved_rows >= LIMITS.starved then break end
+		local agg = starved_items[hash]
 		local tail = {
 			"\n", { "cybersyn-gui.requested-by-stations", tostring(agg.stations) },
 			"\n", { "cybersyn-gui.amount", format.number(agg.count) },
@@ -589,8 +601,7 @@ function overview_tab.model(player_data)
 			starved_rows[#starved_rows + 1] = row
 		end
 	end
-	util.sort_by(starved_rows, function(r) return r.order end, true, function(r) return r.key end)
-	lists.starved = { rows = starved_rows, total = #starved_rows }
+	lists.starved = { rows = starved_rows, total = #starved_hashes }
 
 	local waiting_rows = {}
 	for i, w in ipairs(waiting) do
@@ -720,6 +731,7 @@ function overview_tab.model(player_data)
 	return {
 		snapshot_tick = snapshot.tick,
 		filtered = filtered,
+		item_filter = f.item,
 		tracking = tracking,
 		tiles = {
 			stations = st_tile,
@@ -751,12 +763,36 @@ local function format_line(tile, line, value)
 	return format.number(value)
 end
 
---- @param refs table<string, LuaGuiElement>
+--- Captions that are LocalisedStrings cannot be compared with the element's caption, so the last plain-string
+--- signature written is kept per player and the assignment skipped while it is unchanged.
+--- @param cache table
+--- @param elem LuaGuiElement?
+--- @param sig string
+--- @param caption LocalisedString
+local function set_caption_sig(cache, elem, sig, caption)
+	if not (elem and elem.valid) then return end
+	local name = elem.name
+	if cache[name] == sig then return end
+	cache[name] = sig
+	elem.caption = caption
+end
+
+--- @param player_data PlayerData
+--- @return table
+local function caption_cache(player_data)
+	local state = util.gui_state(player_data, "overview_captions")
+	state.captions = state.captions or {}
+	return state.captions
+end
+
+--- @param player_data PlayerData
 --- @param model table
-local function render_tiles(refs, model)
+local function render_tiles(player_data, model)
+	local refs = player_data.refs
+	local cache = caption_cache(player_data)
 	for _, tile in ipairs(TILES) do
 		local values = model.tiles[tile.name]
-		set_caption(refs["overview_" .. tile.name .. "_total"], format.number(values.headline or 0))
+		set_caption(refs["overview_" .. tile.name .. "_headline"], format.number(values.headline or 0))
 		local colors = tile.colors
 		for _, line in ipairs(tile.lines) do
 			local value = values[line]
@@ -775,10 +811,8 @@ local function render_tiles(refs, model)
 		local value = idle or 0
 		if bar.value ~= value then bar.value = value end
 	end
-	local idle_label = refs.overview_fleet_idle
-	if idle_label and idle_label.valid then
-		idle_label.caption = { "cybersyn-gui.overview-fleet-idle", idle and string.format("%d%%", math.floor(idle * 100 + 0.5)) or NO_VALUE }
-	end
+	local idle_text = idle and string.format("%d%%", math.floor(idle * 100 + 0.5)) or NO_VALUE
+	set_caption_sig(cache, refs.overview_fleet_idle, idle_text, { "cybersyn-gui.overview-fleet-idle", idle_text })
 
 	local tracking = model.tracking
 	for _, line in ipairs(AGE_LINES) do
@@ -788,14 +822,17 @@ local function render_tiles(refs, model)
 	local hint = refs.overview_demand_hint
 	if hint and hint.valid and hint.visible == tracking then hint.visible = not tracking end
 
-	local note = refs.overview_filter_note
-	if note and note.valid then
-		if model.filtered then
-			note.caption = { "cybersyn-gui.overview-filtered" }
-		elseif note.caption ~= "" then
-			note.caption = ""
-		end
+	-- The tab deliberately ignores the item filter, so say so; otherwise a shift-click on an item row looks like a no-op.
+	local note_sig = (model.filtered and "f" or "") .. (model.item_filter and "i" or "")
+	local note_caption = ""
+	if model.filtered and model.item_filter then
+		note_caption = { "", { "cybersyn-gui.overview-filtered" }, " ", { "cybersyn-gui.overview-item-filter-ignored" } }
+	elseif model.filtered then
+		note_caption = { "cybersyn-gui.overview-filtered" }
+	elseif model.item_filter then
+		note_caption = { "", "[img=utility/info] ", { "cybersyn-gui.overview-item-filter-ignored" } }
 	end
+	set_caption_sig(cache, refs.overview_filter_note, note_sig, note_caption)
 end
 
 --- @param scope string
@@ -819,7 +856,7 @@ local function row_entry(scope, row, widths)
 				style = "cybersyn_overview_row",
 				tooltip = row.tooltip,
 				tags = row.tags,
-				handler = { [defines.events.on_gui_click] = overview_tab.handle.on_row_click },
+				handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_row_click },
 				{
 					type = "sprite-button",
 					style = "cybersyn_overview_row_icon",
@@ -866,6 +903,7 @@ end
 --- @param model table
 local function render_lists(player_data, model)
 	local refs = player_data.refs
+	local cache = caption_cache(player_data)
 	for _, column in ipairs(LIST_COLUMNS) do
 		for _, list in ipairs(column) do
 			local data = model.lists[list.name]
@@ -888,13 +926,10 @@ local function render_lists(player_data, model)
 						empty.caption = { "cybersyn-gui.overview-empty-" .. list.name }
 					end
 				end
-				local count = refs["overview_" .. list.name .. "_count"]
-				if count and count.valid then
-					local caption = #data.rows < data.total
-						and { "cybersyn-gui.overview-shown-of", tostring(#data.rows), format.number(data.total) }
-						or format.number(data.total)
-					count.caption = caption
-				end
+				local shown, total = #data.rows, format.number(data.total)
+				local partial = shown < data.total
+				set_caption_sig(cache, refs["overview_" .. list.name .. "_count"], partial and (shown .. "/" .. total) or total,
+					partial and { "cybersyn-gui.overview-shown-of", tostring(shown), total } or total)
 			end
 		end
 	end
@@ -904,9 +939,9 @@ end
 --- @param player_data PlayerData
 function overview_tab.build(map_data, player_data)
 	local refs = player_data.refs
-	if not (refs.overview_stations_total and refs.overview_stations_total.valid) then return end
+	if not (refs.overview_stations_headline and refs.overview_stations_headline.valid) then return end
 	local model = overview_tab.model(player_data)
-	render_tiles(refs, model)
+	render_tiles(player_data, model)
 	render_lists(player_data, model)
 end
 
@@ -941,6 +976,7 @@ function overview_tab.wrapper(e, handler)
 	local player = game.get_player(e.player_index)
 	if not player then return end
 	local player_data = storage.manager.players[e.player_index]
+	if not player_data then return end
 	handler(player, player_data, player_data.refs, e)
 end
 
@@ -988,9 +1024,11 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 --- @param e EventData.on_gui_click
-function overview_tab.handle.on_row_click(player, player_data, refs, e)
+function overview_tab.handle.overview_row_click(player, player_data, refs, e)
 	local element = e.element
 	if not (element and element.valid) then return end
+	-- Repeated shift-clicks on one row must keep the layout held past the hover timeout.
+	util.touch_hover(e)
 	local tags = element.tags
 	local kind = tags.kind
 	if kind == "item" then

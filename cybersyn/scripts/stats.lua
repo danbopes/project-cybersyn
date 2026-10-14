@@ -8,7 +8,6 @@ local MINUTE = 3600
 local HOUR = 216000
 local MINUTE_SLOTS = 60
 local HOUR_SLOTS = 24
-local CYCLE_SAMPLES = 200
 -- Weight of the newest cycle sample in the moving average: about the last 20 deliveries dominate.
 local EMA_ALPHA = 0.1
 
@@ -20,17 +19,14 @@ stats.HOUR = HOUR
 --- @field deliveries int
 --- @field dispatches int
 --- @field items {[string]: int} delivered amount per item hash
-
---- @class StatsCycleSample
---- @field seconds number dispatch to unloading complete
---- @field hash string? first manifest item
---- @field tick uint completion tick
+--- @field cycle_sum number? seconds from dispatch to unloaded, summed over the deliveries completed in this bucket
+--- @field cycle_n int? deliveries that contributed to cycle_sum
 
 --- @class Stats
 --- @field minute {[int]: StatsBucket} ring of one-minute buckets
 --- @field hour {[int]: StatsBucket} ring of one-hour buckets
 --- @field totals {deliveries: int, dispatches: int, items: int, since_tick: uint}
---- @field cycle {ema_seconds: number?, samples: {[int]: StatsCycleSample}, next: int}
+--- @field cycle {ema_seconds: number?}
 
 --- @return Stats
 local function new_stats()
@@ -38,7 +34,7 @@ local function new_stats()
 		minute = {},
 		hour = {},
 		totals = { deliveries = 0, dispatches = 0, items = 0, since_tick = game and game.tick or 0 },
-		cycle = { ema_seconds = nil, samples = {}, next = 1 },
+		cycle = { ema_seconds = nil },
 	}
 end
 
@@ -54,14 +50,35 @@ local function get()
 	s.minute = s.minute or {}
 	s.hour = s.hour or {}
 	s.totals = s.totals or { deliveries = 0, dispatches = 0, items = 0, since_tick = game.tick }
-	s.cycle = s.cycle or { samples = {}, next = 1 }
-	s.cycle.samples = s.cycle.samples or {}
-	s.cycle.next = s.cycle.next or 1
+	s.cycle = s.cycle or {}
+	-- Early builds kept a fixed sample ring, which covered under a minute on busy bases.
+	s.cycle.samples = nil
+	s.cycle.next = nil
 	return s
 end
 
+--- @param hash string
+--- @return boolean
+local function hash_is_valid(hash)
+	local name, quality = unhash_signal(hash)
+	if quality and not prototypes.quality[quality] then return false end
+	return prototypes.item[name] ~= nil or prototypes.fluid[name] ~= nil
+end
+
+--- Buckets outlive mod changes, so a removed item or quality would otherwise reach the GUI and fail there.
+--- @param s Stats
+local function purge_invalid_hashes(s)
+	for _, ring in pairs({ s.minute, s.hour }) do
+		for _, b in pairs(ring) do
+			for hash in pairs(b.items) do
+				if not hash_is_valid(hash) then b.items[hash] = nil end
+			end
+		end
+	end
+end
+
 function stats.init()
-	get()
+	purge_invalid_hashes(get())
 end
 
 --- @return Stats
@@ -110,13 +127,11 @@ function stats.record_delivery_complete(train)
 	local totals = s.totals
 	totals.deliveries = totals.deliveries + 1
 
-	local first_hash
 	local manifest = train.manifest
 	if manifest then
 		local m_items, h_items = m.items, h.items
-		for i, item in ipairs(manifest) do
+		for _, item in ipairs(manifest) do
 			local hash = hash_item(item.name, item.quality)
-			if i == 1 then first_hash = hash end
 			local count = item.count or 0
 			m_items[hash] = (m_items[hash] or 0) + count
 			h_items[hash] = (h_items[hash] or 0) + count
@@ -128,9 +143,11 @@ function stats.record_delivery_complete(train)
 	local dispatch_tick = train.dispatch_tick
 	if dispatch_tick and dispatch_tick <= tick then
 		local seconds = (tick - dispatch_tick) / 60
+		m.cycle_sum = (m.cycle_sum or 0) + seconds
+		m.cycle_n = (m.cycle_n or 0) + 1
+		h.cycle_sum = (h.cycle_sum or 0) + seconds
+		h.cycle_n = (h.cycle_n or 0) + 1
 		local cycle = s.cycle
-		cycle.samples[cycle.next] = { seconds = seconds, hash = first_hash, tick = tick }
-		cycle.next = cycle.next % CYCLE_SAMPLES + 1
 		local ema = cycle.ema_seconds
 		cycle.ema_seconds = ema and (ema + EMA_ALPHA * (seconds - ema)) or seconds
 	end
@@ -178,18 +195,20 @@ function stats.day_deliveries()
 	return n
 end
 
---- Mean dispatch-to-unloaded time of the samples completed within `window_ticks`.
---- @param window_ticks uint
---- @return number? seconds nil when no sample is that recent
---- @return int samples
-function stats.cycle_average(window_ticks)
+--- Mean dispatch-to-unloaded time over the deliveries completed in the last `minutes` minute buckets,
+--- the current partial minute included.
+--- @param minutes int 1..60
+--- @return number? seconds nil when no timed delivery completed in the window
+--- @return int deliveries that were timed
+function stats.cycle_average(minutes)
 	local s = get()
-	local oldest = game.tick - window_ticks
+	local tick = game.tick
+	local oldest = tick - tick % MINUTE - (minutes - 1) * MINUTE
 	local sum, n = 0, 0
-	for _, sample in pairs(s.cycle.samples) do
-		if sample.tick >= oldest then
-			sum = sum + sample.seconds
-			n = n + 1
+	for _, b in pairs(s.minute) do
+		if b.cycle_n and b.start_tick >= oldest and b.start_tick <= tick then
+			sum = sum + b.cycle_sum
+			n = n + b.cycle_n
 		end
 	end
 	if n == 0 then return nil, 0 end
@@ -202,11 +221,7 @@ function stats.summary()
 	local s = get()
 	local d10, p10 = stats.window(10)
 	local d60, p60 = stats.window(60)
-	local cycle_avg, cycle_n = stats.cycle_average(HOUR)
-	local samples = 0
-	for _ in pairs(s.cycle.samples) do
-		samples = samples + 1
-	end
+	local cycle_avg, cycle_n = stats.cycle_average(60)
 	local item_entries = 0
 	for _, ring in pairs({ s.minute, s.hour }) do
 		for _, b in pairs(ring) do
@@ -225,7 +240,6 @@ function stats.summary()
 		deliveries_24h = stats.day_deliveries(),
 		cycle_avg_60m = cycle_avg,
 		cycle_samples_60m = cycle_n,
-		cycle_samples = samples,
 		cycle_ema = s.cycle.ema_seconds,
 		item_entries = item_entries,
 	}
