@@ -373,7 +373,7 @@ local function shipment_children(tr, filter_item)
 				mouse_button_filter = { "left", "right" },
 				tooltip = { "", name_tooltip, "\n", { "cybersyn-gui.amount", format.number(count) }, "\n", { "cybersyn-gui.trains-item-click-tooltip" } },
 				tags = { item_hash = hash },
-				handler = { [defines.events.on_gui_click] = trains_tab.handle.on_item_click },
+				handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_item_click },
 				{
 					type = "label",
 					style = "ltnm_label_signal_count",
@@ -842,7 +842,7 @@ function trains_tab.handle.open_stop(player, player_data, refs, e)
 end
 
 --- @param e EventData.on_gui_click
-function trains_tab.handle.on_item_click(player, player_data, refs, e)
+function trains_tab.handle.on_trains_item_click(player, player_data, refs, e)
 	local hash = e.element.tags.item_hash
 	if not hash then return end
 	util.item_button_click(player, player_data, e, hash)
