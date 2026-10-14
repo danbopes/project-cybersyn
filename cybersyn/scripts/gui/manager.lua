@@ -189,8 +189,13 @@ end
 function manager.update_status(player_data)
 	local label = player_data.refs.manager_updated_label
 	if not label or not label.valid then return end
+	-- The caption tracks renders; the snapshot age cycles through a whole collector pass even while the window
+	-- refreshes every second, so it only goes in the tooltip.
+	local render_tick = player_data.last_update_tick
+	local age = render_tick and util.format_duration(game.tick - render_tick) or "-"
 	local data_tick = player_data.rendered_snapshot_tick
-	local age = data_tick and util.format_duration(game.tick - data_tick) or "-"
+	local data_age = data_tick and util.format_duration(game.tick - data_tick) or "-"
+	label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
 	local caption
 	if player_data.paused then
 		caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
@@ -241,11 +246,35 @@ end
 --- @param player_data PlayerData
 function manager.restore_filter_widgets(player_data)
 	local refs = player_data.refs
+	if player_data.search_item and not util.signal_hash_valid(player_data.search_item) then
+		player_data.search_item = nil
+	end
+	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
+		player_data.search_network_name = nil
+	end
 	refs.manager_text_search_field.text = player_data.search_query or ""
 	refs.manager_item_filter.elem_value = player_data.search_item and util.signalid_from_hash(player_data.search_item) or nil
 	refs.network.elem_value = player_data.search_network_name and util.signalid_from_name(player_data.search_network_name) or nil
 	refs.manager_network_mask_field.text = tostring(player_data.search_network_mask or -1)
 	manager.rebuild_surface_dropdown(player_data)
+end
+
+local sort_headers = {
+	stations_tab = { scroll_pane = "manager_stations_tab_scroll_pane", default = "name" },
+	trains_tab = { scroll_pane = "manager_trains_tab_scroll_pane", default = "train_id" },
+}
+
+--- Restores the sort header state from player_data.sort, which survives window rebuilds the headers do not.
+--- @param player_data PlayerData
+function manager.refresh_sort_headers(player_data)
+	local refs = player_data.refs
+	for tab, header in pairs(sort_headers) do
+		local pane = refs[header.scroll_pane]
+		if pane and pane.valid then
+			local column, ascending = util.get_sort(player_data, tab, header.default)
+			util.sync_sort_header(pane.parent.children[1], column, ascending)
+		end
+	end
 end
 
 local tab_builders = {
@@ -328,6 +357,7 @@ function manager.handle.manager_open(player, player_data, refs)
 	player_data.hover = nil
 	manager.restore_filter_widgets(player_data)
 	manager.refresh_toggles(player_data)
+	manager.refresh_sort_headers(player_data)
 	if not util.select_tab(player_data, player_data.selected_tab or DEFAULT_TAB) then
 		util.select_tab(player_data, DEFAULT_TAB)
 	end

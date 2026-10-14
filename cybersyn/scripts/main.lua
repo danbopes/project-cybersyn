@@ -1010,6 +1010,11 @@ local function main()
 		defines.events.on_gui_leave,
 		defines.events.on_gui_selected_tab_changed,
 	}, flib_gui.dispatch)
+	local manager_util = require("scripts.gui.util")
+	script.on_event(defines.events.on_gui_click, function(e)
+		manager_util.touch_hover(e)
+		flib_gui.dispatch(e)
+	end)
 
 	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)
 	manager_dev.register(manager, manager.manager)

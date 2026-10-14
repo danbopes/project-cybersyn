@@ -168,6 +168,7 @@ function interface.set_sort(pi, tab, column, ascending)
 	local player, pd = context(pi)
 	tab = canonical(tab)
 	util.set_sort(pd, tab, column, ascending)
+	manager.refresh_sort_headers(pd)
 	render(player, pd)
 	return pd.sort[tab]
 end

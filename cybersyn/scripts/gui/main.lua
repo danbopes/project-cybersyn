@@ -97,6 +97,12 @@ local function init_player_fields(player_data)
 	if player_data.paused == nil then player_data.paused = false end
 	player_data.page_size = nil
 	player_data.hover = nil
+	if player_data.search_item and not util.signal_hash_valid(player_data.search_item) then
+		player_data.search_item = nil
+	end
+	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
+		player_data.search_network_name = nil
+	end
 	if player_data.search_query and not player_data.search_terms then
 		util.set_search_query(player_data, player_data.search_query)
 	end

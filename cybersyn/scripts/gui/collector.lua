@@ -108,12 +108,24 @@ function collector.empty()
 	}
 end
 
---- Called from on_init and on_migration; an in-progress pass may hold an outdated shape, so it restarts.
+--- Called from on_init and on_migration; a stored snapshot may hold an outdated shape, and migration closes
+--- every window anyway, so both buffers start over.
 function collector.init()
 	local manager = storage.manager
-	if not manager.snapshot then
-		manager.snapshot = collector.empty()
+	manager.snapshot = collector.empty()
+	manager.snapshot_build = nil
+end
+
+--- Drops both buffers once no window is open: the snapshot is several MB on large bases and would otherwise
+--- be written into every save. Opening a window rebuilds it through ensure_fresh.
+function collector.release_if_unused()
+	local manager = storage.manager
+	if not manager then return end
+	for _, player_data in pairs(manager.players) do
+		if player_data.is_manager_open then return end
 	end
+	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then return end
+	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 end
 
@@ -291,6 +303,33 @@ local function item_threshold(station, hash, name, item_type, base_item, base_fl
 	return threshold
 end
 
+-- Virtual signals a secondary inventory combinator consumes as settings; every other virtual signal on a
+-- NETWORK_EACH station's secondary is one of its networks (tick_poll_station).
+local SECONDARY_SETTINGS = {
+	[SIGNAL_PRIORITY] = true,
+	[REQUEST_THRESHOLD] = true,
+	[REQUEST_FLUID_THRESHOLD] = true,
+	[RESERVED_FLUID_CAPACITY] = true,
+}
+
+--- Records which network:item pairs a combinator provides or actively requests, for the starved derivation.
+--- The planner registers each combinator under its own networks, so this runs per source, not on the merge.
+local function add_keys(b, networks, provided, requested)
+	local r_keys, p_keys = b.r_keys, b.p_keys
+	for hash in pairs(provided) do
+		for i = 1, #networks do
+			p_keys[networks[i] .. ":" .. hash] = true
+		end
+	end
+	for hash, req in pairs(requested) do
+		if req.active then
+			for i = 1, #networks do
+				r_keys[networks[i] .. ":" .. hash] = true
+			end
+		end
+	end
+end
+
 --- Mirrors tick_poll_station: negative = request when is_r, positive = provide when is_p.
 local function classify(station, signals, st, base_item, base_fluid, control)
 	local network_name = station.network_name
@@ -359,10 +398,17 @@ local function collect_station(b, id, station)
 		secondary_count = 0,
 	}
 
+	-- The planner skips warming-up stations and stations without a network, so they neither provide nor starve.
+	local keyed = not st.warming_up and st.network_name ~= nil
+	local is_each = st.network_name == NETWORK_EACH
+
 	local signals1, ok1 = read_signals(comb1)
 	st.comb_ok = ok1 == true
 	if signals1 then
 		classify(station, signals1, st, default_item, default_fluid, st.control)
+		if keyed then
+			add_keys(b, networks_of(st.network_name, st.network_mask), st.provided, st.requested)
+		end
 	end
 
 	local comb2 = station.entity_comb2
@@ -393,6 +439,7 @@ local function collect_station(b, id, station)
 			local signals = read_signals(sec)
 			if signals then
 				local sec_item, sec_fluid = default_item, default_fluid
+				local sec_networks = is_each and {} or nil
 				for _, v in pairs(signals) do
 					local signal = v.signal
 					if signal.type == "virtual" then
@@ -400,10 +447,22 @@ local function collect_station(b, id, station)
 							sec_item = math.abs(v.count)
 						elseif signal.name == REQUEST_FLUID_THRESHOLD then
 							sec_fluid = math.abs(v.count)
+						elseif sec_networks and signal.name and not SECONDARY_SETTINGS[signal.name] then
+							sec_networks[#sec_networks + 1] = signal.name
 						end
 					end
 				end
-				classify(station, signals, st, sec_item, sec_fluid, nil)
+				local own = { provided = {}, requested = {} }
+				classify(station, signals, own, sec_item, sec_fluid, nil)
+				if keyed then
+					add_keys(b, sec_networks or networks_of(st.network_name, st.network_mask), own.provided, own.requested)
+				end
+				for hash, count in pairs(own.provided) do
+					st.provided[hash] = (st.provided[hash] or 0) + count
+				end
+				for hash, req in pairs(own.requested) do
+					add_request(st.requested, hash, req.count, req.threshold)
+				end
 				st.secondary_count = st.secondary_count + 1
 				st.secondary = true
 			end
@@ -411,8 +470,6 @@ local function collect_station(b, id, station)
 	end
 
 	local inv = b.inventory_all
-	local networks = networks_of(st.network_name, st.network_mask)
-	local r_keys, p_keys = b.r_keys, b.p_keys
 
 	for hash, count in pairs(st.provided) do
 		local agg = inv.provided[hash]
@@ -421,9 +478,6 @@ local function collect_station(b, id, station)
 			agg.stations = agg.stations + 1
 		else
 			inv.provided[hash] = { count = count, stations = 1 }
-		end
-		for i = 1, #networks do
-			p_keys[networks[i] .. ":" .. hash] = true
 		end
 	end
 
@@ -443,9 +497,6 @@ local function collect_station(b, id, station)
 				end
 			else
 				inv.requested[hash] = { count = req.count, stations = 1, earliest_wait_start = start }
-			end
-			for i = 1, #networks do
-				r_keys[networks[i] .. ":" .. hash] = true
 			end
 		end
 	end

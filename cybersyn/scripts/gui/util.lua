@@ -1,5 +1,6 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
+local collector = require("scripts.gui.collector")
 
 local util = {}
 
@@ -102,6 +103,17 @@ function util.signalid_from_name(name, quality)
 		name = name,
 		quality = quality,
 	}
+end
+
+--- False when the signal behind a stored hash no longer exists (its mod was removed), since writing it into
+--- a choose-elem-button raises an error.
+--- @param hash string?
+--- @return boolean
+function util.signal_hash_valid(hash)
+	if type(hash) ~= "string" then return false end
+	local name, quality = unhash_signal(hash)
+	if quality and not prototypes.quality[quality] then return false end
+	return util.prototype_from_name(name) ~= nil
 end
 
 --- @param hash string
@@ -403,6 +415,25 @@ function util.hold_active(player_data, scope)
 	return hover ~= nil and hover.scope == scope and game.tick - hover.tick < util.HOVER_HOLD_TICKS
 end
 
+--- A click proves the cursor is still on a hoverable element, so it restarts the hold timeout; repeated
+--- shift-clicks on one slot would otherwise lose the hold after HOVER_HOLD_TICKS.
+--- @param e EventData.on_gui_click
+function util.touch_hover(e)
+	local elem = e.element
+	if not (elem and elem.valid) then return end
+	local scope = elem.tags.hover_scope
+	if not scope then return end
+	local manager_data = storage.manager
+	local player_data = manager_data and manager_data.players[e.player_index]
+	if not player_data then return end
+	local hover = player_data.hover
+	if hover and hover.scope == scope and hover.index == elem.index then
+		hover.tick = game.tick
+	else
+		player_data.hover = { tick = game.tick, scope = scope, index = elem.index }
+	end
+end
+
 --- @param text string?
 --- @return string[]?
 function util.search_terms(text)
@@ -669,6 +700,7 @@ end
 --- @param player_data PlayerData
 --- @param hash string?
 function util.set_item_filter(player_data, hash)
+	if hash and not util.signal_hash_valid(hash) then hash = nil end
 	player_data.search_item = hash
 	local elem = player_data.refs and player_data.refs.manager_item_filter
 	if elem and elem.valid then
@@ -699,6 +731,29 @@ function util.item_button_click(player, player_data, e, hash)
 		return
 	end
 	util.rerender(player, player_data)
+end
+
+--- Restyles a tab's sort header checkboxes to match the stored sort, since the header is built with a fixed
+--- default column and the stored sort outlives window rebuilds.
+--- @param toolbar LuaGuiElement? the frame holding the sort checkboxes
+--- @param column string
+--- @param ascending boolean
+function util.sync_sort_header(toolbar, column, ascending)
+	if not (toolbar and toolbar.valid) then return end
+	for _, child in pairs(toolbar.children) do
+		if child.type == "checkbox" then
+			local tags = child.tags
+			if tags.column then
+				local active = tags.column == column
+				local style = active and "ltnm_selected_sort_checkbox" or "ltnm_sort_checkbox"
+				if child.style.name ~= style then
+					child.style = style
+					if tags.width then child.style.width = tags.width end
+				end
+				if active and child.state ~= not ascending then child.state = not ascending end
+			end
+		end
+	end
 end
 
 --- @param hashes {[string]: any}
@@ -894,6 +949,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	end
 
 	player.set_shortcut_toggled("cybersyn-toggle-gui", false)
+	collector.release_if_unused()
 end
 
 function util.build_train_layout_table(map_data)

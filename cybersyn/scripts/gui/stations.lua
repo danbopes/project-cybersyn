@@ -247,14 +247,7 @@ function stations_tab.handle.on_sort_checkbox_changed(player, player_data, refs,
 
 	util.set_sort(player_data, TAB, column)
 	local active, ascending = util.get_sort(player_data, TAB, "name")
-	for _, child in pairs(element.parent.children) do
-		local tags = child.type == "checkbox" and child.tags
-		if tags and tags.column then
-			child.style = tags.column == active and "ltnm_selected_sort_checkbox" or "ltnm_sort_checkbox"
-			if tags.width then child.style.width = tags.width end
-			if tags.column == active then child.state = not ascending end
-		end
-	end
+	util.sync_sort_header(element.parent, active, ascending)
 	util.rerender(player, player_data)
 end
 
