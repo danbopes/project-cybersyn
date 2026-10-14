@@ -296,6 +296,9 @@ function manager.update(map_data, player_data)
 			utilization_tab.cleanup(map_data, player_data)
 		elseif previous_tab == "delivery_breakdown_tab" then
 			delivery_breakdown_tab.cleanup(map_data, player_data)
+		elseif previous_tab == "inventory_tab" then
+			-- Coming back must show current totals at once, not a refresh spread over the next renders.
+			player_data.inventory_cache = nil
 		end
 		player_data.previous_tab = current_tab
 	end
