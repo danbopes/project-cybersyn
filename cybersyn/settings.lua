@@ -145,12 +145,12 @@ data:extend({
 	},
 	{
 		type = "int-setting",
-		name = "cybersyn-manager-result-limit",
+		name = "cybersyn-manager-page-size",
 		order = "aa",
 		setting_type = "runtime-per-user",
-		default_value = -1,
-		minimum_value = -1,
-		maximum_value = 2147483647,
+		default_value = 50,
+		minimum_value = 10,
+		maximum_value = 500,
 	},
 	--{
 	--  type = "bool-setting",

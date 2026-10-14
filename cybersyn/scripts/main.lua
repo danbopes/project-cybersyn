@@ -1,5 +1,6 @@
 --By Mami
 local manager = require("gui.main")
+local manager_dev = require("scripts.gui.dev")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 local analytics = require("scripts.analytics")
 
@@ -1003,6 +1004,15 @@ local function main()
 	script.on_event(defines.events.on_gui_elem_changed, function(e)
 		flib_gui.dispatch(e)
 	end)
+	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
+	script.on_event({
+		defines.events.on_gui_hover,
+		defines.events.on_gui_leave,
+		defines.events.on_gui_selected_tab_changed,
+	}, flib_gui.dispatch)
+
+	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)
+	manager_dev.register(manager, manager.manager)
 
 	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
 	script.on_event(defines.events.on_player_created, manager.on_player_created)

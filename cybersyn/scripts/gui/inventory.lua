@@ -3,6 +3,8 @@ local gui = require("__flib__.gui")
 local util = require("scripts.gui.util")
 local templates = require("scripts.gui.templates")
 local format = require("__flib__.format")
+local collector = require("scripts.gui.collector")
+local dev = require("scripts.gui.dev")
 
 local inventory_tab = {}
 
@@ -13,7 +15,7 @@ function inventory_tab.create()
 			type = "tab",
 			caption = { "cybersyn-gui.inventory" },
 			ref = { "inventory", "tab" },
-			handler = inventory_tab.handle.on_inventory_tab_selected,
+			handler = { [defines.events.on_gui_click] = inventory_tab.handle.on_inventory_tab_selected },
 		},
 		content = {
 			name = "manager_inventory_content_frame",
@@ -28,388 +30,150 @@ function inventory_tab.create()
 	}
 end
 
+local TAB = "inventory_tab"
+
+--- @param scope string name of the grid, for hover-hold
+--- @param hash string
+--- @param agg {count: int, stations: int}
+--- @param style string
+--- @param tooltip_tail LocalisedString[]
+local function item_entry(scope, hash, agg, style, tooltip_tail, sig_extra)
+	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
+	if not sprite then return nil end
+	local tooltip = { "", name_tooltip }
+	for _, part in ipairs(tooltip_tail) do
+		tooltip[#tooltip + 1] = part
+	end
+	local count_caption = format_signal_count(agg.count)
+	local stations_caption = format_signal_count(agg.stations)
+	return {
+		key = hash,
+		sig = agg.count .. "|" .. agg.stations .. "|" .. style .. "|" .. (sig_extra or ""),
+		build = function()
+			return util.hoverable({
+				type = "sprite-button",
+				sprite = sprite,
+				quality = quality,
+				style = style,
+				tags = { item_hash = hash },
+				handler = { [defines.events.on_gui_click] = inventory_tab.handle.on_inventory_item_click },
+				tooltip = tooltip,
+				children = {
+					{
+						type = "label",
+						style = "ltnm_label_signal_count_inventory",
+						ignored_by_interaction = true,
+						caption = count_caption,
+					},
+					{
+						type = "label",
+						style = "ltnm_label_train_count_inventory",
+						ignored_by_interaction = true,
+						caption = stations_caption,
+					},
+				},
+			}, scope)
+		end,
+		update = function(elem)
+			local labels = elem.children
+			if labels[1].caption ~= count_caption then labels[1].caption = count_caption end
+			if labels[2].caption ~= stations_caption then labels[2].caption = stations_caption end
+			elem.tooltip = tooltip
+			if elem.style.name ~= style then elem.style = style end
+		end,
+	}
+end
+
+--- @param player_data PlayerData
+--- @param table_elem LuaGuiElement
+--- @param entries table[]
+local function render_grid(player_data, table_elem, entries)
+	local scope = table_elem.name
+	util.sync_children(table_elem, entries, util.gui_state(player_data, scope), util.hold_active(player_data, scope))
+end
+
+--- The item filter highlights instead of hiding; the other filters restrict which stations are aggregated.
 ---@param map_data MapData
 ---@param player_data PlayerData
 function inventory_tab.build(map_data, player_data)
 	local refs = player_data.refs
-
-	local search_query = player_data.search_query
-	local search_item = player_data.search_item
-	local search_network_name = player_data.search_network_name
-	local search_network_mask = player_data.search_network_mask
-	local search_surface_idx = player_data.search_surface_idx
-
-	local inventory_provided = {}
-	local inventory_in_transit = {}
-	local inventory_requested = {}
-	local request_start_ticks = {}  -- Track earliest request time for each item
-
-	local stations_sorted = {}
-
-	for id, station in pairs(map_data.stations) do
-		local entity = station.entity_stop
-		if not entity.valid then
-			goto continue
-		end
-
-		if search_query then
-			if not string.match(entity.backer_name, search_query) then
-				goto continue
-			end
-		end
-		-- move surface comparison up higher in query to short circuit query earlier if surface doesn't match
-		if search_surface_idx then
-			if entity.surface.index ~= search_surface_idx then
-				goto continue
-			end
-		end
-		if search_network_name then
-			if station.network_name == NETWORK_EACH then
-				-- NETWORK_EACH stations can have any network, check if this one exists
-				local network_mask = station.network_mask[search_network_name]
-				if not network_mask then
-					goto continue
-				end
-				if not bit32.btest(search_network_mask, network_mask) then
-					goto continue
-				end
-			else
-				-- Regular stations must match the network name
-				if search_network_name ~= station.network_name then
-					goto continue
-				end
-				local train_flag = get_network_mask(station, station.network_name)
-				if not bit32.btest(search_network_mask, train_flag) then
-					goto continue
-				end
-			end
-		elseif search_network_mask ~= -1 then
-			if station.network_name == NETWORK_EACH then
-				local masks = station.network_mask --[[@as {}]]
-				for _, network_mask in pairs(masks) do
-					if bit32.btest(search_network_mask, network_mask) then
-						goto has_match
-					end
-				end
-				goto continue
-				::has_match::
-			elseif not bit32.btest(search_network_mask, station.network_mask) then
-				goto continue
-			end
-		end
-
-		if search_item then
-			if station.deliveries then
-				for item_name, _ in pairs(station.deliveries) do
-					if item_name == search_item then
-						goto has_match
-					end
-				end
-			end
-			local comb1_signals, _ = get_signals(station)
-			if comb1_signals then
-				for _, signal_ID in pairs(comb1_signals) do
-					local item = signal_ID.signal.name
-					-- FIXME handle signal_ID.signal.quality
-					if item then
-						if item == search_item then
-							goto has_match
-						end
-					end
-				end
-			end
-			goto continue
-			::has_match::
-		end
-
-		stations_sorted[#stations_sorted + 1] = id
-		::continue::
+	local snapshot = collector.get()
+	local f = util.get_filters(player_data)
+	local inv
+	if util.filters_active(f, true) then
+		inv = collector.aggregate(snapshot, function(st) return util.station_passes(st, f, true) end)
+	else
+		inv = snapshot.inventory_all
 	end
+	local selected = f.item
+	local now = game.tick
 
-	for i, station_id in pairs(stations_sorted) do
-		--- @class Station
-		local station = map_data.stations[station_id]
-
-		local comb1_signals, _ = get_signals(station)
-		if comb1_signals then
-			for _, v in pairs(comb1_signals) do
-				local item = v.signal
-				local count = v.count
-				local item_type = v.signal.type or "item"
-				local item_hash = hash_signal(item)
-				if item.type ~= "virtual" then
-					if station.is_p and count > 0 then
-						if inventory_provided[item_hash] == nil then
-							inventory_provided[item_hash] = {count, 1}
-						else
-							inventory_provided[item_hash][1] = inventory_provided[item_hash][1] + count
-							inventory_provided[item_hash][2] = inventory_provided[item_hash][2] + 1
-						end
-					end
-					if station.is_r and count < 0 then
-						local r_threshold = station.item_thresholds and station.item_thresholds[item.name] or
-							item_type == "fluid" and station.r_fluid_threshold or
-							station.r_threshold
-						if station.is_stack and item_type == "item" then
-							r_threshold = r_threshold * get_stack_size(map_data, item.name)
-						end
-
-						if -count >= r_threshold then
-							if inventory_requested[item_hash] == nil then
-								inventory_requested[item_hash] = {count, 1}
-							else
-								inventory_requested[item_hash][1] = inventory_requested[item_hash][1] + count
-								inventory_requested[item_hash][2] = inventory_requested[item_hash][2] + 1
-							end
-							
-							-- Track the earliest request time for this item
-							if mod_settings.track_request_wait_times and station.request_start_ticks and station.request_start_ticks[item_hash] then
-								local start_tick = station.request_start_ticks[item_hash]
-								if start_tick and (not request_start_ticks[item_hash] or start_tick < request_start_ticks[item_hash]) then
-									request_start_ticks[item_hash] = start_tick
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-
-		local deliveries = station.deliveries
-		if deliveries then
-			for item_hash, count in pairs(deliveries) do
-				if count > 0 then
-					if inventory_in_transit[item_hash] == nil then
-						inventory_in_transit[item_hash] = {count, 1}
-					else
-						inventory_in_transit[item_hash][1] = inventory_in_transit[item_hash][1] + count
-						inventory_in_transit[item_hash][2] = inventory_in_transit[item_hash][2] + 1
-					end
-				end
-			end
-		end
-	end
-
-	local inventory_provided_table = refs.inventory_provided_table
 	local provided_children = {}
-
-	for item_hash, counts in pairs(inventory_provided) do
-		item, quality = unhash_signal(item_hash)
-		local item_count, station_count = table.unpack(counts)
-		local item_prototype = util.prototype_from_name(item)
-		local signal = util.signalid_from_name(item, quality)
-		local sprite_path = signal.type == "item" and "item/" .. signal.name or
-							signal.type == "fluid" and "fluid/" .. signal.name or
-							"virtual-signal/" .. signal.name
-		if not helpers.is_valid_sprite_path(sprite_path) then goto continue_provided end
-		provided_children[#provided_children + 1] = {
-			type = "sprite-button",
-			sprite = sprite_path,
-			quality = quality,
-			style = "flib_slot_button_green",
-			tags = { item_name = item, item_hash = item_hash },
-			handler = inventory_tab.handle.on_inventory_item_click,
-			tooltip = {
-				"",
-				util.rich_text_from_signal(signal),
-				" ", item_prototype.localised_name, "\n",
-				{"cybersyn-gui.provided-by-stations", tostring(station_count)}, "\n",
-				{"cybersyn-gui.amount", format.number(item_count)},
-			},
-			children = {
-				{
-					type = "label",
-					style = "ltnm_label_signal_count_inventory",
-					ignored_by_interaction = true,
-					caption = format_signal_count(item_count),
-				},
-				{
-					type = "label",
-					style = "ltnm_label_train_count_inventory",
-					ignored_by_interaction = true,
-					caption = format_signal_count(station_count),
-				},
-			},
-		}
-		::continue_provided::
+	for _, hash in ipairs(util.hashes_in_item_order(inv.provided)) do
+		local agg = inv.provided[hash]
+		provided_children[#provided_children + 1] = item_entry("inventory_provided_table", hash, agg,
+			hash == selected and "flib_selected_slot_button_green" or "flib_slot_button_green", {
+				"\n", { "cybersyn-gui.provided-by-stations", tostring(agg.stations) },
+				"\n", { "cybersyn-gui.amount", format.number(agg.count) },
+			})
 	end
 
-	local inventory_requested_table = refs.inventory_requested_table
-	local requested_children = {}
-	
-	-- Get current tick for calculating wait times
-	local current_tick = game.tick
-	
-	-- Create sorted list of requested items with wait times
-	local requested_items = {}
-	for item_hash, counts in pairs(inventory_requested) do
-		local wait_ticks = request_start_ticks[item_hash] and (current_tick - request_start_ticks[item_hash]) or 0
-		local is_in_transit = inventory_in_transit[item_hash] ~= nil
-		
-		table.insert(requested_items, {
-			hash = item_hash,
-			counts = counts,
-			wait_ticks = wait_ticks,
-			in_transit = is_in_transit
-		})
-	end
-	
-	-- Sort by: 1) transit status (not in transit first), 2) wait time (longest first)
-	table.sort(requested_items, function(a, b)
-		if a.in_transit ~= b.in_transit then
-			return not a.in_transit  -- Not in transit comes first
-		end
-		return a.wait_ticks > b.wait_ticks  -- Longer wait time comes first
-	end)
-	
-	-- Helper function to create button element
-	local function create_requested_button(item_hash, counts, wait_ticks)
-		item, quality = unhash_signal(item_hash)
-		local item_count, station_count = table.unpack(counts)
-		local item_prototype = util.prototype_from_name(item)
-		local signal = util.signalid_from_name(item, quality)
-		
-		-- Check if this requested item is in transit
-		local is_in_transit = inventory_in_transit[item_hash] ~= nil
-		local button_style = is_in_transit and "flib_slot_button_orange" or "flib_slot_button_red"
-		
-		-- Build tooltip with transit status
-		local tooltip_parts = {
-			"",
-			util.rich_text_from_signal(signal),
-			" ", item_prototype.localised_name, "\n",
-			{"cybersyn-gui.requested-by-stations", tostring(station_count)}, "\n",
-			{"cybersyn-gui.amount", format.number(item_count)}
-		}
-		
-		-- Add wait time to tooltip
-		if wait_ticks and wait_ticks > 0 then
-			local wait_seconds = math.floor(wait_ticks / 60)
-			local wait_minutes = math.floor(wait_seconds / 60)
-			local wait_hours = math.floor(wait_minutes / 60)
-			local wait_display
-			
-			if wait_hours > 0 then
-				wait_display = string.format("%dh %dm %ds", wait_hours, wait_minutes % 60, wait_seconds % 60)
-			elseif wait_minutes > 0 then
-				wait_display = string.format("%dm %ds", wait_minutes, wait_seconds % 60)
-			else
-				wait_display = string.format("%ds", wait_seconds)
-			end
-			
-			tooltip_parts[#tooltip_parts + 1] = "\n[color=yellow]"
-			tooltip_parts[#tooltip_parts + 1] = {"cybersyn-gui.waiting-for", wait_display}
-			tooltip_parts[#tooltip_parts + 1] = "[/color]"
-		end
-		
-		-- Add transit status to tooltip
-		if is_in_transit then
-			local transit_counts = inventory_in_transit[item_hash]
-			local transit_amount = transit_counts[1]
-			table.insert(tooltip_parts, "\n[color=orange]")
-			table.insert(tooltip_parts, {"cybersyn-gui.in-transit-amount", format.number(transit_amount)})
-			table.insert(tooltip_parts, "[/color]")
-		else
-			table.insert(tooltip_parts, "\n[color=red]")
-			table.insert(tooltip_parts, {"cybersyn-gui.not-in-transit"})
-			table.insert(tooltip_parts, "[/color]")
-		end
-		
-		local sprite_path = signal.type == "item" and "item/" .. signal.name or
-							signal.type == "fluid" and "fluid/" .. signal.name or
-							"virtual-signal/" .. signal.name
-		if not helpers.is_valid_sprite_path(sprite_path) then return nil end
-
-		return {
-			type = "sprite-button",
-			sprite = sprite_path,
-			quality = quality,
-			style = button_style,
-			tags = { item_name = item, item_hash = item_hash },
-			handler = inventory_tab.handle.on_inventory_item_click,
-			tooltip = tooltip_parts,
-			children = {
-				{
-					type = "label",
-					style = "ltnm_label_signal_count_inventory",
-					ignored_by_interaction = true,
-					caption = format_signal_count(item_count),
-				},
-				{
-					type = "label",
-					style = "ltnm_label_train_count_inventory",
-					ignored_by_interaction = true,
-					caption = format_signal_count(station_count),
-				},
-			},
-		}
-	end
-	
-	-- Add items in sorted order
-	for _, item_data in ipairs(requested_items) do
-		local button = create_requested_button(item_data.hash, item_data.counts, item_data.wait_ticks)
-		if button then
-			requested_children[#requested_children + 1] = button
-		end
-	end
-
-	local inventory_in_transit_table = refs.inventory_in_transit_table
 	local in_transit_children = {}
+	for _, hash in ipairs(util.hashes_in_item_order(inv.in_transit)) do
+		local agg = inv.in_transit[hash]
+		in_transit_children[#in_transit_children + 1] = item_entry("inventory_in_transit_table", hash, agg,
+			hash == selected and "flib_selected_slot_button_blue" or "flib_slot_button_blue", {
+				"\n", { "cybersyn-gui.in-transit-to-stations", tostring(agg.stations) },
+				"\n", { "cybersyn-gui.amount", format.number(agg.count) },
+			})
+	end
 
-	for item_hash, counts in pairs(inventory_in_transit) do
-		item, quality = unhash_signal(item_hash)
-		local item_count, station_count = table.unpack(counts)
-		local item_prototype = util.prototype_from_name(item)
-		local signal = util.signalid_from_name(item, quality)
-		local sprite_path = signal.type == "item" and "item/" .. signal.name or
-							signal.type == "fluid" and "fluid/" .. signal.name or
-							"virtual-signal/" .. signal.name
-		if not helpers.is_valid_sprite_path(sprite_path) then goto continue_in_transit end
-		in_transit_children[#in_transit_children + 1] = {
-			type = "sprite-button",
-			sprite = sprite_path,
-			quality = quality,
-			style = "flib_slot_button_blue",
-			tags = { item_name = item, item_hash = item_hash },
-			handler = inventory_tab.handle.on_inventory_item_click,
-			tooltip = {
-				"",
-				util.rich_text_from_signal(signal),
-				" ", item_prototype.localised_name, "\n",
-				{"cybersyn-gui.in-transit-to-stations", tostring(station_count)}, "\n",
-				{"cybersyn-gui.amount", format.number(item_count)},
-			},
-			children = {
-				{
-					type = "label",
-					style = "ltnm_label_signal_count_inventory",
-					ignored_by_interaction = true,
-					caption = format_signal_count(item_count),
-				},
-				{
-					type = "label",
-					style = "ltnm_label_train_count_inventory",
-					ignored_by_interaction = true,
-					caption = format_signal_count(station_count),
-				},
-			},
+	local requested_children = {}
+	for _, hash in ipairs(util.hashes_in_item_order(inv.requested)) do
+		local agg = inv.requested[hash]
+		local transit = inv.in_transit[hash]
+		local color = transit and "orange" or "red"
+		local tail = {
+			"\n", { "cybersyn-gui.requested-by-stations", tostring(agg.stations) },
+			"\n", { "cybersyn-gui.amount", format.number(agg.count) },
 		}
-		::continue_in_transit::
+		if agg.earliest_wait_start then
+			tail[#tail + 1] = "\n[color=yellow]"
+			tail[#tail + 1] = { "cybersyn-gui.waiting-for", util.format_duration(now - agg.earliest_wait_start) }
+			tail[#tail + 1] = "[/color]"
+		end
+		if transit then
+			tail[#tail + 1] = "\n[color=orange]"
+			tail[#tail + 1] = { "cybersyn-gui.in-transit-amount", format.number(transit.count) }
+			tail[#tail + 1] = "[/color]"
+		else
+			tail[#tail + 1] = "\n[color=red]"
+			tail[#tail + 1] = { "cybersyn-gui.not-in-transit" }
+			tail[#tail + 1] = "[/color]"
+		end
+		local sig_extra = (transit and transit.count or "") .. "|" .. (agg.earliest_wait_start and math.floor((now - agg.earliest_wait_start) / 60) or "")
+		requested_children[#requested_children + 1] = item_entry("inventory_requested_table", hash, agg,
+			(hash == selected and "flib_selected_slot_button_" or "flib_slot_button_") .. color, tail, sig_extra)
 	end
 
-	if next(inventory_provided_table.children) ~= nil then
-		refs.inventory_provided_table.clear()
-	end
-	if next(inventory_requested_table.children) ~= nil then
-		refs.inventory_requested_table.clear()
-	end
-	if next(inventory_in_transit_table.children) ~= nil then
-		refs.inventory_in_transit_table.clear()
-	end
-	gui.add(refs.inventory_provided_table, provided_children)
-	gui.add(refs.inventory_requested_table, requested_children)
-	gui.add(refs.inventory_in_transit_table, in_transit_children)
+	render_grid(player_data, refs.inventory_provided_table, provided_children)
+	render_grid(player_data, refs.inventory_in_transit_table, in_transit_children)
+	render_grid(player_data, refs.inventory_requested_table, requested_children)
 end
+
+dev.register_dump(TAB, function(player_data)
+	local refs = player_data.refs
+	local out = {}
+	for _, grid in ipairs({ "provided", "in_transit", "requested" }) do
+		local hashes, captions = {}, {}
+		for i, button in ipairs(refs["inventory_" .. grid .. "_table"].children) do
+			hashes[i] = button.tags.item_hash
+			captions[i] = button.children[1].caption
+		end
+		out[grid] = { hashes = hashes, captions = captions }
+	end
+	return out
+end)
 
 inventory_tab.handle = {}
 
@@ -433,32 +197,9 @@ end
 ---@param e EventData.on_gui_click
 function inventory_tab.handle.on_inventory_item_click(player, player_data, refs, e)
 	local element = e.element
-	if not element or not element.tags then return end
-	
-	local item_name = element.tags.item_name
-	if not item_name then return end
-	
-	if e.button == defines.mouse_button_type.left then
-		-- Set the item filter
-		local signal = util.signalid_from_name(item_name)
-		refs.manager_item_filter.elem_value = signal
-		player_data.search_item = item_name
-		interface_raise_item_selected(e.player_index, item_name)
-		interop_add_recent_item(e.player_index, item_name, "cybersyn")
-		player_data.recent_panel_dirty = true
-
-		-- Switch to stations tab
-		local tabbed_pane = refs.manager_tabbed_pane
-		if tabbed_pane then
-			-- Find stations tab index (it's the second tab)
-			tabbed_pane.selected_tab_index = 2
-			player_data.selected_tab = "stations_tab"
-		end
-	elseif e.button == defines.mouse_button_type.right then
-		-- Clear the item filter
-		refs.manager_item_filter.elem_value = nil
-		player_data.search_item = nil
-	end
+	local hash = element and element.tags.item_hash
+	if not hash then return end
+	util.item_button_click(player, player_data, e, hash)
 end
 
 gui.add_handlers(inventory_tab.handle, inventory_tab.wrapper)

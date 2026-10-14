@@ -3,6 +3,8 @@ local gui = require("__flib__.gui")
 local constants = require("scripts.gui.constants")
 local util = require("scripts.gui.util")
 local templates = require("scripts.gui.templates")
+local collector = require("scripts.gui.collector")
+local dev = require("scripts.gui.dev")
 
 local stations_tab = {}
 
@@ -37,6 +39,7 @@ function stations_tab.create(widths)
 				style = "ltnm_table_scroll_pane",
 				ref = { "stations", "scroll_pane" }
 			},
+			templates.pager("stations_tab", util.handle.pager_click),
 			{
 				type = "flow",
 				style = "ltnm_warning_flow",
@@ -53,195 +56,78 @@ function stations_tab.create(widths)
 	}
 end
 
+local TAB = "stations_tab"
+
+local sort_keys = {
+	name = function(st) return st.name_lower end,
+	status = function(st) return st.network_name or "" end,
+	network_id = function(st)
+		local mask = st.network_mask
+		return type(mask) == "number" and mask or 0
+	end,
+}
+
+--- Filtered and sorted station ids, from the snapshot only.
+--- @param player_data PlayerData
+--- @return uint[] ids
+--- @return Snapshot snapshot
+function stations_tab.query(player_data)
+	local snapshot = collector.get()
+	local f = util.get_filters(player_data)
+	local rows = {}
+	for _, st in pairs(snapshot.stations) do
+		if util.station_passes(st, f) then
+			rows[#rows + 1] = st
+		end
+	end
+	local column, ascending = util.get_sort(player_data, TAB, "name")
+	local key_fn = sort_keys[column] or sort_keys.name
+	util.sort_by(rows, key_fn, ascending, function(st) return st.id end)
+	local ids = {}
+	for i, st in ipairs(rows) do
+		ids[i] = st.id
+	end
+	return ids, snapshot
+end
+
 --- @param map_data MapData
 --- @param player_data PlayerData
-function stations_tab.build(map_data, player_data, query_limit)
+function stations_tab.build(map_data, player_data)
 	local widths = constants.gui["en"]
 	local refs = player_data.refs
 
-	local search_query = player_data.search_query
-	local search_item = player_data.search_item
-	local search_network_name = player_data.search_network_name
-	local search_network_mask = player_data.search_network_mask
-	local search_surface_idx = player_data.search_surface_idx
-
-	local stations = map_data.stations
-
-	local stations_sorted = {}
-	local to_sorted_manifest = {}
-
-	if (search_query) then
-		-- lowercase search query to remove case sensitivity 
-		search_query = search_query:lower()
-	end
-
-	local i = 0
-	for id, station in pairs(stations) do
-		local entity = station.entity_stop
-		if not entity.valid then
-			goto continue
-		end
-
-		if search_query then
-			if not string.match(entity.backer_name:lower(), search_query) then
-				goto continue
-			end
-		end
-
-		-- move surface comparison up higher in query to short circuit query earlier if surface doesn't match; this can exclude hundreds of stations instantly in SE
-		if search_surface_idx then
-			if search_surface_idx == -1 then
-				goto has_match
-			elseif entity.surface.index ~= search_surface_idx then
-				goto continue
-			end
-			::has_match::
-		end
-
-		if search_network_name then
-			if station.network_name == NETWORK_EACH then
-				-- NETWORK_EACH stations can have any network, check if this one exists
-				local network_mask = station.network_mask[search_network_name]
-				if not network_mask then
-					goto continue
-				end
-				if not bit32.btest(search_network_mask, network_mask) then
-					goto continue
-				end
-			else
-				-- Regular stations must match the network name
-				if search_network_name ~= station.network_name then
-					goto continue
-				end
-				local train_flag = get_network_mask(station, station.network_name)
-				if not bit32.btest(search_network_mask, train_flag) then
-					goto continue
-				end
-			end
-		elseif search_network_mask ~= -1 then
-			if station.network_name == NETWORK_EACH then
-				local masks = station.network_mask --[[@as {}]]
-				for _, network_mask in pairs(masks) do
-					if bit32.btest(search_network_mask, network_mask) then
-						goto has_match
-					end
-				end
-				goto continue
-				::has_match::
-			elseif not bit32.btest(search_network_mask, station.network_mask) then
-				goto continue
-			end
-		end
-
-		if search_item then
-			if station.deliveries then
-				for item_name, _ in pairs(station.deliveries) do
-					if item_name == search_item then
-						goto has_match
-					end
-				end
-			end
-			local comb1_signals, _ = get_signals(station)
-			if comb1_signals then
-				for _, signal_ID in pairs(comb1_signals) do
-					local item = signal_ID.signal.name
-					-- FIXME handle signal_ID.signal.quality
-					if item then
-						if item == search_item then
-							goto has_match
-						end
-					end
-				end
-			end
-			goto continue
-			::has_match::
-		end
-
-		stations_sorted[#stations_sorted + 1] = id
-		i = i + 1
-		if query_limit ~= -1 and i >= query_limit then
-			break
-		end
-		::continue::
-	end
-
-	table.sort(stations_sorted, function(a, b)
-		local station1 = map_data.stations[a]
-		local station2 = map_data.stations[b]
-
-		-- Safety check
-		if not station1 or not station2 then
-			return a < b
-		end
-
-		local sort = player_data.stations_sort or { active = "name", ascending = {} }
-		local column = sort.active or "name"
-		local ascending = sort.ascending[column] ~= false  -- default to ascending
-
-		local less_than = nil  -- Will be set to true/false if we can determine order
-
-		if column == "name" then
-			local name1 = (station1.entity_stop and station1.entity_stop.valid) and station1.entity_stop.backer_name or ""
-			local name2 = (station2.entity_stop and station2.entity_stop.valid) and station2.entity_stop.backer_name or ""
-			if name1 ~= name2 then
-				less_than = name1 < name2
-			end
-		elseif column == "status" then
-			-- Sort by network name (status column is repurposed for network signal)
-			local net1 = station1.network_name or ""
-			local net2 = station2.network_name or ""
-			if net1 ~= net2 then
-				less_than = net1 < net2
-			end
-		elseif column == "network_id" then
-			local mask1 = get_network_mask(station1, station1.network_name) or 0
-			local mask2 = get_network_mask(station2, station2.network_name) or 0
-			if mask1 ~= mask2 then
-				less_than = mask1 < mask2
-			end
-		end
-
-		-- Apply sort direction and return
-		if less_than ~= nil then
-			if ascending then
-				return less_than
-			else
-				return not less_than
-			end
-		end
-
-		-- Fallback to station ID for stable sorting
-		return a < b
-	end)
+	local ids, snapshot = stations_tab.query(player_data)
+	local first, last = util.paginate(player_data, TAB, #ids)
 
 	local scroll_pane = refs.manager_stations_tab_scroll_pane
 	if next(scroll_pane.children) ~= nil then
-		refs.manager_stations_tab_scroll_pane.clear()
+		scroll_pane.clear()
 	end
 
-	for i, station_id in pairs(stations_sorted) do
-		--- @type Station
-		local station = stations[station_id]
+	for i = first, last do
+		local station_id = ids[i]
+		local st = snapshot.stations[station_id]
 		local network_sprite = "utility/close_black"
-		local network_name = station.network_name
+		local network_name = st.network_name
 		local network_mask = -1
 		if network_name then
-			network_mask = get_network_mask(station, network_name)
-			network_sprite, _, _ = util.generate_item_references(network_name)
+			local mask = st.network_mask
+			network_mask = type(mask) == "number" and mask or (mask[network_name] or 0)
+			network_sprite = util.generate_item_references(network_name) or network_sprite
 		end
 		local color = i % 2 == 0 and "dark" or "light"
 		gui.add(scroll_pane, {
 			type = "frame",
+			tags = { station_id = station_id },
 			{
 				type = "label",
 				style = "ltnm_clickable_semibold_label",
 				style_mods = { width = widths.stations.name + 45 },
 				tooltip = constants.open_station_gui_tooltip,
-				caption = station.entity_stop.backer_name,
-				handler = stations_tab.handle.open_station_gui,
+				caption = st.name,
+				handler = { [defines.events.on_gui_click] = stations_tab.handle.open_station_gui },
 				tags = { station_id = station_id },
 			},
-			--templates.status_indicator(widths.stations.status, true), --repurposing status column for network name
 			{
 				type = "sprite",
 				style_mods = { width = widths.stations.status - 45, horizontal_align = "center" },
@@ -257,21 +143,29 @@ function stations_tab.build(map_data, player_data, query_limit)
 			templates.small_slot_table(widths.stations, color, "control_signals"),
 		}, refs)
 
-		gui.add(refs.provided_requested_table, util.slot_table_build_from_station(station))
-		gui.add(refs.shipments_table, util.slot_table_build_from_deliveries(station))
-		gui.add(refs.control_signals_table, util.slot_table_build_from_control_signals(station, map_data))
+		gui.add(refs.provided_requested_table, util.slot_table_build_from_station(st))
+		gui.add(refs.shipments_table, util.slot_table_build_from_deliveries(st))
+		gui.add(refs.control_signals_table, util.slot_table_build_from_control_signals(st))
 	end
 
-	if #stations_sorted == 0 then
-		--refs.warning_flow.visible = true
-		scroll_pane.visible = false
-		--refs.content_frame.style = "ltnm_main_warning_frame"
-	else
-		--refs.warning_flow.visible = false
-		scroll_pane.visible = true
-		--refs.content_frame.style = "ltnm_main_content_frame"
-	end
+	scroll_pane.visible = #ids > 0
 end
+
+dev.register_dump(TAB, function(player_data)
+	local scroll_pane = player_data.refs.manager_stations_tab_scroll_pane
+	local snapshot = collector.get()
+	local column, ascending = util.get_sort(player_data, TAB, "name")
+	local key_fn = sort_keys[column] or sort_keys.name
+	local ids, keys = {}, {}
+	for i, row in ipairs(scroll_pane.children) do
+		local id = row.tags.station_id
+		ids[i] = id
+		local st = snapshot.stations[id]
+		keys[i] = st and key_fn(st)
+	end
+	local total = #stations_tab.query(player_data)
+	return { ids = ids, keys = keys, column = column, ascending = ascending, page = player_data.page and player_data.page[TAB], total = total }
+end)
 
 stations_tab.handle = {}
 
@@ -290,6 +184,10 @@ function stations_tab.handle.open_station_gui(player, player_data, refs, e)
 	local station_id = e.element.tags.station_id
 	--- @type Station
 	local station = storage.stations[station_id]
+	if not station then
+		util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
+		return
+	end
 	local station_entity = station.entity_stop
 	local station_comb1 = station.entity_comb1
 	local station_comb2 = station.entity_comb2
@@ -344,36 +242,20 @@ end
 function stations_tab.handle.on_sort_checkbox_changed(player, player_data, refs, e)
 	local element = e.element
 	if not element or not element.tags then return end
-
 	local column = element.tags.column
 	if not column then return end
 
-	-- Initialize sort state if needed
-	if not player_data.stations_sort then
-		player_data.stations_sort = { active = "name", ascending = {} }
-	end
-
-	local sort = player_data.stations_sort
-	if sort.active == column then
-		-- Toggle ascending/descending
-		sort.ascending[column] = element.state
-	else
-		-- Switch to new column
-		local old_column = sort.active
-		sort.active = column
-		sort.ascending[column] = element.state
-
-		-- Update checkbox styles via parent's children
-		for _, child in pairs(element.parent.children) do
-			if child.type == "checkbox" and child ~= element and child.tags and child.tags.column == old_column then
-				child.style = "ltnm_sort_checkbox"
-				if child.tags.width then child.style.width = child.tags.width end
-				break
-			end
+	util.set_sort(player_data, TAB, column)
+	local active, ascending = util.get_sort(player_data, TAB, "name")
+	for _, child in pairs(element.parent.children) do
+		local tags = child.type == "checkbox" and child.tags
+		if tags and tags.column then
+			child.style = tags.column == active and "ltnm_selected_sort_checkbox" or "ltnm_sort_checkbox"
+			if tags.width then child.style.width = tags.width end
+			if tags.column == active then child.state = not ascending end
 		end
-		element.style = "ltnm_selected_sort_checkbox"
-		if element.tags.width then element.style.width = element.tags.width end
 	end
+	util.rerender(player, player_data)
 end
 
 gui.add_handlers(stations_tab.handle, stations_tab.wrapper)

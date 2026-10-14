@@ -117,4 +117,40 @@ function templates.status_indicator(width, center)
 	}
 end
 
+--- Pager row `[«] [‹] "1–50 of 1,921" [›] [»]` for a tab. Element names are `<tab>_pager`, `<tab>_pager_first`,
+--- `_prev`, `_label`, `_next`, `_last`; util.paginate keeps them current. Shift+‹/› moves 10 pages.
+--- @param tab string canonical tab name, e.g. "stations_tab"
+--- @param handler GuiElemHandler click handler, normally util.handle.pager_click
+function templates.pager(tab, handler)
+	local function button(action, caption)
+		return {
+			type = "button",
+			name = tab .. "_pager_" .. action,
+			style = "tool_button",
+			caption = caption,
+			tooltip = { "cybersyn-gui.pager-" .. action },
+			enabled = false,
+			tags = { pager_tab = tab, pager_action = action },
+			handler = { [defines.events.on_gui_click] = handler },
+		}
+	end
+	return {
+		type = "flow",
+		name = tab .. "_pager",
+		direction = "horizontal",
+		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+		button("first", "«"),
+		button("prev", "‹"),
+		{
+			type = "label",
+			name = tab .. "_pager_label",
+			style = "bold_label",
+			style_mods = { minimal_width = 140, horizontal_align = "center" },
+			caption = { "cybersyn-gui.pager-empty" },
+		},
+		button("next", "›"),
+		button("last", "»"),
+	}
+end
+
 return templates
