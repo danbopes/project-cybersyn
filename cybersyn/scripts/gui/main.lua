@@ -89,7 +89,7 @@ function manager_gui.on_lua_shortcut(e)
 	end
 end
 
---- Fields added by the facelift; old saves lack them.
+--- Fields absent from PlayerData in older saves.
 --- @param player_data PlayerData
 local function init_player_fields(player_data)
 	player_data.sort = player_data.sort or {}
@@ -142,6 +142,7 @@ end
 
 function manager_gui.on_player_removed(e)
 	storage.manager.players[e.player_index] = nil
+	collector.release_if_unused()
 end
 
 --script.on_event(defines.events.on_player_joined_game, function(e)

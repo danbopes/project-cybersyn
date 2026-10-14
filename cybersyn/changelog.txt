@@ -4,8 +4,24 @@ Date: 2026-03-30
   Features:
     - (Manager) Add filter history to Manager's top bar
     - (Manager) Add cross-mod interop protocol support
+    - (Manager facelift) New Overview tab, the default on first open: station, fleet, depot, demand and flow tiles plus lists of starved requests, longest waits, saturated stations, top items in transit, items delivered per hour, active alerts and a per-network breakdown
+    - (Manager facelift) Pause and Pin toggles in the title bar, with an "Updated N ago" indicator
+    - (Manager facelift) Stations tab overhaul: Status, Wait and Last delivery columns, status filter chips with counts, every column sortable from its header, item slots clickable to filter
+    - (Manager facelift) Trains tab: readable status with the destination, paging and sortable columns
+    - (Manager facelift) Clear-filters button and a "no match" message on every tab when filters hide everything
   Changes:
     - (Manager) Add average travel-to-P/R times to the delivery breakdown stats
+    - (Manager facelift) Inventory items keep a stable crafting-menu order and update in place; the layout holds still while the cursor is over a grid, so shift-clicking no longer chases moving buttons
+    - (Manager facelift) Paging (per-player "Manager rows per page" setting) replaces the result limit, which cut the list before sorting
+    - (Manager facelift) Items from secondary inventory combinators are now shown in station rows and inventory totals
+    - (Manager facelift) The manager collects its data incrementally only while a window is open and unpaused, and frees it on close
+    - (Manager facelift) Item buttons share one click scheme everywhere: click filters and shows Stations, shift+click filters and stays, right-click clears the item filter
+  Bugfixes:
+    - (Manager facelift) Text search is case-insensitive plain text with space-separated terms, and applies to trains through their depot and station names
+    - (Manager facelift) Item filter matches quality items
+    - (Manager facelift) Sorting no longer flips direction on the first click of a new column and sorts the whole list instead of a truncated subset
+    - (Manager facelift) Wait times are hidden when request wait tracking is turned off instead of showing stale, ever-growing values
+    - (Manager facelift) The tab shown on first open is no longer empty
 ---------------------------------------------------------------------------------------------------
 Version: 2.0.53
 Date: 2026-03-15

@@ -12,28 +12,6 @@ function util.error_flying_text(player, message)
 	player.play_sound({ path = "utility/cannot_build" })
 end
 
-function util.gui_list(parent, iterator, test, build, update, ...)
-	local children = parent.children
-	local i = 0
-
-	for k, v in table.unpack(iterator) do
-		local passed = test(v, k, i, ...)
-		if passed then
-			i = i + 1
-			local child = children[i]
-			if not child then
-				gui.build(parent, { build(...) })
-				child = parent.children[i]
-			end
-			gui.update(child, update(v, k, i, ...))
-		end
-	end
-
-	for j = i + 1, #children do
-		children[j].destroy()
-	end
-end
-
 --- Builds a valid sprite path or returns nil
 --- @param item string
 --- @return string, string, LocalizedString
@@ -44,15 +22,18 @@ function util.generate_item_references(item)
 	if helpers.is_valid_sprite_path("item/" .. item) then
 		sprite = "item/" .. item
 		image_path = "[img=item." .. item .. "]"
-		item_name = { "?", { "item-name." .. item }, { "entity-name." .. item }, "LocalizedString failure: " .. item }
+		local proto = prototypes.item[item]
+		item_name = proto and proto.localised_name or item
 	elseif helpers.is_valid_sprite_path("fluid/" .. item) then
 		sprite = "fluid/" .. item
 		image_path = "[img=fluid." .. item .. "]"
-		item_name = { "?", { "fluid-name." .. item }, "LocalizedString failure: " .. item }
+		local proto = prototypes.fluid[item]
+		item_name = proto and proto.localised_name or item
 	elseif helpers.is_valid_sprite_path("virtual-signal/" .. item) then
 		sprite = "virtual-signal/" .. item
 		image_path = "[img=virtual-signal." .. item .. "]"
-		item_name = { "?", { "virtual-signal." .. item }, "LocalizedString failure: " .. item }
+		local proto = prototypes.virtual_signal[item]
+		item_name = proto and proto.localised_name or item
 	end
 	return sprite, image_path, item_name
 end
@@ -136,13 +117,6 @@ function util.format_duration(ticks)
 		return string.format("%dm %ds", minutes, seconds % 60)
 	end
 	return string.format("%ds", seconds)
-end
-
---- @param tick number? A past game tick.
---- @return LocalisedString
-function util.time_ago(tick)
-	if not tick then return { "cybersyn-gui.never" } end
-	return { "cybersyn-gui.time-ago", util.format_duration(game.tick - tick) }
 end
 
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
@@ -543,6 +517,30 @@ function util.train_passes(tr, f, ignore_item)
 	if f.surface and tr.surface_index ~= f.surface then return false end
 	if not util.network_passes(tr.network_name, tr.network_mask, f) then return false end
 	if f.item and not ignore_item and not tr.manifest_hashes[f.item] then return false end
+	if f.terms and not util.train_terms_pass(tr, f.terms) then return false end
+	return true
+end
+
+--- Text search on trains matches the names of the depot and of the current provider and requester, so searching
+--- for a station also finds the trains serving it.
+--- @param tr SnapshotTrain
+--- @param terms string[] lowercase
+--- @return boolean
+function util.train_terms_pass(tr, terms)
+	local stations = collector.get().stations
+	local depot = tr.depot_name and string.lower(tr.depot_name)
+	local p = tr.p_station_id and stations[tr.p_station_id]
+	local r = tr.r_station_id and stations[tr.r_station_id]
+	p = p and p.name_lower
+	r = r and r.name_lower
+	for i = 1, #terms do
+		local term = terms[i]
+		if not ((depot and string.find(depot, term, 1, true))
+				or (p and string.find(p, term, 1, true))
+				or (r and string.find(r, term, 1, true))) then
+			return false
+		end
+	end
 	return true
 end
 
@@ -774,44 +772,6 @@ function util.hashes_in_item_order(hashes)
 	return util.sort_by(list, util.item_rank, true, function(h) return h end)
 end
 
---- Updates a slot table based on the passed criteria.
---- @param manifest Manifest?
---- @param color string
---- @return GuiElemDef[]
-function util.slot_table_build_from_manifest(manifest, color)
-	---@type GuiElemDef[]
-	local children = {}
-	if manifest then
-		for _, item in pairs(manifest) do
-			local item_prototype = util.prototype_from_name(item.name)
-			local signal = util.signalid_from_name(item.name, item.quality)
-			children[#children + 1] = {
-				type = "choose-elem-button",
-				elem_type = "signal",
-				signal = signal,
-				enabled = false,
-				style = "ltnm_small_slot_button_" .. color,
-				tooltip = {
-					"",
-					util.rich_text_from_signal(signal),
-					" ", item_prototype.localised_name,
-					" shipped",
-					"\n Amount: " .. format.number(item.count),
-				},
-				children = {
-					{
-						type = "label",
-						style = "ltnm_label_signal_count",
-						ignored_by_interaction = true,
-						caption = format_signal_count(item.count),
-					},
-				},
-			}
-		end
-	end
-	return children
-end
-
 local function slot_button(hash, count, color, tooltip_tail)
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	if not sprite then return nil end
@@ -920,21 +880,6 @@ function util.slot_table_build_from_control_signals(st)
 	return children
 end
 
-function util.sorted_iterator(arr, src_tbl, sort_state)
-	local step = sort_state and 1 or -1
-	local i = sort_state and 1 or #arr
-
-	return function()
-				local j = i + step
-				if arr[j] then
-					i = j
-					local arr_value = arr[j]
-					return arr_value, src_tbl[arr_value]
-				end
-			end,
-			arr
-end
-
 local MAX_INT = 2147483648 -- math.pow(2, 31)
 function util.signed_int32(val)
 	return (val >= MAX_INT and val - (2 * MAX_INT)) or val
@@ -952,12 +897,16 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.is_manager_open = false
 	player_data.hover = nil
 	player_data.inventory_cache = nil
-	-- Render signatures only skip redundant updates and are stored per button, so they are not worth keeping in
-	-- the save while closed; a container without sigs updates every child once on the next render.
+	player_data.stations_query = nil
+	player_data.stations_order = nil
+	-- Render signatures and row memos only skip redundant updates, and the memos reference snapshot records, so
+	-- they are not worth keeping in the save while closed; a container without them updates every child once on
+	-- the next render.
 	local states = player_data.gui_state
 	if states then
 		for _, state in pairs(states) do
 			state.sigs = nil
+			state.cells = nil
 		end
 	end
 
@@ -967,20 +916,6 @@ function util.close_manager_window(player, player_data, refs, force)
 
 	player.set_shortcut_toggled("cybersyn-toggle-gui", false)
 	collector.release_if_unused()
-end
-
-function util.build_train_layout_table(map_data)
-	local layouts = map_data.layouts
-	local layouts_table = {}
-	for i, v in pairs(layouts) do
-		local layout_string = table.concat(v, ",")
-		layout_string = layout_string.gsub(layout_string, "0", "[item=locomotive]")
-		layout_string = layout_string.gsub(layout_string, "1", "[item=cargo-wagon]")
-		layout_string = layout_string.gsub(layout_string, "2", "[item=fluid-wagon]")
-		layout_string = layout_string.gsub(layout_string, ",", "")
-		layouts_table[i] = layout_string
-	end
-	return layouts_table
 end
 
 gui.add_handlers(util.handle, util.wrapper, "cybersyn_util")

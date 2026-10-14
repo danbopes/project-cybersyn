@@ -150,7 +150,8 @@ data:extend({
 		setting_type = "runtime-per-user",
 		default_value = 50,
 		minimum_value = 10,
-		maximum_value = 500,
+		-- About 9 ms per Stations render at 500 rows on a 2,000-station base; 200 stays near the 5 ms budget.
+		maximum_value = 200,
 	},
 	--{
 	--  type = "bool-setting",

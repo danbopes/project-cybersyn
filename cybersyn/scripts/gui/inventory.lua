@@ -101,6 +101,12 @@ function inventory_tab.create()
 			style_mods = { vertical_spacing = 8 },
 			sort_toolbar_def(),
 			{
+				name = "inventory_empty_label",
+				type = "label",
+				style = "ltnm_semibold_label",
+				visible = false,
+			},
+			{
 				type = "flow",
 				direction = "horizontal",
 				style_mods = { horizontal_spacing = 12 },
@@ -303,7 +309,7 @@ local function ordered_hashes(cache, grid, column, ascending)
 	return list
 end
 
-local CLICK_HINT = { "", "\n", { "cybersyn-gui.inventory-click-hint" } }
+local CLICK_HINT = { "", "\n", { "cybersyn-gui.item-click-hint" } }
 local STATIONS_KEY = {
 	provided = "cybersyn-gui.provided-by-stations",
 	in_transit = "cybersyn-gui.in-transit-to-stations",
@@ -646,6 +652,23 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 	return ctx, entries
 end
 
+--- Empty grids alone do not say whether nothing matches or nothing has been collected yet.
+--- @param label LuaGuiElement?
+local function render_empty_label(label, snapshot, f, inv)
+	if not (label and label.valid) then return end
+	local key
+	if not snapshot.tick then
+		key = "cybersyn-gui.stations-collecting"
+	elseif not (next(inv.provided) or next(inv.requested) or next(inv.in_transit)) then
+		key = util.filters_active(f, true) and "cybersyn-gui.inventory-no-match" or "cybersyn-gui.inventory-empty"
+	end
+	if label.visible ~= (key ~= nil) then label.visible = key ~= nil end
+	if key and label.tags.key ~= key then
+		label.caption = { key }
+		label.tags = { key = key }
+	end
+end
+
 --- The item filter highlights instead of hiding; the other filters restrict which stations are aggregated.
 ---@param map_data MapData
 ---@param player_data PlayerData
@@ -658,6 +681,7 @@ function inventory_tab.build(map_data, player_data)
 	local cache, rebuilt = get_cache(player_data, snapshot, f)
 	-- A background refresh aggregates on one render and applies on the next, so neither carries both costs.
 	if rebuilt and cache.background then return end
+	render_empty_label(refs.inventory_empty_label, snapshot, f, cache.inv)
 	local version = cache.version
 	local selected = f.item
 	local now = game.tick

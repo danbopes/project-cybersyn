@@ -37,7 +37,8 @@ function trains_tab.create()
 		style = "ltnm_table_toolbar_frame",
 	}
 	for i, column in ipairs(SORT_COLUMNS) do
-		header[i] = templates.sort_checkbox(widths, "trains", column, column == DEFAULT_COLUMN, nil, false,
+		header[i] = templates.sort_checkbox(widths, "trains", column, column == DEFAULT_COLUMN,
+			{ "cybersyn-gui.trains-sort-" .. string.gsub(column, "_", "-") }, false,
 			trains_tab.handle.on_trains_sort_checkbox_changed)
 	end
 	return {
@@ -63,11 +64,6 @@ function trains_tab.create()
 					{ type = "empty-widget", style_mods = { horizontally_stretchable = true } },
 					{ name = "manager_trains_tab_summary", type = "label", style = "ltnm_semibold_label" },
 				},
-				{
-					name = "trains_warning_flow",
-					type = "flow",
-					style = "ltnm_warning_flow",
-				},
 			},
 		},
 	}
@@ -81,6 +77,8 @@ local ALERT_MESSAGE = {
 	[5] = "cybersyn-messages.refueler-broken",
 	[6] = "cybersyn-messages.train-at-incorrect",
 	[7] = "cybersyn-messages.cannot-path-between-surfaces",
+	[8] = "cybersyn-gui.overview-alert-8",
+	[9] = "cybersyn-messages.train-schedule-broken",
 }
 
 --- Where the train is headed or parked, from its status; the STATUS_* globals are not yet defined at require time.
@@ -203,24 +201,6 @@ local function shipment_total(tr)
 	return total
 end
 
---- @param tr SnapshotTrain
---- @param terms string[]
---- @param names function
-local function terms_pass(tr, terms, names)
-	local _, depot = names(tr, "depot")
-	local _, p = names(tr, "station", tr.p_station_id)
-	local _, r = names(tr, "station", tr.r_station_id)
-	for i = 1, #terms do
-		local term = terms[i]
-		if not ((depot and string.find(depot, term, 1, true))
-				or (p and string.find(p, term, 1, true))
-				or (r and string.find(r, term, 1, true))) then
-			return false
-		end
-	end
-	return true
-end
-
 --- Builds the sort-key function for a column; keys are computed once per row by util.sort_by.
 --- @param column string
 --- @param names function
@@ -274,10 +254,9 @@ function trains_tab.query(map_data, player_data)
 	local snapshot = collector.get()
 	local f = util.get_filters(player_data)
 	local names = new_name_cache(snapshot)
-	local terms = f.terms
 	local rows = {}
 	for _, tr in pairs(snapshot.trains) do
-		if util.train_passes(tr, f) and (not terms or terms_pass(tr, terms, names)) then
+		if util.train_passes(tr, f) then
 			rows[#rows + 1] = tr
 		end
 	end
@@ -371,7 +350,7 @@ local function shipment_children(tr, filter_item)
 				quality = quality,
 				style = hash == filter_item and "ltnm_selected_small_slot_button_default" or "ltnm_small_slot_button_default",
 				mouse_button_filter = { "left", "right" },
-				tooltip = { "", name_tooltip, "\n", { "cybersyn-gui.amount", format.number(count) }, "\n", { "cybersyn-gui.trains-item-click-tooltip" } },
+				tooltip = { "", name_tooltip, "\n", { "cybersyn-gui.amount", format.number(count) }, "\n", { "cybersyn-gui.item-click-hint" } },
 				tags = { item_hash = hash },
 				handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_item_click },
 				{
@@ -442,8 +421,8 @@ end
 
 --- @param view TrainRowView
 local function alert_caption(view)
-	local key = view.alert and ALERT_MESSAGE[view.alert]
-	if not key then return "" end
+	if not view.alert then return "" end
+	local key = ALERT_MESSAGE[view.alert] or "cybersyn-gui.overview-alert-0"
 	return { "", "[img=utility/warning_icon] [color=255,69,69]", { key }, "[/color]" }
 end
 
@@ -674,10 +653,18 @@ function trains_tab.build(map_data, player_data)
 
 	local entries = {}
 	if last < first then
+		local empty_key
+		if not snapshot.tick then
+			empty_key = "cybersyn-gui.stations-collecting"
+		elseif util.filters_active(util.get_filters(player_data)) and next(snapshot.trains) then
+			empty_key = "cybersyn-gui.trains-no-match"
+		else
+			empty_key = "cybersyn-gui.no-trains"
+		end
 		entries[1] = {
-			key = "empty",
+			key = empty_key,
 			build = function()
-				return { type = "label", style = "ltnm_semibold_label", caption = { "cybersyn-gui.no-trains" } }
+				return { type = "label", style = "ltnm_semibold_label", caption = { empty_key } }
 			end,
 		}
 	else

@@ -51,6 +51,7 @@ local GREEN = defines.wire_connector_id.circuit_green
 --- @field longest_wait_start uint?
 --- @field secondary boolean
 --- @field secondary_count int
+--- @field tiebreak string name, then id: a unique sort key, built once per record instead of once per sort
 
 --- @class SnapshotTrain
 --- @field id uint
@@ -80,6 +81,7 @@ local GREEN = defines.wire_connector_id.circuit_green
 --- @field starved {[string]: true} "network:hash" request keys with no provider on that network
 --- @field starved_items {[string]: true}
 --- @field starved_source "economy"|"snapshot"
+--- @field starved_version int bumped only when the contents of `starved` change; equal sets keep their table
 --- @field fleet {total: int, by_status: {[uint]: int}, available_by_network: {[string]: int}, by_layout: {[uint]: int}}
 --- @field depots {total: int, parked: int}
 --- @field alerts {train_id: uint, kind: int, since_tick: int}[]
@@ -102,6 +104,7 @@ function collector.empty()
 		starved = {},
 		starved_items = {},
 		starved_source = "snapshot",
+		starved_version = 0,
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {} },
 		depots = { total = 0, parked = 0 },
 		alerts = {},
@@ -114,6 +117,49 @@ function collector.init()
 	local manager = storage.manager
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
+	collector.reset_log()
+end
+
+--- Starts a new change log epoch: readers holding a position from an older epoch must rebuild from scratch.
+function collector.reset_log()
+	local manager = storage.manager
+	local old = manager.collect_log
+	manager.collect_log = { epoch = (old and old.epoch or 0) + 1, base = 0, ids = {} }
+end
+
+--- Ids of station records replaced or removed since `pos`, so per-player caches can update only those.
+--- Returns nil when the caller's position is from another epoch or no longer covered by the log.
+--- @param epoch int?
+--- @param pos int?
+--- @return uint[]? ids
+--- @return integer first index into ids
+--- @return integer last index into ids
+function collector.changed_since(epoch, pos)
+	local log = storage.manager.collect_log
+	if not log or not epoch or not pos or log.epoch ~= epoch then return nil, 0, 0 end
+	local n = #log.ids
+	if pos < log.base or pos > log.base + n then return nil, 0, 0 end
+	return log.ids, pos - log.base + 1, n
+end
+
+--- @return int epoch
+--- @return int pos
+function collector.log_position()
+	local log = storage.manager.collect_log
+	if not log then
+		collector.reset_log()
+		log = storage.manager.collect_log
+	end
+	return log.epoch, log.base + #log.ids
+end
+
+local function log_change(id)
+	local log = storage.manager.collect_log
+	if not log then
+		collector.reset_log()
+		log = storage.manager.collect_log
+	end
+	log.ids[#log.ids + 1] = id
 end
 
 --- Drops both buffers once no window is open: the snapshot is several MB on large bases and would otherwise
@@ -127,6 +173,7 @@ function collector.release_if_unused()
 	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then return end
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
+	collector.reset_log()
 end
 
 --- The last complete snapshot (never nil).
@@ -137,6 +184,7 @@ function collector.get()
 	if not snapshot then
 		snapshot = collector.empty()
 		manager.snapshot = snapshot
+		collector.reset_log()
 	end
 	return snapshot
 end
@@ -264,6 +312,12 @@ local function start_pass(manager)
 	b.seen = {}
 	b.r_keys = {}
 	b.p_keys = {}
+	-- Every reader is at most one update behind, so entries from the previous pass are no longer needed.
+	local log = manager.collect_log
+	if log then
+		log.base = log.base + #log.ids
+		log.ids = {}
+	end
 	summarize_trains(b)
 	manager.snapshot_build = b
 	return b
@@ -373,6 +427,7 @@ local function collect_station(b, id, station)
 		id = id,
 		name = name,
 		name_lower = string.lower(name),
+		tiebreak = string.format("%s\0%010d", string.lower(name), id),
 		surface_index = stop.surface_index,
 		network_name = station.network_name,
 		network_mask = copy(station.network_mask),
@@ -392,7 +447,7 @@ local function collect_station(b, id, station)
 		control = {},
 		control2 = {},
 		thresholds = {},
-		wait = copy(station.request_start_ticks) or {},
+		wait = mod_settings.track_request_wait_times and copy(station.request_start_ticks) or {},
 		longest_wait_start = nil,
 		secondary = false,
 		secondary_count = 0,
@@ -514,9 +569,21 @@ local function collect_station(b, id, station)
 	end
 
 	collector.get().stations[id] = st
+	log_change(id)
 	b.seen[id] = true
 	b.station_count = b.station_count + 1
 	if st.secondary then b.secondary_count = b.secondary_count + 1 end
+end
+
+local function same_keys(a, b)
+	if not a or not b then return false end
+	for k in pairs(a) do
+		if b[k] == nil then return false end
+	end
+	for k in pairs(b) do
+		if a[k] == nil then return false end
+	end
+	return true
 end
 
 local function hash_of_key(key)
@@ -556,13 +623,23 @@ local function finish_pass(manager, b)
 		b.starved_items = items
 		b.starved_source = "snapshot"
 	end
-	local stations = collector.get().stations
+	local live = collector.get()
+	if same_keys(b.starved, live.starved) then
+		b.starved = live.starved
+		b.starved_items = live.starved_items
+		b.starved_version = live.starved_version
+	else
+		b.starved_version = (live.starved_version or 0) + 1
+	end
+	local stations = live.stations
 	local seen = b.seen
 	for id in pairs(stations) do
-		if not seen[id] then stations[id] = nil end
+		if not seen[id] then
+			stations[id] = nil
+			log_change(id)
+		end
 	end
 	b.stations = stations
-	local live = collector.get()
 	b.trains = live.trains
 	b.train_count = live.train_count
 	b.fleet = live.fleet
@@ -583,7 +660,12 @@ end
 --- @return boolean completed
 function collector.step(budget)
 	local manager = storage.manager
-	local b = manager.snapshot_build or start_pass(manager)
+	local b = manager.snapshot_build
+	if not b then
+		b = start_pass(manager)
+		-- Summarising the fleet costs about as much as a batch of stations, so a budgeted step stops here.
+		if not budget then return false end
+	end
 	local ids = b.ids
 	local n = #ids
 	budget = budget or math.min(math.max(math.ceil(n / PASS_UPDATES), MIN_BATCH), MAX_BATCH)

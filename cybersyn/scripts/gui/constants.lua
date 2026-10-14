@@ -148,7 +148,7 @@ if script then
 	}
 end
 
--- Stations tab (facelift): one width per sortable column; row cells use the same widths as their headers.
+-- Stations tab: one width per sortable column; row cells use the same widths as their headers.
 do
 	local w = constants.gui.en.stations
 	w.name = 200

@@ -559,11 +559,7 @@ function manager.handle.recent_item_click(player, player_data, refs, e)
 	if not element then return end
 	local tags = element.tags
 	if tags and tags.item_name then
-		util.set_item_filter(player_data, tags.item_name)
-		interface_raise_item_selected(e.player_index, tags.item_name)
-		interop_add_recent_item(e.player_index, tags.item_name, "cybersyn")
-		player_data.recent_panel_dirty = true
-		manager.render(player, player_data)
+		util.item_button_click(player, player_data, e, tags.item_name)
 	end
 end
 
@@ -589,7 +585,7 @@ function manager.build_recent_panel(player, player_data)
 
 		if sprite_path then
 			local proto = prototypes.item[entry.item_name] or prototypes.fluid[entry.item_name]
-			local tooltip = proto and proto.localised_name or entry.item_name
+			local tooltip = { "", proto and proto.localised_name or entry.item_name, "\n", { "cybersyn-gui.item-click-hint" } }
 			gui.add(flow, {
 				{
 					type = "sprite-button",
@@ -597,6 +593,7 @@ function manager.build_recent_panel(player, player_data)
 					tooltip = tooltip,
 					style = "frame_action_button",
 					tags = { item_name = entry.item_name },
+					mouse_button_filter = { "left", "right" },
 					handler = { [defines.events.on_gui_click] = manager.handle.recent_item_click },
 				},
 			})

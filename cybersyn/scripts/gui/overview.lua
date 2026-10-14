@@ -21,6 +21,10 @@ local PANEL_CAPTION_HEIGHT = 24
 local LIST_AREA_HEIGHT = constants.gui_content_frame_height - TILE_ROW_HEIGHT - FILTER_NOTE_HEIGHT - 2 * SPACING
 
 local NO_VALUE = "–"
+-- Highest active_alerts kind with an overview-alert-N locale key; newer kinds fall back to the generic caption.
+local MAX_ALERT_KIND = 9
+-- Matches the Stations status indicators and the Inventory legend so a status reads the same on every tab.
+local STARVED_COLOR = "255,135,230"
 
 --- @class OverviewTileDef
 --- @field name string
@@ -36,7 +40,7 @@ local TILES = {
 		sprite = "item/train-stop",
 		lines = { "providers", "requesters", "warming_up", "faulty", "saturated", "starved" },
 		tooltips = { faulty = true, saturated = true, starved = true },
-		colors = { warming_up = "yellow", faulty = "red", saturated = "orange", starved = "red" },
+		colors = { warming_up = "cyan", faulty = "red", saturated = "orange", starved = STARVED_COLOR },
 	},
 	{
 		name = "fleet",
@@ -54,7 +58,7 @@ local TILES = {
 		sprite = "item/cybersyn-combinator",
 		lines = { "volume", "starved", "in_transit", "age_1m", "age_5m", "age_30m", "age_over" },
 		tooltips = { volume = true, starved = true, in_transit = true },
-		colors = { starved = "red", age_30m = "orange", age_over = "red" },
+		colors = { starved = STARVED_COLOR, age_30m = "orange", age_over = "red" },
 	},
 	{
 		name = "flow",
@@ -402,7 +406,7 @@ local function item_row(hash, tail)
 		tooltip[#tooltip + 1] = part
 	end
 	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = { "cybersyn-gui.overview-item-click-hint" }
+	tooltip[#tooltip + 1] = { "cybersyn-gui.item-click-hint" }
 	return {
 		key = hash,
 		sprite = sprite,
@@ -675,7 +679,9 @@ function overview_tab.model(player_data)
 	local alert_rows = {}
 	for _, alert in ipairs(snapshot.alerts) do
 		if not filtered or train_passes[alert.train_id] then
-			local kind_caption = { "cybersyn-gui.overview-alert-" .. (alert.kind or 0) }
+			local kind = alert.kind
+			if not kind or kind < 1 or kind > MAX_ALERT_KIND then kind = 0 end
+			local kind_caption = { "cybersyn-gui.overview-alert-" .. kind }
 			local age = util.format_duration(now - alert.since_tick)
 			alert_rows[#alert_rows + 1] = {
 				key = alert.train_id,

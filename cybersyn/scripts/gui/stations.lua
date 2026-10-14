@@ -90,10 +90,9 @@ function stations_tab.create(widths)
 	}
 end
 
--- Pure functions of a snapshot station record (replaced, never mutated, on recollection) and the starved set,
+-- A pure function of a snapshot station record (replaced, never mutated, on recollection) and the starved set,
 -- so weak memoisation cannot make two Lua states disagree.
 local starved_memo = setmetatable({}, { __mode = "k" })
-local tiebreak_memo = setmetatable({}, { __mode = "k" })
 
 --- Active requests of `st` with no provider on any of the station's networks.
 --- @param st SnapshotStation
@@ -131,15 +130,6 @@ local function starved_hashes(st, starved)
 	return hashes
 end
 
---- Name first, id second: unique, and keeps equal keys in a readable order.
-local function tiebreak(st)
-	local key = tiebreak_memo[st]
-	if not key then
-		key = string.format("%s\0%010d", st.name_lower, st.id)
-		tiebreak_memo[st] = key
-	end
-	return key
-end
 
 --- Game ticks since the station's last delivery; last_delivery_tick counts planner ticks, not game ticks.
 --- @param st SnapshotStation
@@ -188,7 +178,8 @@ end
 
 local OFFSET = 2147483648
 
---- Sort keys; each must return only numbers or only strings (nil sorts last).
+--- Sort keys; each must return only numbers or only strings (nil sorts last). Keys are cached per station
+--- between collector passes, so they must not depend on the current tick: ages sort by their negated start tick.
 --- @type {[string]: fun(st: SnapshotStation, ctx: table): (number|string|nil)}
 local sort_keys = {
 	name = function(st) return st.name_lower end,
@@ -202,11 +193,14 @@ local sort_keys = {
 	provided_requested = function(st) return count_keys(st.provided) + count_keys(st.requested) end,
 	deliveries = function(st) return st.deliveries_total end,
 	control_signals = function(st) return st.priority end,
-	wait = function(st, ctx)
+	wait = function(st)
 		local start = st.longest_wait_start
-		return start and ctx.now - start or nil
+		return start and -start or nil
 	end,
-	last_delivery = function(st) return delivery_age(st) end,
+	last_delivery = function(st)
+		local last = st.last_delivery_tick
+		return last and -last or nil
+	end,
 }
 
 --- @param player_data PlayerData
@@ -220,24 +214,90 @@ local function status_filter(player_data)
 	return s
 end
 
---- Everything the sorted order depends on besides the data itself. The status filter is left out: it is applied
+--- Everything the filtered set depends on besides the data itself. The status filter is left out: it is applied
 --- after the cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
-local function view_sig(f, column, ascending)
+local function filter_sig(f)
 	return table.concat({
-		column, ascending and "+" or "-", f.terms and table.concat(f.terms, " ") or "", f.item or "",
-		f.network or "", f.mask, f.surface or "",
+		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
 	}, "\1")
 end
 
-local function order_sig(f, column, ascending, snapshot)
-	return view_sig(f, column, ascending) .. "\1" .. (snapshot.tick or "") .. "\1" .. (snapshot.station_count or 0)
+local function view_sig(f, column, ascending)
+	return column .. "\1" .. (ascending and "+" or "-") .. "\1" .. filter_sig(f)
+end
+
+--- Rescans every snapshot station into a fresh per-player query cache.
+local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
+	local stations = snapshot.stations
+	local starved = snapshot.starved
+	local key_fn = sort_keys[column]
+	local status, keys = {}, {}
+	local counts = { all = 0 }
+	for _, s in ipairs(STATUSES) do counts[s] = 0 end
+	local ctx = { status = status }
+	for id, st in pairs(stations) do
+		if util.station_passes(st, f) then
+			local s = station_status(st, starved)
+			status[id] = s
+			counts[s] = counts[s] + 1
+			counts.all = counts.all + 1
+			keys[id] = key_fn(st, ctx)
+		end
+	end
+	local cache = {
+		epoch = epoch, pos = pos, fsig = fsig, column = column, starved_version = snapshot.starved_version,
+		status = status, keys = keys, counts = counts, dirty = true,
+	}
+	player_data.stations_query = cache
+	return cache
+end
+
+--- Folds the station records the collector replaced or removed since the last render into the cache.
+local function apply_changes(cache, snapshot, f, ids, first, last)
+	local stations = snapshot.stations
+	local starved = snapshot.starved
+	local key_fn = sort_keys[cache.column]
+	local status, keys, counts = cache.status, cache.keys, cache.counts
+	local ctx = { status = status }
+	for i = first, last do
+		local id = ids[i]
+		local st = stations[id]
+		local old = status[id]
+		local new = st and util.station_passes(st, f) and station_status(st, starved) or nil
+		if old ~= new then
+			if old then
+				counts[old] = counts[old] - 1
+				counts.all = counts.all - 1
+			end
+			if new then
+				counts[new] = counts[new] + 1
+				counts.all = counts.all + 1
+			end
+			status[id] = new
+			if not old or not new then cache.dirty = true end
+		end
+		local key = new and key_fn(st, ctx) or nil
+		if keys[id] ~= key then
+			keys[id] = key
+			cache.dirty = true
+		end
+	end
+end
+
+--- Name first, id second. Records from a snapshot saved before `tiebreak` existed lack it until recollected.
+--- @param id uint
+local function tiebreak_of(stations, id)
+	local st = stations[id]
+	return st.tiebreak or string.format("%s\0%010d", st.name_lower, id)
 end
 
 --- Filters, classifies and sorts the snapshot stations. The status filter applies after counting so the chips
 --- always show what each status would yield.
---- Sorting 2,000 rows costs more than the rest of an update, so the order is kept until the sort, a filter or
---- the completed snapshot pass changes; in between, rows show live data in the order of the last sort, which
---- also keeps them from shuffling while a pass trickles in.
+--- Classification is cached per player and updated only for the records the collector replaced since the last
+--- render, so a render costs O(changed + page) rather than O(stations). Sorting 2,000 rows costs more than the
+--- rest of an update, so the order is kept until the sort or a filter changes, or a completed pass changed a key
+--- or the filtered set; in between, rows show live data in the order of the last sort, which also keeps them
+--- from shuffling while a pass trickles in.
 --- @param player_data PlayerData
 --- @return SnapshotStation[] rows
 --- @return {[string]: integer} counts per status over the filtered set, plus `all`
@@ -248,50 +308,46 @@ function stations_tab.query(player_data)
 	local snapshot = collector.get()
 	local stations = snapshot.stations
 	local f = util.get_filters(player_data)
-	local starved = snapshot.starved
 	local wanted = status_filter(player_data)
 	local column, ascending = util.get_sort(player_data, TAB, "name")
-	local key_fn = sort_keys[column]
-	if not key_fn then
-		column = "name"
-		key_fn = sort_keys.name
-	end
+	if not sort_keys[column] then column = "name" end
 
-	local status = {}
-	local counts = { all = 0 }
-	for _, s in ipairs(STATUSES) do counts[s] = 0 end
-	for id, st in pairs(stations) do
-		if util.station_passes(st, f) then
-			local s = station_status(st, starved)
-			status[id] = s
-			counts[s] = counts[s] + 1
-			counts.all = counts.all + 1
-		end
+	local fsig = filter_sig(f)
+	local epoch, pos = collector.log_position()
+	local cache = player_data.stations_query
+	local ids, first, last
+	if cache and cache.fsig == fsig and cache.column == column and cache.starved_version == snapshot.starved_version then
+		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
 	end
+	if ids then
+		apply_changes(cache, snapshot, f, ids, first, last)
+		cache.pos = pos
+	else
+		cache = rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
+	end
+	local status = cache.status
 	local ctx = { status = status, now = game.tick, snapshot = snapshot }
 
-	local sig = order_sig(f, column, ascending, snapshot)
-	local cache = player_data.stations_order
-	local rows = {}
-	if cache and cache.sig == sig then
-		for _, id in ipairs(cache.ids) do
-			local s = status[id]
-			if s and (not wanted or wanted == s) then
-				rows[#rows + 1] = stations[id]
-			end
-		end
-	else
-		local all = {}
-		for id in pairs(status) do all[#all + 1] = stations[id] end
-		util.sort_by(all, function(st) return key_fn(st, ctx) end, ascending, tiebreak)
-		local ids = {}
-		for i, st in ipairs(all) do
-			ids[i] = st.id
-			if not wanted or wanted == status[st.id] then rows[#rows + 1] = st end
-		end
-		player_data.stations_order = { sig = sig, ids = ids }
+	if not cache.order or cache.ascending ~= ascending or (cache.dirty and cache.sorted_tick ~= snapshot.tick) then
+		local keys = cache.keys
+		local order = {}
+		for id in pairs(status) do order[#order + 1] = id end
+		local function tiebreak(id) return tiebreak_of(stations, id) end
+		util.sort_by(order, function(id) return keys[id] end, ascending, tiebreak)
+		cache.order = order
+		cache.ascending = ascending
+		cache.sorted_tick = snapshot.tick
+		cache.dirty = false
 	end
-	return rows, counts, ctx, column, ascending
+
+	local rows = {}
+	for _, id in ipairs(cache.order) do
+		local s = status[id]
+		if s and (not wanted or wanted == s) then
+			rows[#rows + 1] = stations[id]
+		end
+	end
+	return rows, cache.counts, ctx, column, ascending
 end
 
 --- Compact so it fits a narrow column; full precision is in the tooltip.
@@ -395,6 +451,7 @@ local function decorate_slots(defs, item)
 			def.mouse_button_filter = { "left", "right" }
 			def.handler = { [defines.events.on_gui_click] = stations_tab.handle.on_item_click }
 			util.hoverable(def, SCROLL)
+			def.tooltip = { "", def.tooltip, "\n", { "cybersyn-gui.item-click-hint" } }
 			if hash == item then
 				def.style = string.gsub(def.style, "^ltnm_small_", "ltnm_selected_small_")
 			end
