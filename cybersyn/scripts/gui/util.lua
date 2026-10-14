@@ -179,7 +179,8 @@ function util.item_sprite_and_tooltip(hash)
 		local name, quality = unhash_signal(hash)
 		local signal = util.signalid_from_name(name, quality)
 		local sprite = (signal.type == "fluid" and "fluid/" or signal.type == "virtual" and "virtual-signal/" or "item/") .. name
-		if helpers.is_valid_sprite_path(sprite) then
+		-- A quality removed by a mod change still lingers in persisted hashes, and gui.add throws on it.
+		if helpers.is_valid_sprite_path(sprite) and not (quality and not prototypes.quality[quality]) then
 			local proto = util.prototype_from_name(name)
 			cached = {
 				sprite = sprite,

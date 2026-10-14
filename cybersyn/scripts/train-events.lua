@@ -3,6 +3,7 @@ local min = math.min
 local INF = math.huge
 local band = bit32.band
 local analytics = require("scripts.analytics")
+local stats = require("scripts.stats")
 
 ---@param map_data MapData
 ---@param station Station
@@ -315,6 +316,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		--complete delivery
 		-- Record delivery completion for analytics (after unloading)
 		analytics.record_delivery_complete(map_data, train_id)
+		stats.record_delivery_complete(train)
 		train.p_station_id = nil
 		train.r_station_id = nil
 		train.manifest = nil
