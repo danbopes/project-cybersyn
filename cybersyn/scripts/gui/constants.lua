@@ -148,4 +148,22 @@ if script then
 	}
 end
 
+-- Stations tab (facelift): one width per sortable column; row cells use the same widths as their headers.
+do
+	local w = constants.gui.en.stations
+	w.name = 200
+	w.station_status = 100
+	w.network = 80
+	w.provided_requested = 36 * 6
+	w.provided_requested_columns = 6
+	w.deliveries_count = 40
+	w.shipments = 36 * 4
+	w.shipments_columns = 4
+	w.deliveries = 40 + 4 + 36 * 4
+	w.control_signals = 36 * 4
+	w.control_signals_columns = 4
+	w.wait = 56
+	w.last_delivery = 84
+end
+
 return constants
