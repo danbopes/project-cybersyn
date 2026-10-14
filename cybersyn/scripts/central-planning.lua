@@ -11,6 +11,7 @@ local table_insert = table.insert
 local random = math.random
 
 local analytics = require("scripts.analytics")
+local stats = require("scripts.stats")
 
 local HASH_STRING = "|"
 
@@ -255,6 +256,7 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 		train.r_station_id = r_station_id
 		train.manifest = manifest
 		train.last_manifest_tick = map_data.total_ticks
+		stats.record_dispatch(train)
 
 		r_station.last_delivery_tick = map_data.total_ticks
 		p_station.last_delivery_tick = map_data.total_ticks

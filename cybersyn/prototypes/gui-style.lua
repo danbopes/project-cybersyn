@@ -448,3 +448,192 @@ data:extend({
 		technology_to_unlock = "cybersyn-train-network",
 	},
 })
+
+-- OVERVIEW TAB STYLES
+
+styles.cybersyn_overview_content = {
+	type = "vertical_flow_style",
+	vertical_spacing = 8,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_tile_row = {
+	type = "horizontal_flow_style",
+	horizontal_spacing = 8,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_tile = {
+	type = "frame_style",
+	parent = "inside_shallow_frame",
+	minimal_width = 210,
+	horizontally_stretchable = "on",
+	vertically_stretchable = "on",
+	vertical_flow_style = {
+		type = "vertical_flow_style",
+		vertical_spacing = 0,
+	},
+}
+
+styles.cybersyn_overview_tile_header = {
+	type = "frame_style",
+	parent = "subheader_frame",
+	horizontally_stretchable = "on",
+	left_padding = 8,
+	right_padding = 8,
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 6,
+		vertical_align = "center",
+	},
+}
+
+styles.cybersyn_overview_tile_icon = {
+	type = "image_style",
+	size = 24,
+	stretch_image_to_widget_size = true,
+}
+
+styles.cybersyn_overview_big_number = {
+	type = "label_style",
+	font = "default-large-bold",
+	font_color = { 255, 230, 192 },
+}
+
+styles.cybersyn_overview_tile_body = {
+	type = "vertical_flow_style",
+	top_padding = 6,
+	bottom_padding = 6,
+	left_padding = 10,
+	right_padding = 10,
+	vertical_spacing = 0,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_line_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 8,
+	height = 20,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_line_label = {
+	type = "label_style",
+	font_color = { 0.85, 0.85, 0.85 },
+}
+
+styles.cybersyn_overview_line_value = {
+	type = "label_style",
+	font = "default-semibold",
+	horizontal_align = "right",
+	minimal_width = 40,
+}
+
+styles.cybersyn_overview_idle_bar = {
+	type = "progressbar_style",
+	parent = "progressbar",
+	bar_width = 8,
+	horizontally_stretchable = "on",
+	minimal_width = 60,
+}
+
+styles.cybersyn_overview_hint_label = {
+	type = "label_style",
+	font_color = { 0.7, 0.7, 0.7 },
+	single_line = false,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_columns = {
+	type = "horizontal_flow_style",
+	horizontal_spacing = 12,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_column = {
+	type = "vertical_flow_style",
+	vertical_spacing = 8,
+	minimal_width = 360,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_panel_flow = {
+	type = "vertical_flow_style",
+	vertical_spacing = 0,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_panel_caption_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	height = 24,
+	left_padding = 2,
+	right_padding = 4,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_count_label = {
+	type = "label_style",
+	font_color = { 0.7, 0.7, 0.7 },
+}
+
+styles.cybersyn_overview_panel_scroll = {
+	type = "scroll_pane_style",
+	parent = "flib_naked_scroll_pane_no_padding",
+	horizontally_stretchable = "on",
+	vertically_stretchable = "on",
+	vertical_flow_style = {
+		type = "vertical_flow_style",
+		vertical_spacing = 0,
+	},
+}
+
+styles.cybersyn_overview_list_flow = {
+	type = "vertical_flow_style",
+	vertical_spacing = 2,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_empty_label = {
+	type = "label_style",
+	font_color = { 0.6, 0.6, 0.6 },
+	single_line = false,
+	padding = 8,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_row = {
+	type = "frame_style",
+	parent = "ltnm_table_row_frame_light",
+	top_padding = 2,
+	bottom_padding = 2,
+	left_padding = 4,
+	right_padding = 6,
+	minimal_height = 28,
+	horizontally_stretchable = "on",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		vertical_align = "center",
+		horizontal_spacing = 6,
+	},
+}
+
+styles.cybersyn_overview_row_icon = {
+	type = "button_style",
+	parent = "transparent_slot",
+	size = 24,
+}
+
+styles.cybersyn_overview_row_name = {
+	type = "label_style",
+	font = "default-semibold",
+	horizontally_stretchable = "on",
+	horizontally_squashable = "on",
+	maximal_width = 240,
+}
+
+styles.cybersyn_overview_row_value = {
+	type = "label_style",
+	horizontal_align = "right",
+}

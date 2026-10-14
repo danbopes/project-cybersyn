@@ -109,6 +109,7 @@
 ---@class Train
 ---@field public entity LuaTrain --should only be invalid if se_is_being_teleported is true
 ---@field public layout_id uint
+---@field public dispatch_tick uint? game tick of the last dispatch, for the Overview cycle time
 ---@field public item_slot_capacity int
 ---@field public fluid_capacity int
 ---@field public status uint
