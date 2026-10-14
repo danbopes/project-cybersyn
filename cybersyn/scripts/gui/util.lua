@@ -750,7 +750,14 @@ function util.sync_sort_header(toolbar, column, ascending)
 					child.style = style
 					if tags.width then child.style.width = tags.width end
 				end
-				if active and child.state ~= not ascending then child.state = not ascending end
+				-- An inactive arrow shows the direction a click on it would sort, not whatever it was last left at.
+				local state
+				if active then
+					state = not ascending
+				else
+					state = tags.default_state
+				end
+				if state ~= nil and child.state ~= state then child.state = state end
 			end
 		end
 	end
@@ -944,6 +951,14 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.is_manager_open = false
 	player_data.hover = nil
 	player_data.inventory_cache = nil
+	-- Render signatures only skip redundant updates and are stored per button, so they are not worth keeping in
+	-- the save while closed; a container without sigs updates every child once on the next render.
+	local states = player_data.gui_state
+	if states then
+		for _, state in pairs(states) do
+			state.sigs = nil
+		end
+	end
 
 	if player.opened == refs.manager_window then
 		player.opened = nil
