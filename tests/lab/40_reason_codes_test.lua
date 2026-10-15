@@ -63,13 +63,42 @@ local function diag_entry(case, station)
 	return t and t[case.item]
 end
 
---- Whether a `served` event for `station` was written after `seq`. The contract does not say whether
+--- The first `served` event for `station` written after `seq`, or nil. The contract does not say whether
 --- diag_events' from_seq is inclusive, so the query starts at `seq` and the filter drops it.
 local function served_after(seq, station)
 	for _, ev in ipairs(dev("diag_events", seq, 1000) or {}) do
-		if ev.seq and ev.seq > seq and kind_is(ev.kind, "served") and ev.station == station then return true end
+		if ev.seq and ev.seq > seq and kind_is(ev.kind, "served") and ev.station == station then return ev end
 	end
-	return false
+	return nil
+end
+
+--- Live unserved entries by confirmed reason over every station the run knows (the save's and the scenarios'),
+--- read through diag_unserved: what diag_counts must report at the same tick.
+local function unserved_tally()
+	local tally, seen = {}, {}
+	local function add(id)
+		if seen[id] then return end
+		seen[id] = true
+		for _, e in pairs(dev("diag_unserved", id) or {}) do
+			if e.reason then tally[e.reason] = (tally[e.reason] or 0) + 1 end
+		end
+	end
+	for _, id in ipairs(rc.before.stations) do add(id) end
+	for _, case in ipairs(rc.list) do
+		for _, st in ipairs(case.stations) do add(st.id) end
+	end
+	return tally
+end
+
+--- assert_reason (PLAN3 §6.2) for the settled reason and for one it is not; errors are kept as the result.
+local function assert_reason_pair(case, want)
+	local other = want == "NO_PROVIDER" and "R_DISABLED" or "NO_PROVIDER"
+	local function ask(code)
+		local ok, v = pcall(dev, "assert_reason", case.r_station, case.item, code)
+		if ok then return v end
+		return tostring(v)
+	end
+	return { yes = ask(want), no = ask(other), other = other }
 end
 
 local function copy(t)
@@ -143,6 +172,9 @@ local function boundary()
 					if rc.diag then
 						res.settled = copy(diag_entry(case))
 						res.counts = copy(dev("diag_counts"))
+						res.tally = unserved_tally()
+						res.asserted = assert_reason_pair(case, case.expect_settled or case.expect)
+						if case.lift_station then res.target_settled = copy(diag_entry(case, case.lift_station)) end
 					end
 					res.pre = case.pre(case)
 					res.display_failed = display_failed(case)
@@ -154,6 +186,7 @@ local function boundary()
 						res.lift_seq = rc.diag and dev("diag_state").seq or nil
 						case.lift(case)
 						case.lift_tick = tick
+						res.lift_tick = tick
 						case.phase = "lifting"
 					else
 						finish(case)
@@ -163,7 +196,8 @@ local function boundary()
 				local target = case.lift_station or case.r_station
 				res.lift_delivered = deliveries_to({ r_station = target, item = case.item }, case.lift_tick)
 				if rc.diag then
-					res.served_event = served_after(res.lift_seq, target)
+					res.served_ev = copy(served_after(res.lift_seq, target))
+					res.served_event = res.served_ev ~= nil
 					res.entry_after_lift = diag_entry(case, target) ~= nil
 				end
 				-- Two more cycles after the delivery, so a requester the lift must not serve has been evaluated again.
@@ -273,12 +307,27 @@ local function reason_checks(n, case, res)
 		lab.check(n .. ": " .. code .. " pending after the first evaluation",
 			first.pending == code or (first.pending == nil and first.reason == code), first)
 	end
+	if case.no_loss then
+		lab.check(n .. ": no priority loss counted (lo is evaluated in the same call)",
+			(first.lost_n or 0) == 0 and (settled.lost_n or 0) == 0 and settled.lost_to == nil,
+			{ first = first.lost_n, settled = settled.lost_n, to = settled.lost_to })
+	end
 	local want = case.expect_settled or code
 	lab.check(n .. ": reason " .. want .. " after the flap window", settled.reason == want, settled)
+	local asserted = res.asserted or {}
+	lab.check(n .. ": assert_reason agrees (" .. want .. " true, " .. tostring(asserted.other) .. " false)",
+		asserted.yes == true and asserted.no == false, asserted)
 	-- diag_counts counts live entries by confirmed reason (the Overview's and the HUD's number), so it is read
-	-- while the cause is still in place.
-	lab.check(n .. ": diag_counts counts " .. want .. " while it is live", ((res.counts or {})[want] or 0) >= 1,
-		res.counts)
+	-- while the cause is still in place, against the entries diag_unserved shows at that same tick.
+	local counts, tally = res.counts or {}, res.tally or {}
+	local exact = (tally[want] or 0) >= 1
+	for _, t in ipairs({ counts, tally }) do
+		for reason in pairs(t) do
+			if (counts[reason] or 0) ~= (tally[reason] or 0) then exact = false end
+		end
+	end
+	lab.check(n .. ": diag_counts equals the live entries by reason (" .. want .. " among them)", exact,
+		{ counts = counts, entries = tally })
 	local ab = case.expect_ab
 	if ab then
 		local e = ab.at == "first" and first or settled
@@ -290,6 +339,12 @@ local function reason_checks(n, case, res)
 	if case.flap then flap_checks(n, case, res) end
 	if case.lift then
 		lab.check(n .. ": served event after the cause is lifted", res.served_event == true)
+		-- PLAN3 §4.5: served carries the wait, now - first_tick, in `a`; the key failed from first_tick until the lift.
+		local ev, before = res.served_ev or {}, case.lift_station and res.target_settled or res.settled
+		local ft = before and before.first_tick
+		lab.check(n .. ": served event carries the wait since the first failure",
+			ft ~= nil and ev.a ~= nil and ev.tick ~= nil and ev.a == ev.tick - ft and ev.a >= res.lift_tick - ft,
+			{ a = ev.a, tick = ev.tick, first_tick = ft, lift_tick = res.lift_tick })
 		lab.check(n .. ": unserved entry gone after the cause is lifted", res.entry_after_lift == false)
 	end
 end
@@ -378,10 +433,8 @@ lab.suite("40_reason_codes", {
 					lab.check(n .. ": no delivery to the requester while the cause is in place", res.delivered == 0,
 						res.delivered)
 					if case.lift_station then
-						lab.check(n .. ": the higher-priority requester is served once a train arrives",
+						lab.check(n .. ": the higher-priority requester is served once the cause is lifted",
 							(res.lift_delivered or 0) == 1, res.lift_delivered)
-						lab.check(n .. ": the lower-priority requester is never served", res.delivered_end == 0,
-							res.delivered_end)
 					elseif case.lift then
 						lab.check(n .. ": served once the cause is lifted", (res.lift_delivered or 0) > 0,
 							res.lift_delivered)

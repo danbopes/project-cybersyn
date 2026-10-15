@@ -28,6 +28,8 @@
 --   expect_settled  the reason after the flap window when it is not `expect` (a broken schedule makes the
 --               planner drop the train; a lost priority is a counter on top of the requester's own reason).
 --   kind        "reason" (default) or "counter" (LOST_PRIORITY: lost_n/lost_to, not a reason).
+--   no_loss     the requester must not count a priority loss (LOST_PRIORITY_NO_TRAIN: lo is evaluated, and fails,
+--               in the same call as hi).
 --   expect_ab   {a, b} the payload numbers of the settled entry (PLAN3 §4.5 B1); nil = any; `unordered` = either
 --               order; `at = "first"` checks the first sample instead.
 --   expect_rej  the TRAIN_FILTERED cause bucket that must count the rejection (TRAIN_MASK, TRAIN_MANUAL,
@@ -44,16 +46,18 @@ cases = {
 	X_MAX = 330,
 	ITEM = "iron-plate",
 	ITEM2 = "copper-plate",
-	-- Station slots (stop x) from the depot westward.
+	ITEM3 = "steel-plate",
+	-- Station slots (stop x) from the depot westward. A depot holds one train, which parks east of its stop.
 	X_D1 = 280,
 	X_D2 = 240,
+	X_D3 = 210,
 	X_P = { 200, 180, 160 },
 	X_R = { 120, 100, 80 },
 	ORDER = {
 		"CONTROL", "NO_PROVIDER", "R_AT_LIMIT", "R_DISABLED", "R_IS_PROVIDING", "LOST_PRIORITY", "P_AT_LIMIT",
 		"P_IS_REQUESTING", "MASK_MISMATCH", "NO_SURFACE_ROUTE", "P_BELOW_THRESHOLD", "NO_TRAINS_ON_NETWORK",
 		"TRAIN_FILTERED_MANUAL", "TRAIN_FILTERED_MASK", "TRAIN_FILTERED_SCHEDULE", "CAPACITY", "R_LAYOUT",
-		"P_LAYOUT", "ALL_IN_INTERRUPT", "LOST_PRIORITY_LO_FIRST",
+		"P_LAYOUT", "ALL_IN_INTERRUPT", "LOST_PRIORITY_LO_FIRST", "LOST_PRIORITY_NO_TRAIN",
 	},
 	-- One unused network name per scenario; signal-A and signal-B belong to the save.
 	NETWORKS = {
@@ -63,7 +67,7 @@ cases = {
 		P_BELOW_THRESHOLD = "signal-M", NO_TRAINS_ON_NETWORK = "signal-N", TRAIN_FILTERED_MANUAL = "signal-O",
 		TRAIN_FILTERED_MASK = "signal-P", TRAIN_FILTERED_SCHEDULE = "signal-Q", CAPACITY = "signal-R",
 		R_LAYOUT = "signal-S", P_LAYOUT = "signal-T", ALL_IN_INTERRUPT = "signal-U",
-		LOST_PRIORITY_LO_FIRST = "signal-V",
+		LOST_PRIORITY_LO_FIRST = "signal-V", LOST_PRIORITY_NO_TRAIN = "signal-W",
 	},
 }
 
@@ -261,6 +265,16 @@ function cases.trains_ready(case, ids)
 	return true
 end
 
+--- @param ids integer[] indices into case.trains
+--- @return boolean every listed train is dispatched (on its way to the provider) with `field` == `station`
+function cases.dispatched(case, ids, field, station)
+	for _, k in ipairs(ids) do
+		local t = read("trains", case.trains[k])
+		if not (t and t.status == STATUS_TO_P and t[field] == station) then return false end
+	end
+	return true
+end
+
 --- Count of `item` the station's last poll saw on its combinator input (negative = requested), or nil.
 function cases.polled(station_id, item)
 	local sigs = read("stations", station_id, "stops", 0, "tick_signals")
@@ -432,45 +446,51 @@ function cases.NO_PROVIDER(ctx)
 	return finish(case)
 end
 
---- Train limit 1 with one delivery inbound (a train held at its depot), then a second item requested.
+--- Train limit 2 with two deliveries inbound (both trains held at their depots); then the limit drops to 1 and a
+--- third item is requested while a third train waits. Two deliveries against a limit of one keep the payload's
+--- deliveries and limit apart. The two held items come from two providers: one provider would put both on one
+--- train (create_manifest fills a train with everything the requester wants from that provider).
 function cases.R_AT_LIMIT(ctx)
 	local case = base("R_AT_LIMIT", ctx)
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000, cases.ITEM2) })
+	case.p3 = cases.station(case, { name = sname(case, "p3"), x = cases.X_P[3], bits = PR_PROVIDE + ALLOW_ALL,
+		signals = provide(case, 5000, cases.ITEM3) })
 	case.p2 = cases.station(case, { name = sname(case, "p2"), x = cases.X_P[2], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000) })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL,
-		limit = 1 })
+		limit = 2 })
+	case.d2 = cases.depot(case, cases.X_D2, sname(case, "depot2"))
+	case.t2 = cases.train(case, cases.X_D2 + 6, case.d2)
 	case.r_station, case.p_station = case.r.id, case.p2.id
-	case.expect_ab = { 1, 1 }
+	case.expect_ab = { 2, 1 }
+	local held = { { cases.ITEM2, -2000 }, { cases.ITEM3, -2000 }, { THRESHOLD, 1000, "virtual" } }
 	case.stages = {
 		{
 			when = function(c) return cases.trains_ready(c) end,
 			run = function(c)
 				cases.unfuel(c.t1)
-				cases.set_signals(c.r, { { cases.ITEM2, -2000 }, { THRESHOLD, 1000, "virtual" } })
+				cases.unfuel(c.t2)
+				cases.set_signals(c.r, held)
 			end,
 		},
 		{
-			when = function(c)
-				local t = cases.ctrain(c.trains[1])
-				return t and t.status == STATUS_TO_P and t.r_station_id == c.r_station
-			end,
+			when = function(c) return cases.dispatched(c, { 1, 2 }, "r_station_id", c.r_station) end,
 			run = function(c)
-				c.d2 = cases.depot(c, cases.X_D2, sname(c, "depot2"))
-				cases.promote({ c.d2.id })
-				c.t2 = cases.train(c, cases.X_D2 + 6, c.d2)
+				c.r.stop.trains_limit = 1
+				c.d3 = cases.depot(c, cases.X_D3, sname(c, "depot3"))
+				cases.promote({ c.d3.id })
+				c.t3 = cases.train(c, cases.X_D3 + 6, c.d3)
 			end,
 		},
-		arm_when_ready(case, { { cases.ITEM2, -2000 }, { case.item, -2000 }, { THRESHOLD, 1000, "virtual" } }, { 2 }),
+		arm_when_ready(case, { held[1], held[2], { case.item, -2000 }, held[3] }, { 3 }),
 	}
 	case.pre = function(c)
 		local out = common_pre(c)
 		local st = read("stations", c.r_station)
-		check(out, "requester trains_limit is 1", st and st.trains_limit == 1, st and st.trains_limit)
-		check(out, "one delivery inbound (deliveries_total 1)", st and st.deliveries_total == 1,
-			st and st.deliveries_total)
-		check(out, "a second train is available", cases.trains_ready(c, { c.trains[2] }))
+		check(out, "requester at 2 deliveries with trains_limit 1", st and st.trains_limit == 1 and
+			st.deliveries_total == 2, st and { limit = st.trains_limit, total = st.deliveries_total })
+		check(out, "a third train is available", cases.trains_ready(c, { c.trains[3] }))
 		return out
 	end
 	return finish(case)
@@ -539,14 +559,15 @@ function cases.R_IS_PROVIDING(ctx)
 	return finish(case)
 end
 
---- Two requesters of the same item, priorities 10 and 0, on a network with no train. Every cycle the planner
---- picks "hi", fails it (no train) and only then evaluates "lo", so the item's requester loop ends without a
---- candidate (the r591 return, where PLAN3 §4.5 records requester-side skips) with lo having lost to hi once.
---- `lo_first` puts lo ahead of hi in the polling queue: the planner then picks lo first and replaces it with hi
---- instead of skipping lo, and the loss must be counted all the same. Lift: a train arrives; hi is served, and
---- the provider's stock (one delivery) is gone, so lo never is.
+--- Two requesters of one item and the network's only provider, which has 2,000: "hi" (`cybersyn-priority` 10)
+--- asks 3,000/3,000 and "lo" (0) 2,000/1,000, and a train is available. Every call evaluates hi first; the provider
+--- is below hi's threshold, so hi's evaluation locks it (the P_BELOW_THRESHOLD `table_remove`, which keeps the stock
+--- for hi) and lo, evaluated next in the same call, finds no provider left, although that provider and train
+--- would serve it on its own. The call then ends at the r591 return. That is the starvation a priority causes.
+--- `lo_first` puts lo ahead of hi in the polling queue: the planner then picks lo first and replaces it with hi.
+--- Lift: the provider goes to 5,000 and hi is served.
 local function lost_priority(name, ctx, lo_first)
-	local case = base(name, ctx, { no_train = true })
+	local case = base(name, ctx)
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 2000) })
 	local function requester(role, x)
@@ -564,7 +585,58 @@ local function lost_priority(name, ctx, lo_first)
 	case.lift_station = case.hi.id
 	case.kind = "counter"
 	case.expect = "LOST_PRIORITY"
-	case.expect_settled = "NO_TRAINS_ON_NETWORK"
+	-- lo's own reason is the lock that starved it: the provider's stock against the threshold it is kept for.
+	case.expect_settled = "P_BELOW_THRESHOLD"
+	case.expect_ab = { 2000, 3000 }
+	case.stages = {
+		{
+			when = function(c) return cases.trains_ready(c) end,
+			run = function(c)
+				cases.set_signals(c.hi, request(c, -3000, 3000, { { PRIORITY, 10, "virtual" } }))
+				cases.set_signals(c.r, request(c, -2000, 1000))
+			end,
+		},
+	}
+	case.pre = function(c)
+		local out = common_pre(c)
+		local hi = read("stations", c.hi.id)
+		local lo = read("stations", c.r_station)
+		check(out, "requester priorities 10 and 0", hi and lo and hi.priority == 10 and lo.priority == 0,
+			{ hi = hi and hi.priority, lo = lo and lo.priority })
+		local hi_i, lo_i = cases.poll_index(c.hi.id), cases.poll_index(c.r_station)
+		check(out, (lo_first and "lo" or "hi") .. " is polled first",
+			hi_i ~= nil and lo_i ~= nil and (lo_i < hi_i) == (lo_first == true), { hi = hi_i, lo = lo_i })
+		local pc = cases.polled(c.p_station, c.item)
+		check(out, "the provider has less than hi's threshold", pc ~= nil and hi ~= nil and pc < hi.r_threshold,
+			{ offered = pc, hi = hi and hi.r_threshold })
+		check(out, "a train is available", cases.trains_ready(c))
+		return out
+	end
+	case.lift = function(c)
+		cases.set_signals(c.p, provide(c, 5000))
+	end
+	return finish(case)
+end
+
+function cases.LOST_PRIORITY(ctx) return lost_priority("LOST_PRIORITY", ctx, false) end
+
+function cases.LOST_PRIORITY_LO_FIRST(ctx) return lost_priority("LOST_PRIORITY_LO_FIRST", ctx, true) end
+
+--- The same two requesters (2,000/2,000 each) on a network with no train: every call picks hi, fails it for want
+--- of a train, then picks lo, which fails for the same reason of its own. lo is evaluated, so it lost nothing to
+--- hi, and a core that counts the skip at the priority goto as a loss fails here. Lift: a train arrives; hi is
+--- served.
+function cases.LOST_PRIORITY_NO_TRAIN(ctx)
+	local case = base("LOST_PRIORITY_NO_TRAIN", ctx, { no_train = true })
+	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
+		signals = provide(case, 2000) })
+	case.hi = cases.station(case, { name = sname(case, "hi"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
+	case.r = cases.station(case, { name = sname(case, "lo"), x = cases.X_R[2], bits = PR_REQUEST + ALLOW_ALL })
+	case.r_station, case.p_station = case.r.id, case.p.id
+	case.winner = case.hi.id
+	case.lift_station = case.hi.id
+	case.expect = "NO_TRAINS_ON_NETWORK"
+	case.no_loss = true
 	case.expect_ab = { 0, 0 }
 	case.stages = {
 		{
@@ -581,10 +653,7 @@ local function lost_priority(name, ctx, lo_first)
 		local lo = read("stations", c.r_station)
 		check(out, "requester priorities 10 and 0", hi and lo and hi.priority == 10 and lo.priority == 0,
 			{ hi = hi and hi.priority, lo = lo and lo.priority })
-		local hi_i, lo_i = cases.poll_index(c.hi.id), cases.poll_index(c.r_station)
-		check(out, (lo_first and "lo" or "hi") .. " is polled first",
-			hi_i ~= nil and lo_i ~= nil and (lo_i < hi_i) == (lo_first == true), { hi = hi_i, lo = lo_i })
-		check(out, "no train on the network", read("available_trains", c.network) == nil)
+		check(out, "no train on the network", read("available_trains", c.network) == nil and #c.trains == 0)
 		return out
 	end
 	case.lift = function(c)
@@ -593,46 +662,46 @@ local function lost_priority(name, ctx, lo_first)
 	return finish(case)
 end
 
-function cases.LOST_PRIORITY(ctx) return lost_priority("LOST_PRIORITY", ctx, false) end
-
-function cases.LOST_PRIORITY_LO_FIRST(ctx) return lost_priority("LOST_PRIORITY_LO_FIRST", ctx, true) end
-
---- The only provider is at its train limit (1, a pickup in progress) while a requester waits.
+--- The only provider has two pickups in progress (both trains held at their depots), then its train limit drops
+--- from 2 to 1 while a third train waits and a third requester asks.
 function cases.P_AT_LIMIT(ctx)
 	local case = base("P_AT_LIMIT", ctx)
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
-		signals = provide(case, 10000), limit = 1 })
+		signals = provide(case, 10000), limit = 2 })
 	case.r1 = cases.station(case, { name = sname(case, "r1"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
-	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[2], bits = PR_REQUEST + ALLOW_ALL })
+	case.r2 = cases.station(case, { name = sname(case, "r2"), x = cases.X_R[2], bits = PR_REQUEST + ALLOW_ALL })
+	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[3], bits = PR_REQUEST + ALLOW_ALL })
+	case.d2 = cases.depot(case, cases.X_D2, sname(case, "depot2"))
+	case.t2 = cases.train(case, cases.X_D2 + 6, case.d2)
 	case.r_station, case.p_station = case.r.id, case.p.id
-	case.expect_ab = { 1, 1 }
+	case.expect_ab = { 2, 1 }
 	case.stages = {
 		{
 			when = function(c) return cases.trains_ready(c) end,
 			run = function(c)
 				cases.unfuel(c.t1)
+				cases.unfuel(c.t2)
 				cases.set_signals(c.r1, request(c, -2000, 1000))
+				cases.set_signals(c.r2, request(c, -2000, 1000))
 			end,
 		},
 		{
-			when = function(c)
-				local t = cases.ctrain(c.trains[1])
-				return t and t.status == STATUS_TO_P and t.r_station_id == c.r1.id
-			end,
+			when = function(c) return cases.dispatched(c, { 1, 2 }, "p_station_id", c.p_station) end,
 			run = function(c)
-				c.d2 = cases.depot(c, cases.X_D2, sname(c, "depot2"))
-				cases.promote({ c.d2.id })
-				c.t2 = cases.train(c, cases.X_D2 + 6, c.d2)
+				c.p.stop.trains_limit = 1
+				c.d3 = cases.depot(c, cases.X_D3, sname(c, "depot3"))
+				cases.promote({ c.d3.id })
+				c.t3 = cases.train(c, cases.X_D3 + 6, c.d3)
 			end,
 		},
-		arm_when_ready(case, request(case, -2000, 1000), { 2 }),
+		arm_when_ready(case, request(case, -2000, 1000), { 3 }),
 	}
 	case.pre = function(c)
 		local out = common_pre(c)
 		local st = read("stations", c.p_station)
-		check(out, "provider at its train limit (1 of 1)", st and st.trains_limit == 1 and st.deliveries_total == 1,
-			st and { limit = st.trains_limit, total = st.deliveries_total })
-		check(out, "a second train is available", cases.trains_ready(c, { c.trains[2] }))
+		check(out, "provider at 2 deliveries with trains_limit 1", st and st.trains_limit == 1 and
+			st.deliveries_total == 2, st and { limit = st.trains_limit, total = st.deliveries_total })
+		check(out, "a third train is available", cases.trains_ready(c, { c.trains[3] }))
 		return out
 	end
 	return finish(case)
@@ -755,19 +824,37 @@ function cases.P_BELOW_THRESHOLD(ctx)
 	return finish(case)
 end
 
---- A provider and a requester on a network whose depot has no train.
+--- The network's only train is out on another delivery (dispatched to a second requester and held at its
+--- depot), so the network has no available train (`trains == nil` in the planner) while its fleet is one train.
 function cases.NO_TRAINS_ON_NETWORK(ctx)
-	local case = base("NO_TRAINS_ON_NETWORK", ctx, { no_train = true })
-	case.expect_ab = { 0, 0 }
+	local case = base("NO_TRAINS_ON_NETWORK", ctx)
+	case.expect_ab = { 0, 1 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
-		signals = provide(case, 5000) })
+		signals = { { case.item, 5000 }, { cases.ITEM2, 5000 } } })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
+	case.r2 = cases.station(case, { name = sname(case, "r2"), x = cases.X_R[2], bits = PR_REQUEST + ALLOW_ALL })
 	case.r_station, case.p_station = case.r.id, case.p.id
-	case.stages = { arm_when_ready(case, request(case, -2000, 1000)) }
+	case.stages = {
+		{
+			when = function(c) return cases.trains_ready(c) end,
+			run = function(c)
+				cases.unfuel(c.t1)
+				cases.set_signals(c.r2, { { cases.ITEM2, -2000 }, { THRESHOLD, 1000, "virtual" } })
+			end,
+		},
+		{
+			when = function(c) return cases.dispatched(c, { 1 }, "r_station_id", c.r2.id) end,
+			run = function(c) cases.set_signals(c.r, request(c, -2000, 1000)) end,
+		},
+	}
 	case.pre = function(c)
 		local out = common_pre(c)
 		local avail = read("available_trains", c.network)
 		check(out, "no train available on the network", avail == nil, avail)
+		local t = cases.ctrain(c.trains[1])
+		check(out, "the network's one train is out on another delivery",
+			#c.trains == 1 and t ~= nil and t.network_name == c.network and t.status == STATUS_TO_P and
+			t.r_station_id == c.r2.id, t and { network = t.network_name, status = t.status })
 		return out
 	end
 	return finish(case)
@@ -879,6 +966,7 @@ function cases.CAPACITY(ctx)
 		check(out, "largest train carries 40 stacks, request needs 50",
 			t and t.item_slot_capacity == 40 and read("stations", c.r_station, "r_threshold") == 5000,
 			t and t.item_slot_capacity)
+		check(out, "the train is available", cases.trains_ready(c))
 		return out
 	end
 	return finish(case)
@@ -899,12 +987,14 @@ local function layout_case(name, ctx, r_open, p_open)
 		local p = read("stations", c.p_station)
 		local t = cases.ctrain(c.trains[1])
 		local function accepts(st)
-			return st and (st.allows_all_trains or (t and st.accepted_layouts[t.layout_id])) and true or false
+			return st and (st.allows_all_trains or st.accepted_layouts[t.layout_id]) and true or false
 		end
+		-- Without a train "rejects" would hold trivially and the situation would be NO_TRAINS_ON_NETWORK.
+		check(out, "the train is available", t ~= nil and cases.trains_ready(c))
 		check(out, (r_open and "requester accepts" or "requester rejects") .. " the train's layout",
-			accepts(r) == r_open)
+			t ~= nil and accepts(r) == r_open)
 		check(out, (p_open and "provider accepts" or "provider rejects") .. " the train's layout",
-			accepts(p) == p_open)
+			t ~= nil and accepts(p) == p_open)
 		return out
 	end
 	return finish(case)
