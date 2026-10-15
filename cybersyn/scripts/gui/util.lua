@@ -1,8 +1,13 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
+local rich_name = require("scripts.gui.rich-name")
 
 local util = {}
+
+--- Leading icons, text and trailing icons of a rich-text station name (see scripts/gui/rich-name.lua).
+--- @type fun(name: string): RichNameParts
+util.parse_rich_name = rich_name.parse
 
 --- Create a flying text at the player's cursor with an error sound.
 --- @param player LuaPlayer
