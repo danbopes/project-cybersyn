@@ -1,5 +1,5 @@
--- B1 (PLAN3 §4.6): an entity GUI opened from a link of an unpinned manager must not close it, and closing that GUI
--- hands player.opened back to the manager window (at once, or on the next manager tick when something still holds it).
+-- B1 (PLAN3 §4.6): an entity GUI opened from a link of an unpinned manager must not close it, and once that GUI and
+-- any GUI that replaced it have closed, the manager tick hands player.opened back to the manager window.
 -- B5: a train without a locomotive gets an error instead of a silent no-op.
 
 local H = require("harness")
@@ -11,16 +11,25 @@ local function load()
 	return manager_gui, require("scripts.gui.manager"), require("scripts.gui.util")
 end
 
---- A player whose `opened` can be made to refuse writes, as the engine may while it is closing a GUI.
+--- A player whose opened_gui_type follows `opened` the way the engine reports it; `state.gui_type` stands in for GUIs
+--- such as the trains overview, which read as opened == nil.
 local function new_player(index)
-	local state = { opened = nil, refuse = false }
+	local state = { opened = nil, gui_type = nil }
 	local player = setmetatable({
 		index = index, valid = true, _state = state, gui = { screen = {} }, set_shortcut_toggled = function() end,
 	}, {
-		__index = function(_, k) if k == "opened" then return state.opened end end,
+		__index = function(_, k)
+			if k == "opened" then return state.opened end
+			if k == "opened_gui_type" then
+				if state.gui_type then return state.gui_type end
+				local o = state.opened
+				if o == nil then return defines.gui_type.none end
+				return rawget(o, "_kids") and defines.gui_type.custom or defines.gui_type.entity
+			end
+		end,
 		__newindex = function(t, k, v)
 			if k == "opened" then
-				if not state.refuse then state.opened = v end
+				state.opened = v
 			else
 				rawset(t, k, v)
 			end
@@ -38,127 +47,128 @@ local function setup(pinning)
 	storage.manager = { players = { [1] = pd } }
 	player.opened = window
 	game.tick = 500
+	-- Paused, the manager tick neither collects nor renders: only the hand-back is under test.
+	pd.paused = true
+	pd.surface_count = #game.surfaces
 	return manager_gui, manager, util, player, pd, window
+end
+
+--- util.open_entity as the engine runs it: taking player.opened closes the unpinned manager in the same tick.
+local function link(manager, util, player, pd, entity)
+	util.open_entity(player, pd, entity)
+	manager.handle.manager_closed_by_game(player, pd, pd.refs)
 end
 
 local stop = { valid = true, name = "train-stop", unit_number = 77 }
 local comb = { valid = true, name = COMBINATOR_NAME, unit_number = 78 }
+local chest = { valid = true, name = "wooden-chest", unit_number = 79 }
 
 test("open_entity: records the target and opens it", function()
 	local _, _, util, player, pd = setup()
 	util.open_entity(player, pd, stop)
-	assert_eq(pd.return_to, { entity = stop, unit_number = 77, tick = 500 })
+	assert_eq(pd.return_to, { entity = stop, tick = 500 })
 	assert_same(player.opened, stop)
 end)
 
 test("closed_by_game: the manager stays open while its own link takes player.opened", function()
 	local _, manager, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
-	manager.handle.manager_closed_by_game(player, pd, pd.refs)
+	link(manager, util, player, pd, stop)
 	assert_true(pd.is_manager_open)
+	assert_true(pd.restore_opened)
+	assert_nil(pd.return_to)
+	assert_same(player.opened, stop)
 end)
 
-test("on_gui_closed: closing the linked GUI gives player.opened back to the unpinned manager", function()
-	local manager_gui, _, util, player, pd, window = setup()
+test("closed_by_game: a close in a later tick is the player's and closes the window", function()
+	local _, manager, util, player, pd = setup()
 	util.open_entity(player, pd, stop)
+	game.tick = 501
+	player.opened = nil
+	manager.handle.manager_closed_by_game(player, pd, pd.refs)
+	assert_false(pd.is_manager_open)
+end)
+
+test("on_gui_closed: never writes player.opened, the manager tick hands it back", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, stop)
 	game.tick = 900
 	player.opened = nil
-	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
-	assert_same(player.opened, window)
-	assert_nil(pd.return_to)
-	assert_nil(pd.restore_opened)
-end)
-
-test("on_gui_closed: a refused write is retried by the next manager tick", function()
-	local manager_gui, manager, util, player, pd, window = setup()
-	util.open_entity(player, pd, stop)
-	player._state.refuse = true
-	player._state.opened = nil
 	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
 	assert_nil(player.opened)
-	assert_true(pd.restore_opened)
-	player._state.refuse = false
-	assert_true(manager.restore_opened(player, pd))
-	assert_same(player.opened, window)
-end)
-
-test("closed_by_game: the engine releasing player.opened again in the restoring tick defers instead of closing", function()
-	local manager_gui, manager, util, player, pd, window = setup()
-	util.open_entity(player, pd, stop)
-	game.tick = 900
-	player.opened = nil
-	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
-	assert_same(player.opened, window)
-	-- Measured with the locomotive GUI: closing it hands player.opened back, then the engine clears it in that tick.
-	player.opened = nil
-	manager.handle.manager_closed_by_game(player, pd, pd.refs)
-	assert_true(pd.is_manager_open)
-	assert_true(pd.restore_opened)
-	game.tick = 960
-	-- Paused, the manager tick neither collects nor renders: only the hand-back is under test.
-	pd.paused = true
-	pd.surface_count = #game.surfaces
 	manager_gui.tick(storage)
 	assert_same(player.opened, window)
 	assert_nil(pd.restore_opened)
-	-- A later close is the player's: it closes the window.
 	game.tick = 1000
 	player.opened = nil
 	manager.handle.manager_closed_by_game(player, pd, pd.refs)
 	assert_false(pd.is_manager_open)
 end)
 
-test("on_gui_closed: another GUI still open waits; the manager comes back when it closes", function()
-	local manager_gui, manager, util, player, pd, window = setup()
-	util.open_entity(player, pd, comb)
-	-- The combinator's own frame replaces its entity GUI: the entity GUI closes while the frame holds player.opened.
-	local frame = H.element({ name = COMBINATOR_NAME, tags = { id = 78 } })
-	player.opened = frame
-	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = comb })
-	assert_same(player.opened, frame)
+test("tick: waits while the linked GUI is still open", function()
+	local manager_gui, manager, util, player, pd = setup()
+	link(manager, util, player, pd, stop)
+	manager_gui.tick(storage)
+	assert_same(player.opened, stop)
 	assert_true(pd.restore_opened)
-	assert_false(manager.restore_opened(player, pd))
+end)
+
+test("tick: a GUI that replaced the linked one is waited out", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, stop)
+	-- Opening a chest from the stop GUI: the stop closes, the chest takes player.opened.
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
+	player.opened = chest
+	manager_gui.tick(storage)
+	assert_same(player.opened, chest)
+	assert_true(pd.restore_opened)
 	player.opened = nil
+	manager_gui.tick(storage)
+	assert_same(player.opened, window)
+	assert_nil(pd.restore_opened)
+end)
+
+test("tick: the combinator's own frame replacing its entity GUI is waited out", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, comb)
+	local frame = H.element({ name = COMBINATOR_NAME, tags = { id = 78 } })
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = comb })
+	player.opened = frame
+	manager_gui.tick(storage)
+	assert_same(player.opened, frame)
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, element = frame })
+	player.opened = nil
+	manager_gui.tick(storage)
+	assert_same(player.opened, window)
+end)
+
+test("restore_opened: a GUI that reads as opened == nil still counts as open", function()
+	local _, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, stop)
+	player.opened = nil
+	player._state.gui_type = defines.gui_type.trains
+	assert_false(manager.restore_opened(player, pd))
+	assert_nil(player.opened)
+	player._state.gui_type = nil
 	assert_true(manager.restore_opened(player, pd))
 	assert_same(player.opened, window)
 end)
 
-test("on_gui_closed: the combinator frame of the linked combinator counts as the linked GUI", function()
-	local manager_gui, _, util, player, pd, window = setup()
-	util.open_entity(player, pd, comb)
+test("restore_opened: pinned or closed managers are left alone", function()
+	local _, manager, util, player, pd = setup()
+	link(manager, util, player, pd, stop)
 	player.opened = nil
-	local frame = H.element({ name = COMBINATOR_NAME, tags = { id = 78 } })
-	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, element = frame })
-	assert_same(player.opened, window)
-	assert_nil(pd.return_to)
-end)
-
-test("on_gui_closed: unrelated GUIs, pinned or closed managers are left alone", function()
-	local manager_gui, _, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
-	player.opened = nil
-	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = comb })
+	pd.pinning = true
+	assert_true(manager.restore_opened(player, pd))
 	assert_nil(player.opened)
-	assert_same(pd.return_to.entity, stop)
-
-	local manager_gui2, _, util2, player2, pd2 = setup(true)
-	util2.open_entity(player2, pd2, stop)
-	player2.opened = nil
-	manager_gui2.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
-	assert_nil(player2.opened)
-
-	local manager_gui3, _, util3, player3, pd3 = setup()
-	util3.open_entity(player3, pd3, stop)
-	pd3.is_manager_open = false
-	player3.opened = nil
-	manager_gui3.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
-	assert_nil(player3.opened)
+	pd.pinning = false
+	pd.is_manager_open = false
+	assert_true(manager.restore_opened(player, pd))
+	assert_nil(player.opened)
 end)
 
 test("close_manager_window: forgets a pending return", function()
-	local _, _, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
-	pd.restore_opened = true
+	local _, manager, util, player, pd = setup()
+	link(manager, util, player, pd, stop)
 	pd.refs.manager_window.visible = true
 	util.close_manager_window(player, pd, pd.refs, true)
 	assert_nil(pd.return_to)

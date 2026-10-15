@@ -990,12 +990,12 @@ end
 
 --- Opens an entity's GUI from a manager link. Taking player.opened closes an unpinned manager, so the link records
 --- what it opened; the manager stays on screen (manager.handle.manager_closed_by_game) and takes player.opened back
---- when that GUI closes (manager_gui.on_gui_closed).
+--- on a manager tick after that GUI, and any GUI that replaced it, has closed (manager.restore_opened).
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param entity LuaEntity
 function util.open_entity(player, player_data, entity)
-	player_data.return_to = { entity = entity, unit_number = entity.unit_number, tick = game.tick }
+	player_data.return_to = { entity = entity, tick = game.tick }
 	player.opened = entity
 end
 
@@ -1011,7 +1011,6 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.is_manager_open = false
 	player_data.return_to = nil
 	player_data.restore_opened = nil
-	player_data.restored_tick = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.stations_query = nil

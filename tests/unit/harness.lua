@@ -126,7 +126,7 @@ defines = {
 	},
 	mouse_button_type = { none = 1, left = 2, right = 4, middle = 8 },
 	alert_type = { custom = 1, train_out_of_fuel = 2 },
-	gui_type = { none = 0, entity = 1, custom = 16 },
+	gui_type = { none = 0, entity = 1, trains = 7, custom = 16 },
 	relative_gui_type = { train_stop_gui = 1, train_gui = 2 },
 	print_sound = { always = 0, never = 1, use_player_settings = 2 },
 	train_type = { cargo_wagon = 1, fluid_wagon = 2 },
