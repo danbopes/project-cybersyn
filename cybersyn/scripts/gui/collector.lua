@@ -1,5 +1,5 @@
 -- Incremental snapshot of everything the manager renders, so render code never walks entities or reads
--- circuit signals itself. It only runs while a manager window is open and unpaused.
+-- circuit signals itself. It only runs while a manager window is open and unpaused (or paused before its first data).
 -- Aggregates (inventory_all, starved, station counts) are double-buffered and swap when a pass completes.
 -- Station and train records are refilled in place as the pass reaches them, reusing their subtables: a second full
 -- copy would roughly double the memory peak (measured ~7.5 MB per copy on a 2,030-station save), and allocating
@@ -1013,18 +1013,19 @@ function collector.collecting()
 	return b.i / #b.ids
 end
 
---- True when any open manager is unpaused.
+--- True when any open manager is unpaused, or paused but still waiting for its first data: pausing freezes what a
+--- window shows, and a window reopened paused shows nothing until one pass completes.
 --- @return boolean
 function collector.wanted()
 	for _, player_data in pairs(storage.manager.players) do
-		if player_data.is_manager_open and not player_data.paused then
+		if player_data.is_manager_open and (not player_data.paused or not player_data.rendered_snapshot_tick) then
 			return true
 		end
 	end
 	return false
 end
 
---- One manager update's worth of collection; no-op unless a manager is open and unpaused.
+--- One manager update's worth of collection; no-op unless collector.wanted().
 --- @return boolean ran
 function collector.tick()
 	local manager = storage.manager

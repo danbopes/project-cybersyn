@@ -285,7 +285,7 @@ function manager_gui.tick(storage)
 				if v.surface_count ~= surface_count then
 					manager.rebuild_surface_dropdown(v)
 				end
-				if v.paused then
+				if v.paused and (v.rendered_snapshot_tick or not collector.get().tick) then
 					manager.update_status(v)
 				else
 					manager.render(player, v)

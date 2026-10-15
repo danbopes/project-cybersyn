@@ -198,10 +198,10 @@ function manager.update_status(player_data)
 	label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
 	local caption
 	local collecting = collector.collecting()
-	if player_data.paused then
-		caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
-	elseif collecting then
+	if collecting and not (player_data.paused and data_tick) then
 		caption = { "cybersyn-gui.collecting-progress", tostring(math.floor(collecting * 100)) }
+	elseif player_data.paused then
+		caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
 	else
 		caption = { "cybersyn-gui.updated-ago", age }
 		local hover = player_data.hover

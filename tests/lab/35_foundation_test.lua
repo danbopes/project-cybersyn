@@ -77,6 +77,38 @@ lab.suite("35_foundation", {
 		lab.dev("collect")
 	end,
 
+	-- Paused, closed and reopened: the window still collects once and shows that data, then stays frozen.
+	function(ctx)
+		remote.call(D, "set_paused", pi, true)
+		remote.call(D, "close", pi)
+		remote.call(D, "select_tab", pi, "overview")
+		remote.call(D, "open", pi, true)
+		local status = remote.call(D, "status", pi)
+		lab.check("paused reopen: caption says Collecting", caption_key(status) == "cybersyn-gui.collecting-progress", status.caption)
+		local updates = 0
+		while remote.call(D, "status", pi).snapshot_tick == nil and updates < 20 do
+			remote.call(D, "tick", 1)
+			updates = updates + 1
+		end
+		lab.check("paused reopen: the first pass completes", updates >= 1 and updates <= 3, updates)
+		remote.call(D, "tick", 1)
+		local tiles = remote.call(D, "dump", pi, "overview").rendered_tiles
+		lab.check("paused reopen: overview tiles show data", tiles.stations.headline ~= "–" and tiles.fleet.headline ~= "–", tiles)
+		status = remote.call(D, "status", pi)
+		lab.check("paused reopen: caption back to Paused", caption_key(status) ~= "cybersyn-gui.collecting-progress", status.caption)
+		local before = lab.dev("summary").tick
+		remote.call(D, "tick", 3)
+		lab.check("paused reopen: no further collection once data is shown", lab.dev("summary").tick == before, before)
+		lab.wait(1)
+	end,
+	function(ctx)
+		remote.call(D, "select_tab", pi, "stations")
+		remote.call(D, "set_paused", pi, false)
+		remote.call(D, "tick", 1)
+		local d = remote.call(D, "dump", pi, "stations")
+		lab.check("paused reopen: unpaused, stations rows show", d.total == lab.dev("summary").station_count, d.total)
+	end,
+
 	-- B2: Saturated has one meaning (deliveries at a finite limit). A station at its limit is saturated; one with a
 	-- delivery but limit 0 is disabled, which the old Overview tile still counted as saturated.
 	function(ctx)

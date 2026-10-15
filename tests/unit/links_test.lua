@@ -47,8 +47,9 @@ local function setup(pinning)
 	storage.manager = { players = { [1] = pd } }
 	player.opened = window
 	game.tick = 500
-	-- Paused, the manager tick neither collects nor renders: only the hand-back is under test.
+	-- Paused with data shown, the manager tick neither collects nor renders: only the hand-back is under test.
 	pd.paused = true
+	pd.rendered_snapshot_tick = 1
 	pd.surface_count = #game.surfaces
 	return manager_gui, manager, util, player, pd, window
 end

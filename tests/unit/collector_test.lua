@@ -232,9 +232,12 @@ test("release_if_unused: keeps data while any window is open; drops it otherwise
 	assert_eq(storage.manager.collect_log.epoch, 2)
 end)
 
-test("wanted and tick: only an open, unpaused manager collects", function()
+test("wanted and tick: an open manager collects unless it is paused with data shown", function()
 	scenario()
 	storage.manager.players = { [1] = { is_manager_open = true, paused = true }, [2] = { is_manager_open = false } }
+	-- Paused before its first data (reopened paused): it still needs one pass.
+	assert_true(collector.wanted())
+	storage.manager.players[1].rendered_snapshot_tick = 10
 	assert_false(collector.wanted())
 	assert_false(collector.tick())
 	assert_nil(storage.manager.snapshot_build)
