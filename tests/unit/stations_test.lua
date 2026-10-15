@@ -1,6 +1,7 @@
 -- Characterization tests for the Stations query pipeline (scripts/gui/stations.lua at 3b5fe31): the status ladder,
 -- sort order with its name/id tiebreak, the status filter and the incremental update from the collector log.
--- PLAN3: §4.2 moves the status ladder into collector.station_status; these expectations must survive the move.
+-- PLAN3 §4.2 moved the status ladder into collector.station_status: records carry `status` as the collector sets it
+-- once per pass, and the query reads it. §4.1 dropped the `tiebreak` string: ties compare name_lower, then id.
 
 local H = require("harness")
 
@@ -9,7 +10,6 @@ local function st(id, name, over)
 		id = id,
 		name = name,
 		name_lower = string.lower(name),
-		tiebreak = string.format("%s\0%010d", string.lower(name), id),
 		surface_index = 1,
 		network_name = "signal-A",
 		network_mask = 1,
@@ -45,9 +45,10 @@ local function setup()
 		[8] = st(8, "Hotel"),
 		[9] = st(9, "Hotel", { last_delivery_tick = 50000, requested = { stone = { count = -5, threshold = 1, active = true } }, longest_wait_start = 20 }),
 	}
-	-- A record from before the tiebreak field existed.
-	snap.stations[9].tiebreak = nil
 	snap.starved = { ["signal-A:coal"] = true }
+	for _, record in pairs(snap.stations) do
+		record.status = collector.station_status(record, snap.starved)
+	end
 	snap.starved_version = 1
 	snap.tick = 10
 	game.tick = 20
@@ -74,20 +75,23 @@ test("query: status ladder and counts", function()
 	assert_eq(counts, { all = 9, no_power = 1, disabled = 1, warming_up = 1, starved = 1, saturated = 1, idle = 1, ok = 3 })
 end)
 
-test("query: idle needs an old last delivery, tps > 0 and no active request", function()
-	local stations_tab, _, snap = setup()
+test("station_status: idle needs an old last delivery, tps > 0 and no active request", function()
+	local _, collector, snap = setup()
+	local golf = snap.stations[7]
 	mod_settings.tps = 0
-	local _, _, ctx = stations_tab.query({})
-	assert_eq(ctx.status[7], "ok")
-	stations_tab, _, snap = setup()
+	assert_eq(collector.station_status(golf, snap.starved), "ok")
+	mod_settings.tps = 60
 	-- 30 minutes at tps 60 is exactly IDLE_TICKS, which is not idle yet.
-	snap.stations[7].last_delivery_tick = 200000 - 108000
-	_, _, ctx = stations_tab.query({})
-	assert_eq(ctx.status[7], "ok")
-	stations_tab, _, snap = setup()
-	snap.stations[7].last_delivery_tick = 200000 - 108001
-	_, _, ctx = stations_tab.query({})
-	assert_eq(ctx.status[7], "idle")
+	golf.last_delivery_tick = 200000 - 108000
+	assert_eq(collector.station_status(golf, snap.starved), "ok")
+	golf.last_delivery_tick = 200000 - 108001
+	assert_eq(collector.station_status(golf, snap.starved), "idle")
+	golf.requested = { stone = { count = -5, threshold = 1, active = true } }
+	assert_eq(collector.station_status(golf, snap.starved), "ok")
+	golf.requested = { stone = { count = -5, threshold = 10, active = false } }
+	assert_eq(collector.station_status(golf, snap.starved), "idle")
+	golf.deliveries_total = 1
+	assert_eq(collector.station_status(golf, snap.starved), "ok")
 end)
 
 test("query: descending name keeps the id tiebreak ascending", function()
@@ -135,12 +139,13 @@ test("query: global filters narrow the set and the counts", function()
 	assert_eq(ids(rows), { 3, 4 })
 end)
 
-test("query: a replaced record is merged into the kept order once its pass has completed", function()
+-- The collector refills records in place (PLAN3 §4.1), so a renamed station keeps its record table.
+test("query: a refilled record is merged into the kept order once its pass has completed", function()
 	local stations_tab, collector, snap = setup()
 	local pd = {}
 	stations_tab.query(pd)
 	assert_eq(pd.stations_query.sort_kind, "full")
-	snap.stations[8] = st(8, "Aardvark")
+	snap.stations[8].name, snap.stations[8].name_lower = "Aardvark", "aardvark"
 	local log = storage.manager.collect_log
 	log.ids[#log.ids + 1] = 8
 	-- The pass that replaced the record completed on this very tick: the re-sort waits one update.
@@ -156,19 +161,29 @@ test("query: a replaced record is merged into the kept order once its pass has c
 	assert_eq({ collector.log_position() }, { pd.stations_query.epoch, pd.stations_query.pos })
 end)
 
-test("query: a starved-set change reclassifies only the affected stations", function()
+test("query: statuses the collector changed and logged update the cached counts", function()
 	local stations_tab, _, snap = setup()
 	local pd = {}
 	stations_tab.query(pd)
-	snap.starved = { ["signal-A:stone"] = true }
-	snap.starved_version = 2
+	snap.stations[4].status = "ok"
+	snap.stations[9].status = "starved"
+	local log = storage.manager.collect_log
+	log.ids[#log.ids + 1] = 4
+	log.ids[#log.ids + 1] = 9
 	local rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(ctx.status[4], "ok")
 	assert_eq(ctx.status[9], "starved")
 	assert_eq(counts.starved, 1)
 	assert_eq(counts.ok, 3)
-	assert_eq(pd.stations_query.starved_version, 2)
 	assert_eq(#rows, 9)
+end)
+
+test("query: the status is read from the record, never recomputed", function()
+	local stations_tab, _, snap = setup()
+	snap.stations[8].status = "saturated"
+	local _, counts, ctx = stations_tab.query({})
+	assert_eq(ctx.status[8], "saturated")
+	assert_eq(counts.saturated, 2)
 end)
 
 test("query: removed station leaves rows and counts", function()

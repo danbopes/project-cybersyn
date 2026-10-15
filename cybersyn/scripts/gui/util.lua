@@ -192,18 +192,20 @@ end
 
 --- Decorate-sort-undecorate. `key_fn` runs once per row; the comparator touches no API.
 --- Keys must all be numbers or all strings; nil keys sort last in both directions.
---- Ties are broken by `tiebreak_fn(row)` ascending (must be unique and comparable), else by input position.
+--- Ties are broken by `tiebreak_fn(row)` ascending, then by `tiebreak2_fn(row)` ascending (together they must be unique
+--- and comparable), else by input position.
 --- @param rows any[] Sorted in place and returned.
 --- @param key_fn fun(row: any): (number|string|nil)
 --- @param ascending boolean
 --- @param tiebreak_fn (fun(row: any): (number|string))?
+--- @param tiebreak2_fn (fun(row: any): (number|string))?
 --- @return any[]
-function util.sort_by(rows, key_fn, ascending, tiebreak_fn)
+function util.sort_by(rows, key_fn, ascending, tiebreak_fn, tiebreak2_fn)
 	local n = #rows
 	local decorated = {}
 	for i = 1, n do
 		local row = rows[i]
-		decorated[i] = { key_fn(row), tiebreak_fn and tiebreak_fn(row) or i, row }
+		decorated[i] = { key_fn(row), tiebreak_fn and tiebreak_fn(row) or i, tiebreak2_fn and tiebreak2_fn(row) or i, row }
 	end
 	table.sort(decorated, function(a, b)
 		local ka, kb = a[1], b[1]
@@ -213,10 +215,12 @@ function util.sort_by(rows, key_fn, ascending, tiebreak_fn)
 			if ascending then return ka < kb end
 			return ka > kb
 		end
-		return a[2] < b[2]
+		local ta, tb = a[2], b[2]
+		if ta ~= tb then return ta < tb end
+		return a[3] < b[3]
 	end)
 	for i = 1, n do
-		rows[i] = decorated[i][3]
+		rows[i] = decorated[i][4]
 	end
 	return rows
 end
@@ -302,6 +306,7 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs)
 			local def = entry.build()
 			def.index = i
 			local _, elem = gui.add(parent, def)
+			if entry.built then entry.built(elem) end
 			table.insert(cur, i, key)
 			table.insert(elems, i, elem)
 			for m = i, #cur do
@@ -326,6 +331,7 @@ end
 --- (children whose key is still present get `update`d) and `state.dirty` is set; when not held, the common
 --- prefix is updated in place, the rest destroyed and rebuilt.
 --- `sig`, when given, is a cheap signature of everything `update` writes: an unchanged sig skips the update.
+--- `built(elem)`, when given, receives each child right after `build` created it.
 --- @param parent LuaGuiElement
 --- @param entries {key: string|number, build: fun(): flib.GuiElemDef, update: fun(elem: LuaGuiElement, entry: table, index: integer)?, sig: (string|number)?}[]
 --- @param state {keys: (string|number)[]?, sigs: {[string|number]: string|number}?, dirty: true?} from util.gui_state
@@ -401,7 +407,8 @@ function util.sync_children(parent, entries, state, hold, movable)
 	end
 	for i = prefix + 1, n do
 		local entry = entries[i]
-		gui.add(parent, entry.build())
+		local _, elem = gui.add(parent, entry.build())
+		if entry.built then entry.built(elem) end
 		if entry.sig ~= nil then new_sigs[entry.key] = entry.sig end
 	end
 	state.sigs = new_sigs

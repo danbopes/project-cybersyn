@@ -535,24 +535,27 @@ local function count_train_network(name, networks, tr)
 	if tr.is_available then n.available = n.available + 1 end
 end
 
+--- Rows carry a tooltip builder instead of the tooltip: only the rows on screen whose sig changed ever build one.
 --- @param hash string
---- @param tail LocalisedString[]
---- @return table? row partial row with sprite, quality, caption and tooltip; nil when the item has no sprite
+--- @param tail fun(): LocalisedString[]
+--- @return table? row partial row with sprite, quality, caption and tooltip builder; nil when the item has no sprite
 local function item_row(hash, tail)
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	if not sprite then return nil end
-	local tooltip = { "", name_tooltip }
-	for _, part in ipairs(tail) do
-		tooltip[#tooltip + 1] = part
-	end
-	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = { "cybersyn-gui.item-click-hint" }
 	return {
 		key = hash,
 		sprite = sprite,
 		quality = quality,
 		caption = name_tooltip[4],
-		tooltip = tooltip,
+		tooltip = function()
+			local tooltip = { "", name_tooltip }
+			for _, part in ipairs(tail()) do
+				tooltip[#tooltip + 1] = part
+			end
+			tooltip[#tooltip + 1] = "\n"
+			tooltip[#tooltip + 1] = { "cybersyn-gui.item-click-hint" }
+			return tooltip
+		end,
 		tags = { kind = "item", item_hash = hash },
 	}
 end
@@ -583,22 +586,25 @@ end
 --- @param key string|number
 --- @param sprite string?
 --- @param quality string?
---- @param tail LocalisedString[]
+--- @param tail fun(): LocalisedString[]
 local function station_row(st, key, sprite, quality, tail)
-	local tooltip = { "", "[font=default-semibold]", st.name, "[/font]" }
-	for _, part in ipairs(tail) do
-		tooltip[#tooltip + 1] = part
-	end
-	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = constants.open_station_gui_tooltip
-	local caption = display_name(st.name)
+	local name = st.name
+	local caption = display_name(name)
 	return {
 		key = key,
 		sprite = sprite or "item/train-stop",
 		quality = quality,
 		caption = caption,
 		name_sig = caption,
-		tooltip = tooltip,
+		tooltip = function()
+			local tooltip = { "", "[font=default-semibold]", name, "[/font]" }
+			for _, part in ipairs(tail()) do
+				tooltip[#tooltip + 1] = part
+			end
+			tooltip[#tooltip + 1] = "\n"
+			tooltip[#tooltip + 1] = constants.open_station_gui_tooltip
+			return tooltip
+		end,
 		tags = { kind = "station", station_id = st.id },
 	}
 end
@@ -635,7 +641,7 @@ end
 --- @param snapshot Snapshot
 --- @return string
 local function data_key(snapshot)
-	return tostring(snapshot.tick) .. "\1" .. tostring(snapshot.starved_version)
+	return tostring(snapshot.tick) .. "\1" .. tostring(snapshot.pass) .. "\1" .. tostring(snapshot.starved_version)
 end
 
 --- Accumulator of the snapshot-derived figures; wait ages are kept as start ticks so it does not depend on the tick.
@@ -675,7 +681,8 @@ local function add_station(base, st, tracking, starved_set, starved_items_set)
 	if st.is_r then st_tile.requesters = st_tile.requesters + 1 end
 	if st.warming_up then st_tile.warming_up = st_tile.warming_up + 1 end
 	if not st.comb_ok then st_tile.faulty = st_tile.faulty + 1 end
-	if st.deliveries_total > 0 and st.deliveries_total >= st.trains_limit then
+	-- One meaning everywhere (PLAN3 §4.2): the collector's status, deliveries at a finite train limit.
+	if st.status == "saturated" then
 		st_tile.saturated = st_tile.saturated + 1
 		base.saturated[#base.saturated + 1] = st
 	end
@@ -854,7 +861,7 @@ local function cached_snapshot_model(player_data, snapshot, f, filtered, trackin
 	if not cache or cache.view_key ~= vkey then
 		local base = new_base(snapshot, filtered)
 		advance_base(base, snapshot, f, filtered, tracking, math.huge)
-		player_data.overview_cache = { view_key = vkey, data_key = dkey, base = base }
+		player_data.overview_cache = { view_key = vkey, data_key = dkey, base = base, empty = snapshot.tick == nil or nil }
 		return base
 	end
 	if cache.data_key ~= dkey then
@@ -864,7 +871,10 @@ local function cached_snapshot_model(player_data, snapshot, f, filtered, trackin
 			build.data_key = dkey
 			cache.build = build
 		end
-		if advance_base(build, snapshot, f, filtered, tracking, BASE_CHUNK) then
+		-- Figures from before the first completed pass are all zero: nothing worth keeping on screen meanwhile.
+		local budget = cache.empty and math.huge or BASE_CHUNK
+		if advance_base(build, snapshot, f, filtered, tracking, budget) then
+			cache.empty = nil
 			cache.base = build
 			cache.data_key = build.data_key
 			build.data_key = nil
@@ -926,16 +936,18 @@ function overview_tab.model(player_data)
 	for _, hash in ipairs(base.starved_hashes) do
 		if #starved_rows >= LIMITS.starved then break end
 		local agg = starved_items[hash]
-		local tail = {
-			"\n", { "cybersyn-gui.requested-by-stations", tostring(agg.stations) },
-			"\n", { "cybersyn-gui.amount", format.number(agg.count) },
-			"\n[color=red]", { "cybersyn-gui.overview-no-provider" }, "[/color]",
-		}
-		if agg.earliest then
-			tail[#tail + 1] = "\n"
-			tail[#tail + 1] = { "cybersyn-gui.waiting-for", util.format_duration(now - agg.earliest) }
-		end
-		local row = item_row(hash, tail)
+		local row = item_row(hash, function()
+			local tail = {
+				"\n", { "cybersyn-gui.requested-by-stations", tostring(agg.stations) },
+				"\n", { "cybersyn-gui.amount", format.number(agg.count) },
+				"\n[color=red]", { "cybersyn-gui.overview-no-provider" }, "[/color]",
+			}
+			if agg.earliest then
+				tail[#tail + 1] = "\n"
+				tail[#tail + 1] = { "cybersyn-gui.waiting-for", util.format_duration(now - agg.earliest) }
+			end
+			return tail
+		end)
 		if row then
 			row.order = agg.earliest or (1e12 - agg.count)
 			row.values = { amount(agg.count), tostring(agg.stations), agg.earliest and short_duration(now - agg.earliest) or NO_VALUE }
@@ -947,11 +959,13 @@ function overview_tab.model(player_data)
 	local waiting_rows = {}
 	for i, w in ipairs(base.waiting) do
 		local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(w.hash)
-		local row = station_row(w.st, w.id .. "|" .. w.hash, sprite, quality, {
-			"\n", name_tooltip or w.hash,
-			"\n", { "cybersyn-gui.amount", format.number(w.count) },
-			"\n", { "cybersyn-gui.waiting-for", util.format_duration(now - w.start) },
-		})
+		local row = station_row(w.st, w.id .. "|" .. w.hash, sprite, quality, function()
+			return {
+				"\n", name_tooltip or w.hash,
+				"\n", { "cybersyn-gui.amount", format.number(w.count) },
+				"\n", { "cybersyn-gui.waiting-for", util.format_duration(now - w.start) },
+			}
+		end)
 		row.order = w.start
 		row.values = { amount(w.count), short_duration(now - w.start) }
 		waiting_rows[i] = row
@@ -963,10 +977,12 @@ function overview_tab.model(player_data)
 	for _, hash in ipairs(base.transit_hashes) do
 		if #transit_rows >= LIMITS.transit then break end
 		local agg = transit[hash]
-		local row = item_row(hash, {
-			"\n", { "cybersyn-gui.in-transit-to-stations", tostring(agg.stations) },
-			"\n", { "cybersyn-gui.amount", format.number(agg.count) },
-		})
+		local row = item_row(hash, function()
+			return {
+				"\n", { "cybersyn-gui.in-transit-to-stations", tostring(agg.stations) },
+				"\n", { "cybersyn-gui.amount", format.number(agg.count) },
+			}
+		end)
 		if row then
 			row.order = agg.count
 			row.values = { amount(agg.count), tostring(agg.stations) }
@@ -988,10 +1004,12 @@ function overview_tab.model(player_data)
 		if #delivered_rows >= LIMITS.delivered then break end
 		local count = delivered_items[hash]
 		local rate = amount(count / span_minutes)
-		local row = item_row(hash, {
-			"\n", { "cybersyn-gui.overview-delivered-amount", period_caption, format.number(count) },
-			"\n", { "cybersyn-gui.overview-delivered-rate", rate },
-		})
+		local row = item_row(hash, function()
+			return {
+				"\n", { "cybersyn-gui.overview-delivered-amount", period_caption, format.number(count) },
+				"\n", { "cybersyn-gui.overview-delivered-rate", rate },
+			}
+		end)
 		if row then
 			row.order = count
 			row.value_sig = period
@@ -1028,11 +1046,13 @@ function overview_tab.model(player_data)
 				when, when_sig = { "cybersyn-gui.overview-hours-ago", tostring(h) }, "h" .. h
 			end
 			local bucket_key = (period <= 60 or minute_buckets[b]) and "cybersyn-gui.overview-slowest-minute" or "cybersyn-gui.overview-slowest-hour"
-			local tail = {
-				"\n", name_tooltip or { "cybersyn-gui.overview-unknown-item" },
-				"\n", { "cybersyn-gui.overview-slowest-row", util.format_duration(b.wait_max) },
-				"\n", { bucket_key, tostring(b.wait_n), util.format_duration(b.wait_sum / b.wait_n) },
-			}
+			local function tail()
+				return {
+					"\n", name_tooltip or { "cybersyn-gui.overview-unknown-item" },
+					"\n", { "cybersyn-gui.overview-slowest-row", util.format_duration(b.wait_max) },
+					"\n", { bucket_key, tostring(b.wait_n), util.format_duration(b.wait_sum / b.wait_n) },
+				}
+			end
 			-- A bucket's maximum moves to another station or item as requests are fulfilled, and the update path keeps
 			-- a row's icon and tags, so the key must change with them.
 			local key = b.start_tick .. "|" .. tostring(b.wait_max_station) .. "|" .. tostring(hash)
@@ -1041,17 +1061,19 @@ function overview_tab.model(player_data)
 			if st then
 				row = station_row(st, key, sprite, quality, tail)
 			else
-				local tooltip = { "", { "cybersyn-gui.overview-removed-station" } }
-				for _, part in ipairs(tail) do
-					tooltip[#tooltip + 1] = part
-				end
 				row = {
 					key = key,
 					sprite = sprite or "utility/questionmark",
 					quality = quality,
 					caption = { "cybersyn-gui.overview-removed-station" },
 					name_sig = "",
-					tooltip = tooltip,
+					tooltip = function()
+						local tooltip = { "", { "cybersyn-gui.overview-removed-station" } }
+						for _, part in ipairs(tail()) do
+							tooltip[#tooltip + 1] = part
+						end
+						return tooltip
+					end,
 					tags = { kind = "none" },
 				}
 			end
@@ -1068,9 +1090,10 @@ function overview_tab.model(player_data)
 		local hash = main_delivery_hash(st)
 		local sprite, quality
 		if hash then sprite, quality = util.item_sprite_and_tooltip(hash) end
-		local row = station_row(st, st.id .. "|" .. tostring(hash), sprite, quality, {
-			"\n", { "cybersyn-gui.overview-saturated-row", tostring(st.deliveries_total), tostring(st.trains_limit) },
-		})
+		local deliveries, limit = st.deliveries_total, st.trains_limit
+		local row = station_row(st, st.id .. "|" .. tostring(hash), sprite, quality, function()
+			return { "\n", { "cybersyn-gui.overview-saturated-row", tostring(deliveries), tostring(limit) } }
+		end)
 		row.order = st.deliveries_total
 		row.values = { st.deliveries_total .. "/" .. st.trains_limit }
 		saturated_rows[i] = row
@@ -1283,6 +1306,11 @@ local function row_entry(scope, row, columns, skip)
 	end
 	local sig = table.concat(sig_parts, "|") .. "|" .. tostring(row.value_sig or "") .. "|" .. tostring(row.name_sig or "")
 		.. "|" .. tostring(skip or "")
+	local tooltip
+	local function tip()
+		tooltip = tooltip or row.tooltip()
+		return tooltip
+	end
 	return {
 		key = row.key,
 		sig = sig,
@@ -1294,7 +1322,7 @@ local function row_entry(scope, row, columns, skip)
 					style = "cybersyn_overview_cell_icon",
 					sprite = row.sprite,
 					quality = row.quality,
-					tooltip = row.tooltip,
+					tooltip = tip(),
 					tags = row.tags,
 					handler = handler,
 				}, scope),
@@ -1302,7 +1330,7 @@ local function row_entry(scope, row, columns, skip)
 					type = "label",
 					style = "cybersyn_overview_cell_name",
 					caption = row.caption,
-					tooltip = row.tooltip,
+					tooltip = tip(),
 					tags = row.tags,
 					handler = handler,
 				}, scope),
@@ -1314,7 +1342,7 @@ local function row_entry(scope, row, columns, skip)
 						style = "cybersyn_overview_cell_value",
 						style_mods = { width = column[2] },
 						caption = values[i] or "",
-						tooltip = row.tooltip,
+						tooltip = tip(),
 						tags = row.tags,
 						handler = handler,
 					}, scope)
@@ -1323,8 +1351,9 @@ local function row_entry(scope, row, columns, skip)
 			return cells
 		end,
 		update = function(cells)
+			local t = tip()
 			for _, cell in ipairs(cells) do
-				cell.tooltip = row.tooltip
+				cell.tooltip = t
 			end
 			if row.name_sig then set_caption(cells[2], row.caption) end
 			local c = 2

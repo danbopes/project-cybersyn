@@ -12,12 +12,10 @@ local stations_tab = {}
 local TAB = "stations_tab"
 local SCROLL = "manager_stations_tab_scroll_pane"
 local CHIPS = "manager_stations_status_flow"
-local IDLE_TICKS = 30 * 60 * 60
--- Unset train stop limits read back as uint max; the planner treats anything this large as unlimited.
-local UNLIMITED = 2100000000
+local UNLIMITED = collector.UNLIMITED
 
 --- Severity order: the status sort and the filter chips both follow it.
-local STATUSES = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok" }
+local STATUSES = collector.STATUSES
 local STATUS_RANK = {}
 for i, s in ipairs(STATUSES) do STATUS_RANK[s] = i end
 local STATUS_COLOR = {
@@ -90,84 +88,19 @@ function stations_tab.create(widths)
 	}
 end
 
--- A pure function of a snapshot station record (replaced, never mutated, on recollection) and the starved set,
--- so weak memoisation cannot make two Lua states disagree.
-local starved_memo = setmetatable({}, { __mode = "k" })
-
---- Active requests of `st` with no provider on any of the station's networks.
+--- Active requests of `st` with no provider on any of its networks, in item order, for the status tooltip.
 --- @param st SnapshotStation
 --- @param starved {[string]: true}
 --- @return string[]|false
 local function starved_hashes(st, starved)
-	local memo = starved_memo[st]
-	if memo and memo.set == starved then return memo.hashes end
-	local hashes = false
-	local name = st.network_name
-	if name and not st.warming_up and next(starved) then
-		local networks
-		if name == NETWORK_EACH then
-			networks = {}
-			if type(st.network_mask) == "table" then
-				for n in pairs(st.network_mask) do networks[#networks + 1] = n end
-			end
-		else
-			networks = { name }
-		end
-		for hash, req in pairs(st.requested) do
-			if req.active then
-				for i = 1, #networks do
-					if starved[networks[i] .. ":" .. hash] then
-						hashes = hashes or {}
-						hashes[#hashes + 1] = hash
-						break
-					end
-				end
-			end
-		end
-		if hashes then util.sort_by(hashes, util.item_rank, true, function(h) return h end) end
-	end
-	starved_memo[st] = { set = starved, hashes = hashes }
+	local hashes = collector.starved_hashes(st, starved)
+	if hashes then util.sort_by(hashes, util.item_rank, true, function(h) return h end) end
 	return hashes
-end
-
-
---- Game ticks since the station's last delivery; last_delivery_tick counts planner ticks, not game ticks.
---- @param st SnapshotStation
---- @return number?
-local function delivery_age(st)
-	local last = st.last_delivery_tick
-	local tps = mod_settings.tps
-	if not last or not tps or tps <= 0 then return nil end
-	return math.max(0, (storage.total_ticks or 0) - last) * 60 / tps
-end
-
-local function has_active_request(st)
-	for _, req in pairs(st.requested) do
-		if req.active then return true end
-	end
-	return false
 end
 
 local function finite_limit(st)
 	local limit = st.trains_limit
 	return limit < UNLIMITED and limit or nil
-end
-
---- @param st SnapshotStation
---- @param starved {[string]: true}
---- @return string status one of STATUSES
-local function station_status(st, starved)
-	if not st.comb_ok then return "no_power" end
-	if st.trains_limit == 0 then return "disabled" end
-	if st.warming_up then return "warming_up" end
-	if starved_hashes(st, starved) then return "starved" end
-	local limit = finite_limit(st)
-	if limit and st.deliveries_total >= limit then return "saturated" end
-	if st.deliveries_total == 0 and not has_active_request(st) then
-		local age = delivery_age(st)
-		if age and age > IDLE_TICKS then return "idle" end
-	end
-	return "ok"
 end
 
 local function count_keys(tbl)
@@ -229,7 +162,6 @@ end
 --- Rescans every snapshot station into a fresh per-player query cache.
 local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	local stations = snapshot.stations
-	local starved = snapshot.starved
 	local key_fn = sort_keys[column]
 	local status, keys = {}, {}
 	local counts = { all = 0 }
@@ -237,7 +169,7 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	local ctx = { status = status }
 	for id, st in pairs(stations) do
 		if util.station_passes(st, f) then
-			local s = station_status(st, starved)
+			local s = st.status or "ok"
 			status[id] = s
 			counts[s] = counts[s] + 1
 			counts.all = counts.all + 1
@@ -245,17 +177,16 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 		end
 	end
 	local cache = {
-		epoch = epoch, pos = pos, fsig = fsig, column = column, starved_version = snapshot.starved_version, starved = starved,
+		epoch = epoch, pos = pos, fsig = fsig, column = column,
 		status = status, keys = keys, counts = counts, dirty = true, changed = {},
 	}
 	player_data.stations_query = cache
 	return cache
 end
 
---- Folds the station records the collector replaced or removed since the last render into the cache.
+--- Folds the station records the collector refilled, reclassified or removed since the last render into the cache.
 local function apply_changes(cache, snapshot, f, ids, first, last)
 	local stations = snapshot.stations
-	local starved = snapshot.starved
 	local key_fn = sort_keys[cache.column]
 	local status, keys, counts = cache.status, cache.keys, cache.counts
 	local changed = cache.changed
@@ -268,8 +199,9 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 		local id = ids[i]
 		local st = stations[id]
 		local old = status[id]
-		local new = st and util.station_passes(st, f) and station_status(st, starved) or nil
+		local new = st and util.station_passes(st, f) and (st.status or "ok") or nil
 		if old ~= new then
+			cache.version = (cache.version or 0) + 1
 			if old then
 				counts[old] = counts[old] - 1
 				counts.all = counts.all - 1
@@ -293,49 +225,8 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 	end
 end
 
---- Name first, id second. Records from a snapshot saved before `tiebreak` existed lack it until recollected.
---- @param id uint
-local function tiebreak_of(stations, id)
-	local st = stations[id]
-	return st.tiebreak or string.format("%s\0%010d", st.name_lower, id)
-end
-
---- Stations in the cached set whose status a change of the starved set can flip: those with an active request for
---- an item that became or stopped being starved. Re-classifying only these is far cheaper than a rebuild, and the
---- set changes on most passes on a large base.
---- @return uint[]
-local function starved_affected(cache, snapshot)
-	local old, new = cache.starved, snapshot.starved
-	local items = {}
-	local any = false
-	for key in pairs(old) do
-		if not new[key] then
-			items[string.match(key, ":(.*)$") or key] = true
-			any = true
-		end
-	end
-	for key in pairs(new) do
-		if not old[key] then
-			items[string.match(key, ":(.*)$") or key] = true
-			any = true
-		end
-	end
-	local ids = {}
-	if not any then return ids end
-	local stations = snapshot.stations
-	for id in pairs(cache.status) do
-		local st = stations[id]
-		if st then
-			for hash, req in pairs(st.requested) do
-				if req.active and items[hash] then
-					ids[#ids + 1] = id
-					break
-				end
-			end
-		end
-	end
-	return ids
-end
+--- Ties sort by name, then id.
+local function id_of(id) return id end
 
 --- Sorting every station costs about 3 ms on a 2,000-station base and a pass changes the keys of only some of
 --- them, so the previous order is kept for the rest and the re-sorted changed ids are merged into it.
@@ -348,8 +239,8 @@ local function merge_changes(cache, stations, ascending)
 	end
 	local old = cache.order
 	if #moved * 4 > #old then return nil end
-	util.sort_by(moved, function(id) return keys[id] end, ascending, function(id) return tiebreak_of(stations, id) end)
-	-- Same order as util.sort_by: key in the requested direction with nil last, then tiebreak ascending.
+	util.sort_by(moved, function(id) return keys[id] end, ascending, function(id) return stations[id].name_lower end, id_of)
+	-- Same order as util.sort_by: key in the requested direction with nil last, then name and id ascending.
 	local function less(a, b)
 		local ka, kb = keys[a], keys[b]
 		if ka ~= kb then
@@ -358,8 +249,9 @@ local function merge_changes(cache, stations, ascending)
 			if ascending then return ka < kb end
 			return ka > kb
 		end
-		local sa, sb = stations[a], stations[b]
-		return (sa.tiebreak or tiebreak_of(stations, a)) < (sb.tiebreak or tiebreak_of(stations, b))
+		local na, nb = stations[a].name_lower, stations[b].name_lower
+		if na ~= nb then return na < nb end
+		return a < b
 	end
 	local order = {}
 	local n, j, m = 0, 1, #moved
@@ -406,37 +298,32 @@ function stations_tab.query(player_data)
 	local epoch, pos = collector.log_position()
 	local cache = player_data.stations_query
 	local ids, first, last
-	if cache and cache.fsig == fsig and cache.column == column and cache.starved then
+	if cache and cache.fsig == fsig and cache.column == column then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
 	end
 	if ids then
 		apply_changes(cache, snapshot, f, ids, first, last)
 		cache.pos = pos
-		if cache.starved_version ~= snapshot.starved_version then
-			local affected = starved_affected(cache, snapshot)
-			apply_changes(cache, snapshot, f, affected, 1, #affected)
-			cache.starved_version = snapshot.starved_version
-			cache.starved = snapshot.starved
-		end
 	else
 		cache = rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	end
 	local status = cache.status
 	local ctx = { status = status, now = game.tick, snapshot = snapshot }
 
-	local resort = not cache.order or cache.ascending ~= ascending
+	-- An empty order (the window opened before the first pass completed) has no rows to keep still.
+	local resort = not cache.order or cache.ascending ~= ascending or (cache.dirty and #cache.order == 0)
 	-- A data-driven re-sort waits for the update after the one that completed the pass, which carries the pass's
 	-- last collector batch; the next one carries only the cheap start of a new pass.
 	if resort or (cache.dirty and cache.sorted_tick ~= snapshot.tick and snapshot.tick ~= game.tick) then
 		local keys = cache.keys
 		local function key_of(id) return keys[id] end
-		local function tiebreak(id) return tiebreak_of(stations, id) end
+		local function name_of(id) return stations[id].name_lower end
 		local order = not resort and merge_changes(cache, stations, ascending) or nil
 		cache.sort_kind = order and "merged" or "full"
 		if not order then
 			order = {}
 			for id in pairs(status) do order[#order + 1] = id end
-			util.sort_by(order, key_of, ascending, tiebreak)
+			util.sort_by(order, key_of, ascending, name_of, id_of)
 		end
 		cache.order = order
 		cache.ascending = ascending
@@ -445,19 +332,26 @@ function stations_tab.query(player_data)
 		cache.changed = {}
 	end
 
-	local rows = {}
-	for _, id in ipairs(cache.order) do
-		local s = status[id]
-		if s and (not wanted or wanted == s) then
-			rows[#rows + 1] = stations[id]
+	-- The row list only changes with the order, the status filter or a status; rebuilding it every update allocated
+	-- tens of KB per render on a large base.
+	local rows = cache.rows
+	if not rows or cache.rows_order ~= cache.order or cache.rows_wanted ~= (wanted or false) or cache.rows_version ~= cache.version then
+		rows = {}
+		for _, id in ipairs(cache.order) do
+			local s = status[id]
+			if s and (not wanted or wanted == s) then
+				rows[#rows + 1] = stations[id]
+			end
 		end
+		cache.rows, cache.rows_order, cache.rows_wanted, cache.rows_version = rows, cache.order, wanted or false, cache.version
 	end
 	return rows, cache.counts, ctx, column, ascending
 end
 
 local NONE_CAPTION = { "cybersyn-gui.none-short" }
 
---- Everything a row shows that is not a slot table, as plain values comparable between updates.
+--- Everything a row shows that is not a slot table, as plain values comparable between updates. Tooltips and the
+--- network cell cost API calls, so they are built by functions that run only when their sig changed.
 --- @param st SnapshotStation
 --- @param ctx table
 local function row_model(st, ctx)
@@ -465,47 +359,54 @@ local function row_model(st, ctx)
 	local status = ctx.status[st.id]
 	local m = { status = status }
 
-	local status_tooltip = { "", { status_key(status) .. "-tooltip" } }
-	if status == "starved" then
-		local hashes = starved_hashes(st, ctx.snapshot.starved)
-		local icons = {}
-		for i = 1, math.min(#hashes, 10) do
-			icons[i] = util.rich_text_from_signal(util.signalid_from_hash(hashes[i]))
+	local hashes = status == "starved" and starved_hashes(st, ctx.snapshot.starved) or nil
+	m.status_tip_sig = hashes and (status .. "|" .. table.concat(hashes, ",", 1, math.min(#hashes, 10))) or status
+	m.status_tooltip = function()
+		local tooltip = { "", { status_key(status) .. "-tooltip" } }
+		if hashes then
+			local icons = {}
+			for i = 1, math.min(#hashes, 10) do
+				icons[i] = util.rich_text_from_signal(util.signalid_from_hash(hashes[i]))
+			end
+			tooltip[#tooltip + 1] = "\n" .. table.concat(icons, " ")
 		end
-		status_tooltip[#status_tooltip + 1] = "\n" .. table.concat(icons, " ")
+		return tooltip
 	end
-	m.status_tooltip = status_tooltip
 
 	local network_name = st.network_name
+	local mask = st.network_mask
 	if not network_name then
-		m.net_sprite = "utility/close_black"
-		m.net_caption = ""
 		m.net_sig = ""
-		m.net_tooltip = { "cybersyn-gui.station-no-network" }
 	elseif network_name == NETWORK_EACH then
-		local mask = type(st.network_mask) == "table" and st.network_mask or {}
 		local names = {}
-		for n in pairs(mask) do names[#names + 1] = n end
-		table.sort(names)
-		local lines = { "" }
-		local parts = {}
-		for i, n in ipairs(names) do
-			local _, img = util.generate_item_references(n)
-			local line = (img or n) .. " " .. mask[n]
-			parts[i] = line
-			if i <= 20 then lines[#lines + 1] = (i > 1 and "\n" or "") .. line end
+		if type(mask) == "table" then
+			for n in pairs(mask) do names[#names + 1] = n end
 		end
-		m.net_sprite = "virtual-signal/" .. NETWORK_EACH
-		m.net_caption = { "cybersyn-gui.network-each-count", #names }
-		m.net_sig = table.concat(parts, ",")
-		m.net_tooltip = lines
+		table.sort(names)
+		local parts = {}
+		for i, n in ipairs(names) do parts[i] = n .. "=" .. mask[n] end
+		m.net_sig = NETWORK_EACH .. "|" .. table.concat(parts, ",")
+		m.net_names = names
 	else
-		local mask = type(st.network_mask) == "number" and st.network_mask or 0
+		m.net_sig = network_name .. "=" .. (type(mask) == "number" and mask or 0)
+	end
+	m.network = function()
+		if not network_name then
+			return "utility/close_black", "", { "cybersyn-gui.station-no-network" }
+		elseif network_name == NETWORK_EACH then
+			local names = m.net_names
+			local lines = { "" }
+			for i, n in ipairs(names) do
+				if i > 20 then break end
+				local _, img = util.generate_item_references(n)
+				lines[#lines + 1] = (i > 1 and "\n" or "") .. (img or n) .. " " .. mask[n]
+			end
+			return "virtual-signal/" .. NETWORK_EACH, { "cybersyn-gui.network-each-count", #names }, lines
+		end
+		local value = type(mask) == "number" and mask or 0
 		local sprite, img = util.generate_item_references(network_name)
-		m.net_sprite = sprite or "utility/close_black"
-		m.net_caption = tostring(mask)
-		m.net_sig = network_name .. "=" .. mask
-		m.net_tooltip = { "", img or network_name, " ", { "cybersyn-gui.station-network-mask", mask, string.format("0x%08X", mask < 0 and mask + 2 * OFFSET or mask) } }
+		return sprite or "utility/close_black", tostring(value), { "", img or network_name, " ",
+			{ "cybersyn-gui.station-network-mask", value, string.format("0x%08X", value < 0 and value + 2 * OFFSET or value) } }
 	end
 
 	local limit = finite_limit(st)
@@ -521,7 +422,7 @@ local function row_model(st, ctx)
 	end
 	m.wait_full = start and util.format_duration(now - start) or nil
 
-	local age = delivery_age(st)
+	local age = collector.delivery_age(st)
 	if age then
 		m.last_caption = util.short_duration(age)
 		m.last_sig = m.last_caption
@@ -530,6 +431,14 @@ local function row_model(st, ctx)
 	end
 	m.last_full = age and util.format_duration(age) or nil
 	return m
+end
+
+local function wait_tooltip(m)
+	return m.wait_full and { "cybersyn-gui.waiting-for", m.wait_full } or { "cybersyn-gui.stations-wait-none" }
+end
+
+local function last_tooltip(m)
+	return m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" }
 end
 
 --- Slot defs become clickable items with the standard item click semantics and hover-hold; the filtered item is
@@ -593,12 +502,51 @@ local function sync_slots(table_elem, defs, state, hold, minute)
 	return util.sync_children(table_elem, entries, state, hold)
 end
 
+local SLOT_TABLES = {
+	pr = function(st, item) return decorate_slots(util.slot_table_build_from_station(st), item) end,
+	dl = function(st, item) return decorate_slots(util.slot_table_build_from_deliveries(st), item) end,
+	ctl = function(st) return util.slot_table_build_from_control_signals(st) end,
+}
+
 local function cell_build_defs(st, item)
-	return {
-		pr = decorate_slots(util.slot_table_build_from_station(st), item),
-		dl = decorate_slots(util.slot_table_build_from_deliveries(st), item),
-		ctl = util.slot_table_build_from_control_signals(st),
-	}
+	return { pr = SLOT_TABLES.pr(st, item), dl = SLOT_TABLES.dl(st, item), ctl = SLOT_TABLES.ctl(st) }
+end
+
+local function count_parts(parts, prefix, map)
+	for k, v in pairs(map) do
+		parts[#parts + 1] = prefix .. k .. "=" .. tostring(v)
+	end
+end
+
+--- Signatures of what each slot table shows, from the record's data, so an unchanged table is not rebuilt as defs at
+--- all. The minute is part of the provided/requested sig only when one of its requests shows a wait.
+--- @param st SnapshotStation
+--- @param item string?
+--- @param minute integer
+--- @return {pr: string, dl: string, ctl: string}
+local function slot_sigs(st, item, minute)
+	local parts = {}
+	count_parts(parts, "p", st.provided)
+	local waits = false
+	local wait = st.wait
+	for hash, req in pairs(st.requested) do
+		parts[#parts + 1] = "r" .. hash .. "=" .. req.count .. (req.active and "a" or "b")
+		if req.active and wait[hash] then
+			waits = true
+			parts[#parts + 1] = tostring(wait[hash])
+		end
+	end
+	parts[#parts + 1] = item or ""
+	if waits then parts[#parts + 1] = tostring(minute) end
+	local pr = table.concat(parts, "\1")
+	parts = {}
+	count_parts(parts, "", st.deliveries)
+	parts[#parts + 1] = item or ""
+	local dl = table.concat(parts, "\1")
+	parts = {}
+	count_parts(parts, "c", st.control)
+	count_parts(parts, "t", st.thresholds)
+	return { pr = pr, dl = dl, ctl = table.concat(parts, "\1") }
 end
 
 local function slot_state(slots, name)
@@ -610,8 +558,41 @@ local function slot_state(slots, name)
 	return s
 end
 
-local function set_if_changed(elem, key, value, old)
-	if old ~= value then elem[key] = value end
+--- Element references of a row, found by name once and kept in the row's memo.
+--- @param row LuaGuiElement
+local function row_refs(row)
+	local c = row.children
+	local status = c[2].children
+	local net = c[3].children
+	local dl = c[5].children
+	return {
+		name = c[1],
+		status_sprite = status[1],
+		status_label = status[2],
+		net = c[3],
+		net_sprite = net[1],
+		net_label = net[2],
+		pr_frame = c[4],
+		pr = c[4].children[1],
+		dl_count = dl[1],
+		dl_frame = dl[2],
+		dl = dl[2].children[1],
+		ctl_frame = c[6],
+		ctl = c[6].children[1],
+		wait = c[7],
+		last = c[8],
+	}
+end
+
+--- @param cell table
+--- @param row LuaGuiElement
+local function cell_refs(cell, row)
+	local refs = cell.refs
+	if not (refs and refs.name.valid and refs.last.valid) then
+		refs = row_refs(row)
+		cell.refs = refs
+	end
+	return refs
 end
 
 --- @param row LuaGuiElement
@@ -621,59 +602,83 @@ end
 --- @param item string? item filter hash
 --- @param hold boolean
 --- @param minute integer
---- @return boolean settled false when a hold deferred a slot table change, so it is retried next update
-local function update_row(row, st, m, cell, item, hold, minute)
-	local c = row.children
-	if cell.name ~= st.name then c[1].caption = st.name end
+--- @param sigs {pr: string, dl: string, ctl: string}
+local function update_row(row, st, m, cell, item, hold, minute, sigs)
+	local r = cell_refs(cell, row)
+	if cell.name ~= st.name then
+		r.name.caption = st.name
+		cell.name = st.name
+	end
 
 	if cell.status ~= m.status then
-		local flow = c[2].children
-		flow[1].sprite = "flib_indicator_" .. STATUS_COLOR[m.status]
-		flow[2].caption = { status_key(m.status) }
+		r.status_sprite.sprite = "flib_indicator_" .. STATUS_COLOR[m.status]
+		r.status_label.caption = { status_key(m.status) }
+		cell.status = m.status
 	end
-	c[2].children[2].tooltip = m.status_tooltip
+	if cell.status_tip_sig ~= m.status_tip_sig then
+		r.status_label.tooltip = m.status_tooltip()
+		cell.status_tip_sig = m.status_tip_sig
+	end
 
 	if cell.net_sig ~= m.net_sig then
-		local flow = c[3].children
-		flow[1].sprite = m.net_sprite
-		flow[2].caption = m.net_caption
-		c[3].tooltip = m.net_tooltip
+		local sprite, caption, tooltip = m.network()
+		r.net_sprite.sprite = sprite
+		r.net_label.caption = caption
+		r.net.tooltip = tooltip
+		cell.net_sig = m.net_sig
 	end
 
-	local dl_children = c[5].children
-	if cell.dl_sig ~= m.dl_sig then dl_children[1].caption = m.dl_caption end
-	if cell.wait_sig ~= m.wait_sig then c[7].caption = m.wait_caption end
-	if cell.last_sig ~= m.last_sig then c[8].caption = m.last_caption end
-	c[7].tooltip = m.wait_full and { "cybersyn-gui.waiting-for", m.wait_full } or { "cybersyn-gui.stations-wait-none" }
-	c[8].tooltip = m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" }
+	if cell.dl_sig ~= m.dl_sig then
+		r.dl_count.caption = m.dl_caption
+		cell.dl_sig = m.dl_sig
+	end
+	if cell.wait_sig ~= m.wait_sig then
+		r.wait.caption = m.wait_caption
+		cell.wait_sig = m.wait_sig
+	end
+	if cell.last_sig ~= m.last_sig then
+		r.last.caption = m.last_caption
+		cell.last_sig = m.last_sig
+	end
+	local wait_tip, last_tip = m.wait_full or "", m.last_full or ""
+	if cell.wait_tip ~= wait_tip then
+		r.wait.tooltip = wait_tooltip(m)
+		cell.wait_tip = wait_tip
+	end
+	if cell.last_tip ~= last_tip then
+		r.last.tooltip = last_tooltip(m)
+		cell.last_tip = last_tip
+	end
 
-	-- Records are replaced on recollection, so an unchanged reference means unchanged slot contents.
-	if cell.st == st and cell.item == item and cell.minute == minute then return true end
-	local defs = cell_build_defs(st, item)
 	local slots = cell.slots or {}
 	cell.slots = slots
-	local a = sync_slots(c[4].children[1], defs.pr, slot_state(slots, "pr"), hold, minute)
-	local b = sync_slots(dl_children[2].children[1], defs.dl, slot_state(slots, "dl"), hold, minute)
-	local d = sync_slots(c[6].children[1], defs.ctl, slot_state(slots, "ctl"), hold, minute)
-	return a ~= "held" and b ~= "held" and d ~= "held"
+	local sig_of = cell.slot_sigs or {}
+	cell.slot_sigs = sig_of
+	for name, build in pairs(SLOT_TABLES) do
+		local sig = sigs[name]
+		if sig_of[name] ~= sig then
+			local result = sync_slots(r[name], build(st, item), slot_state(slots, name), hold, minute)
+			-- A hold deferred a structural change, so the table is retried next update.
+			sig_of[name] = result ~= "held" and sig or nil
+		end
+	end
 end
 
 --- Rows alternate their background, so a row that moved to an index of the other parity is restyled. Assigning a
 --- style drops style_mods, so the widths are set again.
+--- @param refs table row_refs
 --- @param row LuaGuiElement
 --- @param color "light"|"dark"
 --- @param w table stations column widths
-local function restyle_row(row, color, w)
+local function restyle_row(refs, row, color, w)
 	row.style = "ltnm_table_row_frame_" .. color
-	local c = row.children
 	local frame = "ltnm_small_slot_table_frame_" .. color
-	c[4].style = frame
-	c[4].style.width = w.provided_requested
-	local shipments = c[5].children[2]
-	shipments.style = frame
-	shipments.style.width = w.shipments
-	c[6].style = frame
-	c[6].style.width = w.control_signals
+	refs.pr_frame.style = frame
+	refs.pr_frame.style.width = w.provided_requested
+	refs.dl_frame.style = frame
+	refs.dl_frame.style.width = w.shipments
+	refs.ctl_frame.style = frame
+	refs.ctl_frame.style.width = w.control_signals
 end
 
 --- @param st SnapshotStation
@@ -692,6 +697,7 @@ local function row_def(st, m, color, item, widths)
 			{ type = "table", style = "slot_table", column_count = columns, children = children },
 		}
 	end
+	local net_sprite, net_caption, net_tooltip = m.network()
 	return util.hoverable({
 		type = "frame",
 		style = "ltnm_table_row_frame_" .. color,
@@ -711,15 +717,15 @@ local function row_def(st, m, color, item, widths)
 			style = "flib_indicator_flow",
 			style_mods = { width = w.station_status, vertical_align = "center" },
 			{ type = "sprite", style = "flib_indicator", sprite = "flib_indicator_" .. STATUS_COLOR[m.status] },
-			{ type = "label", caption = { status_key(m.status) }, tooltip = m.status_tooltip },
+			{ type = "label", caption = { status_key(m.status) }, tooltip = m.status_tooltip() },
 		},
 		{
 			type = "flow",
 			direction = "horizontal",
 			style_mods = { width = w.network, vertical_align = "center", horizontal_spacing = 4 },
-			tooltip = m.net_tooltip,
-			{ type = "sprite", sprite = m.net_sprite, resize_to_sprite = false, style_mods = { size = 24 }, ignored_by_interaction = true },
-			{ type = "label", caption = m.net_caption, ignored_by_interaction = true },
+			tooltip = net_tooltip,
+			{ type = "sprite", sprite = net_sprite, resize_to_sprite = false, style_mods = { size = 24 }, ignored_by_interaction = true },
+			{ type = "label", caption = net_caption, ignored_by_interaction = true },
 		},
 		slot_frame("provided_requested", defs.pr, w.provided_requested_columns),
 		{
@@ -741,13 +747,13 @@ local function row_def(st, m, color, item, widths)
 			-- Left-aligned like Last delivery and both headers: right-aligned, the two durations read as one.
 			style_mods = { width = w.wait },
 			caption = m.wait_caption,
-			tooltip = m.wait_full and { "cybersyn-gui.waiting-for", m.wait_full } or { "cybersyn-gui.stations-wait-none" },
+			tooltip = wait_tooltip(m),
 		},
 		{
 			type = "label",
 			style_mods = { width = w.last_delivery },
 			caption = m.last_caption,
-			tooltip = m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" },
+			tooltip = last_tooltip(m),
 		},
 	}, SCROLL), defs
 end
@@ -835,16 +841,22 @@ function stations_tab.build(map_data, player_data)
 					slots[name] = { keys = keys }
 				end
 				cells[id] = {
-					slots = slots, st = st, item = item, minute = minute, name = st.name, status = m.status, color = color,
-					net_sig = m.net_sig, dl_sig = m.dl_sig, wait_sig = m.wait_sig, last_sig = m.last_sig,
+					slots = slots, slot_sigs = slot_sigs(st, item, minute), name = st.name, status = m.status, color = color,
+					status_tip_sig = m.status_tip_sig, net_sig = m.net_sig, dl_sig = m.dl_sig, wait_sig = m.wait_sig,
+					last_sig = m.last_sig, wait_tip = m.wait_full or "", last_tip = m.last_full or "",
 				}
 				return def
+			end,
+			built = function(elem)
+				local cell = cells[id]
+				if cell then cell.refs = row_refs(elem) end
 			end,
 			-- A row that left the page becomes this one: its slot tables keep their buttons where the items match.
 			reuse = function(elem, old_id)
 				local old = old_cells[old_id]
-				old_cells[id] = { slots = old and old.slots, color = old and old.color }
-				for _, e in ipairs({ elem, elem.children[1] }) do
+				old_cells[id] = { slots = old and old.slots, color = old and old.color, refs = old and old.refs }
+				local r = cell_refs(old_cells[id], elem)
+				for _, e in ipairs({ elem, r.name }) do
 					local tags = e.tags
 					tags.station_id = id
 					e.tags = tags
@@ -853,12 +865,10 @@ function stations_tab.build(map_data, player_data)
 			update = function(elem)
 				local cell = old_cells[id] or {}
 				if cell.color ~= color then
-					restyle_row(elem, color, widths.stations)
+					restyle_row(cell_refs(cell, elem), elem, color, widths.stations)
 					cell.color = color
 				end
-				local settled = update_row(elem, st, m, cell, item, hold, minute)
-				cell.st, cell.item, cell.minute, cell.name, cell.status = settled and st or nil, item, minute, st.name, m.status
-				cell.net_sig, cell.dl_sig, cell.wait_sig, cell.last_sig = m.net_sig, m.dl_sig, m.wait_sig, m.last_sig
+				update_row(elem, st, m, cell, item, hold, minute, slot_sigs(st, item, minute))
 				cells[id] = cell
 			end,
 		}

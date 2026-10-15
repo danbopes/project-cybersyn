@@ -197,8 +197,11 @@ function manager.update_status(player_data)
 	local data_age = data_tick and util.format_duration(game.tick - data_tick) or "-"
 	label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
 	local caption
+	local collecting = collector.collecting()
 	if player_data.paused then
 		caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
+	elseif collecting then
+		caption = { "cybersyn-gui.collecting-progress", tostring(math.floor(collecting * 100)) }
 	else
 		caption = { "cybersyn-gui.updated-ago", age }
 		local hover = player_data.hover

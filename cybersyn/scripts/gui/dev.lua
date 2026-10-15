@@ -120,15 +120,34 @@ end
 
 local interface = {}
 
-function interface.open(pi)
+--- Opens the manager pinned. Unless `async`, a pass the opening started is finished at once and the tab rendered
+--- again, so a test or screenshot right after sees collected data; with `async` it runs over the next updates as for
+--- a player.
+function interface.open(pi, async)
 	local player, pd, refs = context(pi)
 	-- Pinned so no player.opened is needed (the lab player is offline).
 	pd.pinning = true
 	if not pd.is_manager_open then
 		manager.handle.manager_open(player, pd, refs)
+		if not async and collector.collecting() then
+			collector.run_to_completion()
+			manager.render(player, pd)
+		end
 	end
 	manager.refresh_toggles(pd)
 	return state(pi)
+end
+
+--- The title-bar status caption and the boosted pass progress (nil when no boosted pass runs).
+function interface.status(pi)
+	local _, pd, refs = context(pi)
+	local label = refs.manager_updated_label
+	return { caption = label and label.valid and label.caption or nil, collecting = collector.collecting(), snapshot_tick = collector.get().tick }
+end
+
+--- util.parse_rich_name, for checking the parser against names from a real save.
+function interface.parse_name(name)
+	return util.parse_rich_name(name)
 end
 
 function interface.close(pi)

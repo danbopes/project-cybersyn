@@ -150,9 +150,11 @@ test("empty: the snapshot shape", function()
 		secondary_count = 0,
 		stations = {},
 		trains = {},
+		trains_version = 0,
 		inventory_all = { provided = {}, requested = {}, in_transit = {} },
 		starved = {},
 		starved_items = {},
+		starved_count = 0,
 		starved_source = "snapshot",
 		starved_version = 0,
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {} },
@@ -252,8 +254,9 @@ test("full pass: provider record", function()
 		id = 1,
 		name = "Iron Mine",
 		name_lower = "iron mine",
-		-- PLAN3: §4.1 drops the tiebreak string and sorts on (name_lower, id).
-		tiebreak = "iron mine" .. "\0" .. "0000000001",
+		-- PLAN3 §4.1: no tiebreak string (sorts compare name_lower, then id); §4.2: parsed name and status.
+		name_parts = { lead = {}, text = "Iron Mine", tail = {}, lead_overflow = 0, tail_overflow = 0 },
+		status = "saturated",
 		surface_index = 1,
 		network_name = "signal-A",
 		network_mask = 1,
@@ -544,18 +547,49 @@ test("batch size: ceil(n / 20) clamped to 25..200", function()
 	assert_eq(storage.manager.snapshot_build.i, 200)
 end)
 
-test("ensure_fresh: collects when never collected or older than 600 ticks", function()
+-- PLAN3 §4.1: opening no longer collects synchronously; a missing or stale snapshot gets a boosted pass instead.
+test("ensure_fresh: never collected or older than 600 ticks boosts the next passes, nothing synchronous", function()
 	scenario()
+	storage.manager.players[1] = { is_manager_open = true }
 	collector.ensure_fresh()
+	assert_nil(collector.get().tick)
+	assert_true(storage.manager.collect_boost)
+	assert_eq(collector.collecting(), 0)
+	-- Six stations fit one boosted step (4 x the minimum batch), listing and trains included.
+	assert_true(collector.tick())
 	assert_eq(collector.get().tick, 1000)
+	assert_nil(storage.manager.collect_boost)
+	assert_nil(collector.collecting())
 	game.tick = 1600
 	collector.ensure_fresh()
-	assert_eq(collector.get().tick, 1000)
+	assert_nil(storage.manager.collect_boost)
 	game.tick = 1601
-	storage.manager.snapshot_build = { stale = true }
 	collector.ensure_fresh()
-	assert_eq(collector.get().tick, 1601)
+	assert_true(storage.manager.collect_boost)
+	assert_eq(collector.get().tick, 1000)
+	-- A pass in progress that started long ago is dropped; a recent one is kept and boosted.
+	storage.manager.snapshot_build = { started_tick = 1000, stale = true }
+	collector.ensure_fresh()
 	assert_nil(storage.manager.snapshot_build)
+	collector.step()
+	local b = storage.manager.snapshot_build
+	collector.ensure_fresh()
+	assert_same(storage.manager.snapshot_build, b)
+end)
+
+test("collecting: progress of the boosted pass", function()
+	scenario()
+	storage.manager.players[1] = { is_manager_open = true }
+	for id = 7, 106 do
+		storage.stations[id] = { entity_stop = stop("S" .. id), entity_comb1 = comb(WORKING, {}), network_name = "signal-A", network_mask = 1 }
+	end
+	collector.ensure_fresh()
+	-- 106 stations: default batch 25, boosted 100.
+	assert_false(collector.step(nil, 4))
+	assert_eq(collector.collecting(), 100 / 106)
+	assert_true(collector.tick())
+	assert_eq(collector.get().tick, 1000)
+	assert_nil(collector.collecting())
 end)
 
 test("aggregate: provided, active requests and incoming deliveries over the accepted stations", function()
@@ -662,7 +696,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		id = 1,
 		name = "Iron Mine",
 		name_lower = "iron mine",
-		tiebreak = "iron mine" .. "\0" .. "0000000001",
+		name_parts = { lead = {}, text = "Iron Mine", tail = {}, lead_overflow = 0, tail_overflow = 0 },
+		status = "no_power",
 		surface_index = 1,
 		network_name = "signal-A",
 		network_mask = 1,
@@ -689,7 +724,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		id = 2,
 		name = "Smelter",
 		name_lower = "smelter",
-		tiebreak = "smelter" .. "\0" .. "0000000002",
+		name_parts = { lead = {}, text = "Smelter", tail = {}, lead_overflow = 0, tail_overflow = 0 },
+		status = "disabled",
 		surface_index = 1,
 		network_name = "signal-A",
 		network_mask = 3,
@@ -910,4 +946,177 @@ test("longest_wait_start: the earliest start over active requests, whatever the 
 	-- iron-ore is below the threshold, so its earlier start does not count.
 	assert_eq(snap.stations[1].longest_wait_start, 10)
 	assert_eq(snap.stations[2].longest_wait_start, 10)
+end)
+
+-- ---------------------------------------------------------------- PLAN3 §4.1/§4.2: in-place refill, status, names
+
+test("refill: unchanged inputs keep the record and every subtable, and allocate no new request tables", function()
+	scenario()
+	collector.run_to_completion()
+	local snap = collector.get()
+	local before = {}
+	for id, st in pairs(snap.stations) do
+		before[id] = {
+			st = st, provided = st.provided, requested = st.requested, deliveries = st.deliveries, control = st.control,
+			control2 = st.control2, thresholds = st.thresholds, wait = st.wait, mask = st.network_mask,
+			parts = st.name_parts, reqs = H.copy(st.requested),
+		}
+		before[id].req_tables = {}
+		for hash, req in pairs(st.requested) do before[id].req_tables[hash] = req end
+	end
+	local trains = snap.trains
+	local train10, manifest10 = trains[10], trains[10].manifest
+	game.tick = 1100
+	collector.run_to_completion()
+	snap = collector.get()
+	assert_same(snap.trains, trains)
+	assert_same(snap.trains[10], train10)
+	assert_same(snap.trains[10].manifest, manifest10)
+	for id, b in pairs(before) do
+		local st = snap.stations[id]
+		assert_same(st, b.st, "record " .. id)
+		for _, field in ipairs({ "provided", "requested", "deliveries", "control", "control2", "thresholds", "wait" }) do
+			assert_same(st[field], b[field], field .. " of " .. id)
+		end
+		assert_same(st.network_mask, b.mask, "mask of " .. id)
+		assert_same(st.name_parts, b.parts, "name_parts of " .. id)
+		assert_eq(st.requested, b.reqs)
+		for hash, req in pairs(st.requested) do assert_same(req, b.req_tables[hash]) end
+	end
+end)
+
+test("refill: removed entries go, new ones arrive, and a changed manifest or mask is copied again", function()
+	scenario()
+	collector.run_to_completion()
+	local snap = collector.get()
+	local smelter = snap.stations[2]
+	local requested = smelter.requested
+	local each_mask = snap.stations[4].network_mask
+	local s2 = storage.stations[2]
+	s2.entity_comb1.signals = { sig("iron-ore", -1000), sig("gravel", -900) }
+	s2.deliveries = { gravel = 50 }
+	storage.stations[4].network_mask = { ["signal-A"] = 1, ["signal-B"] = 4 }
+	storage.trains[10].manifest = { { name = "coal", count = 1 } }
+	local old_manifest = snap.trains[10].manifest
+	game.tick = 1100
+	collector.run_to_completion()
+	snap = collector.get()
+	assert_same(snap.stations[2], smelter)
+	assert_same(smelter.requested, requested)
+	assert_eq(smelter.requested, {
+		["iron-ore"] = { count = -1000, threshold = 500, active = true },
+		gravel = { count = -900, threshold = 500, active = true },
+	})
+	assert_eq(smelter.deliveries, { gravel = 50 })
+	assert_eq(smelter.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20 })
+	assert_eq(snap.stations[4].network_mask, { ["signal-A"] = 1, ["signal-B"] = 4 })
+	assert_true(snap.stations[4].network_mask ~= each_mask)
+	assert_true(snap.stations[4].network_mask ~= storage.stations[4].network_mask)
+	assert_true(snap.trains[10].manifest ~= old_manifest)
+	assert_eq(snap.trains[10].manifest_hashes, { coal = 1 })
+	storage.trains[12] = nil
+	collector.run_to_completion()
+	assert_nil(collector.get().trains[12])
+	assert_eq(collector.get().train_count, 1)
+end)
+
+test("name_parts: parsed on first sight and again only after a rename", function()
+	scenario()
+	storage.stations[1].entity_stop.backer_name = "[item=iron-ore] Iron Mine [virtual-signal=signal-P]"
+	collector.run_to_completion()
+	local st = collector.get().stations[1]
+	assert_eq(st.name_parts, {
+		lead = { { sprite = "item/iron-ore" } }, text = "Iron Mine", tail = { { sprite = "virtual-signal/signal-P" } },
+		lead_overflow = 0, tail_overflow = 0,
+	})
+	assert_eq(st.name_lower, "[item=iron-ore] iron mine [virtual-signal=signal-p]")
+	local parts = st.name_parts
+	collector.run_to_completion()
+	assert_same(st.name_parts, parts)
+	storage.stations[1].entity_stop.backer_name = "Iron Mine 2"
+	collector.run_to_completion()
+	assert_eq(st.name, "Iron Mine 2")
+	assert_eq(st.name_lower, "iron mine 2")
+	assert_eq(st.name_parts.text, "Iron Mine 2")
+end)
+
+local function ladder_station(over)
+	local st = {
+		comb_ok = true, trains_limit = 2, warming_up = false, deliveries_total = 0, network_name = "signal-A",
+		network_mask = 1, requested = {}, last_delivery_tick = nil,
+	}
+	for k, v in pairs(over or {}) do st[k] = v end
+	return st
+end
+
+test("station_status: the ladder, first match wins", function()
+	mod_settings = { tps = 60 }
+	storage.total_ticks = 200000
+	local starved = { ["signal-A:coal"] = true }
+	local coal = { coal = { count = -5, threshold = 1, active = true } }
+	local s = collector.station_status
+	assert_eq(collector.STATUSES, { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok" })
+	-- Each rung beats every rung below it.
+	assert_eq(s(ladder_station({ comb_ok = false, trains_limit = 0, warming_up = true, requested = coal }), starved), "no_power")
+	assert_eq(s(ladder_station({ trains_limit = 0, warming_up = true, requested = coal }), starved), "disabled")
+	assert_eq(s(ladder_station({ warming_up = true, requested = coal, deliveries_total = 5 }), starved), "warming_up")
+	assert_eq(s(ladder_station({ requested = coal, deliveries_total = 5 }), starved), "starved")
+	assert_eq(s(ladder_station({ deliveries_total = 2 }), starved), "saturated")
+	assert_eq(s(ladder_station({ last_delivery_tick = 1 }), starved), "idle")
+	assert_eq(s(ladder_station(), starved), "ok")
+end)
+
+test("station_status: saturated means deliveries at a finite limit, nothing else", function()
+	mod_settings = { tps = 60 }
+	storage.total_ticks = 0
+	local s = collector.station_status
+	assert_eq(s(ladder_station({ trains_limit = 3, deliveries_total = 3 }), {}), "saturated")
+	assert_eq(s(ladder_station({ trains_limit = 3, deliveries_total = 4 }), {}), "saturated")
+	assert_eq(s(ladder_station({ trains_limit = 3, deliveries_total = 2 }), {}), "ok")
+	-- The Overview used to count these two as saturated too (B2).
+	assert_eq(s(ladder_station({ trains_limit = 0, deliveries_total = 1 }), {}), "disabled")
+	assert_eq(s(ladder_station({ trains_limit = 4294967295, deliveries_total = 9 }), {}), "ok")
+	assert_eq(s(ladder_station({ trains_limit = collector.UNLIMITED - 1, deliveries_total = collector.UNLIMITED }), {}), "saturated")
+end)
+
+test("station_status: starved needs an active request without a provider on one of its networks", function()
+	mod_settings = { tps = 60 }
+	storage.total_ticks = 0
+	local s = collector.station_status
+	local inactive = { coal = { count = -5, threshold = 10, active = false } }
+	local active = { coal = { count = -5, threshold = 1, active = true } }
+	assert_eq(s(ladder_station({ requested = inactive }), { ["signal-A:coal"] = true }), "ok")
+	assert_eq(s(ladder_station({ requested = active }), { ["signal-B:coal"] = true }), "ok")
+	assert_eq(s(ladder_station({ network_name = false, requested = active }), { ["signal-A:coal"] = true }), "ok")
+	local each = { network_name = NETWORK_EACH, network_mask = { ["signal-B"] = 1, ["signal-C"] = 2 }, requested = active }
+	assert_eq(s(ladder_station(each), { ["signal-C:coal"] = true }), "starved")
+	assert_eq(s(ladder_station(each), { ["signal-A:coal"] = true }), "ok")
+	assert_eq(collector.starved_hashes(ladder_station(each), { ["signal-C:coal"] = true }), { "coal" })
+	assert_false(collector.starved_hashes(ladder_station(each), {}))
+end)
+
+test("status: set once per pass, and a changed starved set reclassifies and logs the affected stations", function()
+	scenario()
+	collector.run_to_completion()
+	local snap = collector.get()
+	local status = {}
+	for id, st in pairs(snap.stations) do status[id] = st.status end
+	-- No train limit set reads as 0, i.e. disabled.
+	assert_eq(status, { [1] = "saturated", [2] = "disabled", [3] = "disabled", [4] = "disabled", [6] = "no_power" })
+	-- Smelter requests coal on signal-A, which nobody provides.
+	storage.stations[2].trains_limit = 3
+	storage.stations[4].trains_limit = 3
+	game.tick = 1100
+	collector.run_to_completion()
+	assert_eq(collector.get().stations[2].status, "starved")
+	-- Providers of coal and copper ore on signal-A appear: the finish of that pass sees the new set and reclassifies.
+	storage.stations[1].entity_comb1.signals = { sig("coal", 5000), sig("iron-ore", 500), sig("copper-ore", 500) }
+	game.tick = 1200
+	collector.run_to_completion()
+	snap = collector.get()
+	assert_eq(snap.stations[2].status, "ok")
+	-- Each still lacks coal on signal-B.
+	assert_eq(snap.stations[4].status, "starved")
+	local log = storage.manager.collect_log.ids
+	assert_eq(log[#log], 2)
 end)
