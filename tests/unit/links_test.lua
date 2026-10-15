@@ -1,5 +1,6 @@
--- B1 (PLAN3 §4.6): an entity GUI opened from a link of an unpinned manager must not close it, and once that GUI and
--- any GUI that replaced it have closed, the manager tick hands player.opened back to the manager window.
+-- B1 (PLAN3 §4.6): an entity GUI opened from a link of an unpinned manager must not close it. Closing that GUI hands
+-- player.opened back to the manager window at once when nothing else holds it; the manager tick confirms the hand-back
+-- and retries it once any GUI that replaced the linked one has closed.
 -- B5: a train without a locomotive gets an error instead of a silent no-op.
 
 local H = require("harness")
@@ -17,6 +18,7 @@ local function new_player(index)
 	local state = { opened = nil, gui_type = nil }
 	local player = setmetatable({
 		index = index, valid = true, _state = state, gui = { screen = {} }, set_shortcut_toggled = function() end,
+		controller_type = defines.controllers.character,
 	}, {
 		__index = function(_, k)
 			if k == "opened" then return state.opened end
@@ -47,6 +49,7 @@ local function setup(pinning)
 	storage.manager = { players = { [1] = pd } }
 	player.opened = window
 	game.tick = 500
+	mod_settings.manager_ups = 1
 	-- Paused with data shown, the manager tick neither collects nor renders: only the hand-back is under test.
 	pd.paused = true
 	pd.rendered_snapshot_tick = 1
@@ -67,7 +70,7 @@ local chest = { valid = true, name = "wooden-chest", unit_number = 79 }
 test("open_entity: records the target and opens it", function()
 	local _, _, util, player, pd = setup()
 	util.open_entity(player, pd, stop)
-	assert_eq(pd.return_to, { entity = stop, tick = 500 })
+	assert_eq(pd.return_to, { entity = stop, tick = 500, controller = defines.controllers.character })
 	assert_same(player.opened, stop)
 end)
 
@@ -75,9 +78,17 @@ test("closed_by_game: the manager stays open while its own link takes player.ope
 	local _, manager, util, player, pd = setup()
 	link(manager, util, player, pd, stop)
 	assert_true(pd.is_manager_open)
-	assert_true(pd.restore_opened)
+	assert_eq(pd.restore_opened, { entity = stop, controller = defines.controllers.character })
 	assert_nil(pd.return_to)
 	assert_same(player.opened, stop)
+end)
+
+test("closed_by_game: without a manager tick a link closes the window as before", function()
+	local _, manager, util, player, pd = setup()
+	mod_settings.manager_ups = 0
+	link(manager, util, player, pd, stop)
+	assert_false(pd.is_manager_open)
+	assert_nil(pd.restore_opened)
 end)
 
 test("closed_by_game: a close in a later tick is the player's and closes the window", function()
@@ -89,20 +100,123 @@ test("closed_by_game: a close in a later tick is the player's and closes the win
 	assert_false(pd.is_manager_open)
 end)
 
-test("on_gui_closed: never writes player.opened, the manager tick hands it back", function()
+test("on_gui_closed: closing the linked GUI hands player.opened back at once, so the next Escape closes", function()
 	local manager_gui, manager, util, player, pd, window = setup()
 	link(manager, util, player, pd, stop)
 	game.tick = 900
 	player.opened = nil
 	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
-	assert_nil(player.opened)
+	assert_same(player.opened, window)
+	assert_true(pd.restore_opened ~= nil)
+	-- The second Escape, before any manager tick.
+	game.tick = 912
+	player.opened = nil
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, element = window })
+	assert_false(pd.is_manager_open)
+	assert_nil(pd.restore_opened)
+end)
+
+test("on_gui_closed: the manager tick confirms a hand-back that held", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, stop)
+	game.tick = 900
+	player.opened = nil
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
+	game.tick = 960
 	manager_gui.tick(storage)
 	assert_same(player.opened, window)
 	assert_nil(pd.restore_opened)
-	game.tick = 1000
+	assert_nil(pd.handed_back_tick)
+end)
+
+test("on_gui_closed: the engine closing the window again in the hand-back tick leaves it to the manager tick", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, stop)
+	game.tick = 900
 	player.opened = nil
-	manager.handle.manager_closed_by_game(player, pd, pd.refs)
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
+	assert_same(player.opened, window)
+	player.opened = nil
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, element = window })
+	assert_true(pd.is_manager_open)
+	assert_true(pd.restore_opened ~= nil)
+	game.tick = 960
+	manager_gui.tick(storage)
+	assert_same(player.opened, window)
+	assert_nil(pd.restore_opened)
+end)
+
+test("on_gui_closed: a hand-back force-closed by a replacing GUI is retried once that GUI closes", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	link(manager, util, player, pd, stop)
+	player.opened = nil
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
+	-- The chest the player clicked takes player.opened with no event for the manager window.
+	player.opened = chest
+	game.tick = 560
+	manager_gui.tick(storage)
+	assert_same(player.opened, chest)
+	assert_true(pd.restore_opened ~= nil)
+	player.opened = nil
+	game.tick = 620
+	manager_gui.tick(storage)
+	assert_same(player.opened, window)
+	assert_nil(pd.restore_opened)
+end)
+
+test("on_gui_closed: another entity closing does not hand back", function()
+	local manager_gui, manager, util, player, pd = setup()
+	link(manager, util, player, pd, stop)
+	player.opened = nil
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = chest })
+	assert_nil(player.opened)
+	assert_true(pd.restore_opened ~= nil)
+end)
+
+test("remote view while a hand-back is pending closes the unpinned manager", function()
+	local manager_gui, manager, util, player, pd = setup()
+	link(manager, util, player, pd, stop)
+	player.opened = nil
+	player.controller_type = defines.controllers.remote
+	game.tick = 560
+	manager_gui.tick(storage)
 	assert_false(pd.is_manager_open)
+	assert_nil(pd.restore_opened)
+	assert_nil(player.opened)
+end)
+
+test("remote view: the linked GUI closing on the switch leaves the decision to the manager tick", function()
+	local manager_gui, manager, util, player, pd = setup()
+	link(manager, util, player, pd, stop)
+	player.opened = nil
+	player.controller_type = defines.controllers.remote
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = stop })
+	assert_true(pd.is_manager_open)
+	assert_nil(player.opened)
+	game.tick = 560
+	manager_gui.tick(storage)
+	assert_false(pd.is_manager_open)
+end)
+
+test("locomotive on another surface: its remote view while the GUI is open does not close the manager", function()
+	local manager_gui, manager, util, player, pd, window = setup()
+	local loco = { valid = true, name = "locomotive", unit_number = 80 }
+	link(manager, util, player, pd, loco)
+	player.controller_type = defines.controllers.remote
+	game.tick = 560
+	manager_gui.tick(storage)
+	assert_true(pd.is_manager_open)
+	assert_same(player.opened, loco)
+	-- Escape: on_gui_closed still in remote view, the controller is back by the next manager tick.
+	player.opened = nil
+	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = loco })
+	assert_true(pd.is_manager_open)
+	assert_nil(player.opened)
+	player.controller_type = defines.controllers.character
+	game.tick = 620
+	manager_gui.tick(storage)
+	assert_same(player.opened, window)
+	assert_nil(pd.restore_opened)
 end)
 
 test("tick: waits while the linked GUI is still open", function()
@@ -110,7 +224,7 @@ test("tick: waits while the linked GUI is still open", function()
 	link(manager, util, player, pd, stop)
 	manager_gui.tick(storage)
 	assert_same(player.opened, stop)
-	assert_true(pd.restore_opened)
+	assert_true(pd.restore_opened ~= nil)
 end)
 
 test("tick: a GUI that replaced the linked one is waited out", function()
@@ -121,7 +235,7 @@ test("tick: a GUI that replaced the linked one is waited out", function()
 	player.opened = chest
 	manager_gui.tick(storage)
 	assert_same(player.opened, chest)
-	assert_true(pd.restore_opened)
+	assert_true(pd.restore_opened ~= nil)
 	player.opened = nil
 	manager_gui.tick(storage)
 	assert_same(player.opened, window)

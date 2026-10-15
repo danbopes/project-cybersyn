@@ -402,18 +402,22 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 	if player_data.pinning or not player_data.is_manager_open then return end
 	-- A link of this window just opened an entity GUI: stay on screen and take player.opened back once it is closed.
 	local return_to = player_data.return_to
-	if return_to and return_to.tick == game.tick then
+	-- Without a manager tick (updates per second 0) nothing would ever hand player.opened back.
+	if return_to and return_to.tick == game.tick and mod_settings.manager_ups > DELTA then
 		player_data.return_to = nil
-		player_data.restore_opened = true
+		player_data.restore_opened = { entity = return_to.entity, controller = return_to.controller }
 		return
 	end
+	if player_data.restore_opened and player_data.handed_back_tick == game.tick then return end
 	manager.handle.manager_close(player, player_data, refs)
 end
 
 --- Gives player.opened back to an unpinned manager whose link opened another GUI, once no GUI holds player.opened.
---- Runs on the manager tick, never inside on_gui_closed: a GUI opened there while the engine is switching to another
---- GUI is force-closed without an event. opened_gui_type, not opened, tells whether a GUI is open: the trains overview,
---- production statistics and similar GUIs read as opened == nil.
+--- Runs on the manager tick and from on_gui_closed of the linked entity; only the manager tick may call it done,
+--- because a GUI opened inside on_gui_closed while the engine is switching to another GUI is force-closed without an
+--- event. opened_gui_type, not opened, tells whether a GUI is open: the trains overview, production statistics and
+--- similar GUIs read as opened == nil. Remote view closes an unpinned manager (PLAN3 §4.6), also while a hand-back
+--- is pending.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @return boolean done
@@ -423,6 +427,13 @@ function manager.restore_opened(player, player_data)
 	if player_data.pinning or not player_data.is_manager_open or not (window and window.valid) then return true end
 	if player.opened == window then return true end
 	if player.opened_gui_type ~= defines.gui_type.none then return false end
+	-- Checked only once no GUI is open: a locomotive on another surface opens its GUI in remote view and leaves it
+	-- when that GUI closes.
+	local pending = player_data.restore_opened
+	if pending and pending.controller and player.controller_type ~= pending.controller then
+		manager.handle.manager_close(player, player_data, refs)
+		return true
+	end
 	player.opened = window
 	return player.opened == window
 end

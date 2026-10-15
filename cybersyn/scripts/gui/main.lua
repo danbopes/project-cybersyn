@@ -32,8 +32,9 @@ local util = require("scripts.gui.util")
 --- @field last_update_tick uint? game tick of the last render
 --- @field rendered_snapshot_tick uint? snapshot tick shown by the last render
 --- @field pinning boolean
---- @field return_to {entity: LuaEntity, tick: uint}? entity GUI a manager link opened, see util.open_entity
---- @field restore_opened true? player.opened goes back to the unpinned manager once no other GUI holds it
+--- @field return_to {entity: LuaEntity, tick: uint, controller: defines.controllers}? entity GUI a manager link opened, see util.open_entity
+--- @field restore_opened {entity: LuaEntity, controller: defines.controllers}? player.opened goes back to the unpinned manager once no other GUI holds it
+--- @field handed_back_tick uint? game tick on_gui_closed last handed player.opened back, see manager.handle.manager_closed_by_game
 --- @field selected_tab string? "overview_tab"|"inventory_tab"|"stations_tab"|"trains_tab"|"utilization_tab"|"delivery_breakdown_tab"
 --- @field previous_tab string?
 --- @field delivery_times_interval uint?
@@ -95,6 +96,18 @@ end
 --- @param e EventData.on_gui_closed
 function manager_gui.on_gui_closed(e)
 	manager_gui.on_lua_shortcut(e)
+	-- Closing the GUI a link opened hands player.opened back at once when nothing else holds it, so a second Escape
+	-- closes the manager instead of opening the game menu. restore_opened stays set: the engine may still close the
+	-- window again in this tick (locomotive GUI) or force-close it without an event while it switches to another GUI,
+	-- and the manager tick then retries.
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	local pending = player_data and player_data.restore_opened
+	if not (pending and e.entity and e.entity == pending.entity) then return end
+	local player = game.get_player(e.player_index)
+	-- A controller switch still in progress (remote view entered or left) is settled on the manager tick.
+	if not player or player.controller_type ~= pending.controller then return end
+	player_data.handed_back_tick = game.tick
+	manager.restore_opened(player, player_data)
 end
 
 --- Fields absent from PlayerData in older saves.
@@ -279,6 +292,7 @@ function manager_gui.tick(storage)
 			local player = game.get_player(i)
 			if player and v.restore_opened and manager.restore_opened(player, v) then
 				v.restore_opened = nil
+				v.handed_back_tick = nil
 			end
 			if player then
 				surface_count = surface_count or #game.surfaces

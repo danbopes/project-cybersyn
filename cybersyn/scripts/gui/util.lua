@@ -995,7 +995,7 @@ end
 --- @param player_data PlayerData
 --- @param entity LuaEntity
 function util.open_entity(player, player_data, entity)
-	player_data.return_to = { entity = entity, tick = game.tick }
+	player_data.return_to = { entity = entity, tick = game.tick, controller = player.controller_type }
 	player.opened = entity
 end
 
@@ -1011,6 +1011,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.is_manager_open = false
 	player_data.return_to = nil
 	player_data.restore_opened = nil
+	player_data.handed_back_tick = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.stations_query = nil
