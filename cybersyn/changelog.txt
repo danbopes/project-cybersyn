@@ -4,7 +4,7 @@ Date: 2026-03-30
   Features:
     - (Manager) Add filter history to Manager's top bar
     - (Manager) Add cross-mod interop protocol support
-    - (Manager facelift) New Overview tab, the default on first open: Stations (with networks), Fleet (with alerts), Depots, Demand and Deliveries tiles, and six equal panels with aligned value columns that page by whole rows: starved requests, open requests waiting longest, top items in transit, items delivered, slowest fulfilled requests and saturated stations
+    - (Manager facelift) New Overview tab, the default on first open: Stations (with networks), Fleet (with alerts), Depots, Demand and Deliveries tiles, and six equal panels with aligned value columns that page by whole rows: starved requests, longest open waits, top items in transit, items delivered, slowest fulfilled and saturated stations
     - (Manager facelift) Overview period selector (last 10 min, last hour, last 24 h) for deliveries, items delivered, dispatches, trip time and request waits; every figure says whether it covers the period or the network right now
     - (Manager facelift) Request wait statistics per minute and hour (average, maximum and the slowest fulfilled request), kept in fixed-size rings so neither UPS nor the save grows with time
     - (Manager facelift) Pause and Pin toggles in the title bar, with an "Updated N ago" indicator

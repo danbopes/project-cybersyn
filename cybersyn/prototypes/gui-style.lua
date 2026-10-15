@@ -610,11 +610,14 @@ styles.cybersyn_overview_panel_row = {
 	horizontally_stretchable = "on",
 }
 
+-- Fixed like the tiles: a stretched frame grows with its natural content, so a panel whose header or names were
+-- wider ended up wider than its neighbours and the two rows' edges drifted apart. Three panels and two 12 px gaps
+-- equal the tile row (5 x 228 + 4 x 12).
 styles.cybersyn_overview_panel = {
 	type = "frame_style",
 	parent = "inside_deep_frame",
-	minimal_width = 330,
-	horizontally_stretchable = "on",
+	width = 388,
+	horizontally_squashable = "on",
 	vertical_flow_style = {
 		type = "vertical_flow_style",
 		vertical_spacing = 0,
