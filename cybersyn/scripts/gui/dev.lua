@@ -1,4 +1,6 @@
--- Test hooks for driving the manager headlessly over RCON (remote interface "cybersyn-manager-dev").
+-- Test hooks for driving the manager headlessly over RCON (remote interface "cybersyn-manager-dev"). Dev only: not a
+-- stable API, and nothing in the mod or its compatibility code calls it. It is registered unconditionally because a
+-- remote interface that depends on a setting or game state would differ between a server and a joining client.
 -- Tab modules register dumpers here, so this file must not require the tab modules or manager.lua.
 
 local flib_gui = require("__flib__.gui")
@@ -229,6 +231,22 @@ function interface.tick(n)
 	end)
 end
 
+--- One manager tick for player `pi`, its collector step and render timed separately, with the heap change (a drop
+--- means a garbage collection cycle finished inside it); flags a completed pass.
+function interface.tick_split(pi)
+	local player, pd = context(pi)
+	local before = collector.get().tick
+	local heap = collectgarbage("count")
+	local step = game.create_profiler()
+	collector.tick()
+	step.stop()
+	local render = game.create_profiler()
+	manager.render(player, pd)
+	render.stop()
+	return { "", "step ", step, " render ", render, " heap ", math.floor(collectgarbage("count") - heap), " KB",
+		collector.get().tick ~= before and " (pass done)" or "" }
+end
+
 --- Times `n` collector steps at the default batch size, then one full pass.
 function interface.bench_collect(n)
 	n = n or 1
@@ -239,6 +257,25 @@ function interface.bench_collect(n)
 	storage.manager.snapshot_build = nil
 	local full = profile(1, collector.run_to_completion)
 	return { "", "steps: ", steps, "\nfull pass: ", full }
+end
+
+--- Times every budgeted collector step of one fresh pass, plus the render of player `pi` after each, separately.
+--- Returns one LocalisedString per step.
+function interface.bench_pass(pi)
+	local pd = pi and select(2, context(pi))
+	storage.manager.snapshot_build = nil
+	local out = {}
+	local done = false
+	while not done do
+		local step = game.create_profiler()
+		done = collector.step()
+		step.stop()
+		local render = game.create_profiler()
+		if pd then manager.update(storage, pd) end
+		render.stop()
+		out[#out + 1] = { "", #out + 1, done and " (last)" or "", " step ", step, " render ", render }
+	end
+	return out
 end
 
 function interface.dump(pi, tab)
@@ -333,11 +370,15 @@ function interface.check_dispatch()
 	}
 end
 
---- Writes a runtime-global setting of this mod from the mod's own context, which script-driven tests
+--- Writes a runtime-global setting of this mod (no other mod's) from the mod's own context, which script-driven tests
 --- cannot do from level scope. Fires on_runtime_mod_setting_changed like a change from the settings GUI.
 --- @param name string
 --- @param value boolean|number|string
 function interface.set_setting(name, value)
+	local proto = type(name) == "string" and prototypes.mod_setting[name]
+	if not (proto and proto.mod == script.mod_name and proto.setting_type == "runtime-global") then
+		error("not a runtime-global setting of " .. script.mod_name .. ": " .. tostring(name))
+	end
 	settings.global[name] = { value = value }
 	return settings.global[name].value
 end

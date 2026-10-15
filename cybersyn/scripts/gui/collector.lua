@@ -318,7 +318,7 @@ local function start_pass(manager)
 		log.base = log.base + #log.ids
 		log.ids = {}
 	end
-	summarize_trains(b)
+	b.trains_pending = true
 	manager.snapshot_build = b
 	return b
 end
@@ -661,9 +661,15 @@ end
 function collector.step(budget)
 	local manager = storage.manager
 	local b = manager.snapshot_build
+	-- Listing the stations and summarising the fleet each cost about as much as a batch of stations, so a budgeted
+	-- step does only one of them.
 	if not b then
 		b = start_pass(manager)
-		-- Summarising the fleet costs about as much as a batch of stations, so a budgeted step stops here.
+		if not budget then return false end
+	end
+	if b.trains_pending then
+		b.trains_pending = nil
+		summarize_trains(b)
 		if not budget then return false end
 	end
 	local ids = b.ids

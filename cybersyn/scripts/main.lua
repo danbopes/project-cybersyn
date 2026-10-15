@@ -901,6 +901,12 @@ local function on_settings_changed(event)
 	grab_all_settings()
 	if event.setting == "cybersyn-ticks-per-second" or event.setting == "cybersyn-manager-updates-per-second" then
 		register_tick()
+	elseif event.setting == "cybersyn-track-request-wait-times" then
+		-- The poll clears start ticks only when it reaches a station, so a quick off/on toggle would keep starts from
+		-- before the off period and record waits that include it.
+		for _, station in pairs(storage.stations) do
+			clear_all_request_tracking(station)
+		end
 	end
 	manager.on_runtime_mod_setting_changed(event)
 	interface_raise_on_mod_settings_changed(event)

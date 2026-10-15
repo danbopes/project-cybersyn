@@ -103,17 +103,22 @@ function inventory_tab.create()
 			name = "manager_inventory_content_frame",
 			type = "flow",
 			direction = "vertical",
-			-- Same height as the other tabs, so the window does not grow below them; without the empty-filter
-			-- label the grids get exactly 17 slot rows.
+			-- Same height as the other tabs, so the window does not grow below them; the grids get exactly 18 slot rows.
 			style_mods = { vertical_spacing = SPACING, height = constants.gui_content_frame_height },
 			sort_toolbar_def(),
 			{
-				name = "inventory_empty_label",
-				type = "label",
-				style = "ltnm_semibold_label",
+				name = "inventory_empty_flow",
+				type = "flow",
+				style = "ltnm_warning_flow",
 				visible = false,
+				{
+					name = "inventory_empty_label",
+					type = "label",
+					style = "ltnm_semibold_label",
+				},
 			},
 			{
+				name = "inventory_grids_flow",
 				type = "flow",
 				direction = "horizontal",
 				style_mods = { horizontal_spacing = 12, vertically_stretchable = true },
@@ -625,6 +630,15 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 	local bucket = inv[grid]
 	local top_bucket = cache.top[grid]
 	local hashes = ordered_hashes(cache, grid, column, ascending)
+	-- On a large base the filtered item is usually far down a grid, where its highlight would go unseen, so it
+	-- leads every grid it is in. The cached order is shared, so this works on a copy.
+	if selected and bucket[selected] then
+		local pinned = { selected }
+		for _, hash in ipairs(hashes) do
+			if hash ~= selected then pinned[#pinned + 1] = hash end
+		end
+		hashes = pinned
+	end
 	local is_requested = grid == "requested"
 	local base_color = grid == "provided" and "green" or "blue"
 	local ctx = {
@@ -659,17 +673,21 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 	return ctx, entries
 end
 
---- Empty grids alone do not say whether nothing matches or nothing has been collected yet.
---- @param label LuaGuiElement?
-local function render_empty_label(label, snapshot, f, inv)
-	if not (label and label.valid) then return end
+--- Empty grids alone do not say whether nothing matches or nothing has been collected yet. The message replaces
+--- the grids, centred like the empty state of the Stations and Trains tabs.
+--- @param refs table<string, LuaGuiElement>
+local function render_empty_label(refs, snapshot, f, inv)
+	local label, flow, grids = refs.inventory_empty_label, refs.inventory_empty_flow, refs.inventory_grids_flow
+	if not (label and label.valid and flow and flow.valid and grids and grids.valid) then return end
 	local key
 	if not snapshot.tick then
 		key = "cybersyn-gui.stations-collecting"
 	elseif not (next(inv.provided) or next(inv.requested) or next(inv.in_transit)) then
 		key = util.filters_active(f, true) and "cybersyn-gui.inventory-no-match" or "cybersyn-gui.inventory-empty"
 	end
-	if label.visible ~= (key ~= nil) then label.visible = key ~= nil end
+	local show = key ~= nil
+	if flow.visible ~= show then flow.visible = show end
+	if grids.visible == show then grids.visible = not show end
 	if key and label.tags.key ~= key then
 		label.caption = { key }
 		label.tags = { key = key }
@@ -688,7 +706,7 @@ function inventory_tab.build(map_data, player_data)
 	local cache, rebuilt = get_cache(player_data, snapshot, f)
 	-- A background refresh aggregates on one render and applies on the next, so neither carries both costs.
 	if rebuilt and cache.background then return end
-	render_empty_label(refs.inventory_empty_label, snapshot, f, cache.inv)
+	render_empty_label(refs, snapshot, f, cache.inv)
 	local version = cache.version
 	local selected = f.item
 	local now = game.tick

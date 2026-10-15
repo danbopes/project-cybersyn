@@ -245,8 +245,8 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 		end
 	end
 	local cache = {
-		epoch = epoch, pos = pos, fsig = fsig, column = column, starved_version = snapshot.starved_version,
-		status = status, keys = keys, counts = counts, dirty = true,
+		epoch = epoch, pos = pos, fsig = fsig, column = column, starved_version = snapshot.starved_version, starved = starved,
+		status = status, keys = keys, counts = counts, dirty = true, changed = {},
 	}
 	player_data.stations_query = cache
 	return cache
@@ -258,6 +258,11 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 	local starved = snapshot.starved
 	local key_fn = sort_keys[cache.column]
 	local status, keys, counts = cache.status, cache.keys, cache.counts
+	local changed = cache.changed
+	if not changed then
+		changed = {}
+		cache.changed = changed
+	end
 	local ctx = { status = status }
 	for i = first, last do
 		local id = ids[i]
@@ -274,12 +279,16 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 				counts.all = counts.all + 1
 			end
 			status[id] = new
-			if not old or not new then cache.dirty = true end
+			if not old or not new then
+				cache.dirty = true
+				changed[id] = true
+			end
 		end
 		local key = new and key_fn(st, ctx) or nil
 		if keys[id] ~= key then
 			keys[id] = key
 			cache.dirty = true
+			changed[id] = true
 		end
 	end
 end
@@ -289,6 +298,87 @@ end
 local function tiebreak_of(stations, id)
 	local st = stations[id]
 	return st.tiebreak or string.format("%s\0%010d", st.name_lower, id)
+end
+
+--- Stations in the cached set whose status a change of the starved set can flip: those with an active request for
+--- an item that became or stopped being starved. Re-classifying only these is far cheaper than a rebuild, and the
+--- set changes on most passes on a large base.
+--- @return uint[]
+local function starved_affected(cache, snapshot)
+	local old, new = cache.starved, snapshot.starved
+	local items = {}
+	local any = false
+	for key in pairs(old) do
+		if not new[key] then
+			items[string.match(key, ":(.*)$") or key] = true
+			any = true
+		end
+	end
+	for key in pairs(new) do
+		if not old[key] then
+			items[string.match(key, ":(.*)$") or key] = true
+			any = true
+		end
+	end
+	local ids = {}
+	if not any then return ids end
+	local stations = snapshot.stations
+	for id in pairs(cache.status) do
+		local st = stations[id]
+		if st then
+			for hash, req in pairs(st.requested) do
+				if req.active and items[hash] then
+					ids[#ids + 1] = id
+					break
+				end
+			end
+		end
+	end
+	return ids
+end
+
+--- Sorting every station costs about 3 ms on a 2,000-station base and a pass changes the keys of only some of
+--- them, so the previous order is kept for the rest and the re-sorted changed ids are merged into it.
+--- @return uint[]? order nil when so many ids changed that a full sort is cheaper
+local function merge_changes(cache, stations, ascending)
+	local keys, status, changed = cache.keys, cache.status, cache.changed
+	local moved = {}
+	for id in pairs(changed) do
+		if status[id] then moved[#moved + 1] = id end
+	end
+	local old = cache.order
+	if #moved * 4 > #old then return nil end
+	util.sort_by(moved, function(id) return keys[id] end, ascending, function(id) return tiebreak_of(stations, id) end)
+	-- Same order as util.sort_by: key in the requested direction with nil last, then tiebreak ascending.
+	local function less(a, b)
+		local ka, kb = keys[a], keys[b]
+		if ka ~= kb then
+			if ka == nil then return false end
+			if kb == nil then return true end
+			if ascending then return ka < kb end
+			return ka > kb
+		end
+		local sa, sb = stations[a], stations[b]
+		return (sa.tiebreak or tiebreak_of(stations, a)) < (sb.tiebreak or tiebreak_of(stations, b))
+	end
+	local order = {}
+	local n, j, m = 0, 1, #moved
+	for _, id in ipairs(old) do
+		if status[id] and not changed[id] then
+			while j <= m and less(moved[j], id) do
+				n = n + 1
+				order[n] = moved[j]
+				j = j + 1
+			end
+			n = n + 1
+			order[n] = id
+		end
+	end
+	for k = j, m do
+		n = n + 1
+		order[n] = moved[k]
+	end
+	return order
 end
 
 --- Filters, classifies and sorts the snapshot stations. The status filter applies after counting so the chips
@@ -316,28 +406,43 @@ function stations_tab.query(player_data)
 	local epoch, pos = collector.log_position()
 	local cache = player_data.stations_query
 	local ids, first, last
-	if cache and cache.fsig == fsig and cache.column == column and cache.starved_version == snapshot.starved_version then
+	if cache and cache.fsig == fsig and cache.column == column and cache.starved then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
 	end
 	if ids then
 		apply_changes(cache, snapshot, f, ids, first, last)
 		cache.pos = pos
+		if cache.starved_version ~= snapshot.starved_version then
+			local affected = starved_affected(cache, snapshot)
+			apply_changes(cache, snapshot, f, affected, 1, #affected)
+			cache.starved_version = snapshot.starved_version
+			cache.starved = snapshot.starved
+		end
 	else
 		cache = rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	end
 	local status = cache.status
 	local ctx = { status = status, now = game.tick, snapshot = snapshot }
 
-	if not cache.order or cache.ascending ~= ascending or (cache.dirty and cache.sorted_tick ~= snapshot.tick) then
+	local resort = not cache.order or cache.ascending ~= ascending
+	-- A data-driven re-sort waits for the update after the one that completed the pass, which carries the pass's
+	-- last collector batch; the next one carries only the cheap start of a new pass.
+	if resort or (cache.dirty and cache.sorted_tick ~= snapshot.tick and snapshot.tick ~= game.tick) then
 		local keys = cache.keys
-		local order = {}
-		for id in pairs(status) do order[#order + 1] = id end
+		local function key_of(id) return keys[id] end
 		local function tiebreak(id) return tiebreak_of(stations, id) end
-		util.sort_by(order, function(id) return keys[id] end, ascending, tiebreak)
+		local order = not resort and merge_changes(cache, stations, ascending) or nil
+		cache.sort_kind = order and "merged" or "full"
+		if not order then
+			order = {}
+			for id in pairs(status) do order[#order + 1] = id end
+			util.sort_by(order, key_of, ascending, tiebreak)
+		end
 		cache.order = order
 		cache.ascending = ascending
 		cache.sorted_tick = snapshot.tick
 		cache.dirty = false
+		cache.changed = {}
 	end
 
 	local rows = {}
@@ -348,22 +453,6 @@ function stations_tab.query(player_data)
 		end
 	end
 	return rows, cache.counts, ctx, column, ascending
-end
-
---- Compact so it fits a narrow column; full precision is in the tooltip.
---- @param ticks number
---- @return string
---- @return LocalisedString caption
---- @return string sig plain value to compare between updates, since LocalisedStrings are fresh tables
-local function short_duration(ticks)
-	local s = math.floor(ticks / 60)
-	if s < 60 then return { "cybersyn-gui.duration-short-s", s }, "s" .. s end
-	local m = math.floor(s / 60)
-	if m < 60 then return { "cybersyn-gui.duration-short-m", m }, "m" .. m end
-	local h = math.floor(m / 60)
-	if h < 24 then return { "cybersyn-gui.duration-short-hm", h, m % 60 }, "h" .. m end
-	local d = math.floor(h / 24)
-	return { "cybersyn-gui.duration-short-dh", d, h % 24 }, "d" .. h
 end
 
 local NONE_CAPTION = { "cybersyn-gui.none-short" }
@@ -425,7 +514,8 @@ local function row_model(st, ctx)
 
 	local start = st.longest_wait_start
 	if start then
-		m.wait_caption, m.wait_sig = short_duration(now - start)
+		m.wait_caption = util.short_duration(now - start)
+		m.wait_sig = m.wait_caption
 	else
 		m.wait_caption, m.wait_sig = NONE_CAPTION, ""
 	end
@@ -433,7 +523,8 @@ local function row_model(st, ctx)
 
 	local age = delivery_age(st)
 	if age then
-		m.last_caption, m.last_sig = short_duration(age)
+		m.last_caption = util.short_duration(age)
+		m.last_sig = m.last_caption
 	else
 		m.last_caption, m.last_sig = NONE_CAPTION, ""
 	end
@@ -567,6 +658,24 @@ local function update_row(row, st, m, cell, item, hold, minute)
 	return a ~= "held" and b ~= "held" and d ~= "held"
 end
 
+--- Rows alternate their background, so a row that moved to an index of the other parity is restyled. Assigning a
+--- style drops style_mods, so the widths are set again.
+--- @param row LuaGuiElement
+--- @param color "light"|"dark"
+--- @param w table stations column widths
+local function restyle_row(row, color, w)
+	row.style = "ltnm_table_row_frame_" .. color
+	local c = row.children
+	local frame = "ltnm_small_slot_table_frame_" .. color
+	c[4].style = frame
+	c[4].style.width = w.provided_requested
+	local shipments = c[5].children[2]
+	shipments.style = frame
+	shipments.style.width = w.shipments
+	c[6].style = frame
+	c[6].style.width = w.control_signals
+end
+
 --- @param st SnapshotStation
 --- @param m table row model
 --- @param color "light"|"dark"
@@ -629,14 +738,13 @@ local function row_def(st, m, color, item, widths)
 		slot_frame("control_signals", defs.ctl, w.control_signals_columns),
 		{
 			type = "label",
-			style_mods = { width = w.wait, horizontal_align = "right" },
+			-- Left-aligned like Last delivery and both headers: right-aligned, the two durations read as one.
+			style_mods = { width = w.wait },
 			caption = m.wait_caption,
 			tooltip = m.wait_full and { "cybersyn-gui.waiting-for", m.wait_full } or { "cybersyn-gui.stations-wait-none" },
 		},
 		{
 			type = "label",
-			-- Left-aligned to sit under its header: restyling a sort checkbox drops style_mods, so the header cannot be
-			-- right-aligned.
 			style_mods = { width = w.last_delivery },
 			caption = m.last_caption,
 			tooltip = m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" },
@@ -727,13 +835,27 @@ function stations_tab.build(map_data, player_data)
 					slots[name] = { keys = keys }
 				end
 				cells[id] = {
-					slots = slots, st = st, item = item, minute = minute, name = st.name, status = m.status,
+					slots = slots, st = st, item = item, minute = minute, name = st.name, status = m.status, color = color,
 					net_sig = m.net_sig, dl_sig = m.dl_sig, wait_sig = m.wait_sig, last_sig = m.last_sig,
 				}
 				return def
 			end,
+			-- A row that left the page becomes this one: its slot tables keep their buttons where the items match.
+			reuse = function(elem, old_id)
+				local old = old_cells[old_id]
+				old_cells[id] = { slots = old and old.slots, color = old and old.color }
+				for _, e in ipairs({ elem, elem.children[1] }) do
+					local tags = e.tags
+					tags.station_id = id
+					e.tags = tags
+				end
+			end,
 			update = function(elem)
 				local cell = old_cells[id] or {}
+				if cell.color ~= color then
+					restyle_row(elem, color, widths.stations)
+					cell.color = color
+				end
 				local settled = update_row(elem, st, m, cell, item, hold, minute)
 				cell.st, cell.item, cell.minute, cell.name, cell.status = settled and st or nil, item, minute, st.name, m.status
 				cell.net_sig, cell.dl_sig, cell.wait_sig, cell.last_sig = m.net_sig, m.dl_sig, m.wait_sig, m.last_sig
@@ -741,7 +863,7 @@ function stations_tab.build(map_data, player_data)
 			end,
 		}
 	end
-	local result = util.sync_children(scroll_pane, entries, state, hold)
+	local result = util.sync_children(scroll_pane, entries, state, hold, true)
 	if result == "held" then
 		-- Rows that left the page keep their memo until the hold ends and they are rebuilt.
 		for id, cell in pairs(old_cells) do
@@ -775,10 +897,15 @@ dev.register_dump(TAB, function(player_data)
 	local rows, counts, ctx, column, ascending = stations_tab.query(player_data)
 	local key_fn = sort_keys[column]
 	local ids, keys, statuses = {}, {}, {}
+	local stripes_ok = true
 	local by_id = ctx.snapshot.stations
 	for i, row in ipairs(scroll_pane.children) do
 		local id = row.tags.station_id
 		ids[i] = id
+		local color = i % 2 == 0 and "dark" or "light"
+		if row.style.name ~= "ltnm_table_row_frame_" .. color or row.children[4].style.name ~= "ltnm_small_slot_table_frame_" .. color then
+			stripes_ok = false
+		end
 		local st = by_id[id]
 		keys[i] = st and key_fn(st, ctx)
 		statuses[i] = ctx.status[id]
@@ -804,6 +931,8 @@ dev.register_dump(TAB, function(player_data)
 		warning = player_data.refs.manager_stations_warning_flow.visible,
 		chips = chips,
 		render = util.gui_state(player_data, SCROLL).result,
+		sort_kind = player_data.stations_query and player_data.stations_query.sort_kind,
+		stripes_ok = stripes_ok,
 	}
 end)
 

@@ -11,6 +11,7 @@ local stations_tab = require("scripts.gui.stations")
 --- @class PlayerData
 --- @field overview_period int? minutes covered by the Overview's period figures: 10, 60 or 1440; see get_period
 --- @field overview_offsets {[string]: int}? first row shown per Overview panel, a multiple of the panel capacity
+--- @field overview_cache {view_key: string, data_key: string, base: table, build: table?}? snapshot-derived Overview figures, see cached_snapshot_model
 
 local overview_tab = {}
 
@@ -19,10 +20,9 @@ local TAB = "overview_tab"
 local PERIODS = { 10, 60, 1440 }
 local DEFAULT_PERIOD = 60
 
--- Vertical budget of the tab. The tabbed pane is as tall as its tallest tab, which leaves 774 in game rather than
--- gui_content_frame_height, and a tab's content is not stretched to fill it, so the budget is that measured height.
--- Rows have a fixed height and a panel shows a whole page of them, so no row is ever cut in half.
-local CONTENT_HEIGHT = 774
+-- Every tab is this tall, so they all end the same distance above the pane's edge. Rows have a fixed height and a
+-- panel shows a whole page of them, so no row is ever cut in half.
+local CONTENT_HEIGHT = constants.gui_content_frame_height
 local TILE_ROW_HEIGHT = 216
 local SUBHEADER_HEIGHT = 28
 local SPACING = 8
@@ -138,21 +138,26 @@ local function locale_key(prefix, name)
 	return prefix .. string.gsub(name, "_", "-")
 end
 
---- Compact enough for a value column: "42s", "3m 05s", "1h 05m", "2d 03h".
---- @param ticks number
---- @return string
-local function short_duration(ticks)
-	local s = math.floor(math.max(ticks or 0, 0) / 60)
-	if s < 60 then return s .. "s" end
-	local m = math.floor(s / 60)
-	if m < 60 then return string.format("%dm %02ds", m, s % 60) end
-	local h = math.floor(m / 60)
-	if h < 24 then return string.format("%dh %02dm", h, m % 60) end
-	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
-end
+local short_duration = util.short_duration
 
+local AMOUNT_UNITS = { { 1e9, " G" }, { 1e6, " M" }, { 1e3, " k" } }
+
+--- Always one decimal from a thousand up ("3.0 M", "40.0 k"), so a right-aligned column lines up on the decimal
+--- point; flib's abbreviation drops a trailing ".0".
+--- @param count number
+--- @return string
 local function amount(count)
-	return format.number(count, true)
+	local a = math.abs(count)
+	for _, unit in ipairs(AMOUNT_UNITS) do
+		-- Rounding to one decimal can carry into the next unit ("1000.0 k"), so compare the rounded value.
+		if a >= unit[1] * 0.99995 then
+			return string.format("%.1f%s", count / unit[1], unit[2])
+		end
+	end
+	if a < 10 and count ~= math.floor(count) then
+		return string.format("%.1f", count)
+	end
+	return string.format("%d", math.floor(count + 0.5))
 end
 
 local function tile_line_def(tile, line)
@@ -202,15 +207,6 @@ local function tile_def(tile)
 	for _, line in ipairs(tile.lines) do
 		body[#body + 1] = tile_line_def(tile, line)
 	end
-	if tile.name == "demand" then
-		body[#body + 1] = {
-			type = "label",
-			name = "overview_demand_hint",
-			style = "cybersyn_overview_hint_label",
-			caption = { "cybersyn-gui.overview-demand-tracking-off" },
-			visible = false,
-		}
-	end
 	return {
 		type = "frame",
 		name = "overview_tile_" .. tile.name,
@@ -230,6 +226,7 @@ local function tile_def(tile)
 				type = "label",
 				name = "overview_tile_" .. tile.name .. "_caption",
 				style = "subheader_caption_label",
+				style_mods = { horizontally_squashable = true },
 				caption = { "cybersyn-gui.overview-tile-" .. tile.name },
 				tooltip = { "cybersyn-gui.overview-tile-" .. tile.name .. "-tooltip" },
 			},
@@ -560,6 +557,28 @@ local function item_row(hash, tail)
 	}
 end
 
+local MAX_NAME_ICONS = 2
+local SEPARATORS = "[%s/|,%-]*"
+
+--- Station names often start with a run of icons. A squashed label cuts from the right, so the readable text after
+--- the icons would be lost first; keep at most MAX_NAME_ICONS of them (the tooltip has the full name).
+--- @param name string
+--- @return string
+local function display_name(name)
+	if string.sub(name, 1, 1) ~= "[" then return name end
+	local pos, icons, keep_end = 1, 0, nil
+	while true do
+		local s, e = string.find(name, "^" .. SEPARATORS .. "%[[%w%-]+=[^%]]*%]", pos)
+		if not s then break end
+		icons = icons + 1
+		if icons == MAX_NAME_ICONS then keep_end = e end
+		pos = e + 1
+	end
+	if icons <= MAX_NAME_ICONS then return name end
+	local rest = string.gsub(string.sub(name, pos), "^" .. SEPARATORS, "")
+	return string.sub(name, 1, keep_end) .. "… " .. rest
+end
+
 --- @param st SnapshotStation
 --- @param key string|number
 --- @param sprite string?
@@ -572,17 +591,288 @@ local function station_row(st, key, sprite, quality, tail)
 	end
 	tooltip[#tooltip + 1] = "\n"
 	tooltip[#tooltip + 1] = constants.open_station_gui_tooltip
+	local caption = display_name(st.name)
 	return {
 		key = key,
 		sprite = sprite or "item/train-stop",
 		quality = quality,
-		caption = st.name,
-		name_sig = st.name,
+		caption = caption,
+		name_sig = caption,
 		tooltip = tooltip,
 		tags = { kind = "station", station_id = st.id },
 	}
 end
 
+--- The item a saturated station's trains are busy with: its largest delivery, in or out.
+--- @param st SnapshotStation
+--- @return string?
+local function main_delivery_hash(st)
+	local best, best_count
+	for hash, count in pairs(st.deliveries) do
+		local a = math.abs(count)
+		if a > 0 and (not best_count or a > best_count or (a == best_count and hash < best)) then
+			best, best_count = hash, a
+		end
+	end
+	return best
+end
+
+-- Walking every snapshot station costs about 3 ms on a 2,000-station base, so after a completed pass the new figures
+-- are built over several updates, this many stations at a time, while the previous ones stay on screen.
+local BASE_CHUNK = 500
+
+--- Filters and tracking: a change of these is the player's own action and is shown at once.
+--- @param f table
+--- @param tracking boolean
+--- @return string
+local function view_key(f, tracking)
+	return table.concat({
+		tracking and "t" or "", f.terms and table.concat(f.terms, " ") or "", f.network or "", tostring(f.mask),
+		tostring(f.surface or ""),
+	}, "\1")
+end
+
+--- @param snapshot Snapshot
+--- @return string
+local function data_key(snapshot)
+	return tostring(snapshot.tick) .. "\1" .. tostring(snapshot.starved_version)
+end
+
+--- Accumulator of the snapshot-derived figures; wait ages are kept as start ticks so it does not depend on the tick.
+--- @param snapshot Snapshot
+--- @param filtered boolean
+--- @return table
+local function new_base(snapshot, filtered)
+	local ids = {}
+	for id in pairs(snapshot.stations) do
+		ids[#ids + 1] = id
+	end
+	table.sort(ids)
+	return {
+		ids = ids,
+		i = 0,
+		st_tile = { total = 0, providers = 0, requesters = 0, warming_up = 0, faulty = 0, saturated = 0, starved = 0 },
+		demand = { total = 0, volume = 0, starved = 0, in_transit = 0 },
+		wait_starts = {},
+		starved_items = {},
+		waiting = {},
+		waiting_total = 0,
+		saturated = {},
+		transit = filtered and {} or nil,
+		networks = {},
+	}
+end
+
+--- @param base table
+--- @param st SnapshotStation
+--- @param tracking boolean
+--- @param starved_set {[string]: true}
+--- @param starved_items_set {[string]: true}
+local function add_station(base, st, tracking, starved_set, starved_items_set)
+	local st_tile, demand = base.st_tile, base.demand
+	st_tile.total = st_tile.total + 1
+	if st.is_p then st_tile.providers = st_tile.providers + 1 end
+	if st.is_r then st_tile.requesters = st_tile.requesters + 1 end
+	if st.warming_up then st_tile.warming_up = st_tile.warming_up + 1 end
+	if not st.comb_ok then st_tile.faulty = st_tile.faulty + 1 end
+	if st.deliveries_total > 0 and st.deliveries_total >= st.trains_limit then
+		st_tile.saturated = st_tile.saturated + 1
+		base.saturated[#base.saturated + 1] = st
+	end
+	each_network(st.network_name, st.network_mask, count_station_network, base.networks, st)
+
+	local deliveries = st.deliveries
+	local wait = st.wait
+	local any_starved = false
+	for hash, req in pairs(st.requested) do
+		if req.active then
+			local volume = -req.count
+			demand.total = demand.total + 1
+			demand.volume = demand.volume + volume
+			local incoming = deliveries[hash]
+			if incoming and incoming > 0 then demand.in_transit = demand.in_transit + 1 end
+			local start = tracking and wait[hash] or nil
+			if start then
+				base.wait_starts[#base.wait_starts + 1] = start
+				base.waiting_total = base.waiting_total + 1
+				top_k_insert(base.waiting, LIMITS.waiting, { start = start, id = st.id, hash = hash, count = volume, st = st }, waiting_less)
+			end
+			-- The per-item set rejects almost every request without building a "network:item" key.
+			if starved_items_set[hash] and request_starved(st, hash, starved_set) then
+				any_starved = true
+				demand.starved = demand.starved + 1
+				local agg = base.starved_items[hash]
+				if agg then
+					agg.count = agg.count + volume
+					agg.stations = agg.stations + 1
+					if start and (not agg.earliest or start < agg.earliest) then agg.earliest = start end
+				else
+					base.starved_items[hash] = { count = volume, stations = 1, earliest = start }
+				end
+			end
+		end
+	end
+	if any_starved then st_tile.starved = st_tile.starved + 1 end
+
+	local transit = base.transit
+	if transit then
+		for hash, count in pairs(deliveries) do
+			if count > 0 then
+				local agg = transit[hash]
+				if agg then
+					agg.count = agg.count + count
+					agg.stations = agg.stations + 1
+				else
+					transit[hash] = { count = count, stations = 1 }
+				end
+			end
+		end
+	end
+end
+
+--- Trains, depots and the sorted lists, once every station has been added.
+--- @param base table
+--- @param snapshot Snapshot
+--- @param f table
+--- @param filtered boolean
+local function finish_base(base, snapshot, f, filtered)
+	local networks = base.networks
+	local fleet = { total = 0, parked = 0, to_provider = 0, loading = 0, to_requester = 0, unloading = 0, returning = 0, refuelling = 0, other = 0, alerts = 0 }
+	-- Unfiltered like the rest of the Depots tile, so the tile never mixes scopes.
+	local available = 0
+	local train_passes = {}
+	for id, tr in pairs(snapshot.trains) do
+		if tr.is_available then available = available + 1 end
+		if not filtered or util.train_passes(tr, f, true) then
+			train_passes[id] = true
+			fleet.total = fleet.total + 1
+			local group = STATUS_GROUP[tr.status or STATUS_D] or "other"
+			fleet[group] = fleet[group] + 1
+			each_network(tr.network_name, tr.network_mask, count_train_network, networks, tr)
+		end
+	end
+	fleet.idle = fleet.total > 0 and fleet.parked / fleet.total or nil
+	for _, alert in ipairs(snapshot.alerts) do
+		if not filtered or train_passes[alert.train_id] then
+			fleet.alerts = fleet.alerts + 1
+		end
+	end
+	base.fleet = fleet
+
+	local network_names = {}
+	for name in pairs(networks) do
+		if not f.network or f.network == name then
+			network_names[#network_names + 1] = name
+		end
+	end
+	util.sort_by(network_names, function(name)
+		local n = networks[name]
+		return n.p + n.r
+	end, false, function(name) return name end)
+	base.network_names = network_names
+	local st_tile = base.st_tile
+	st_tile.networks = #network_names
+
+	local depots = snapshot.depots
+	base.depot_tile = {
+		total = depots.total,
+		occupied = depots.parked,
+		empty = depots.total - depots.parked,
+		available = available,
+	}
+
+	-- Oldest wait first, then the largest shortfall.
+	local starved_items = base.starved_items
+	local starved_hashes = {}
+	for hash, agg in pairs(starved_items) do
+		starved_hashes[#starved_hashes + 1] = hash
+		agg.tiebreak = string.format("%020.0f|%s", 1e15 - math.min(agg.count, 1e15 - 1), hash)
+	end
+	util.sort_by(starved_hashes, function(hash)
+		local agg = starved_items[hash]
+		return agg.earliest or (1e12 - agg.count)
+	end, true, function(hash) return starved_items[hash].tiebreak end)
+	base.starved_hashes = starved_hashes
+
+	local transit = base.transit or snapshot.inventory_all.in_transit
+	base.transit = transit
+	local transit_hashes = {}
+	for hash in pairs(transit) do
+		transit_hashes[#transit_hashes + 1] = hash
+	end
+	util.sort_by(transit_hashes, function(hash) return transit[hash].count end, false, function(hash) return hash end)
+	base.transit_hashes = transit_hashes
+
+	local saturated = base.saturated
+	util.sort_by(saturated, function(st) return st.deliveries_total end, false, function(st) return st.id end)
+	for i = LIMITS.saturated + 1, #saturated do
+		saturated[i] = nil
+	end
+	base.saturated_total = st_tile.saturated
+
+	st_tile.headline = st_tile.total
+	fleet.headline = fleet.total
+	base.depot_tile.headline = base.depot_tile.total
+	base.demand.headline = base.demand.total
+	base.ids = nil
+	base.i = nil
+end
+
+--- Adds up to `budget` more stations to a base under construction; true once it is complete.
+--- @return boolean
+local function advance_base(base, snapshot, f, filtered, tracking, budget)
+	local stations = snapshot.stations
+	local starved_set, starved_items_set = snapshot.starved, snapshot.starved_items
+	local ids = base.ids
+	local n = #ids
+	local i = base.i
+	local stop = math.min(n, i + budget)
+	while i < stop do
+		i = i + 1
+		local st = stations[ids[i]]
+		if st and (not filtered or util.station_passes(st, f, true)) then
+			add_station(base, st, tracking, starved_set, starved_items_set)
+		end
+	end
+	base.i = i
+	if i < n then return false end
+	finish_base(base, snapshot, f, filtered)
+	return true
+end
+
+--- The snapshot-derived figures for the player's filters. Kept in player_data, not in a Lua local, so every peer
+--- shows the same figures.
+--- @param player_data PlayerData
+--- @param snapshot Snapshot
+--- @param f table
+--- @param filtered boolean
+--- @param tracking boolean
+--- @return table
+local function cached_snapshot_model(player_data, snapshot, f, filtered, tracking)
+	local vkey, dkey = view_key(f, tracking), data_key(snapshot)
+	local cache = player_data.overview_cache
+	if not cache or cache.view_key ~= vkey then
+		local base = new_base(snapshot, filtered)
+		advance_base(base, snapshot, f, filtered, tracking, math.huge)
+		player_data.overview_cache = { view_key = vkey, data_key = dkey, base = base }
+		return base
+	end
+	if cache.data_key ~= dkey then
+		local build = cache.build
+		if not build then
+			build = new_base(snapshot, filtered)
+			build.data_key = dkey
+			cache.build = build
+		end
+		if advance_base(build, snapshot, f, filtered, tracking, BASE_CHUNK) then
+			cache.base = build
+			cache.data_key = build.data_key
+			build.data_key = nil
+			cache.build = nil
+		end
+	end
+	return cache.base
+end
 
 --- Everything the tab shows, from the snapshot and storage.stats only, with every list already sorted and cut.
 --- @param player_data PlayerData
@@ -595,127 +885,28 @@ function overview_tab.model(player_data)
 	local period = get_period(player_data)
 	-- The planner reads its cached copy, so this matches what is actually being tracked.
 	local tracking = mod_settings.track_request_wait_times == true
-	local starved_set = snapshot.starved
+	local base = cached_snapshot_model(player_data, snapshot, f, filtered, tracking)
 
-	local st_tile = { total = 0, providers = 0, requesters = 0, warming_up = 0, faulty = 0, saturated = 0, starved = 0 }
-	local demand = { total = 0, volume = 0, starved = 0, in_transit = 0, age_1m = 0, age_5m = 0, age_30m = 0, age_over = 0 }
-	local starved_items = {}
-	local waiting = {}
-	local waiting_total = 0
-	local saturated = {}
-	local transit = filtered and {} or snapshot.inventory_all.in_transit
-	local networks = {}
-
-	for _, st in pairs(snapshot.stations) do
-		if not filtered or util.station_passes(st, f, true) then
-			st_tile.total = st_tile.total + 1
-			if st.is_p then st_tile.providers = st_tile.providers + 1 end
-			if st.is_r then st_tile.requesters = st_tile.requesters + 1 end
-			if st.warming_up then st_tile.warming_up = st_tile.warming_up + 1 end
-			if not st.comb_ok then st_tile.faulty = st_tile.faulty + 1 end
-			local limit = st.trains_limit
-			if st.deliveries_total > 0 and st.deliveries_total >= limit then
-				st_tile.saturated = st_tile.saturated + 1
-				saturated[#saturated + 1] = st
-			end
-			each_network(st.network_name, st.network_mask, count_station_network, networks, st)
-
-			local deliveries = st.deliveries
-			local wait = st.wait
-			local any_starved = false
-			for hash, req in pairs(st.requested) do
-				if req.active then
-					local volume = -req.count
-					demand.total = demand.total + 1
-					demand.volume = demand.volume + volume
-					local incoming = deliveries[hash]
-					if incoming and incoming > 0 then demand.in_transit = demand.in_transit + 1 end
-					local start = tracking and wait[hash] or nil
-					if start then
-						local age = now - start
-						if age < 3600 then
-							demand.age_1m = demand.age_1m + 1
-						elseif age < 18000 then
-							demand.age_5m = demand.age_5m + 1
-						elseif age < 108000 then
-							demand.age_30m = demand.age_30m + 1
-						else
-							demand.age_over = demand.age_over + 1
-						end
-						waiting_total = waiting_total + 1
-						top_k_insert(waiting, LIMITS.waiting, { start = start, id = st.id, hash = hash, count = volume, st = st }, waiting_less)
-					end
-					if request_starved(st, hash, starved_set) then
-						any_starved = true
-						demand.starved = demand.starved + 1
-						local agg = starved_items[hash]
-						if agg then
-							agg.count = agg.count + volume
-							agg.stations = agg.stations + 1
-							if start and (not agg.earliest or start < agg.earliest) then agg.earliest = start end
-						else
-							starved_items[hash] = { count = volume, stations = 1, earliest = start }
-						end
-					end
-				end
-			end
-			if any_starved then st_tile.starved = st_tile.starved + 1 end
-
-			if filtered then
-				for hash, count in pairs(deliveries) do
-					if count > 0 then
-						local agg = transit[hash]
-						if agg then
-							agg.count = agg.count + count
-							agg.stations = agg.stations + 1
-						else
-							transit[hash] = { count = count, stations = 1 }
-						end
-					end
-				end
+	local demand = {}
+	for k, v in pairs(base.demand) do
+		demand[k] = v
+	end
+	if tracking then
+		local a1, a5, a30, over = 0, 0, 0, 0
+		for _, start in ipairs(base.wait_starts) do
+			local age = now - start
+			if age < 3600 then
+				a1 = a1 + 1
+			elseif age < 18000 then
+				a5 = a5 + 1
+			elseif age < 108000 then
+				a30 = a30 + 1
+			else
+				over = over + 1
 			end
 		end
+		demand.age_1m, demand.age_5m, demand.age_30m, demand.age_over = a1, a5, a30, over
 	end
-
-	local fleet = { total = 0, parked = 0, to_provider = 0, loading = 0, to_requester = 0, unloading = 0, returning = 0, refuelling = 0, other = 0, alerts = 0 }
-	local available = 0
-	local train_passes = {}
-	for id, tr in pairs(snapshot.trains) do
-		if not filtered or util.train_passes(tr, f, true) then
-			train_passes[id] = true
-			fleet.total = fleet.total + 1
-			local group = STATUS_GROUP[tr.status or STATUS_D] or "other"
-			fleet[group] = fleet[group] + 1
-			if tr.is_available then available = available + 1 end
-			each_network(tr.network_name, tr.network_mask, count_train_network, networks, tr)
-		end
-	end
-	fleet.idle = fleet.total > 0 and fleet.parked / fleet.total or nil
-	for _, alert in ipairs(snapshot.alerts) do
-		if not filtered or train_passes[alert.train_id] then
-			fleet.alerts = fleet.alerts + 1
-		end
-	end
-
-	local network_names = {}
-	for name in pairs(networks) do
-		if not f.network or f.network == name then
-			network_names[#network_names + 1] = name
-		end
-	end
-	util.sort_by(network_names, function(name)
-		local n = networks[name]
-		return n.p + n.r
-	end, false, function(name) return name end)
-	st_tile.networks = #network_names
-
-	local depots = snapshot.depots
-	local depot_tile = {
-		total = depots.total,
-		occupied = depots.parked,
-		empty = depots.total - depots.parked,
-		available = available,
-	}
 
 	local window = stats.aggregate(period)
 	local flow = {
@@ -729,19 +920,10 @@ function overview_tab.model(player_data)
 
 	local lists = {}
 
-	-- Starved requests: oldest wait first, then the largest shortfall. Rows (and their tooltips) are built for the
-	-- visible top only.
-	local starved_hashes = {}
-	for hash, agg in pairs(starved_items) do
-		starved_hashes[#starved_hashes + 1] = hash
-		agg.tiebreak = string.format("%020.0f|%s", 1e15 - math.min(agg.count, 1e15 - 1), hash)
-	end
-	util.sort_by(starved_hashes, function(hash)
-		local agg = starved_items[hash]
-		return agg.earliest or (1e12 - agg.count)
-	end, true, function(hash) return starved_items[hash].tiebreak end)
+	-- Rows (and their tooltips) are built for the kept top only.
+	local starved_items = base.starved_items
 	local starved_rows = {}
-	for _, hash in ipairs(starved_hashes) do
+	for _, hash in ipairs(base.starved_hashes) do
 		if #starved_rows >= LIMITS.starved then break end
 		local agg = starved_items[hash]
 		local tail = {
@@ -760,10 +942,10 @@ function overview_tab.model(player_data)
 			starved_rows[#starved_rows + 1] = row
 		end
 	end
-	lists.starved = { rows = starved_rows, total = #starved_hashes }
+	lists.starved = { rows = starved_rows, total = #base.starved_hashes }
 
 	local waiting_rows = {}
-	for i, w in ipairs(waiting) do
+	for i, w in ipairs(base.waiting) do
 		local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(w.hash)
 		local row = station_row(w.st, w.id .. "|" .. w.hash, sprite, quality, {
 			"\n", name_tooltip or w.hash,
@@ -774,16 +956,11 @@ function overview_tab.model(player_data)
 		row.values = { amount(w.count), short_duration(now - w.start) }
 		waiting_rows[i] = row
 	end
-	lists.waiting = { rows = waiting_rows, total = waiting_total, disabled = not tracking }
+	lists.waiting = { rows = waiting_rows, total = base.waiting_total, disabled = not tracking }
 
-	-- Sorting bare hashes and building rows for the visible top only keeps tooltips off the other ~200 items.
-	local transit_hashes = {}
-	for hash in pairs(transit) do
-		transit_hashes[#transit_hashes + 1] = hash
-	end
-	util.sort_by(transit_hashes, function(hash) return transit[hash].count end, false, function(hash) return hash end)
+	local transit = base.transit
 	local transit_rows = {}
-	for _, hash in ipairs(transit_hashes) do
+	for _, hash in ipairs(base.transit_hashes) do
 		if #transit_rows >= LIMITS.transit then break end
 		local agg = transit[hash]
 		local row = item_row(hash, {
@@ -796,7 +973,7 @@ function overview_tab.model(player_data)
 			transit_rows[#transit_rows + 1] = row
 		end
 	end
-	lists.transit = { rows = transit_rows, total = #transit_hashes }
+	lists.transit = { rows = transit_rows, total = #base.transit_hashes }
 
 	local period_caption = { "cybersyn-gui.overview-scope-" .. period }
 	local delivered_items = window.items
@@ -832,7 +1009,7 @@ function overview_tab.model(player_data)
 			slowest[i] = b
 		end
 		util.sort_by(slowest, function(b) return b.wait_max end, false, function(b) return -b.start_tick end)
-		local bucket_key = period > 60 and "cybersyn-gui.overview-slowest-hour" or "cybersyn-gui.overview-slowest-minute"
+		local minute_buckets = window.slowest_minutes
 		for i = 1, math.min(#slowest, LIMITS.slowest) do
 			local b = slowest[i]
 			local hash = b.wait_max_hash
@@ -850,22 +1027,26 @@ function overview_tab.model(player_data)
 				local h = math.floor(age / stats.HOUR)
 				when, when_sig = { "cybersyn-gui.overview-hours-ago", tostring(h) }, "h" .. h
 			end
+			local bucket_key = (period <= 60 or minute_buckets[b]) and "cybersyn-gui.overview-slowest-minute" or "cybersyn-gui.overview-slowest-hour"
 			local tail = {
 				"\n", name_tooltip or { "cybersyn-gui.overview-unknown-item" },
 				"\n", { "cybersyn-gui.overview-slowest-row", util.format_duration(b.wait_max) },
 				"\n", { bucket_key, tostring(b.wait_n), util.format_duration(b.wait_sum / b.wait_n) },
 			}
+			-- A bucket's maximum moves to another station or item as requests are fulfilled, and the update path keeps
+			-- a row's icon and tags, so the key must change with them.
+			local key = b.start_tick .. "|" .. tostring(b.wait_max_station) .. "|" .. tostring(hash)
 			local st = snapshot.stations[b.wait_max_station]
 			local row
 			if st then
-				row = station_row(st, b.start_tick, sprite, quality, tail)
+				row = station_row(st, key, sprite, quality, tail)
 			else
 				local tooltip = { "", { "cybersyn-gui.overview-removed-station" } }
 				for _, part in ipairs(tail) do
 					tooltip[#tooltip + 1] = part
 				end
 				row = {
-					key = b.start_tick,
+					key = key,
 					sprite = sprite or "utility/questionmark",
 					quality = quality,
 					caption = { "cybersyn-gui.overview-removed-station" },
@@ -882,23 +1063,19 @@ function overview_tab.model(player_data)
 	end
 	lists.slowest = { rows = slowest_rows, total = #slowest, disabled = not tracking }
 
-	util.sort_by(saturated, function(st) return st.deliveries_total end, false, function(st) return st.id end)
 	local saturated_rows = {}
-	for i = 1, math.min(#saturated, LIMITS.saturated) do
-		local st = saturated[i]
-		local row = station_row(st, st.id, nil, nil, {
+	for i, st in ipairs(base.saturated) do
+		local hash = main_delivery_hash(st)
+		local sprite, quality
+		if hash then sprite, quality = util.item_sprite_and_tooltip(hash) end
+		local row = station_row(st, st.id .. "|" .. tostring(hash), sprite, quality, {
 			"\n", { "cybersyn-gui.overview-saturated-row", tostring(st.deliveries_total), tostring(st.trains_limit) },
 		})
 		row.order = st.deliveries_total
 		row.values = { st.deliveries_total .. "/" .. st.trains_limit }
 		saturated_rows[i] = row
 	end
-	lists.saturated = { rows = saturated_rows, total = #saturated }
-
-	st_tile.headline = st_tile.total
-	fleet.headline = fleet.total
-	depot_tile.headline = depot_tile.total
-	demand.headline = demand.total
+	lists.saturated = { rows = saturated_rows, total = base.saturated_total }
 
 	return {
 		snapshot_tick = snapshot.tick,
@@ -907,12 +1084,12 @@ function overview_tab.model(player_data)
 		item_filter = f.item,
 		tracking = tracking,
 		period = period,
-		networks = networks,
-		network_names = network_names,
+		networks = base.networks,
+		network_names = base.network_names,
 		tiles = {
-			stations = st_tile,
-			fleet = fleet,
-			depots = depot_tile,
+			stations = base.st_tile,
+			fleet = base.fleet,
+			depots = base.depot_tile,
 			demand = demand,
 			flow = flow,
 		},
@@ -1039,15 +1216,15 @@ local function render_tiles(player_data, model)
 	end
 
 	local period = model.period
+	-- The short scope keeps the caption whole at the fixed tile width.
 	set_caption_sig(cache, refs.overview_tile_flow_caption, tostring(period),
-		{ "", { "cybersyn-gui.overview-tile-flow" }, " · ", { "cybersyn-gui.overview-scope-" .. period } })
+		{ "", { "cybersyn-gui.overview-tile-flow" }, " · ", { "cybersyn-gui.overview-scope-short-" .. period } })
 
+	-- The two wait panels already explain how to turn tracking on, so the tile only shows "–" with the hint as tooltip.
 	for _, line in ipairs(AGE_LINES) do
-		local elem = refs["overview_demand_" .. line .. "_flow"]
-		if elem and elem.valid and elem.visible ~= tracking then elem.visible = tracking end
+		set_tooltip_sig(cache, { refs["overview_demand_" .. line .. "_label"], refs["overview_demand_" .. line] },
+			tracking and "on" or "off", tracking and "" or { "cybersyn-gui.overview-demand-age-off" })
 	end
-	local hint = refs.overview_demand_hint
-	if hint and hint.valid and hint.visible == tracking then hint.visible = not tracking end
 
 	for _, line in ipairs(WAIT_LINES) do
 		local key = "cybersyn-gui.overview-flow-" .. string.gsub(line, "_", "-")
@@ -1067,9 +1244,7 @@ local function render_tiles(player_data, model)
 		local show = recorded ~= nil
 		if period_note.visible ~= show then period_note.visible = show end
 		if show then
-			-- Minutes are enough here, and they keep the caption from being rewritten every update.
-			local minutes = math.floor(recorded / stats.MINUTE)
-			local text = minutes < 60 and (minutes .. "m") or string.format("%dh %02dm", math.floor(minutes / 60), minutes % 60)
+			local text = short_duration(recorded)
 			set_caption_sig(cache, period_note, text, { "cybersyn-gui.overview-period-recorded", text })
 		end
 	end
@@ -1257,14 +1432,13 @@ local function render_panels(player_data, model)
 				set_caption_sig(cache, count, "", "")
 			else
 				local total = format.number(data.total)
-				if n > CAPACITY then
+				-- One form whether or not the panel pages, so every caption reads the same.
+				if n == 0 then
+					set_caption_sig(cache, count, "", "")
+				else
 					local first, last = offset + 1, math.min(offset + CAPACITY, n)
 					set_caption_sig(cache, count, first .. "-" .. last .. "/" .. total,
 						{ "cybersyn-gui.pager-range", tostring(first), tostring(last), total })
-				elseif n < data.total then
-					set_caption_sig(cache, count, n .. "/" .. total, { "cybersyn-gui.overview-shown-of", tostring(n), total })
-				else
-					set_caption_sig(cache, count, total, total)
 				end
 				set_tooltip_sig(cache, { count }, n .. "/" .. data.total, n < data.total
 					and { "cybersyn-gui.overview-count-tooltip", tostring(n), total } or "")
@@ -1329,6 +1503,7 @@ dev.register_dump(TAB, function(player_data)
 				for c = 2, columns do
 					cells[c] = children[base + c].caption
 				end
+				cells.sprite = children[base + 1].sprite
 				rendered[r] = cells
 			end
 		end

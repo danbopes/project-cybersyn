@@ -27,6 +27,9 @@ data:extend({
 	data_util.build_sprite("ltnm_pin_white", { 32, 32 }, util.paths.nav_icons, 32),
 	data_util.build_sprite("ltnm_refresh_black", { 0, 0 }, util.paths.nav_icons, 32),
 	data_util.build_sprite("ltnm_refresh_white", { 32, 0 }, util.paths.nav_icons, 32),
+	-- utility/pause is dark grey, which vanishes on an unselected frame action button; the button style inverts a
+	-- light sprite on hover by itself.
+	data_util.build_sprite("cybersyn_pause_white", { 0, 0 }, "__cybersyn__/graphics/gui/pause-white.png", 32),
 })
 
 
@@ -500,11 +503,12 @@ styles.cybersyn_overview_tile_row = {
 	horizontally_stretchable = "on",
 }
 
+-- Fixed so the period, the data or a caption can never shift the row: five tiles and four 12 px gaps fill the
+-- tab's content width.
 styles.cybersyn_overview_tile = {
 	type = "frame_style",
 	parent = "inside_shallow_frame",
-	minimal_width = 220,
-	horizontally_stretchable = "on",
+	width = 228,
 	vertically_stretchable = "on",
 	vertical_flow_style = {
 		type = "vertical_flow_style",
@@ -572,13 +576,6 @@ styles.cybersyn_overview_idle_bar = {
 	parent = "progressbar",
 	bar_width = 8,
 	width = 64,
-}
-
-styles.cybersyn_overview_hint_label = {
-	type = "label_style",
-	font_color = { 0.7, 0.7, 0.7 },
-	single_line = false,
-	horizontally_stretchable = "on",
 }
 
 styles.cybersyn_overview_subheader = {

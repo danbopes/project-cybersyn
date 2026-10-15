@@ -265,6 +265,7 @@ end
 --- @field wait_n int
 --- @field wait_max uint? ticks
 --- @field slowest StatsBucket[] buckets with a fulfilled request, as they are; read only
+--- @field slowest_minutes {[StatsBucket]: true} entries of `slowest` that are minute buckets in an hour-bucket period
 
 --- Everything the Overview shows for one period: minute buckets for 10 and 60 minutes, hour buckets for longer
 --- periods (rounded up to whole hours), the current partial bucket included.
@@ -292,6 +293,7 @@ function stats.aggregate(minutes)
 		cycle_n = 0,
 		wait_n = 0,
 		slowest = {},
+		slowest_minutes = {},
 	}
 	local items = out.items
 	local amount, cycle_sum, wait_sum, wait_max = 0, 0, 0, nil
@@ -314,6 +316,22 @@ function stats.aggregate(minutes)
 				out.slowest[#out.slowest + 1] = b
 			end
 		end
+	end
+	-- The current hour holds a single maximum until it closes, so a longer period would list fewer of the recent
+	-- slow requests than a shorter one; its minute buckets stand in for it in the list (not in the sums).
+	if ring == s.hour then
+		local hour_start = tick - tick % HOUR
+		local slowest, minutes = {}, out.slowest_minutes
+		for _, b in ipairs(out.slowest) do
+			if b.start_tick ~= hour_start then slowest[#slowest + 1] = b end
+		end
+		for _, b in pairs(s.minute) do
+			if b.wait_n and b.start_tick >= hour_start and b.start_tick <= tick then
+				slowest[#slowest + 1] = b
+				minutes[b] = true
+			end
+		end
+		out.slowest = slowest
 	end
 	out.amount = amount
 	if out.cycle_n > 0 then out.cycle_avg = cycle_sum / out.cycle_n end

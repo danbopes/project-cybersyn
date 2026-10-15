@@ -4,7 +4,9 @@ Date: 2026-03-30
   Features:
     - (Manager) Add filter history to Manager's top bar
     - (Manager) Add cross-mod interop protocol support
-    - (Manager facelift) New Overview tab, the default on first open: station, fleet, depot, demand and flow tiles plus lists of starved requests, longest waits, saturated stations, top items in transit, items delivered per hour, active alerts and a per-network breakdown
+    - (Manager facelift) New Overview tab, the default on first open: Stations (with networks), Fleet (with alerts), Depots, Demand and Deliveries tiles, and six equal panels with aligned value columns that page by whole rows: starved requests, open requests waiting longest, top items in transit, items delivered, slowest fulfilled requests and saturated stations
+    - (Manager facelift) Overview period selector (last 10 min, last hour, last 24 h) for deliveries, items delivered, dispatches, trip time and request waits; every figure says whether it covers the period or the network right now
+    - (Manager facelift) Request wait statistics per minute and hour (average, maximum and the slowest fulfilled request), kept in fixed-size rings so neither UPS nor the save grows with time
     - (Manager facelift) Pause and Pin toggles in the title bar, with an "Updated N ago" indicator
     - (Manager facelift) Stations tab overhaul: Status, Wait and Last delivery columns, status filter chips with counts, every column sortable from its header, item slots clickable to filter
     - (Manager facelift) Trains tab: readable status with the destination, paging and sortable columns
@@ -16,12 +18,16 @@ Date: 2026-03-30
     - (Manager facelift) Items from secondary inventory combinators are now shown in station rows and inventory totals
     - (Manager facelift) The manager collects its data incrementally only while a window is open and unpaused, and frees it on close
     - (Manager facelift) Item buttons share one click scheme everywhere: click filters and shows Stations, shift+click filters and stays, right-click clears the item filter
+    - (Manager facelift) Layout rework following the Factorio GUI style guide: sentence-case toolbar captions, every tab the same height, equal Inventory grids, a compact Trains summary and shorter train rows, Stations headers that fit, and the pager at the right of every tab
+    - (Manager facelift) The Overview and Stations tabs stay within their update budget on large bases: Overview figures are rebuilt over several updates after each collection pass, and Stations re-sorts only the changed rows and reuses rows that move
   Bugfixes:
     - (Manager facelift) Text search is case-insensitive plain text with space-separated terms, and applies to trains through their depot and station names
     - (Manager facelift) Item filter matches quality items
     - (Manager facelift) Sorting no longer flips direction on the first click of a new column and sorts the whole list instead of a truncated subset
     - (Manager facelift) Wait times are hidden when request wait tracking is turned off instead of showing stale, ever-growing values
     - (Manager facelift) The tab shown on first open is no longer empty
+    - (Manager facelift) Joining a multiplayer game no longer fails with a script event mismatch caused by the fork migration's on_tick hook
+    - (Manager facelift) Turning request wait tracking off and on again no longer counts the off period into the next waits
 ---------------------------------------------------------------------------------------------------
 Version: 2.0.53
 Date: 2026-03-15

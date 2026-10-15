@@ -66,7 +66,7 @@ function manager.create(player)
 							direction = "horizontal",
 							style_mods = { horizontal_spacing = 2 },
 						},
-						frame_toggle("manager_pause_button", "utility/pause", { "cybersyn-gui.pause-tooltip" }, manager.handle.manager_toggle_pause),
+						frame_toggle("manager_pause_button", "cybersyn_pause_white", { "cybersyn-gui.pause-tooltip" }, manager.handle.manager_toggle_pause),
 						frame_toggle("manager_pin_button", "ltnm_pin_white", { "cybersyn-gui.pin-tooltip" }, manager.handle.manager_toggle_pinned),
 						frame_toggle(nil, "utility/close", { "gui.close-instruction" }, manager.handle.manager_close),
 					},
@@ -168,7 +168,7 @@ function manager.refresh_toggles(player_data)
 	local pause = refs.manager_pause_button
 	if pause and pause.valid then
 		set_frame_toggle(pause, player_data.paused)
-		local sprite = player_data.paused and "utility/play" or "utility/pause"
+		local sprite = player_data.paused and "utility/play" or "cybersyn_pause_white"
 		pause.sprite = sprite
 		pause.hovered_sprite = sprite
 		pause.clicked_sprite = sprite

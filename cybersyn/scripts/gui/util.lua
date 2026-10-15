@@ -119,6 +119,20 @@ function util.format_duration(ticks)
 	return string.format("%ds", seconds)
 end
 
+--- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h". Every tab uses it,
+--- so one duration reads the same everywhere; util.format_duration has the full precision for tooltips.
+--- @param ticks number
+--- @return string
+function util.short_duration(ticks)
+	local s = math.floor(math.max(ticks or 0, 0) / 60)
+	if s < 60 then return s .. "s" end
+	local m = math.floor(s / 60)
+	if m < 60 then return string.format("%dm %02ds", m, s % 60) end
+	local h = math.floor(m / 60)
+	if h < 24 then return string.format("%dh %02dm", h, m % 60) end
+	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
+end
+
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
 local rank_cache = {}
 local sprite_cache = {}
@@ -231,6 +245,76 @@ local function run_update(entry, elem, index, sigs)
 	update(elem, entry, index)
 end
 
+--- A re-sort mostly permutes the same rows, and rebuilding a heavy row costs far more than moving it: survivors are
+--- swapped into place, a child whose key vanished is handed to a new key through `entry.reuse(elem, old_key)` when the
+--- entry has one (then updated like a survivor), and only the remaining new keys are built, at their index.
+local function sync_moved(parent, entries, keys, old, elems, state, sigs)
+	local n = #entries
+	local wanted = {}
+	for i = 1, n do
+		wanted[keys[i]] = true
+	end
+	local cur, pos_of, old_index = {}, {}, {}
+	local free = {}
+	for j = 1, #old do
+		local key = old[j]
+		cur[j] = key
+		pos_of[key] = j
+		old_index[key] = j
+		if not wanted[key] then free[#free + 1] = key end
+	end
+	-- Positions before i are final, so every unclaimed child sits at i or later.
+	local function swap(i, j)
+		parent.swap_children(i, j)
+		cur[i], cur[j] = cur[j], cur[i]
+		elems[i], elems[j] = elems[j], elems[i]
+		pos_of[cur[i]] = i
+		pos_of[cur[j]] = j
+	end
+	for i = 1, n do
+		local key = keys[i]
+		local entry = entries[i]
+		if cur[i] == key then
+			-- A child that moved must learn its new index even when its data did not change.
+			if old_index[key] ~= i then sigs[key] = nil end
+			run_update(entry, elems[i], i, sigs)
+		elseif pos_of[key] then
+			swap(i, pos_of[key])
+			sigs[key] = nil
+			run_update(entry, elems[i], i, sigs)
+		elseif entry.reuse and #free > 0 then
+			local old_key = table.remove(free)
+			local j = pos_of[old_key]
+			if j ~= i then swap(i, j) end
+			pos_of[old_key] = nil
+			sigs[old_key] = nil
+			cur[i] = key
+			pos_of[key] = i
+			entry.reuse(elems[i], old_key)
+			sigs[key] = nil
+			run_update(entry, elems[i], i, sigs)
+		else
+			local def = entry.build()
+			def.index = i
+			local _, elem = gui.add(parent, def)
+			table.insert(cur, i, key)
+			table.insert(elems, i, elem)
+			for m = i, #cur do
+				pos_of[cur[m]] = m
+			end
+			sigs[key] = entry.sig
+		end
+	end
+	for j = #cur, n + 1, -1 do
+		elems[j].destroy()
+		sigs[cur[j]] = nil
+	end
+	state.sigs = sigs
+	state.keys = keys
+	state.dirty = nil
+	return "rebuilt"
+end
+
 --- Reconciles `parent`'s children with `entries`, an ordered array of
 --- `{key=, build=fun(): GuiElemDef, update=fun(elem, entry, index)?, sig=string|number?}`.
 --- Same key sequence: `update` each child in place. Otherwise, when `hold` is set, structure is left alone
@@ -241,8 +325,11 @@ end
 --- @param entries {key: string|number, build: fun(): flib.GuiElemDef, update: fun(elem: LuaGuiElement, entry: table, index: integer)?, sig: (string|number)?}[]
 --- @param state {keys: (string|number)[]?, sigs: {[string|number]: string|number}?, dirty: true?} from util.gui_state
 --- @param hold boolean?
+--- @param movable boolean? keep children whose key survives and move them into place instead of rebuilding from the
+--- first difference; `update` then also runs for a moved or reused child and must apply anything that depends on its
+--- index (see sync_moved)
 --- @return "updated"|"held"|"rebuilt"
-function util.sync_children(parent, entries, state, hold)
+function util.sync_children(parent, entries, state, hold, movable)
 	local n = #entries
 	local keys = {}
 	for i = 1, n do
@@ -286,6 +373,10 @@ function util.sync_children(parent, entries, state, hold)
 			state.dirty = true
 			return "held"
 		end
+	end
+
+	if movable and old then
+		return sync_moved(parent, entries, keys, old, children, state, sigs)
 	end
 
 	for i = 1, prefix do
@@ -898,6 +989,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.stations_query = nil
+	player_data.overview_cache = nil
 	player_data.stations_order = nil
 	-- Render signatures and row memos only skip redundant updates, and the memos reference snapshot records, so
 	-- they are not worth keeping in the save while closed; a container without them updates every child once on

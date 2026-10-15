@@ -65,14 +65,14 @@ function trains_tab.create()
 				{
 					type = "frame",
 					style = "ltnm_subfooter_frame",
-					templates.pager(TAB, util.handle.pager_click),
-					{ type = "empty-widget", style = "flib_horizontal_pusher" },
 					{
 						name = "manager_trains_tab_summary",
 						type = "label",
 						style = "ltnm_squashable_semibold_label",
 						tooltip = { "cybersyn-gui.trains-sum-tooltip" },
 					},
+					{ type = "empty-widget", style = "flib_horizontal_pusher" },
+					templates.pager(TAB, util.handle.pager_click),
 				},
 			},
 		},
