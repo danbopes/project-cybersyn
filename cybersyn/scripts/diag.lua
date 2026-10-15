@@ -27,6 +27,7 @@ local WAIT_SIGNAL_MIN = 600
 local ALERT_REPEAT = 36000
 local ACK_CAP = 1024
 local EXPORT_CHUNK = 2000
+local EXPORT_SCAN = 4 * EXPORT_CHUNK
 
 diag.BASIC_RING = BASIC_RING
 diag.UNSERVED_CAP = UNSERVED_CAP
@@ -94,6 +95,7 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field unserved {[uint]: {[int]: DiagEntry}} requester unit number -> item index -> entry
 --- @field unserved_count {[uint]: int}
 --- @field unserved_n int
+--- @field unserved_dropped int new keys refused because unserved_n was at UNSERVED_CAP
 --- @field counts {[int]: int} live entries per confirmed reason
 --- @field item_ix {[string]: int} item hash -> index
 --- @field item_hash string[] index -> item hash
@@ -142,6 +144,7 @@ local function new_state()
 		unserved = {},
 		unserved_count = {},
 		unserved_n = 0,
+		unserved_dropped = 0,
 		counts = {},
 		item_ix = {},
 		item_hash = {},
@@ -198,6 +201,7 @@ function diag.apply()
 	end
 	d.mode = mode
 	d.full = mode == "full"
+	d.unserved_dropped = d.unserved_dropped or 0
 	diag.resize_ring(d.ring_full, full_ring_size())
 	return d
 end
@@ -393,12 +397,14 @@ end
 function diag.horizon()
 	local d = storage.diag
 	if not d then return nil, 0 end
+	-- The log reaches back only as far as both rings do: with full on, the newer of the two oldest rows; with it
+	-- off, the full ring may hold rows of an earlier full session and does not count.
 	local oldest
-	for _, r in ipairs({ d.ring_basic, d.ring_full }) do
-		if r.count > 0 then
-			local t = r.tick[at(r, 0)]
-			if not oldest or t < oldest then oldest = t end
-		end
+	local rb, rf = d.ring_basic, d.ring_full
+	if rb.count > 0 then oldest = rb.tick[at(rb, 0)] end
+	if d.full and rf.count > 0 then
+		local t = rf.tick[at(rf, 0)]
+		if not oldest or t > oldest then oldest = t end
 	end
 	return oldest, oldest and (game.tick - oldest) or 0
 end
@@ -643,20 +649,6 @@ local function remove_entry(d, r_id, by_item, ix, e)
 	else
 		d.unserved_count[r_id] = n
 	end
-	end_request_ack(r_id, d.item_hash[ix], DIAG_ACK_END_RESOLVED)
-end
-
---- Makes room at the cap by dropping the entry evaluated longest ago.
-local function evict_oldest(d)
-	local best_r, best_ix, best_e
-	for r_id, by_item in pairs(d.unserved) do
-		for ix, e in pairs(by_item) do
-			if not best_e or e.last_tick < best_e.last_tick then
-				best_r, best_ix, best_e = r_id, ix, e
-			end
-		end
-	end
-	if best_e then remove_entry(d, best_r, d.unserved[best_r], best_ix, best_e) end
 end
 
 --- @param d DiagState
@@ -712,14 +704,17 @@ end
 --- @param lost_to uint? requester whose evaluation in the same call locked the providers this one needed
 function diag.fail(d, r_id, hash, reason, a, b, p_id, rej, lost_to)
 	local now = game.tick
-	local ix = d.item_ix[hash] or intern(d, hash)
+	local ix = d.item_ix[hash]
 	local by_item = d.unserved[r_id]
-	local e = by_item and by_item[ix]
+	local e = ix and by_item and by_item[ix]
 	if not e then
+		-- Every failing key is re-evaluated once per cycle in a fixed order, so evicting the least recently
+		-- evaluated one only makes room for a key that evicts the next: at the cap new keys wait for the sweep.
 		if d.unserved_n >= UNSERVED_CAP then
-			evict_oldest(d)
-			by_item = d.unserved[r_id]
+			d.unserved_dropped = d.unserved_dropped + 1
+			return
 		end
+		ix = ix or intern(d, hash)
 		if not by_item then
 			by_item = {}
 			d.unserved[r_id] = by_item
@@ -733,6 +728,18 @@ function diag.fail(d, r_id, hash, reason, a, b, p_id, rej, lost_to)
 		write_payload(e, reason, a, b, p_id, rej)
 		diag.event(d, DIAG_KIND_UNSERVED_REASON, reason_sev(reason), reason, 0, 0, r_id, p_id, ix, e.a, e.b)
 		if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
+		-- The key may have been swept or diagnostics turned off since the acknowledgement: it holds only while the
+		-- reason is the one acknowledged, and one taken without a known reason binds to this one.
+		local acks = storage.acks
+		local by = acks and acks.request[r_id]
+		local ack = by and by[hash]
+		if ack then
+			if ack.reason == nil then
+				ack.reason = reason
+			elseif ack.reason ~= reason then
+				end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, DIAG_ACK_END_REASON_CHANGED, nil)
+			end
+		end
 	else
 		e.last_tick = now
 		if reason == e.reason then
@@ -774,10 +781,10 @@ function diag.skipped(d, r_id, station, hash)
 		diag.fail(d, r_id, hash, limit == 0 and REASON_R_DISABLED or REASON_R_AT_LIMIT, total, limit, nil, nil, nil)
 		return
 	end
-	local stop = station.entity_stop
-	if not (stop and stop.valid) then return end
 	local deliveries = station.deliveries[hash]
 	if deliveries and deliveries < 0 then
+		local stop = station.entity_stop
+		if not (stop and stop.valid) then return end
 		diag.fail(d, r_id, hash, REASON_R_IS_PROVIDING, -deliveries, 0, nil, nil, nil)
 	end
 end
@@ -816,13 +823,15 @@ end
 --- @param delivery_id uint?
 function diag.served(d, r_id, hash, p_id, train_id, delivery_id)
 	local by_item = d.unserved[r_id]
-	if not by_item then return end
-	local ix = d.item_ix[hash]
+	local ix = by_item and d.item_ix[hash]
 	local e = ix and by_item[ix]
-	if not e then return end
-	diag.event(d, DIAG_KIND_SERVED, DIAG_SEV_INFO, e.reason, delivery_id, train_id, r_id, p_id, ix,
-		game.tick - e.first_tick, e.n)
-	remove_entry(d, r_id, by_item, ix, e)
+	if e then
+		diag.event(d, DIAG_KIND_SERVED, DIAG_SEV_INFO, e.reason, delivery_id, train_id, r_id, p_id, ix,
+			game.tick - e.first_tick, e.n)
+		remove_entry(d, r_id, by_item, ix, e)
+	end
+	-- Only service resolves a request: a swept entry keeps its acknowledgement, which is keyed by hash.
+	end_request_ack(r_id, hash, DIAG_ACK_END_RESOLVED)
 end
 
 --- A station left Cybersyn: its entries and its acknowledgements go with it.
@@ -1182,8 +1191,9 @@ function diag.export_step()
 		n = 1
 		parts[1] = HEADER
 	end
-	local exhausted = true
-	while rows < EXPORT_CHUNK do
+	local exhausted, scanned = false, 0
+	-- A selective filter matches few rows, so the scan is bounded as well as the rows written.
+	while rows < EXPORT_CHUNK and scanned < EXPORT_SCAN do
 		local ib = kb < rb.count and at(rb, kb) or nil
 		local iff = kf < rf.count and at(rf, kf) or nil
 		local r, i
@@ -1192,10 +1202,15 @@ function diag.export_step()
 		elseif iff then
 			r, i, kf = rf, iff, kf + 1
 		else
+			exhausted = true
 			break
 		end
 		local seq = r.seq[i]
-		if seq > end_seq then break end
+		if seq > end_seq then
+			exhausted = true
+			break
+		end
+		scanned = scanned + 1
 		job.next_seq = seq
 		if matches(r, i, filter) then
 			local kind, code = r.kind[i], r.code[i]
@@ -1206,7 +1221,7 @@ function diag.export_step()
 			rows = rows + 1
 		end
 	end
-	if rows == EXPORT_CHUNK then exhausted = job.next_seq >= end_seq end
+	if not exhausted then exhausted = job.next_seq >= end_seq end
 	helpers.write_file(job.path, table.concat(parts), job.started, job.player_index)
 	job.started = true
 	job.rows = job.rows + rows

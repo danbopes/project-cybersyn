@@ -176,14 +176,14 @@ test("flapping: the fifth change in 10 min logs one flapping event, then quiet u
 	assert_eq(d.counts, tally(d))
 end)
 
-test("lost priority: a counter on the entry, never a reason of its own", function()
+test("lost priority: a counter on the entry beside its reason, kept when an evaluation loses nothing", function()
 	at(5)
 	local d = setup()
-	diag.fail(d, 3, "coal", REASON_P_BELOW_THRESHOLD, 2000, 3000, 9, nil, 4)
-	diag.fail(d, 3, "coal", REASON_P_BELOW_THRESHOLD, 2000, 3000, 9, nil, 4)
+	diag.fail(d, 3, "coal", REASON_P_RESERVED, 2000, 1000, 9, nil, 4)
+	diag.fail(d, 3, "coal", REASON_P_RESERVED, 2000, 1000, 9, nil, 4)
 	local e = d.unserved[3][1]
-	assert_eq({ e.reason, e.lost_n, e.lost_to }, { REASON_P_BELOW_THRESHOLD, 2, 4 })
-	diag.fail(d, 3, "coal", REASON_P_BELOW_THRESHOLD, 2000, 3000, 9, nil, nil)
+	assert_eq({ e.reason, e.lost_n, e.lost_to }, { REASON_P_RESERVED, 2, 4 })
+	diag.fail(d, 3, "coal", REASON_P_RESERVED, 2000, 1000, 9, nil, nil)
 	assert_eq({ e.lost_n, e.lost_to }, { 2, 4 })
 end)
 
@@ -255,22 +255,75 @@ test("cycle: entries no evaluation touched for two cycles are swept", function()
 	assert_eq(d.counts, {})
 end)
 
-test("cap: the entry evaluated longest ago makes room", function()
+test("cap: more failing keys than the cap over two cycles; refused keys are counted, logged once, never evicting", function()
 	at(0)
 	local d = setup()
-	for i = 1, diag.UNSERVED_CAP do
-		at(i)
-		diag.fail(d, i, "coal", REASON_NO_PROVIDER, 0, 0)
+	diag.cycle()
+	local cap, extra = diag.UNSERVED_CAP, 500
+	local function evaluate_all(from)
+		for i = from, cap + extra do diag.fail(d, i, "coal", REASON_NO_PROVIDER, 0, 0) end
 	end
-	at(diag.UNSERVED_CAP + 5)
-	diag.fail(d, 1, "coal", REASON_NO_PROVIDER, 0, 0)
-	at(diag.UNSERVED_CAP + 10)
-	diag.fail(d, 99999, "coal", REASON_CAPACITY, 1, 1)
-	assert_eq(d.unserved_n, diag.UNSERVED_CAP)
-	assert_not_nil(d.unserved[1], "touched again, so not the oldest")
-	assert_nil(d.unserved[2])
-	assert_not_nil(d.unserved[99999])
+	evaluate_all(1)
+	assert_eq({ d.unserved_n, d.unserved_dropped, d.seq }, { cap, extra, cap })
+	assert_nil(d.unserved[cap + 1])
 	assert_eq(d.counts, tally(d))
+	-- The same evaluation order next cycle: the live keys stay put, nothing is logged again, no key churns.
+	at(50)
+	diag.cycle()
+	evaluate_all(1)
+	assert_eq({ d.unserved_n, d.unserved_dropped, d.seq }, { cap, 2 * extra, cap })
+	assert_eq(d.unserved[1][1].first_tick, 0)
+	-- Keys 1..1000 stop failing: the sweep frees their slots and refused keys get in.
+	at(100)
+	diag.cycle()
+	evaluate_all(1001)
+	at(150)
+	diag.cycle()
+	at(200)
+	diag.cycle()
+	assert_nil(d.unserved[1])
+	assert_eq(d.unserved_n, cap - 1000)
+	evaluate_all(1001)
+	assert_eq(d.unserved_n, cap - 1000 + extra)
+	assert_not_nil(d.unserved[cap + extra])
+	assert_eq(d.counts, tally(d))
+end)
+
+test("acks: the sweep keeps an acknowledgement; a re-created key with another reason ends it; service ends it", function()
+	at(0)
+	local d = setup()
+	diag.cycle()
+	diag.fail(d, 1, "coal", REASON_R_AT_LIMIT, 1, 1)
+	diag.ack("request", 1, "coal", 3, nil)
+	diag.fail(d, 2, "coal", REASON_NO_PROVIDER, 0, 0)
+	diag.ack("request", 2, "coal", 3, nil)
+	for _, t in ipairs({ 50, 100, 150 }) do
+		at(t)
+		diag.cycle()
+	end
+	assert_nil(d.unserved[1])
+	assert_nil(d.unserved[2])
+	assert_not_nil(diag.is_acked("request", 1, "coal"), "swept, not resolved")
+	assert_not_nil(diag.is_acked("request", 2, "coal"))
+	diag.fail(d, 1, "coal", REASON_R_AT_LIMIT, 1, 1)
+	assert_not_nil(diag.is_acked("request", 1, "coal"), "same reason again")
+	diag.fail(d, 2, "coal", REASON_NO_TRAINS_ON_NETWORK, 0, 3)
+	assert_nil(diag.is_acked("request", 2, "coal"), "a different reason ends it")
+	local un = diag.events({ kind = DIAG_KIND_UNACKNOWLEDGED }, 0, 10)
+	assert_eq({ #un, un[1].station, un[1].b }, { 1, 2, DIAG_ACK_END_REASON_CHANGED })
+	-- Served while it had no entry: still resolved.
+	for _, t in ipairs({ 200, 250, 300 }) do
+		at(t)
+		diag.cycle()
+	end
+	assert_nil(d.unserved[1])
+	diag.served(d, 1, "coal", 5, 6, 0)
+	assert_nil(diag.is_acked("request", 1, "coal"))
+	-- An acknowledgement taken without a known reason binds to the reason of the key's next first entry.
+	diag.ack("request", 9, "coal", 3, nil)
+	assert_nil(storage.acks.request[9].coal.reason)
+	diag.fail(d, 9, "coal", REASON_CAPACITY, 2, 1)
+	assert_eq(storage.acks.request[9].coal.reason, REASON_CAPACITY)
 end)
 
 test("station_removed: entries, counters and acknowledgements of the station go", function()
@@ -384,8 +437,11 @@ test("rings: wrap keeps the newest rows; merged order follows seq across both ri
 	end
 	-- the full ring keeps its newest 1024 rows: two of every three ticks, so its oldest row is tick 3466
 	assert_eq(diag.events({ kind = DIAG_KIND_ARRIVE_R }, 0, 1)[1].a, 3466)
-	local oldest = diag.horizon()
-	assert_eq(oldest, 3)
+	-- the log is complete only as far back as both rings reach: the full ring's oldest row
+	assert_eq(diag.horizon(), 3466)
+	d.full = false
+	assert_eq(diag.horizon(), 3, "with full off the full ring's leftover rows do not count")
+	d.full = true
 	assert_eq(#diag.events(nil, 4990, 100), 10)
 end)
 
@@ -446,6 +502,25 @@ test("export: csv lines, a header once, chunks of 2,000 rows appended", function
 	assert_eq(diag.csv_line({ seq = 1, tick = 2, kind = DIAG_KIND_ALERT, sev = 1, code = DIAG_ALERT_STUCK, delivery = 0,
 		train = 3, station = 0, station2 = 0, item = 1, a = 0, b = 0 }, { 'odd,"name"' }),
 		'1,2,alert,error,stuck,0,3,0,0,"odd,""name""",0,0\n')
+	helpers.write_file = function() end
+end)
+
+test("export: a selective filter is scanned in bounded steps", function()
+	at(60)
+	local d = setup("full")
+	local writes = {}
+	helpers.write_file = function(path, data, append, player) writes[#writes + 1] = { path, data, append, player } end
+	for i = 1, 9000 do
+		diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 3, 0, 0, 0, 0, 0)
+	end
+	diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 4, 0, 0, 0, 0, 0)
+	diag.export(nil, { train = 4 })
+	diag.export_tick()
+	assert_eq(#d.export_jobs, 1, "8,000 rows scanned, the match not reached yet")
+	diag.export_tick()
+	assert_eq(#d.export_jobs, 0)
+	assert_eq(#writes, 2)
+	assert_eq(writes[2][2], "9001,60,arrive_p,info,0,0,4,0,0,,0,0\n")
 	helpers.write_file = function() end
 end)
 

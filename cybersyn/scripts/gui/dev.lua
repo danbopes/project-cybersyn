@@ -526,6 +526,7 @@ function interface.diag_state()
 		count_full = d and d.ring_full.count or 0,
 		seq = d and d.seq or 0,
 		unserved_entries = d and d.unserved_n or 0,
+		unserved_dropped = d and d.unserved_dropped or 0,
 		loaded_tick = d and d.loaded_tick or nil,
 		horizon_ticks = horizon,
 		interrupt_checks = verify and verify.checks or nil,
@@ -545,7 +546,7 @@ end
 --- Exports both rings at once (the GUI's export runs in chunks on the manager tick) and returns the path under
 --- script-output.
 function interface.diag_export(pi)
-	local player = pi and game.get_player(pi)
+	local player = pi and pi > 0 and game.get_player(pi)
 	local path = diag.export(player and player.connected and pi or 0, nil)
 	if not path then return nil end
 	local d = storage.diag
@@ -555,7 +556,7 @@ end
 
 --- Queues an export like the GUI would; the manager tick writes it.
 function interface.diag_export_async(pi)
-	local player = pi and game.get_player(pi)
+	local player = pi and pi > 0 and game.get_player(pi)
 	return diag.export(player and player.connected and pi or 0, nil)
 end
 
