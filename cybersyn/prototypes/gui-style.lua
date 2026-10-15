@@ -365,24 +365,27 @@ styles.ltnm_column_label = {
 
 -- MINIMAP STYLES
 
--- 60 px keeps the locomotive's surroundings readable while fitting nine rows on a page.
+-- Smallest size at which the locomotive's surroundings stay readable; it roughly doubles the rows visible without
+-- scrolling.
 styles.ltnm_train_minimap = {
 	type = "minimap_style",
 	size = 60,
 }
 
+-- 67 px rows (60 minimap + 7 padding) divide the 670 px Trains scroll pane into exactly ten rows, so the last
+-- visible row is never cut in half by the footer.
 styles.ltnm_train_row_frame_light = {
 	type = "frame_style",
 	parent = "ltnm_table_row_frame_light",
 	top_padding = 4,
-	bottom_padding = 4,
+	bottom_padding = 3,
 }
 
 styles.ltnm_train_row_frame_dark = {
 	type = "frame_style",
 	parent = "ltnm_table_row_frame_dark",
 	top_padding = 4,
-	bottom_padding = 4,
+	bottom_padding = 3,
 }
 
 styles.ltnm_subfooter_frame = {

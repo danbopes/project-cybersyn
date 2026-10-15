@@ -635,7 +635,9 @@ local function row_def(st, m, color, item, widths)
 		},
 		{
 			type = "label",
-			style_mods = { width = w.last_delivery, horizontal_align = "right" },
+			-- Left-aligned to sit under its header: restyling a sort checkbox drops style_mods, so the header cannot be
+			-- right-aligned.
+			style_mods = { width = w.last_delivery },
 			caption = m.last_caption,
 			tooltip = m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" },
 		},

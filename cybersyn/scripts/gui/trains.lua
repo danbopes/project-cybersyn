@@ -17,11 +17,12 @@ local DEFAULT_COLUMN = "train_id"
 local SHIPMENT_COLUMNS = 6
 local NETWORK_COLUMNS = 3
 
--- Same overall width as the old five-column layout; the old 420 px network column is split into status and network.
+-- The total matches the Stations tab so the window keeps its width when switching tabs; the old 420 px network
+-- column is split into status and network.
 local widths = {
 	trains = {
-		train_id = 90,
-		train_status = 280,
+		train_id = 60,
+		train_status = 334,
 		network = 140,
 		layout = 200,
 		depot = 160,

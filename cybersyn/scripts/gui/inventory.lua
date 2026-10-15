@@ -12,7 +12,6 @@ local TAB = "inventory_tab"
 local GRIDS = { "provided", "in_transit", "requested" }
 -- Equal columns let the three grids share the tab width evenly; nine is the most that fits in a third of it.
 local GRID_COLUMNS = 9
-local SLOT_SIZE = 40
 local TOOLBAR_HEIGHT = 28
 local GRID_HEADER_HEIGHT = 20
 local SPACING = 8
