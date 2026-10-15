@@ -103,7 +103,7 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field fleet {[string]: int} Cybersyn trains per network, recounted at most once per cycle
 --- @field fleet_tick int
 --- @field unpowered {[uint]: true} stations whose combinator was not working at their last poll
---- @field alert_last {[int]: number} stop unit number, or -train id, -> tick * 32 + code of its last logged alert
+--- @field alert_last {[int]: uint} (stop unit number, or -train id) * 32 + alert code -> tick it was last logged
 --- @field alert_sweep uint? next tick alert_last is pruned
 --- @field next_delivery uint
 --- @field export_jobs DiagExportJob[]
@@ -837,7 +837,7 @@ function diag.station_removed(station_id)
 		d.unserved[station_id] = nil
 		d.unserved_count[station_id] = nil
 		d.unpowered[station_id] = nil
-		d.alert_last[station_id] = nil
+		for code = 1, #DIAG_ALERT_NAMES do d.alert_last[station_id * 32 + code] = nil end
 	end
 	local acks = storage.acks
 	if acks then
@@ -859,8 +859,8 @@ function diag.cycle()
 	d.cycle_start = now
 	if now >= (d.alert_sweep or 0) then
 		local last = d.alert_last
-		for key, v in pairs(last) do
-			if now - math.floor(v / 32) >= ALERT_REPEAT then last[key] = nil end
+		for key, tick in pairs(last) do
+			if now - tick >= ALERT_REPEAT then last[key] = nil end
 		end
 		d.alert_sweep = now + ALERT_REPEAT
 	end
@@ -970,11 +970,12 @@ function diag.alert(code, train, stop, stop2)
 	if not d then return end
 	local station = unit(stop)
 	local train_id = train and train.valid and train.id or 0
-	local key = station ~= 0 and station or -train_id
+	-- Per alert, not per entity: one requester can fail two items in turn with two different alerts.
+	local key = station ~= 0 and (station * 32 + code) or -(train_id * 32 + code)
 	local now = game.tick
 	local last = d.alert_last[key]
-	if last and last % 32 == code and now - math.floor(last / 32) < ALERT_REPEAT then return end
-	d.alert_last[key] = now * 32 + code
+	if last and now - last < ALERT_REPEAT then return end
+	d.alert_last[key] = now
 	local ctrain = train_id ~= 0 and storage.trains[train_id]
 	diag.event(d, DIAG_KIND_ALERT, ALERT_SEVERITY[code] or DIAG_SEV_WARNING, code, ctrain and ctrain.delivery_id or 0,
 		train_id, station, unit(stop2), 0, 0, 0)

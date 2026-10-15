@@ -523,9 +523,15 @@ test("alerts: one row per entity and alert until it changes or 10 minutes pass",
 	for i, e in ipairs(ev) do codes[i] = e.code end
 	assert_eq(codes, { DIAG_ALERT_MISSING_TRAIN, DIAG_ALERT_TRAINS_FILTERED, DIAG_ALERT_TRAINS_FILTERED, DIAG_ALERT_STUCK })
 	assert_eq({ ev[4].train, ev[4].sev }, { 8, DIAG_SEV_ERROR })
+	-- Two alerts taking turns on one stop are each kept to one row per window.
+	diag.alert(DIAG_ALERT_MISSING_TRAIN, nil, stop, nil)
+	diag.alert(DIAG_ALERT_TRAINS_FILTERED, nil, stop, nil)
+	diag.alert(DIAG_ALERT_MISSING_TRAIN, nil, stop, nil)
+	assert_eq(#diag.events({ kind = DIAG_KIND_ALERT }, 0, 10), 5)
 	at(71999)
 	diag.cycle()
-	assert_eq(d.alert_last, { [40] = 36000 * 32 + DIAG_ALERT_TRAINS_FILTERED, [-8] = 36000 * 32 + DIAG_ALERT_STUCK })
+	assert_eq(d.alert_last, { [40 * 32 + DIAG_ALERT_TRAINS_FILTERED] = 36000, [40 * 32 + DIAG_ALERT_MISSING_TRAIN] = 36000,
+		[-(8 * 32 + DIAG_ALERT_STUCK)] = 36000 })
 	at(107999)
 	diag.cycle()
 	assert_eq(d.alert_last, {}, "older than 10 minutes pruned")
