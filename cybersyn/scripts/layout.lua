@@ -59,7 +59,7 @@ end
 ---@param train Train
 function remove_train(map_data, train_id, train)
 	if train.manifest then
-		on_failed_delivery(map_data, train_id, train)
+		on_failed_delivery(map_data, train_id, train, DIAG_FAIL_TRAIN_REMOVED)
 	end
 	remove_available_train(map_data, train_id, train)
 

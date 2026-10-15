@@ -4,6 +4,7 @@ local INF = math.huge
 local band = bit32.band
 local analytics = require("scripts.analytics")
 local stats = require("scripts.stats")
+local diag = require("scripts.diag")
 
 ---@param map_data MapData
 ---@param station Station
@@ -30,7 +31,8 @@ end
 ---@param map_data MapData
 ---@param train_id uint
 ---@param train Train
-function on_failed_delivery(map_data, train_id, train)
+---@param cause int? DIAG_FAIL_* for the diagnostics log
+function on_failed_delivery(map_data, train_id, train, cause)
 	--NOTE: must either change this train's status or remove it after this call
 	local p_station_id = train.p_station_id --[[@as uint]]
 	local r_station_id = train.r_station_id --[[@as uint]]
@@ -70,6 +72,9 @@ function on_failed_delivery(map_data, train_id, train)
 			end
 		end
 	end
+	if map_data.diag then
+		diag.delivery_failed(cause, train_id, train, p_station_id, r_station_id, is_p_in_progress, is_r_in_progress)
+	end
 	train.r_station_id = nil
 	train.p_station_id = nil
 	train.manifest = nil
@@ -94,7 +99,10 @@ function add_available_train(map_data, train_id, train)
 				network = {}
 				map_data.available_trains[network_name] = network
 			end
-			network[train_id] = true
+			if not network[train_id] then
+				network[train_id] = true
+				stats.available_changed(network_name, 1)
+			end
 		end
 		train.is_available = true
 		interface_raise_train_available(train_id)
@@ -117,6 +125,7 @@ function add_available_train_to_depot(map_data, mod_settings, train_id, train, d
 	train.status = STATUS_D
 
 	add_available_train(map_data, train_id, train)
+	if map_data.diag then diag.train_event(DIAG_KIND_RETURNED, train_id, train, depot_id) end
 end
 ---@param map_data MapData
 ---@param train_id uint
@@ -133,7 +142,10 @@ function remove_available_train(map_data, train_id, train)
 		for network_name in f, a do
 			local network = map_data.available_trains[network_name]
 			if network then
-				network[train_id] = nil
+				if network[train_id] then
+					network[train_id] = nil
+					stats.available_changed(network_name, -1)
+				end
 				if next(network) == nil then
 					map_data.available_trains[network_name] = nil
 				end
@@ -163,7 +175,7 @@ local function on_train_arrives_depot(map_data, depot_id, depot, train_entity)
 			remove_available_train(map_data, train_id, train)
 		elseif mod_settings.react_to_train_early_to_depot then
 			if train.manifest then
-				on_failed_delivery(map_data, train_id, train)
+				on_failed_delivery(map_data, train_id, train, DIAG_FAIL_EARLY_TO_DEPOT)
 			end
 			send_alert_unexpected_train(train.entity)
 		else
@@ -200,6 +212,9 @@ local function on_train_arrives_depot(map_data, depot_id, depot, train_entity)
 			--network_name = add_available_train_to_depot,
 			--network_mask = add_available_train_to_depot,
 			--priority = add_available_train_to_depot,
+			last_state = train_entity.state,
+			state_tick = game.tick,
+			in_interrupt = train_in_interrupt(train_entity),
 		} --[[@as Train]]
 		set_train_layout(map_data, train)
 		map_data.trains[train_id] = train
@@ -227,6 +242,7 @@ local function on_train_arrives_station(map_data, station, train_id, train)
 		set_p_wagon_combs(map_data, station, train)
 		-- Record phase: arrived at provider
 		analytics.record_phase_arrive_provider(map_data, train_id)
+		if map_data.diag then diag.train_event(DIAG_KIND_ARRIVE_P, train_id, train, train.p_station_id) end
 		interface_raise_train_status_changed(train_id, STATUS_TO_P, STATUS_P)
 	elseif train.status == STATUS_TO_R then
 		train.status = STATUS_R
@@ -234,6 +250,7 @@ local function on_train_arrives_station(map_data, station, train_id, train)
 		set_r_wagon_combs(map_data, station, train)
 		-- Record phase: arrived at requester
 		analytics.record_phase_arrive_requester(map_data, train_id)
+		if map_data.diag then diag.train_event(DIAG_KIND_ARRIVE_R, train_id, train, train.r_station_id) end
 		interface_raise_train_status_changed(train_id, STATUS_TO_R, STATUS_R)
 	end
 end
@@ -305,6 +322,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		color_train_by_stop(train.entity, r_station.entity_stop)
 		-- Record phase: left provider (loading complete)
 		analytics.record_phase_leave_provider(map_data, train_id)
+		if map_data.diag then diag.train_event(DIAG_KIND_LEAVE_P, train_id, train, train.p_station_id) end
 		interface_raise_train_status_changed(train_id, STATUS_P, STATUS_TO_R)
 	elseif train.status == STATUS_R then
 		local station = map_data.stations[train.r_station_id]
@@ -317,6 +335,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		-- Record delivery completion for analytics (after unloading)
 		analytics.record_delivery_complete(map_data, train_id)
 		stats.record_delivery_complete(train)
+		if map_data.diag then diag.train_event(DIAG_KIND_LEAVE_R, train_id, train, train.r_station_id) end
 		train.p_station_id = nil
 		train.r_station_id = nil
 		train.manifest = nil
@@ -502,6 +521,28 @@ local function on_train_modified(map_data, pre_train_id)
 end
 
 
+---Whether the train is inside an interrupt: its current schedule record was inserted by one.
+---@param entity LuaTrain
+---@return boolean
+function train_in_interrupt(entity)
+	local schedule = entity.get_schedule()
+	if schedule.get_record_count() == 0 then return false end
+	local record = schedule.get_record({ schedule_index = schedule.current })
+	return record ~= nil and record.created_by_interrupt == true
+end
+
+---Keeps Train.in_interrupt current for the dispatcher, which reads it instead of the schedule. Fires on every
+---record insert and removal, interrupts and Cybersyn's own schedule writes included, before the writing call returns.
+---@param event EventData.on_train_schedule_changed
+function on_train_schedule_changed(event)
+	local train_e = event.train
+	if not (train_e and train_e.valid) then return end
+	local train = storage.trains[train_e.id]
+	if train then
+		train.in_interrupt = train_in_interrupt(train_e)
+	end
+end
+
 function on_train_built(event)
 	local train_e = event.train
 	if event.old_train_id_1 then
@@ -510,6 +551,10 @@ function on_train_built(event)
 	if event.old_train_id_2 then
 		on_train_modified(storage, event.old_train_id_2)
 	end
+	local train = train_e and train_e.valid and storage.trains[train_e.id]
+	if train then
+		train.in_interrupt = train_in_interrupt(train_e)
+	end
 end
 function on_train_changed(event)
 	---@type MapData
@@ -517,6 +562,19 @@ function on_train_changed(event)
 	local train_e = event.train --[[@as LuaTrain]]
 	if not train_e.valid then return end
 	local train_id = train_e.id
+
+	local cybersyn_train = map_data.trains[train_id]
+	if cybersyn_train then
+		local state = train_e.state
+		local old_state = cybersyn_train.last_state
+		-- process_active_alerts calls this with a made-up event, so only a real change moves the timestamp.
+		if state ~= old_state then
+			local since = cybersyn_train.state_tick
+			cybersyn_train.last_state = state
+			cybersyn_train.state_tick = game.tick
+			if map_data.diag then diag.train_state(train_id, cybersyn_train, old_state, since, state) end
+		end
+	end
 
 	if map_data.active_alerts then
 		--remove the alert if the train is interacted with at all

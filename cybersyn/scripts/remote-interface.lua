@@ -315,7 +315,7 @@ end
 function interface.fail_delivery(train_id)
 	local train = storage.trains[train_id]
 	assert(train)
-	return on_failed_delivery(storage, train_id, train)
+	return on_failed_delivery(storage, train_id, train, DIAG_FAIL_REMOTE)
 end
 ---@param train_id uint
 function interface.remove_train(train_id)

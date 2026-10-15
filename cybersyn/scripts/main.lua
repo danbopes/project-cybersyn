@@ -4,6 +4,7 @@ local manager_dev = require("scripts.gui.dev")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 local analytics = require("scripts.analytics")
 local stats = require("scripts.stats")
+local diag = require("scripts.diag")
 local fork_migrations = require("scripts.fork-migrations")
 
 local ceil = math.ceil
@@ -188,6 +189,7 @@ function on_station_broken(map_data, station_id, station)
 		end
 	end
 	clear_all_request_tracking(station)
+	diag.station_removed(station_id)
 	map_data.stations[station_id] = nil
 	interface_raise_station_removed(station_id, station)
 end
@@ -907,6 +909,8 @@ local function on_settings_changed(event)
 		for _, station in pairs(storage.stations) do
 			clear_all_request_tracking(station)
 		end
+	elseif event.setting == "cybersyn-diagnostics" or event.setting == "cybersyn-diagnostics-ring" then
+		diag.apply()
 	end
 	manager.on_runtime_mod_setting_changed(event)
 	interface_raise_on_mod_settings_changed(event)
@@ -971,6 +975,7 @@ local function main()
 
 	script.on_event(defines.events.on_train_created, on_train_built)
 	script.on_event(defines.events.on_train_changed_state, on_train_changed)
+	script.on_event(defines.events.on_train_schedule_changed, on_train_schedule_changed)
 
 	script.on_event(defines.events.on_entity_renamed, on_rename)
 
@@ -995,6 +1000,7 @@ local function main()
 		picker_dollies_compat.setup_picker_dollies_compat()
 		manager.on_init()
 		stats.init()
+		fork_migrations.migrate_schema()
 		interop_subscribe_to_events()
 	end)
 
@@ -1002,6 +1008,7 @@ local function main()
 		on_config_changed(e)
 		manager.on_migration()
 		stats.init()
+		fork_migrations.migrate_schema()
 		interop_subscribe_to_events()
 	end)
 

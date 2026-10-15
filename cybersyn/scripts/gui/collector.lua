@@ -6,6 +6,8 @@
 -- fresh records every pass made the Lua GC run in multi-millisecond steps on large bases.
 
 local rich_name = require("scripts.gui.rich-name")
+local diag = require("scripts.diag")
+local stats = require("scripts.stats")
 
 local collector = {}
 
@@ -23,6 +25,7 @@ local IDLE_TICKS = 30 * 60 * 60
 -- Unset train stop limits read back as uint max; the planner treats anything this large as unlimited.
 local UNLIMITED = 2100000000
 
+local WAIT_SIGNAL = defines.train_state.wait_signal
 local WORKING = defines.entity_status.working
 local LOW_POWER = defines.entity_status.low_power
 local RED = defines.wire_connector_id.circuit_red
@@ -66,6 +69,10 @@ collector.UNLIMITED = UNLIMITED
 --- @field longest_wait_start uint?
 --- @field secondary boolean
 --- @field secondary_count int
+--- @field read_tick uint game tick this record was last refreshed
+--- @field lint int bitmask of setup findings (PLAN3 §4.12), written by the lint job from phase 2b; 0 until then
+--- @field unserved {count: int, worst_reason: int, oldest_first_tick: uint}? copy of the station's diagnostics
+---   entries as of read_tick; nil when it has none or diagnostics are off
 
 --- @class SnapshotTrain
 --- @field id uint
@@ -82,6 +89,11 @@ collector.UNLIMITED = UNLIMITED
 --- @field manifest_hashes {[string]: int}
 --- @field surface_index uint?
 --- @field is_available boolean
+--- @field state defines.train_state? LuaTrain.state
+--- @field state_since uint? tick the train entered `state` (Train.state_tick; the load tick for older trains)
+--- @field in_interrupt boolean current schedule record was inserted by an interrupt
+--- @field signal_unit_number uint? the signal it waits at, while state is wait_signal
+--- @field has_path boolean?
 
 --- @class Snapshot
 --- @field tick uint? game tick the last pass completed; nil = never collected
@@ -100,9 +112,19 @@ collector.UNLIMITED = UNLIMITED
 --- @field starved_count int number of keys in starved
 --- @field starved_source "economy"|"snapshot"
 --- @field starved_version int bumped only when the contents of `starved` change; equal sets keep their table
---- @field fleet {total: int, by_status: {[uint]: int}, available_by_network: {[string]: int}, by_layout: {[uint]: int}}
+--- @field fleet SnapshotFleet
 --- @field depots {total: int, parked: int}
+--- @field depots_by_name {[string]: {ids: uint[], limit: int, parked: int, inbound: int, trains_bound: int, compositions: {[uint]: int}}} declared; filled from phase 4 (PLAN3 §4.2)
 --- @field alerts {train_id: uint, kind: int, since_tick: int}[]
+
+--- @class SnapshotFleet
+--- @field total int
+--- @field by_status {[uint]: int}
+--- @field available_by_network {[string]: int}
+--- @field by_layout {[uint]: int}
+--- @field min_available_by_network {[string]: int} fewest available trains per network over the last hour (stats)
+--- @field capability {[string]: {[uint]: {count: int, item_capacity: int, fluid_capacity: int, mask_or: int}}} declared; built from phase 2b (PLAN3 §4.2)
+--- @field mask_or {[string]: int} declared; built from phase 2b
 
 local function new_inventory()
 	return { provided = {}, requested = {}, in_transit = {} }
@@ -125,8 +147,10 @@ function collector.empty()
 		starved_count = 0,
 		starved_source = "snapshot",
 		starved_version = 0,
-		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {} },
+		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
+			capability = {}, mask_or = {} },
 		depots = { total = 0, parked = 0 },
+		depots_by_name = {},
 		alerts = {},
 	}
 end
@@ -409,7 +433,8 @@ local function summarize_trains(b)
 	-- Refilled straight in the live snapshot for the same memory reason as station records.
 	local live = collector.get()
 	local trains = live.trains
-	local fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {} }
+	local fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {},
+		min_available_by_network = stats.min_available(60), capability = {}, mask_or = {} }
 	local depot_names = {}
 	local depots = storage.depots
 	local storage_trains = storage.trains
@@ -463,6 +488,17 @@ local function summarize_trains(b)
 			tr.refueler_id = train.refueler_id
 			tr.surface_index = any and any.surface_index or nil
 			tr.is_available = train.is_available == true
+			local state = entity.state
+			tr.state = state
+			tr.state_since = train.state_tick
+			tr.in_interrupt = train.in_interrupt == true
+			if state == WAIT_SIGNAL then
+				local signal = entity.signal
+				tr.signal_unit_number = signal and signal.valid and signal.unit_number or nil
+			else
+				tr.signal_unit_number = nil
+			end
+			tr.has_path = entity.has_path
 			fleet.total = fleet.total + 1
 			local status = train.status or STATUS_D
 			fleet.by_status[status] = (fleet.by_status[status] or 0) + 1
@@ -497,6 +533,7 @@ local function summarize_trains(b)
 	live.trains_version = (live.trains_version or 0) + 1
 	live.fleet = fleet
 	live.depots = { total = depot_total, parked = parked }
+	live.depots_by_name = live.depots_by_name or {}
 	live.alerts = alerts
 	b.trains = nil
 end
@@ -689,6 +726,19 @@ local function collect_station(b, id, station)
 	st.longest_wait_start = nil
 	st.secondary = false
 	st.secondary_count = 0
+	st.read_tick = game.tick
+	if st.lint == nil then st.lint = 0 end
+	local n_unserved, worst, oldest = diag.unserved_summary(id)
+	if n_unserved > 0 then
+		local u = st.unserved
+		if not u then
+			u = {}
+			st.unserved = u
+		end
+		u.count, u.worst_reason, u.oldest_first_tick = n_unserved, worst, oldest
+	elseif st.unserved then
+		st.unserved = nil
+	end
 	refill(st.deliveries, station.deliveries)
 	refill(st.wait, mod_settings.track_request_wait_times and station.request_start_ticks or nil)
 	local provided, requested = st.provided, st.requested

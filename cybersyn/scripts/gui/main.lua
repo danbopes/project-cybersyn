@@ -4,6 +4,7 @@ local mod_gui = require("__core__.lualib.mod-gui")
 local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
 local util = require("scripts.gui.util")
+local diag = require("scripts.diag")
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
@@ -280,6 +281,7 @@ end
 
 ---@param global cybersyn.global
 function manager_gui.tick(storage)
+	diag.export_tick()
 	local manager_data = storage.manager
 	if not manager_data then return end
 	collector.tick()

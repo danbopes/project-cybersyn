@@ -69,11 +69,41 @@ local function migrate_to_fork()
 	storage.tick_data = {}
 end
 
+local diag = require("scripts.diag")
+local stats = require("scripts.stats")
+
+-- Bumped whenever a fork release adds storage fields an existing save must get before its first planner tick.
+-- 1: diagnostics (storage.diag per setting, storage.acks), Train.in_interrupt/last_state/state_tick, the
+-- available-train counters and the cycle fields of storage.stats.
+local SCHEMA = 1
+
 local fork_migrations = {}
+
+--- Creates or refreshes every field of SCHEMA; idempotent, and it never touches the dispatcher's cycle state.
+function fork_migrations.migrate_schema()
+	diag.migrate()
+	local tick = game.tick
+	for _, train in pairs(storage.trains or {}) do
+		local entity = train.entity
+		if entity and entity.valid then
+			-- Schedule changes made while the mod was not loaded raised no event, so the cache is rebuilt.
+			train.in_interrupt = train_in_interrupt(entity)
+			if train.last_state == nil then
+				train.last_state = entity.state
+				train.state_tick = tick
+			end
+		end
+	end
+	stats.init()
+	storage.fork_schema = SCHEMA
+end
 
 function fork_migrations.run_once()
 	if not storage.fork_migrated then
 		migrate_to_fork()
+	end
+	if (storage.fork_schema or 0) < SCHEMA then
+		fork_migrations.migrate_schema()
 	end
 end
 

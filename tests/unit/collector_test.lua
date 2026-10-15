@@ -157,8 +157,11 @@ test("empty: the snapshot shape", function()
 		starved_count = 0,
 		starved_source = "snapshot",
 		starved_version = 0,
-		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {} },
+		-- PLAN3 §4.2 (phase 2): the hour's minimum from stats; capability, mask_or and depots_by_name declared empty.
+		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
+			capability = {}, mask_or = {} },
 		depots = { total = 0, parked = 0 },
+		depots_by_name = {},
 		alerts = {},
 	})
 	assert_true(collector.empty() ~= collector.empty())
@@ -281,6 +284,9 @@ test("full pass: provider record", function()
 		wait = {},
 		secondary = false,
 		secondary_count = 0,
+		-- PLAN3 §4.2 (phase 2): when the record was read, and the lint bitmask (0 until phase 2b).
+		read_tick = 1000,
+		lint = 0,
 	})
 	-- Copied, not shared, so the planner's later writes do not leak into the snapshot.
 	assert_true(snap.stations[1].deliveries ~= storage.stations[1].deliveries)
@@ -398,6 +404,8 @@ test("full pass: trains, fleet, depots and alerts", function()
 		manifest_hashes = { ["iron-ore"] = 250, ["iron-ore|rare"] = 5 },
 		surface_index = 1,
 		is_available = false,
+		-- PLAN3 §4.2 (phase 2); the stub entity has no state, signal or path, so only the cached flag shows.
+		in_interrupt = false,
 	})
 	local t12 = snap.trains[12]
 	assert_eq(t12.depot_name, "")
@@ -411,6 +419,9 @@ test("full pass: trains, fleet, depots and alerts", function()
 		by_status = { [STATUS_TO_P] = 1, [STATUS_D] = 1 },
 		available_by_network = { ["signal-A"] = 1 },
 		by_layout = { [1] = 1 },
+		min_available_by_network = {},
+		capability = {},
+		mask_or = {},
 	})
 	assert_eq(snap.depots, { total = 2, parked = 1 })
 	-- tps 30 = 2 ticks per main tick: alert raised 10 main ticks ago.
@@ -728,6 +739,9 @@ test("second pass: changed inputs replace every field of the previous record", f
 		wait = {},
 		secondary = false,
 		secondary_count = 0,
+		-- PLAN3 §4.2 (phase 2): when the record was read, and the lint bitmask (0 until phase 2b).
+		read_tick = 1100,
+		lint = 0,
 	})
 	assert_eq(snap.stations[2], {
 		id = 2,
@@ -761,6 +775,9 @@ test("second pass: changed inputs replace every field of the previous record", f
 		longest_wait_start = 60,
 		secondary = false,
 		secondary_count = 0,
+		-- PLAN3 §4.2 (phase 2): when the record was read, and the lint bitmask (0 until phase 2b).
+		read_tick = 1100,
+		lint = 0,
 	})
 	assert_eq(snap.stations[3].warming_up, false)
 	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true } })
