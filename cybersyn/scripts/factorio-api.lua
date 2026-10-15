@@ -1,5 +1,6 @@
 --By Mami
 local get_distance = require("__flib__.position").distance
+local diag = require("scripts.diag")
 local bit_extract = bit32.extract
 local bit_replace = bit32.replace
 
@@ -993,6 +994,10 @@ function set_combinator_output(map_data, comb, signals)
 end
 
 ---@param station Station
+---@return Signal[]? comb1_signals
+---@return Signal[]? comb2_signals
+---@return {[uint]: Signal[]} secondary_inv_signals
+---@return boolean comb1_working the station combinator is working or on low power (the planner reads it only then)
 function get_signals(station)
 	local comb1 = station.entity_comb1
 	local status1 = comb1.status
@@ -1027,7 +1032,7 @@ function get_signals(station)
 		end
 	end
 
-	return comb1_signals, comb2_signals, secondary_inv_signals
+	return comb1_signals, comb2_signals, secondary_inv_signals, status1 == DEFINES_WORKING or status1 == DEFINES_LOW_POWER
 end
 
 --- Update the station control combinator at the given station if it exists.
@@ -1133,21 +1138,32 @@ end
 ---@param p_stop LuaEntity
 function send_alert_missing_train(r_stop, p_stop)
 	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.missing-train")
+	diag.alert(DIAG_ALERT_MISSING_TRAIN, nil, r_stop, p_stop)
+end
+---Trains exist on the network but every one was rejected by mask, manual mode, schedule or surface (B3).
+---@param r_stop LuaEntity
+---@param p_stop LuaEntity
+function send_alert_trains_filtered(r_stop, p_stop)
+	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.trains-filtered")
+	diag.alert(DIAG_ALERT_TRAINS_FILTERED, nil, r_stop, p_stop)
 end
 ---@param r_stop LuaEntity
 ---@param p_stop LuaEntity
 function send_alert_no_train_has_capacity(r_stop, p_stop)
 	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.no-train-has-capacity")
+	diag.alert(DIAG_ALERT_NO_TRAIN_HAS_CAPACITY, nil, r_stop, p_stop)
 end
 ---@param r_stop LuaEntity
 ---@param p_stop LuaEntity
 function send_alert_no_train_matches_r_layout(r_stop, p_stop)
 	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.no-train-matches-r-layout")
+	diag.alert(DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT, nil, r_stop, p_stop)
 end
 ---@param r_stop LuaEntity
 ---@param p_stop LuaEntity
 function send_alert_no_train_matches_p_layout(r_stop, p_stop)
 	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.no-train-matches-p-layout")
+	diag.alert(DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT, nil, r_stop, p_stop)
 end
 
 local send_stuck_train_alert_icon = { name = LOST_TRAIN_NAME, type = "fluid" }
@@ -1157,6 +1173,7 @@ function send_alert_stuck_train(map_data, train)
 	send_alert_for_train(train, send_stuck_train_alert_icon, "cybersyn-messages.stuck-train")
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 1, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_STUCK, train)
 end
 
 local send_nonempty_train_in_depot_alert_icon = { name = NONEMPTY_TRAIN_NAME, type = "fluid" }
@@ -1167,6 +1184,7 @@ function send_alert_nonempty_train_in_depot(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 2, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_NONEMPTY_IN_DEPOT, train)
 end
 
 local send_lost_train_alert_icon = { name = LOST_TRAIN_NAME, type = "fluid" }
@@ -1177,6 +1195,7 @@ function send_alert_depot_of_train_broken(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 3, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_DEPOT_BROKEN, train)
 end
 ---@param map_data MapData
 ---@param train LuaTrain
@@ -1185,6 +1204,7 @@ function send_alert_station_of_train_broken(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 4, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_STATION_BROKEN, train)
 end
 ---@param map_data MapData
 ---@param train LuaTrain
@@ -1193,6 +1213,7 @@ function send_alert_refueler_of_train_broken(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 5, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_REFUELER_BROKEN, train)
 end
 ---@param map_data MapData
 ---@param train LuaTrain
@@ -1201,6 +1222,7 @@ function send_alert_train_at_incorrect_station(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 6, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_AT_INCORRECT_STATION, train)
 end
 ---@param map_data MapData
 ---@param train LuaTrain
@@ -1209,6 +1231,7 @@ function send_alert_cannot_path_between_surfaces(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 7, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_CANNOT_PATH_BETWEEN_SURFACES, train)
 end
 ---@param map_data MapData
 ---@param train LuaTrain
@@ -1218,6 +1241,7 @@ function send_alert_train_group_base_schedule_broken(map_data, train, group)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 8, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_GROUP_SCHEDULE_BROKEN, train)
 end
 ---@param map_data MapData
 ---@param train LuaTrain
@@ -1226,6 +1250,7 @@ function send_alert_train_base_schedule_broken(map_data, train)
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 9, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_SCHEDULE_BROKEN, train)
 end
 
 --- Alert user when a Cybersyn train arrives at a station with non-default
@@ -1233,11 +1258,13 @@ end
 ---@param station LuaEntity Must be a train stop.
 function send_alert_station_non_default_priority(station)
 	send_alert_for_station(station, send_lost_train_alert_icon, "cybersyn-messages.station-non-default-priority")
+	diag.alert(DIAG_ALERT_NON_DEFAULT_PRIORITY, nil, station)
 end
 
 ---@param train LuaTrain
 function send_alert_unexpected_train(train)
 	send_alert_for_train(train, send_lost_train_alert_icon, "cybersyn-messages.unexpected-train")
+	diag.alert(DIAG_ALERT_UNEXPECTED_TRAIN, train)
 end
 
 ---@param map_data MapData
@@ -1250,6 +1277,7 @@ function send_alert_unexpected_cargo(map_data, train, station_name, station_posi
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 10, map_data.total_ticks }
+	diag.alert(DIAG_ALERT_UNEXPECTED_CARGO, train)
 
 	if station_name and station_position and station_surface then
 		local gps_tag = "[gps=" .. station_position.x .. "," .. station_position.y .. "," .. station_surface.name .. "]"

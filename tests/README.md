@@ -15,7 +15,7 @@ tests/unit/run.sh                 # from anywhere; VERBOSE=1 for tracebacks
 CYBERSYN_ROOT=<cybersyn dir> tests/unit/run.sh   # same tests against another copy of the mod
 ```
 
-Plain Lua 5.2 against the mod's real modules (`constants`, `lib`, `factorio-api`, `central-planning`, `gui/util`, `gui/stats`, `gui/collector`, the stations and trains tab queries). `harness.lua` stubs the engine (`game`, `prototypes`, `storage`, a fake `LuaGuiElement`, flib's `format`, `gui.add`, `train`). Every test runs in a fresh harness state. Prints `FAIL <file>: <test>: <message>` per failure and a final `PASS n FAIL m`; exits 1 on any failure. New tests go in `tests/unit/<name>_test.lua`.
+Plain Lua 5.2 against the mod's real modules (`constants`, `lib`, `factorio-api`, `central-planning`, `diag`, `stats`, `gui/util`, `gui/collector`, the stations and trains tab queries). `harness.lua` stubs the engine (`game`, `prototypes`, `storage`, a fake `LuaGuiElement`, flib's `format`, `gui.add`, `train`). Every test runs in a fresh harness state. Prints `FAIL <file>: <test>: <message>` per failure and a final `PASS n FAIL m`; exits 1 on any failure. New tests go in `tests/unit/<name>_test.lua`.
 
 ## 2. In-game suite (`tests/lab`)
 

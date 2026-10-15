@@ -52,6 +52,27 @@ local rc = {
 }
 lab.rc = rc
 
+-- B3 (PLAN3 §3): the dispatcher's alert for a key, as the alert events of the log record it. "Missing train" only
+-- when the network has no train available; filtered trains get their own alert; trains inside interrupts get none.
+local B3 = {
+	TRAIN_FILTERED_MANUAL = { yes = "trains_filtered", no = "missing_train" },
+	TRAIN_FILTERED_MASK = { yes = "trains_filtered", no = "missing_train" },
+	NO_TRAINS_ON_NETWORK = { yes = "missing_train", no = "trains_filtered" },
+	CAPACITY = { yes = "no_train_has_capacity", no = "missing_train" },
+	R_LAYOUT = { yes = "no_train_matches_r_layout", no = "missing_train" },
+	P_LAYOUT = { yes = "no_train_matches_p_layout", no = "missing_train" },
+	ALL_IN_INTERRUPT = { no = "missing_train", none = true },
+}
+
+--- Alert code names the log holds for one requester.
+local function alerts_for(station)
+	local out = {}
+	for _, ev in ipairs(dev("diag_events", 0, 1000000) or {}) do
+		if ev.kind == "alert" and ev.station == station then out[#out + 1] = ev.code_name end
+	end
+	return out
+end
+
 local function kind_is(kind, name)
 	if kind == name then return true end
 	local st = rc.diag_state
@@ -175,6 +196,7 @@ local function boundary()
 						res.tally = unserved_tally()
 						res.asserted = assert_reason_pair(case, case.expect_settled or case.expect)
 						if case.lift_station then res.target_settled = copy(diag_entry(case, case.lift_station)) end
+						if B3[case.name] then res.alerts = alerts_for(case.r_station) end
 					end
 					res.pre = case.pre(case)
 					res.display_failed = display_failed(case)
@@ -268,6 +290,7 @@ end
 
 local TRAIN_CAUSES = { "TRAIN_MASK", "TRAIN_MANUAL", "TRAIN_SURFACE" }
 
+
 --- The rejection is counted under the expected TRAIN_FILTERED cause and under no other.
 local function rej_matches(e, want)
 	local rej = e and e.rej or {}
@@ -337,6 +360,14 @@ local function reason_checks(n, case, res)
 		end
 	end
 	if case.flap then flap_checks(n, case, res) end
+	local b3 = B3[n]
+	if b3 then
+		local seen = {}
+		for _, name in ipairs(res.alerts or {}) do seen[name] = true end
+		if b3.yes then lab.check(n .. ": alert " .. b3.yes .. " (B3)", seen[b3.yes] == true, res.alerts) end
+		if b3.no then lab.check(n .. ": no " .. b3.no .. " alert (B3)", not seen[b3.no], res.alerts) end
+		if b3.none then lab.check(n .. ": no dispatcher alert at all (B3)", #(res.alerts or {}) == 0, res.alerts) end
+	end
 	if case.lift then
 		lab.check(n .. ": served event after the cause is lifted", res.served_event == true)
 		-- PLAN3 §4.5: served carries the wait, now - first_tick, in `a`; the key failed from first_tick until the lift.
@@ -366,6 +397,8 @@ lab.suite("40_reason_codes", {
 				dev("set_setting", "cybersyn-diagnostics", "basic")
 				dev("diag_reset")
 				rc.diag_state = dev("diag_state")
+				-- DIAG_VERIFY_INTERRUPT: tick_dispatch also reads each candidate's schedule and counts disagreements.
+				dev("diag_verify_interrupt", true)
 			end)
 			lab.check("diagnostics set to basic and reset", ok, err)
 		end
@@ -483,6 +516,13 @@ lab.suite("40_reason_codes", {
 				end
 			end
 			lab.check("cleanup: no unserved entry left for a removed stop", #left_keys == 0, left_keys)
+			local st = dev("diag_state")
+			lab.check("in_interrupt cache: no disagreement with the schedules tick_dispatch read (PLAN3 §4.4)",
+				st.interrupt_checks ~= nil and st.interrupt_checks > 0 and st.interrupt_mismatches == 0,
+				{ checks = st.interrupt_checks, mismatches = st.interrupt_mismatches })
+			lab.info("in_interrupt shadow comparison: " .. tostring(st.interrupt_checks) .. " checks, " ..
+				tostring(st.interrupt_mismatches) .. " mismatches")
+			dev("diag_verify_interrupt", false)
 			if rc.diag_setting then dev("set_setting", "cybersyn-diagnostics", rc.diag_setting) end
 		end
 	end,

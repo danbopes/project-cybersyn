@@ -7,6 +7,8 @@
 local flib_gui = require("__flib__.gui")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
+local diag = require("scripts.diag")
+local stats = require("scripts.stats")
 
 local dev = {}
 
@@ -411,6 +413,323 @@ function interface.set_setting(name, value)
 	end
 	settings.global[name] = { value = value }
 	return settings.global[name].value
+end
+
+-- ---- diagnostics (PLAN3 §4.5, §6 gate 2; the contract in tests/lab/README.md)
+
+--- @param e DiagEntry
+--- @return table plain copy with reason names instead of codes
+local function entry_view(e)
+	local rej = {}
+	for i = 1, REJ_COUNT do
+		if e.rej[i] ~= 0 then rej[REJ_NAMES[i]] = e.rej[i] end
+	end
+	return {
+		reason = REASON_NAMES[e.reason],
+		pending = e.pending and REASON_NAMES[e.pending] or nil,
+		pending_since = e.pending_since,
+		n = e.n,
+		first_tick = e.first_tick,
+		last_tick = e.last_tick,
+		p_station_id = e.p_station_id,
+		p_count = e.p_count,
+		p_threshold = e.p_threshold,
+		lost_n = e.lost_n,
+		lost_to = e.lost_to,
+		a = e.a,
+		b = e.b,
+		rej = rej,
+		changes = #e.changes,
+		suppressed_until = e.suppressed_until,
+	}
+end
+
+--- Unserved entries of one requester, keyed by item hash.
+--- @param r_station_id uint
+function interface.diag_unserved(r_station_id)
+	local d = storage.diag
+	local out = {}
+	local by_item = d and d.unserved[r_station_id]
+	if not by_item then return out end
+	for ix, e in pairs(by_item) do
+		out[d.item_hash[ix]] = entry_view(e)
+	end
+	return out
+end
+
+--- Live entries per confirmed reason name.
+function interface.diag_counts()
+	local out = {}
+	for code, n in pairs(diag.counts_by_reason()) do
+		out[REASON_NAMES[code]] = n
+	end
+	return out
+end
+
+--- @param ev table a diag.events row
+local function event_view(ev, d)
+	return {
+		seq = ev.seq,
+		tick = ev.tick,
+		kind = DIAG_KIND_NAMES[ev.kind] or ev.kind,
+		sev = DIAG_SEV_NAMES[ev.sev] or ev.sev,
+		code = ev.code,
+		code_name = diag.code_name(ev.kind, ev.code),
+		delivery = ev.delivery,
+		train = ev.train,
+		station = ev.station,
+		station2 = ev.station2,
+		item = ev.item ~= 0 and d.item_hash[ev.item] or nil,
+		a = ev.a,
+		b = ev.b,
+	}
+end
+
+--- Events with seq above from_seq (exclusive), oldest first; from_seq nil = the newest `limit`.
+function interface.diag_events(from_seq, limit)
+	local d = storage.diag
+	local out = {}
+	if not d then return out end
+	for i, ev in ipairs(diag.events(nil, from_seq, limit or 1000)) do out[i] = event_view(ev, d) end
+	return out
+end
+
+--- diag.last_for, as plain rows.
+function interface.diag_last_for(kind, id, n)
+	local d = storage.diag
+	local out = {}
+	if not d then return out end
+	for i, ev in ipairs(diag.last_for(kind, id, n or 10)) do out[i] = event_view(ev, d) end
+	return out
+end
+
+--- diag.unserved_rows, as plain rows.
+function interface.diag_unserved_rows(limit, item, reason_name)
+	local out = {}
+	local rows = diag.unserved_rows({ limit = limit, item = item, reason = reason_name and REASON_BY_NAME[reason_name] })
+	for i, r in ipairs(rows) do
+		out[i] = { r_station_id = r.r_station_id, hash = r.hash, reason = REASON_NAMES[r.entry.reason],
+			first_tick = r.entry.first_tick }
+	end
+	return out
+end
+
+function interface.diag_state()
+	local d = storage.diag
+	local verify = storage.diag_verify_interrupt
+	local _, horizon = diag.horizon()
+	local out = {
+		mode = d and d.mode or "off",
+		ring_basic_size = d and d.ring_basic.size or 0,
+		ring_full_size = d and d.ring_full.size or 0,
+		count_basic = d and d.ring_basic.count or 0,
+		count_full = d and d.ring_full.count or 0,
+		seq = d and d.seq or 0,
+		unserved_entries = d and d.unserved_n or 0,
+		loaded_tick = d and d.loaded_tick or nil,
+		horizon_ticks = horizon,
+		interrupt_checks = verify and verify.checks or nil,
+		interrupt_mismatches = verify and verify.mismatches or nil,
+		export_jobs = d and #d.export_jobs or 0,
+		kinds = DIAG_KIND_NAMES,
+		tick = game.tick,
+	}
+	return out
+end
+
+function interface.diag_reset()
+	diag.reset()
+	return interface.diag_state()
+end
+
+--- Exports both rings at once (the GUI's export runs in chunks on the manager tick) and returns the path under
+--- script-output.
+function interface.diag_export(pi)
+	local player = pi and game.get_player(pi)
+	local path = diag.export(player and player.connected and pi or 0, nil)
+	if not path then return nil end
+	local d = storage.diag
+	while d.export_jobs[1] do diag.export_step() end
+	return path
+end
+
+--- Queues an export like the GUI would; the manager tick writes it.
+function interface.diag_export_async(pi)
+	local player = pi and game.get_player(pi)
+	return diag.export(player and player.connected and pi or 0, nil)
+end
+
+--- @param kind "request"|"station"|"lint"
+--- @param until_ticks uint? from now; nil = until the reason changes
+function interface.diag_ack(kind, id, sub, until_ticks, player_index)
+	local ack = diag.ack(kind, id, sub, player_index, until_ticks and (game.tick + until_ticks) or nil)
+	return { player_index = ack.player_index, tick = ack.tick, until_tick = ack.until_tick,
+		reason = ack.reason and REASON_NAMES[ack.reason] or nil }
+end
+
+function interface.diag_unack(kind, id, sub, player_index)
+	return diag.unack(kind, id, sub, player_index)
+end
+
+function interface.diag_is_acked(kind, id, sub)
+	return diag.is_acked(kind, id, sub) ~= nil
+end
+
+function interface.diag_acks()
+	return storage.acks
+end
+
+--- True exactly when the key's confirmed reason is `name` (PLAN3 §6 gate 2).
+function interface.assert_reason(station_id, item_hash, name)
+	local d = storage.diag
+	local by_item = d and d.unserved[station_id]
+	local ix = d and d.item_ix[item_hash]
+	local e = by_item and ix and by_item[ix]
+	return e ~= nil and REASON_NAMES[e.reason] == name
+end
+
+--- Lab flag DIAG_VERIFY_INTERRUPT: tick_dispatch also reads every candidate's schedule and counts the cases where
+--- the cached in_interrupt disagrees (the decision still uses the cache, as without the flag).
+function interface.diag_verify_interrupt(on)
+	storage.diag_verify_interrupt = on and { checks = 0, mismatches = 0 } or nil
+	return storage.diag_verify_interrupt
+end
+
+--- Compares the cached in_interrupt of every Cybersyn train with its schedule now.
+function interface.diag_check_interrupts()
+	local out = { trains = 0, in_interrupt = 0, mismatches = 0, ids = {} }
+	for id, train in pairs(storage.trains) do
+		local e = train.entity
+		if e and e.valid then
+			out.trains = out.trains + 1
+			local live = train_in_interrupt(e)
+			if live then out.in_interrupt = out.in_interrupt + 1 end
+			if live ~= (train.in_interrupt == true) then
+				out.mismatches = out.mismatches + 1
+				out.ids[#out.ids + 1] = id
+			end
+		end
+	end
+	return out
+end
+
+--- Size of storage.diag as JSON, entry and ring counts (growth gate).
+function interface.diag_size()
+	local d = storage.diag
+	if not d then return { json = 0 } end
+	-- Entries some evaluation touched since the previous cycle began: the keys failing right now.
+	local live = 0
+	local since = d.cycle_prev or d.cycle_start
+	for _, by_item in pairs(d.unserved) do
+		for _, e in pairs(by_item) do
+			if e.last_tick >= since then live = live + 1 end
+		end
+	end
+	return {
+		json = #helpers.table_to_json(d),
+		acks_json = storage.acks and #helpers.table_to_json(storage.acks) or 0,
+		unserved_entries = d.unserved_n,
+		live_entries = live,
+		cycle_ticks = d.cycle_prev and (d.cycle_start - d.cycle_prev) or nil,
+		count_basic = d.ring_basic.count,
+		count_full = d.ring_full.count,
+		items = #d.item_hash,
+		alert_last = table_size(d.alert_last),
+		unpowered = table_size(d.unpowered),
+		stations_with_entries = table_size(d.unserved),
+	}
+end
+
+--- The always-on train and stats fields: available counters against the planner's table, the hour's minimum and
+--- no-train failures.
+function interface.diag_stats(minutes)
+	local s = stats.get()
+	local counts = {}
+	for name, ids in pairs(storage.available_trains) do counts[name] = table_size(ids) end
+	local agg = stats.aggregate(minutes or 60)
+	return {
+		available_count = s.available_count,
+		available_actual = counts,
+		min_available_by_network = agg.min_available_by_network,
+		no_train_failures = agg.no_train_failures,
+		cycle = s.cycle,
+	}
+end
+
+--- The phase-2 snapshot fields: how many station and train records carry each, plus the declared fleet tables.
+function interface.snapshot_fields()
+	local snap = collector.get()
+	local out = { stations = 0, read_tick = 0, lint_zero = 0, unserved = 0, unserved_count = 0, trains = 0, state = 0,
+		state_since = 0, in_interrupt_bool = 0, has_path_bool = 0, waiting_at_signal = 0, signal_unit_number = 0 }
+	for _, st in pairs(snap.stations) do
+		out.stations = out.stations + 1
+		if st.read_tick then out.read_tick = out.read_tick + 1 end
+		if st.lint == 0 then out.lint_zero = out.lint_zero + 1 end
+		if st.unserved then
+			out.unserved = out.unserved + 1
+			out.unserved_count = out.unserved_count + st.unserved.count
+		end
+	end
+	for _, tr in pairs(snap.trains) do
+		out.trains = out.trains + 1
+		if tr.state then out.state = out.state + 1 end
+		if tr.state_since then out.state_since = out.state_since + 1 end
+		if type(tr.in_interrupt) == "boolean" then out.in_interrupt_bool = out.in_interrupt_bool + 1 end
+		if type(tr.has_path) == "boolean" then out.has_path_bool = out.has_path_bool + 1 end
+		if tr.state == defines.train_state.wait_signal then out.waiting_at_signal = out.waiting_at_signal + 1 end
+		if tr.signal_unit_number then out.signal_unit_number = out.signal_unit_number + 1 end
+	end
+	local fleet = snap.fleet
+	out.min_available_by_network = fleet.min_available_by_network
+	out.capability = fleet.capability
+	out.mask_or = fleet.mask_or
+	out.depots_by_name = snap.depots_by_name
+	return out
+end
+
+--- PLAN3 §4.5 decision check: requests the planner polled as active whose (requester, item) has no unserved entry.
+--- Reads the manager snapshot (collect first); `min_wait` in ticks filters on the tracked request start.
+function interface.diag_coverage(min_wait, top)
+	local d = storage.diag
+	local snap = collector.get()
+	local now = game.tick
+	local out = { stations_active = 0, stations_uncovered = 0, keys_active = 0, keys_uncovered = 0,
+		keys_uncovered_waiting = 0, failed_display_uncovered = 0, examples = {} }
+	local examples = {}
+	for id, st in pairs(snap.stations) do
+		local station = storage.stations[id]
+		local by_item = d and d.unserved[id]
+		local active, uncovered = false, false
+		for hash, req in pairs(st.requested) do
+			if req.active then
+				active = true
+				out.keys_active = out.keys_active + 1
+				local ix = d and d.item_ix[hash]
+				if not (by_item and ix and by_item[ix]) then
+					uncovered = true
+					out.keys_uncovered = out.keys_uncovered + 1
+					local start = station and station.request_start_ticks and station.request_start_ticks[hash]
+					local wait = start and (now - start) or nil
+					if wait and wait >= (min_wait or 0) then
+						out.keys_uncovered_waiting = out.keys_uncovered_waiting + 1
+						examples[#examples + 1] = { id = id, name = st.name, item = hash, wait = wait,
+							priority = station and station.priority, deliveries = st.deliveries_total, limit = st.trains_limit,
+							last_delivery_tick = st.last_delivery_tick, display_state = station and station.display_state }
+					end
+				end
+			end
+		end
+		if active then out.stations_active = out.stations_active + 1 end
+		if uncovered then
+			out.stations_uncovered = out.stations_uncovered + 1
+			if station and bit32.band(station.display_state or 0, 2) ~= 0 then
+				out.failed_display_uncovered = out.failed_display_uncovered + 1
+			end
+		end
+	end
+	table.sort(examples, function(a, b) return a.wait > b.wait end)
+	for i = 1, math.min(top or 10, #examples) do out.examples[i] = examples[i] end
+	return out
 end
 
 --- @return boolean

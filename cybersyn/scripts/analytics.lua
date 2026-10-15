@@ -374,7 +374,9 @@ local FAILURE_STALE_TICKS = 3600   -- Consider failure resolved if not updated f
 ---@param failure_reason number 0=no provider stock, 1=no train, 2=capacity, 3=layout
 ---@param wait_so_far number seconds the request has been waiting (cumulative)
 ---@param p_station_id uint? provider station id if one was found
-function analytics.record_failed_dispatch(map_data, r_station_id, item_hash, failure_reason, wait_so_far, p_station_id)
+---@param reason int? REASON_* the diagnostics recorded for this evaluation (nil when a provider-side failure is not
+---  classified because diagnostics are off)
+function analytics.record_failed_dispatch(map_data, r_station_id, item_hash, failure_reason, wait_so_far, p_station_id, reason)
 	if not analytics.is_enabled() then return end
 	if not map_data.analytics then return end
 
@@ -394,6 +396,7 @@ function analytics.record_failed_dispatch(map_data, r_station_id, item_hash, fai
 		-- Update existing active failure
 		existing.last_tick = current_tick
 		existing.failure_reason = failure_reason  -- Reason might change
+		existing.reason = reason
 		existing.p_station_id = p_station_id
 		-- Keep original request_start_tick so bar shows full wait time
 	else
@@ -406,6 +409,7 @@ function analytics.record_failed_dispatch(map_data, r_station_id, item_hash, fai
 			request_start_tick = request_start_tick,  -- When the request originally started
 			last_tick = current_tick,
 			failure_reason = failure_reason,
+			reason = reason,
 			p_station_id = p_station_id,
 		}
 	end

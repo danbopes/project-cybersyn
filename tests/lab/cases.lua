@@ -31,7 +31,10 @@
 --   no_loss     the requester must not count a priority loss (LOST_PRIORITY_NO_TRAIN: lo is evaluated, and fails,
 --               in the same call as hi).
 --   expect_ab   {a, b} the payload numbers of the settled entry (PLAN3 §4.5 B1); nil = any; `unordered` = either
---               order; `at = "first"` checks the first sample instead.
+--               order; `at = "first"` checks the first sample instead. Codes B1 gives no numbers carry the phase-2
+--               core's own: R_DISABLED deliveries/limit (0/0), R_IS_PROVIDING and P_IS_REQUESTING the amount on its
+--               way out or in / 0, MASK_MISMATCH requester mask / provider mask, and 0/0 for NO_PROVIDER, the two
+--               layouts and ALL_IN_INTERRUPT.
 --   expect_rej  the TRAIN_FILTERED cause bucket that must count the rejection (TRAIN_MASK, TRAIN_MANUAL,
 --               TRAIN_SURFACE), checked where expect_ab is.
 --   flap        {from, to}: the dispatcher's own transition the flap rule must hold back (TRAIN_FILTERED_SCHEDULE).
@@ -427,6 +430,7 @@ end
 function cases.NO_PROVIDER(ctx)
 	local case = base("NO_PROVIDER", ctx)
 	case.no_offer = true
+	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000, cases.ITEM2) })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
@@ -499,6 +503,7 @@ end
 --- Train limit 0 with an active request.
 function cases.R_DISABLED(ctx)
 	local case = base("R_DISABLED", ctx)
+	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000) })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL,
@@ -527,6 +532,8 @@ function cases.R_IS_PROVIDING(ctx)
 	case.b = cases.station(case, { name = sname(case, "b"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
 	case.r = case.a
 	case.r_station, case.p_station = case.a.id, case.c.id
+	-- a's pickup for b: 2,000 on its way out.
+	case.expect_ab = { 2000, 0 }
 	case.stages = {
 		{
 			when = function(c) return cases.trains_ready(c) end,
@@ -716,6 +723,8 @@ function cases.P_IS_REQUESTING(ctx)
 	case.q = cases.station(case, { name = sname(case, "q"), x = cases.X_P[2], bits = PR_BOTH + ALLOW_ALL })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
 	case.r_station, case.p_station = case.r.id, case.q.id
+	-- q's own delivery from p0: 2,000 on its way in.
+	case.expect_ab = { 2000, 0 }
 	case.stages = {
 		{
 			when = function(c) return cases.trains_ready(c) end,
@@ -754,6 +763,7 @@ end
 --- Requester mask 1, provider mask 2, trains on both.
 function cases.MASK_MISMATCH(ctx)
 	local case = base("MASK_MISMATCH", ctx, { depot_mask = 3 })
+	case.expect_ab = { 1, 2 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = { { case.item, 5000 }, { case.network, 2 } } })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
@@ -975,6 +985,7 @@ end
 --- A stop with "disable allow list" off and no inserters accepts no layout with a cargo wagon.
 local function layout_case(name, ctx, r_open, p_open)
 	local case = base(name, ctx)
+	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1],
 		bits = PR_PROVIDE + (p_open and ALLOW_ALL or 0), signals = provide(case, 5000) })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1],
@@ -1011,6 +1022,7 @@ function cases.P_LAYOUT(ctx) return layout_case("P_LAYOUT", ctx, true, false) en
 --- train is parked and available, and its current record is the interrupt's.
 function cases.ALL_IN_INTERRUPT(ctx)
 	local case = base("ALL_IN_INTERRUPT", ctx)
+	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000) })
 	case.r = cases.station(case, { name = sname(case, "r"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
