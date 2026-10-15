@@ -9,7 +9,7 @@ local function caption_key(status)
 	return type(c) == "table" and c[1] or c
 end
 
-lab.suite("40_foundation", {
+lab.suite("35_foundation", {
 	-- Opening with no snapshot renders at once and collects over the next manager updates.
 	function(ctx)
 		ctx.planner = settings.global["cybersyn-enable-planner"].value
