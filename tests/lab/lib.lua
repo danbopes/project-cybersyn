@@ -5,6 +5,7 @@
 -- Output protocol (one line each, parsed by run.sh):
 --   PASS <suite>: <check>            FAIL <suite>: <check>: <detail>
 --   INFO <suite>: <text>             WAIT <tick>            DONE <suite>
+--   SKIP <check> (<why>)             a check whose subject does not exist yet (counted apart from PASS/FAIL)
 -- A suite is a list of steps. A step that needs game time calls lab.wait(n) and returns; the server keeps running
 -- and run.sh calls lab.resume() until the target tick is reached, so no RCON command ever blocks a tick.
 
@@ -282,7 +283,26 @@ end
 --- Asks for `ticks` of game time before the next step, at `speed` (default 20).
 function lab.wait(ticks, speed)
 	lab.cur.wait_until = game.tick + ticks
+	lab.cur.wait_cond = nil
 	game.speed = speed or 20
+end
+
+--- Like lab.wait, but the next step runs as soon as `cond()` is true (checked on every lab.resume), or after
+--- `max_ticks` at the latest. The next step must check the condition itself: a timeout is not a failure here.
+--- @param cond fun(): boolean
+--- @param max_ticks integer
+--- @param speed number?
+function lab.wait_until(cond, max_ticks, speed)
+	lab.cur.wait_until = game.tick + max_ticks
+	lab.cur.wait_cond = cond
+	game.speed = speed or 20
+end
+
+--- A check that cannot run yet. run.sh counts SKIP lines apart from PASS and FAIL.
+--- @param name string
+--- @param why string
+function lab.skip(name, why)
+	out("SKIP " .. name .. " (" .. why .. ")")
 end
 
 function lab.resume()
@@ -292,11 +312,13 @@ function lab.resume()
 		return
 	end
 	if s.wait_until then
-		if game.tick < s.wait_until then
+		local cond = s.wait_cond
+		if game.tick < s.wait_until and not (cond and cond()) then
 			out("WAIT " .. s.wait_until)
 			return
 		end
 		s.wait_until = nil
+		s.wait_cond = nil
 		game.speed = 1
 	end
 	while s.i < #s.steps do

@@ -40,14 +40,14 @@ RESULTS="$SCRATCH/lab-results.txt"
 : > "$RESULTS"
 emit() { echo "$1" | tee -a "$RESULTS"; }
 
-# Keeps PASS/FAIL/INFO lines; a Lua error from RCON (no protocol line) becomes a FAIL.
+# Keeps PASS/FAIL/INFO/SKIP lines; a Lua error from RCON (no protocol line) becomes a FAIL.
 collect() {
 	local name=$1 text=$2
 	echo "$text" >> "$LOG"
 	if grep -q '^Cannot execute command' <<< "$text"; then
 		emit "FAIL $name: lua error: $(grep -m1 '^Cannot execute command' <<< "$text" | cut -c1-400)"
 	fi
-	grep -E '^(PASS|FAIL|INFO) ' <<< "$text" | while IFS= read -r line; do emit "$line"; done
+	grep -E '^(PASS|FAIL|INFO|SKIP) ' <<< "$text" | while IFS= read -r line; do emit "$line"; done
 }
 
 wait_tick() { grep -oE '^WAIT [0-9]+' <<< "$1" | tail -1 | cut -d' ' -f2; }
@@ -167,6 +167,8 @@ stop_lab
 trap - EXIT
 pass=$(grep -c '^PASS ' "$RESULTS")
 fail=$(grep -c '^FAIL ' "$RESULTS")
+skip=$(grep -c '^SKIP ' "$RESULTS")
 echo "wall $(python3 -I -c "import time; print(f'{time.time() - $T0:.1f}')") s, log $LOG"
+echo "SKIP $skip"
 echo "PASS $pass FAIL $fail"
 [ "$fail" -eq 0 ]
