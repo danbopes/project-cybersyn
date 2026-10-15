@@ -21,6 +21,12 @@ stats.HOUR = HOUR
 --- @field items {[string]: int} delivered amount per item hash
 --- @field cycle_sum number? seconds from dispatch to unloaded, summed over the deliveries completed in this bucket
 --- @field cycle_n int? deliveries that contributed to cycle_sum
+--- @field wait_sum number? request wait in ticks, summed over the requests fulfilled (dispatched) in this bucket
+--- @field wait_n int? fulfilled requests that contributed to wait_sum
+--- @field wait_max uint? longest of those waits, in ticks
+--- @field wait_max_station uint? requester station id of the longest wait
+--- @field wait_max_hash string? item hash of the longest wait
+--- @field wait_max_tick uint? when the longest wait ended (its train was dispatched)
 
 --- @class Stats
 --- @field minute {[int]: StatsBucket} ring of one-minute buckets
@@ -73,6 +79,7 @@ local function purge_invalid_hashes(s)
 			for hash in pairs(b.items) do
 				if not hash_is_valid(hash) then b.items[hash] = nil end
 			end
+			if b.wait_max_hash and not hash_is_valid(b.wait_max_hash) then b.wait_max_hash = nil end
 		end
 	end
 end
@@ -113,6 +120,35 @@ function stats.record_dispatch(train)
 	local h = bucket(s.hour, HOUR_SLOTS, HOUR, tick)
 	h.dispatches = h.dispatches + 1
 	s.totals.dispatches = s.totals.dispatches + 1
+end
+
+--- @param b StatsBucket
+--- @param ticks uint
+--- @param station_id uint
+--- @param hash string
+local function add_wait(b, ticks, station_id, hash)
+	b.wait_sum = (b.wait_sum or 0) + ticks
+	b.wait_n = (b.wait_n or 0) + 1
+	local max = b.wait_max
+	-- Ties keep the first request, so a bucket's maximum does not flicker between equal waits.
+	if not max or ticks > max then
+		b.wait_max = ticks
+		b.wait_max_station = station_id
+		b.wait_max_hash = hash
+		b.wait_max_tick = game.tick
+	end
+end
+
+--- Called from create_delivery for each manifest item whose request start was tracked. Only bucket aggregates are
+--- kept, so the cost and the save size do not depend on the number of deliveries.
+--- @param ticks uint time from the request start until the delivery was created
+--- @param station_id uint requester station id
+--- @param hash string item hash
+function stats.record_fulfilment(ticks, station_id, hash)
+	local tick = game.tick
+	local s = get()
+	add_wait(bucket(s.minute, MINUTE_SLOTS, MINUTE, tick), ticks, station_id, hash)
+	add_wait(bucket(s.hour, HOUR_SLOTS, HOUR, tick), ticks, station_id, hash)
 end
 
 --- Called when a train has finished unloading at the requester, before its manifest is cleared.
@@ -215,6 +251,77 @@ function stats.cycle_average(minutes)
 	return sum / n, n
 end
 
+--- @class StatsWindow
+--- @field minutes int
+--- @field span_ticks uint time the buckets cover so far, for rates
+--- @field partial boolean recording started inside the period, so span_ticks is shorter than the period
+--- @field deliveries int
+--- @field dispatches int
+--- @field items {[string]: int} delivered amount per item hash
+--- @field amount int all delivered amounts together
+--- @field cycle_avg number? seconds from dispatch to unloaded
+--- @field cycle_n int
+--- @field wait_avg number? ticks from request start to dispatch
+--- @field wait_n int
+--- @field wait_max uint? ticks
+--- @field slowest StatsBucket[] buckets with a fulfilled request, as they are; read only
+
+--- Everything the Overview shows for one period: minute buckets for 10 and 60 minutes, hour buckets for longer
+--- periods (rounded up to whole hours), the current partial bucket included.
+--- @param minutes int 10, 60 or 1440
+--- @return StatsWindow
+function stats.aggregate(minutes)
+	local s = get()
+	local tick = game.tick
+	local ring, width, count
+	if minutes <= MINUTE_SLOTS then
+		ring, width, count = s.minute, MINUTE, minutes
+	else
+		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
+	end
+	local oldest = tick - tick % width - (count - 1) * width
+	local since = s.totals.since_tick or 0
+	local out = {
+		minutes = minutes,
+		span_ticks = tick - math.max(oldest, since) + 1,
+		partial = since > oldest,
+		deliveries = 0,
+		dispatches = 0,
+		items = {},
+		amount = 0,
+		cycle_n = 0,
+		wait_n = 0,
+		slowest = {},
+	}
+	local items = out.items
+	local amount, cycle_sum, wait_sum, wait_max = 0, 0, 0, nil
+	for _, b in pairs(ring) do
+		if b.start_tick >= oldest and b.start_tick <= tick then
+			out.deliveries = out.deliveries + b.deliveries
+			out.dispatches = out.dispatches + b.dispatches
+			for hash, n in pairs(b.items) do
+				items[hash] = (items[hash] or 0) + n
+				amount = amount + n
+			end
+			if b.cycle_n then
+				cycle_sum = cycle_sum + b.cycle_sum
+				out.cycle_n = out.cycle_n + b.cycle_n
+			end
+			if b.wait_n then
+				wait_sum = wait_sum + b.wait_sum
+				out.wait_n = out.wait_n + b.wait_n
+				if not wait_max or b.wait_max > wait_max then wait_max = b.wait_max end
+				out.slowest[#out.slowest + 1] = b
+			end
+		end
+	end
+	out.amount = amount
+	if out.cycle_n > 0 then out.cycle_avg = cycle_sum / out.cycle_n end
+	if out.wait_n > 0 then out.wait_avg = wait_sum / out.wait_n end
+	out.wait_max = wait_max
+	return out
+end
+
 --- Plain-data summary for the dev interface.
 --- @return table
 function stats.summary()
@@ -222,6 +329,7 @@ function stats.summary()
 	local d10, p10 = stats.window(10)
 	local d60, p60 = stats.window(60)
 	local cycle_avg, cycle_n = stats.cycle_average(60)
+	local w60, w24 = stats.aggregate(60), stats.aggregate(1440)
 	local item_entries = 0
 	for _, ring in pairs({ s.minute, s.hour }) do
 		for _, b in pairs(ring) do
@@ -242,6 +350,8 @@ function stats.summary()
 		cycle_samples_60m = cycle_n,
 		cycle_ema = s.cycle.ema_seconds,
 		item_entries = item_entries,
+		waits_60m = { n = w60.wait_n, avg = w60.wait_avg, max = w60.wait_max, buckets = #w60.slowest },
+		waits_24h = { n = w24.wait_n, avg = w24.wait_avg, max = w24.wait_max, buckets = #w24.slowest },
 	}
 end
 

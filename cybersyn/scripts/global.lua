@@ -27,6 +27,7 @@
 ---@field public connected_surfaces {[string]: {[string]: Cybersyn.SurfaceConnection}} maps pairs of surfaces to the pairs of entities connecting them
 ---@field public perf_cache PerfCache -- This gets reset to an empty table on migration change
 ---@field public analytics Cybersyn.AnalyticsData? Analytics data for train utilization and delivery times
+---@field public stats Stats? delivery throughput and request-wait aggregates for the manager Overview, see scripts/stats.lua
 
 ---@class PerfCache
 ---@field public se_get_space_elevator_name {}?

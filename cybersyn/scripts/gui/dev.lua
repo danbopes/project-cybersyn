@@ -182,6 +182,14 @@ function interface.set_page(pi, tab, page)
 	return pd.page[tab]
 end
 
+--- Sets the Overview period (minutes: 10, 60 or 1440) as the drop-down would.
+function interface.set_period(pi, minutes)
+	local player, pd = context(pi)
+	pd.overview_period = minutes
+	render(player, pd)
+	return pd.overview_period
+end
+
 function interface.set_paused(pi, paused)
 	local player, pd = context(pi)
 	pd.paused = paused and true or false

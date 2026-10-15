@@ -266,15 +266,17 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 
 		-- Reset request tracking times for delivered items
 		-- Also record delivery start for analytics
+		local request_start_ticks = r_station.request_start_ticks
 		for i, item in ipairs(manifest) do
 			local item_hash = hash_item(item.name, item.quality)
+			-- Start ticks are frozen while tracking is off, so they only measure a wait while it is on.
+			local start_tick = mod_settings.track_request_wait_times and request_start_ticks and request_start_ticks[item_hash]
+			local fulfillment_time = start_tick and game.tick - start_tick or nil
+			if fulfillment_time then
+				stats.record_fulfilment(fulfillment_time, r_station_id, item_hash)
+			end
 			-- Record delivery start for analytics (only for first item to avoid duplicates)
 			if i == 1 then
-				-- Calculate fulfillment time BEFORE clearing request tracking
-				local fulfillment_time = nil
-				if r_station.request_start_ticks and r_station.request_start_ticks[item_hash] then
-					fulfillment_time = game.tick - r_station.request_start_ticks[item_hash]
-				end
 				analytics.record_delivery_start(map_data, train_id, item_hash, fulfillment_time)
 			end
 			clear_request_tracking(r_station, item_hash)
@@ -1228,6 +1230,9 @@ local function tick_poll_station(map_data, mod_settings)
 			if not next(requested_items) then
 				clear_all_request_tracking(station)
 			end
+		elseif station.request_start_ticks and not mod_settings.track_request_wait_times then
+			-- Nothing refreshes these while tracking is off, so turning it back on would report stale waits.
+			clear_all_request_tracking(station)
 		end
 	end
 	-- Update the graphic of the station combinator based on the result of polling the station.

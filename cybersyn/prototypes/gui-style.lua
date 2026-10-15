@@ -459,14 +459,14 @@ styles.cybersyn_overview_content = {
 
 styles.cybersyn_overview_tile_row = {
 	type = "horizontal_flow_style",
-	horizontal_spacing = 8,
+	horizontal_spacing = 12,
 	horizontally_stretchable = "on",
 }
 
 styles.cybersyn_overview_tile = {
 	type = "frame_style",
 	parent = "inside_shallow_frame",
-	minimal_width = 210,
+	minimal_width = 220,
 	horizontally_stretchable = "on",
 	vertically_stretchable = "on",
 	vertical_flow_style = {
@@ -480,7 +480,7 @@ styles.cybersyn_overview_tile_header = {
 	parent = "subheader_frame",
 	horizontally_stretchable = "on",
 	left_padding = 8,
-	right_padding = 8,
+	right_padding = 10,
 	horizontal_flow_style = {
 		type = "horizontal_flow_style",
 		horizontal_spacing = 6,
@@ -514,7 +514,7 @@ styles.cybersyn_overview_line_flow = {
 	type = "horizontal_flow_style",
 	vertical_align = "center",
 	horizontal_spacing = 8,
-	height = 20,
+	height = 18,
 	horizontally_stretchable = "on",
 }
 
@@ -534,8 +534,7 @@ styles.cybersyn_overview_idle_bar = {
 	type = "progressbar_style",
 	parent = "progressbar",
 	bar_width = 8,
-	horizontally_stretchable = "on",
-	minimal_width = 60,
+	width = 64,
 }
 
 styles.cybersyn_overview_hint_label = {
@@ -545,32 +544,55 @@ styles.cybersyn_overview_hint_label = {
 	horizontally_stretchable = "on",
 }
 
-styles.cybersyn_overview_columns = {
+styles.cybersyn_overview_subheader = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 8,
+	height = 28,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_filter_note = {
+	type = "label_style",
+	font_color = { 0.7, 0.7, 0.7 },
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_overview_period_dropdown = {
+	type = "dropdown_style",
+	parent = "dropdown",
+	width = 140,
+}
+
+styles.cybersyn_overview_panels = {
+	type = "vertical_flow_style",
+	vertical_spacing = 12,
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_overview_panel_row = {
 	type = "horizontal_flow_style",
 	horizontal_spacing = 12,
 	horizontally_stretchable = "on",
 }
 
-styles.cybersyn_overview_column = {
-	type = "vertical_flow_style",
-	vertical_spacing = 8,
-	minimal_width = 360,
+styles.cybersyn_overview_panel = {
+	type = "frame_style",
+	parent = "inside_deep_frame",
+	minimal_width = 330,
 	horizontally_stretchable = "on",
+	vertical_flow_style = {
+		type = "vertical_flow_style",
+		vertical_spacing = 0,
+	},
 }
 
-styles.cybersyn_overview_panel_flow = {
-	type = "vertical_flow_style",
-	vertical_spacing = 0,
+styles.cybersyn_overview_panel_header = {
+	type = "frame_style",
+	parent = "subheader_frame",
 	horizontally_stretchable = "on",
-}
-
-styles.cybersyn_overview_panel_caption_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	height = 24,
-	left_padding = 2,
-	right_padding = 4,
-	horizontally_stretchable = "on",
+	left_padding = 8,
+	right_padding = 10,
 }
 
 styles.cybersyn_overview_count_label = {
@@ -578,20 +600,72 @@ styles.cybersyn_overview_count_label = {
 	font_color = { 0.7, 0.7, 0.7 },
 }
 
-styles.cybersyn_overview_panel_scroll = {
+styles.cybersyn_overview_panel_body = {
 	type = "scroll_pane_style",
 	parent = "flib_naked_scroll_pane_no_padding",
 	horizontally_stretchable = "on",
-	vertically_stretchable = "on",
 	vertical_flow_style = {
 		type = "vertical_flow_style",
 		vertical_spacing = 0,
 	},
 }
 
-styles.cybersyn_overview_list_flow = {
-	type = "vertical_flow_style",
-	vertical_spacing = 2,
+styles.cybersyn_overview_table = {
+	type = "table_style",
+	parent = "table",
+	horizontal_spacing = 8,
+	vertical_spacing = 0,
+	left_padding = 4,
+	right_padding = 10,
+	horizontally_stretchable = "on",
+	odd_row_graphical_set = {
+		filename = "__core__/graphics/gui-new.png",
+		position = { 472, 25 },
+		size = 1,
+	},
+}
+
+styles.cybersyn_overview_cell_icon = {
+	type = "button_style",
+	parent = "transparent_slot",
+	size = 28,
+}
+
+styles.cybersyn_overview_cell_name = {
+	type = "label_style",
+	font = "default-semibold",
+	height = 32,
+	vertical_align = "center",
+	horizontally_stretchable = "on",
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_overview_cell_value = {
+	type = "label_style",
+	height = 32,
+	vertical_align = "center",
+	horizontal_align = "right",
+}
+
+styles.cybersyn_overview_cell_header = {
+	type = "label_style",
+	font = "default-small-semibold",
+	font_color = { 0.6, 0.6, 0.6 },
+	height = 20,
+	vertical_align = "center",
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_overview_cell_header_value = {
+	type = "label_style",
+	parent = "cybersyn_overview_cell_header",
+	horizontal_align = "right",
+	horizontally_squashable = "off",
+}
+
+styles.cybersyn_overview_empty_flow = {
+	type = "horizontal_flow_style",
+	horizontal_align = "center",
 	horizontally_stretchable = "on",
 }
 
@@ -599,41 +673,7 @@ styles.cybersyn_overview_empty_label = {
 	type = "label_style",
 	font_color = { 0.6, 0.6, 0.6 },
 	single_line = false,
-	padding = 8,
-	horizontally_stretchable = "on",
-}
-
-styles.cybersyn_overview_row = {
-	type = "frame_style",
-	parent = "ltnm_table_row_frame_light",
-	top_padding = 2,
-	bottom_padding = 2,
-	left_padding = 4,
-	right_padding = 6,
-	minimal_height = 28,
-	horizontally_stretchable = "on",
-	horizontal_flow_style = {
-		type = "horizontal_flow_style",
-		vertical_align = "center",
-		horizontal_spacing = 6,
-	},
-}
-
-styles.cybersyn_overview_row_icon = {
-	type = "button_style",
-	parent = "transparent_slot",
-	size = 24,
-}
-
-styles.cybersyn_overview_row_name = {
-	type = "label_style",
-	font = "default-semibold",
-	horizontally_stretchable = "on",
-	horizontally_squashable = "on",
-	maximal_width = 240,
-}
-
-styles.cybersyn_overview_row_value = {
-	type = "label_style",
-	horizontal_align = "right",
+	horizontal_align = "center",
+	vertical_align = "center",
+	maximal_width = 320,
 }
