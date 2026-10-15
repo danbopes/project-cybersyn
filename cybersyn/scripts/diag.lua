@@ -1123,17 +1123,25 @@ end
 
 diag.code_name = code_name
 
---- One CSV line per event row (as returned by diag.events).
+local LINE = "%d,%d,%s,%s,%s,%d,%d,%d,%d,%s,%d,%d\n"
+
+--- @param item_hash string[]
+--- @param ix int
+--- @return string
+local function csv_item(item_hash, ix)
+	local item = ix ~= 0 and item_hash[ix] or ""
+	if string.find(item, "[,\"]") then item = '"' .. string.gsub(item, '"', '""') .. '"' end
+	return item
+end
+
+--- One CSV line for an event row (as returned by diag.events).
 --- @param ev table
 --- @param item_hash string[]
 --- @return string
 function diag.csv_line(ev, item_hash)
-	local item = ev.item ~= 0 and item_hash[ev.item] or ""
-	if string.find(item, "[,\"]") then item = '"' .. string.gsub(item, '"', '""') .. '"' end
-	return table.concat({
-		ev.seq, ev.tick, DIAG_KIND_NAMES[ev.kind] or tostring(ev.kind), DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev),
-		code_name(ev.kind, ev.code), ev.delivery, ev.train, ev.station, ev.station2, item, ev.a, ev.b,
-	}, ",") .. "\n"
+	return string.format(LINE, ev.seq, ev.tick, DIAG_KIND_NAMES[ev.kind] or tostring(ev.kind),
+		DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev), code_name(ev.kind, ev.code), ev.delivery, ev.train, ev.station,
+		ev.station2, csv_item(item_hash, ev.item), ev.a, ev.b)
 end
 
 --- Queues an export of everything both rings hold now (matching `filter`); the manager tick writes it in chunks.
@@ -1165,23 +1173,45 @@ function diag.export_step()
 	local d = storage.diag
 	local job = d and d.export_jobs[1]
 	if not job then return nil end
-	local filter = {}
-	for k, v in pairs(job.filter or {}) do filter[k] = v end
-	filter.max_seq = job.end_seq
-	local rows = diag.events(filter, job.next_seq, EXPORT_CHUNK)
-	local parts = {}
-	if not job.started then parts[1] = HEADER end
-	local item_hash = d.item_hash
-	for _, ev in ipairs(rows) do
-		parts[#parts + 1] = diag.csv_line(ev, item_hash)
-		job.next_seq = ev.seq
+	-- Formatted straight from the ring columns: a row table per event made a 2,000-row chunk cost ~20 ms.
+	local rb, rf = d.ring_basic, d.ring_full
+	local kb, kf = first_after(rb, job.next_seq), first_after(rf, job.next_seq)
+	local filter, end_seq, item_hash = job.filter, job.end_seq, d.item_hash
+	local parts, n, rows = {}, 0, 0
+	if not job.started then
+		n = 1
+		parts[1] = HEADER
 	end
+	local exhausted = true
+	while rows < EXPORT_CHUNK do
+		local ib = kb < rb.count and at(rb, kb) or nil
+		local iff = kf < rf.count and at(rf, kf) or nil
+		local r, i
+		if ib and (not iff or rb.seq[ib] < rf.seq[iff]) then
+			r, i, kb = rb, ib, kb + 1
+		elseif iff then
+			r, i, kf = rf, iff, kf + 1
+		else
+			break
+		end
+		local seq = r.seq[i]
+		if seq > end_seq then break end
+		job.next_seq = seq
+		if matches(r, i, filter) then
+			local kind, code = r.kind[i], r.code[i]
+			n = n + 1
+			parts[n] = string.format(LINE, seq, r.tick[i], DIAG_KIND_NAMES[kind] or tostring(kind),
+				DIAG_SEV_NAMES[r.sev[i]] or tostring(r.sev[i]), code_name(kind, code), r.delivery[i], r.train[i],
+				r.station[i], r.station2[i], csv_item(item_hash, r.item[i]), r.a[i], r.b[i])
+			rows = rows + 1
+		end
+	end
+	if rows == EXPORT_CHUNK then exhausted = job.next_seq >= end_seq end
 	helpers.write_file(job.path, table.concat(parts), job.started, job.player_index)
 	job.started = true
-	job.rows = job.rows + #rows
-	local done = #rows < EXPORT_CHUNK or job.next_seq >= job.end_seq
-	if done then table.remove(d.export_jobs, 1) end
-	return done
+	job.rows = job.rows + rows
+	if exhausted then table.remove(d.export_jobs, 1) end
+	return exhausted
 end
 
 --- Drained from manager_gui.tick: one chunk per manager update, so an export never stalls a tick.

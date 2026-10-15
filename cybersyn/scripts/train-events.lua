@@ -125,7 +125,7 @@ function add_available_train_to_depot(map_data, mod_settings, train_id, train, d
 	train.status = STATUS_D
 
 	add_available_train(map_data, train_id, train)
-	if map_data.diag then diag.train_event(DIAG_KIND_RETURNED, train_id, train, depot_id) end
+	if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_RETURNED, train_id, train, depot_id) end
 end
 ---@param map_data MapData
 ---@param train_id uint
@@ -242,7 +242,7 @@ local function on_train_arrives_station(map_data, station, train_id, train)
 		set_p_wagon_combs(map_data, station, train)
 		-- Record phase: arrived at provider
 		analytics.record_phase_arrive_provider(map_data, train_id)
-		if map_data.diag then diag.train_event(DIAG_KIND_ARRIVE_P, train_id, train, train.p_station_id) end
+		if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_ARRIVE_P, train_id, train, train.p_station_id) end
 		interface_raise_train_status_changed(train_id, STATUS_TO_P, STATUS_P)
 	elseif train.status == STATUS_TO_R then
 		train.status = STATUS_R
@@ -250,7 +250,7 @@ local function on_train_arrives_station(map_data, station, train_id, train)
 		set_r_wagon_combs(map_data, station, train)
 		-- Record phase: arrived at requester
 		analytics.record_phase_arrive_requester(map_data, train_id)
-		if map_data.diag then diag.train_event(DIAG_KIND_ARRIVE_R, train_id, train, train.r_station_id) end
+		if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_ARRIVE_R, train_id, train, train.r_station_id) end
 		interface_raise_train_status_changed(train_id, STATUS_TO_R, STATUS_R)
 	end
 end
@@ -322,7 +322,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		color_train_by_stop(train.entity, r_station.entity_stop)
 		-- Record phase: left provider (loading complete)
 		analytics.record_phase_leave_provider(map_data, train_id)
-		if map_data.diag then diag.train_event(DIAG_KIND_LEAVE_P, train_id, train, train.p_station_id) end
+		if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_LEAVE_P, train_id, train, train.p_station_id) end
 		interface_raise_train_status_changed(train_id, STATUS_P, STATUS_TO_R)
 	elseif train.status == STATUS_R then
 		local station = map_data.stations[train.r_station_id]
@@ -335,7 +335,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		-- Record delivery completion for analytics (after unloading)
 		analytics.record_delivery_complete(map_data, train_id)
 		stats.record_delivery_complete(train)
-		if map_data.diag then diag.train_event(DIAG_KIND_LEAVE_R, train_id, train, train.r_station_id) end
+		if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_LEAVE_R, train_id, train, train.r_station_id) end
 		train.p_station_id = nil
 		train.r_station_id = nil
 		train.manifest = nil
@@ -572,7 +572,8 @@ function on_train_changed(event)
 			local since = cybersyn_train.state_tick
 			cybersyn_train.last_state = state
 			cybersyn_train.state_tick = game.tick
-			if map_data.diag then diag.train_state(train_id, cybersyn_train, old_state, since, state) end
+			local d = map_data.diag
+			if d and d.full then diag.train_state(train_id, cybersyn_train, old_state, since, state) end
 		end
 	end
 
