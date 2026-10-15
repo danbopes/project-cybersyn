@@ -17,11 +17,12 @@ local DEFAULT_COLUMN = "train_id"
 local SHIPMENT_COLUMNS = 6
 local NETWORK_COLUMNS = 3
 
--- Same overall width as the old five-column layout; the old 420 px network column is split into status and network.
+-- The total matches the Stations tab so the window keeps its width when switching tabs; the old 420 px network
+-- column is split into status and network.
 local widths = {
 	trains = {
-		train_id = 90,
-		train_status = 280,
+		train_id = 60,
+		train_status = 334,
 		network = 140,
 		layout = 200,
 		depot = 160,
@@ -55,14 +56,23 @@ function trains_tab.create()
 			direction = "vertical",
 			children = {
 				header,
-				{ name = SCROLL, type = "scroll-pane", style = "ltnm_table_scroll_pane" },
 				{
-					type = "flow",
-					direction = "horizontal",
-					style_mods = { vertical_align = "center", horizontal_spacing = 12 },
+					name = SCROLL,
+					type = "scroll-pane",
+					style = "ltnm_table_scroll_pane",
+					style_mods = { vertically_stretchable = true },
+				},
+				{
+					type = "frame",
+					style = "ltnm_subfooter_frame",
 					templates.pager(TAB, util.handle.pager_click),
-					{ type = "empty-widget", style_mods = { horizontally_stretchable = true } },
-					{ name = "manager_trains_tab_summary", type = "label", style = "ltnm_semibold_label" },
+					{ type = "empty-widget", style = "flib_horizontal_pusher" },
+					{
+						name = "manager_trains_tab_summary",
+						type = "label",
+						style = "ltnm_squashable_semibold_label",
+						tooltip = { "cybersyn-gui.trains-sum-tooltip" },
+					},
 				},
 			},
 		},
@@ -443,7 +453,7 @@ local function build_row(view, index, map_data)
 	local w = widths.trains
 	return util.hoverable({
 		type = "frame",
-		style = "ltnm_table_row_frame_" .. color,
+		style = "ltnm_train_row_frame_" .. color,
 		tags = { train_id = view.id },
 		{
 			type = "frame",
@@ -603,7 +613,7 @@ local function summary_caption(rows, alerts)
 		end
 		if alerts[tr.id] then alerted = alerted + 1 end
 	end
-	local sep = "   "
+	local sep = "  ·  "
 	local caption = {
 		"",
 		{ "cybersyn-gui.trains-sum-parked", parked }, sep,
@@ -664,7 +674,11 @@ function trains_tab.build(map_data, player_data)
 		entries[1] = {
 			key = empty_key,
 			build = function()
-				return { type = "label", style = "ltnm_semibold_label", caption = { empty_key } }
+				return {
+					type = "flow",
+					style = "ltnm_warning_flow",
+					{ type = "label", style = "ltnm_semibold_label", caption = { empty_key } },
+				}
 			end,
 		}
 	else

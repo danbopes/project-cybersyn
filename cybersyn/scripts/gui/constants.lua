@@ -82,7 +82,6 @@ constants.gui = {
 }
 
 constants.gui_content_frame_height = 744
-constants.gui_inventory_table_height = 40 * 18
 
 constants.gui_translations = {
 	delivering_to = { "cybersyn-gui.delivering-to" },
@@ -151,7 +150,9 @@ end
 -- Stations tab: one width per sortable column; row cells use the same widths as their headers.
 do
 	local w = constants.gui.en.stations
-	w.name = 200
+	-- "Last delivery" in bold needs about 100 px with its sort arrow; the name column gives up the difference
+	-- so the window keeps its width.
+	w.name = 184
 	w.station_status = 100
 	w.network = 80
 	w.provided_requested = 36 * 6
@@ -163,7 +164,7 @@ do
 	w.control_signals = 36 * 4
 	w.control_signals_columns = 4
 	w.wait = 56
-	w.last_delivery = 84
+	w.last_delivery = 100
 end
 
 return constants

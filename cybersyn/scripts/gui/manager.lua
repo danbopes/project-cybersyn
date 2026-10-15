@@ -88,7 +88,7 @@ function manager.create(player)
 									tooltip = { "cybersyn-gui.search-tooltip" },
 									handler = { [defines.events.on_gui_text_changed] = manager.handle.manager_update_text_search },
 								},
-								{ type = "label", name = "manager_item_filter_label", style = "subheader_caption_label", caption = { "cybersyn-gui.search-item-label" } },
+								{ type = "label", name = "manager_item_filter_label", style = "caption_label", caption = { "cybersyn-gui.search-item-label" } },
 								{
 									type = "choose-elem-button",
 									name = "manager_item_filter",
