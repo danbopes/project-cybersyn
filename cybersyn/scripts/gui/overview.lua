@@ -1,127 +1,58 @@
+-- Overview tab (PLAN3 §4.7): four tiles and one full-width table of the requests the dispatcher is not serving now,
+-- with the reason it recorded for each (scripts/diag.lua). Obeys the item filter only.
+
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
-local constants = require("scripts.gui.constants")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local dev = require("scripts.gui.dev")
 local stats = require("scripts.stats")
-local stations_tab = require("scripts.gui.stations")
+local diag = require("scripts.diag")
+local text = require("scripts.gui.unserved-text")
 
 --- @class PlayerData
---- @field overview_period int? minutes covered by the Overview's period figures: 10, 60 or 1440; see get_period
---- @field overview_offsets {[string]: int}? first row shown per Overview panel, a multiple of the panel capacity
---- @field overview_cache {view_key: string, data_key: string, base: table, build: table?}? snapshot-derived Overview figures, see cached_snapshot_model
+--- @field overview_period int? minutes covered by the Throughput tile and the headroom minimum: 10, 60 or 1440
+--- @field overview_show_acked true? acknowledged rows are listed (greyed, at the bottom)
+--- @field overview_widths {requester: int, provider: int, tile: int}? column widths for the current layout
+--- @field stations_chip "unserved"|"failing"? the Stations chip a tile jump selects; read by the Stations chips from
+---   phase 4 on (PLAN3 §4.7), until then the jump only sorts the Stations tab
+--- @field trains_chip "parked"? the Trains chip the Fleet headroom tile selects (phase 4), with the network filter
 
 local overview_tab = {}
 
 local TAB = "overview_tab"
-
+local TABLE = "overview_unserved_table"
 local PERIODS = { 10, 60, 1440 }
 local DEFAULT_PERIOD = 60
-
--- Every tab is this tall, so they all end the same distance above the pane's edge. Rows have a fixed height and a
--- panel shows a whole page of them, so no row is ever cut in half.
-local CONTENT_HEIGHT = constants.gui_content_frame_height
-local TILE_ROW_HEIGHT = 216
-local SUBHEADER_HEIGHT = 28
-local SPACING = 8
-local PANEL_SPACING = 12
-local PANEL_CAPTION_HEIGHT = 36
-local COLUMN_HEADER_HEIGHT = 20
--- A deep frame is this much taller than its content, and its bottom border covers about as much of the content.
-local FRAME_BORDER = 2
-local ROW_HEIGHT = 32
-local ICON_WIDTH = 28
-local PANEL_AREA_HEIGHT = CONTENT_HEIGHT - TILE_ROW_HEIGHT - SUBHEADER_HEIGHT - 2 * SPACING
-local PANEL_HEIGHT = math.floor((PANEL_AREA_HEIGHT - PANEL_SPACING) / 2)
-local BODY_HEIGHT = PANEL_HEIGHT - FRAME_BORDER - PANEL_CAPTION_HEIGHT
-local CAPACITY = math.floor((BODY_HEIGHT - COLUMN_HEADER_HEIGHT) / ROW_HEIGHT)
-local ROWS_HEIGHT = CAPACITY * ROW_HEIGHT
-
-local NO_VALUE = "–"
--- Matches the Stations status indicators and the Inventory legend so a status reads the same on every tab.
-local STARVED_COLOR = "255,135,230"
+local NO_VALUE = text.NO_VALUE
+local HOUR = 216000
+local DAY = 24 * HOUR
+local TOP_REASONS = 3
 local MAX_TOOLTIP_NETWORKS = 12
+local TABLE_COLUMNS = 8
+-- Logical px at the 1,392 px content width of a 1,440 px window (PLAN3 §4.7); the requester column takes the rest.
+local W = { item = 32, why = 132, provider = 272, stock = 110, lost = 96, wait = 72, ack = 28 }
+local BASE_CONTENT_WIDTH = 1392
+local TABLE_PADDING = 4 + 10
+local TABLE_SPACING = 8
+local FRAME_BORDER = 4
+local ICON_ROW = 64
+local NAME_ICONS = 3
 
 --- @class OverviewTileDef
 --- @field name string
 --- @field sprite string
---- @field lines string[]
---- @field tooltips {[string]: true}? lines that have a "-tooltip" locale key
---- @field colors {[string]: string}? rich-text colour for a line while its value is non-zero
+--- @field lines int
 
 --- @type OverviewTileDef[]
 local TILES = {
-	{
-		name = "stations",
-		sprite = "item/train-stop",
-		lines = { "providers", "requesters", "networks", "warming_up", "faulty", "saturated", "starved" },
-		tooltips = { faulty = true, saturated = true, starved = true },
-		colors = { warming_up = "cyan", faulty = "red", saturated = "orange", starved = STARVED_COLOR },
-	},
-	{
-		name = "fleet",
-		sprite = "item/locomotive",
-		lines = { "idle", "parked", "to_provider", "loading", "to_requester", "unloading", "returning", "refuelling", "alerts" },
-		tooltips = { idle = true, alerts = true },
-		colors = { alerts = "red" },
-	},
-	{
-		name = "depots",
-		sprite = "item/rail",
-		lines = { "occupied", "empty", "available" },
-		tooltips = { available = true },
-	},
-	{
-		name = "demand",
-		sprite = "item/cybersyn-combinator",
-		lines = { "volume", "starved", "in_transit", "age_1m", "age_5m", "age_30m", "age_over" },
-		tooltips = { volume = true, starved = true, in_transit = true },
-		colors = { starved = STARVED_COLOR, age_30m = "orange", age_over = "red" },
-	},
-	{
-		name = "flow",
-		sprite = "item/cargo-wagon",
-		lines = { "amount", "dispatches", "cycle", "wait_avg", "wait_max" },
-		tooltips = { amount = true, dispatches = true, cycle = true, wait_avg = true, wait_max = true },
-	},
+	{ name = "unserved", sprite = "utility/warning_icon", lines = 4 },
+	{ name = "fleet", sprite = "item/locomotive", lines = 3 },
+	{ name = "failing", sprite = "item/train-stop", lines = 4 },
+	{ name = "throughput", sprite = "item/cargo-wagon", lines = 3 },
 }
-
-local AGE_LINES = { "age_1m", "age_5m", "age_30m", "age_over" }
-local WAIT_LINES = { "wait_avg", "wait_max" }
-
---- @class OverviewPanelDef
---- @field name string
---- @field scope "now"|"period"
---- @field subject "item"|"station"
---- @field limit int rows kept; more than CAPACITY scroll
---- @field columns {[1]: string, [2]: int}[] value columns: locale suffix and width
---- @field tracking true? shows a hint instead of rows while wait tracking is off
---- @field tracking_column int? value column that is hidden while wait tracking is off
-
---- @type OverviewPanelDef[][] two rows of three
-local PANEL_ROWS = {
-	{
-		{ name = "starved", scope = "now", subject = "item", limit = 20, columns = { { "amount", 56 }, { "stations", 52 }, { "waiting", 60 } }, tracking_column = 3 },
-		{ name = "waiting", scope = "now", subject = "station", limit = 20, columns = { { "amount", 56 }, { "waiting", 60 } }, tracking = true },
-		{ name = "transit", scope = "now", subject = "item", limit = 20, columns = { { "amount", 56 }, { "stations", 52 } } },
-	},
-	{
-		{ name = "delivered", scope = "period", subject = "item", limit = 20, columns = { { "amount", 56 }, { "rate", 60 } } },
-		{ name = "slowest", scope = "period", subject = "station", limit = 60, columns = { { "waited", 60 }, { "when", 64 } }, tracking = true },
-		{ name = "saturated", scope = "now", subject = "station", limit = 20, columns = { { "trains", 52 } } },
-	},
-}
-
-local PANELS = {}
-local LIMITS = {}
-for _, row in ipairs(PANEL_ROWS) do
-	for _, panel in ipairs(row) do
-		PANELS[#PANELS + 1] = panel
-		LIMITS[panel.name] = panel.limit
-	end
-end
+local FAILING_LINES = { "no_power", "disabled", "throttling", "misconfigured" }
 
 --- @param player_data PlayerData
 --- @return int minutes
@@ -134,67 +65,32 @@ local function get_period(player_data)
 	return period
 end
 
-local function locale_key(prefix, name)
-	return prefix .. string.gsub(name, "_", "-")
+--- @param player_data PlayerData
+--- @return int
+local function unserved_minutes(player_data)
+	local m = player_data.unserved_minutes
+	if not m then
+		local setting = settings.get_player_settings(player_data.player_index)["cybersyn-manager-unserved-minutes"]
+		m = setting and setting.value --[[@as int]] or 5
+		player_data.unserved_minutes = m
+	end
+	return m
 end
 
-local short_duration = util.short_duration
+-- ---------------------------------------------------------------- build
 
-local AMOUNT_UNITS = { { 1e9, " G" }, { 1e6, " M" }, { 1e3, " k" } }
-
---- Always one decimal from a thousand up ("3.0 M", "40.0 k"), so a right-aligned column lines up on the decimal
---- point; flib's abbreviation drops a trailing ".0".
---- @param count number
---- @return string
-local function amount(count)
-	local a = math.abs(count)
-	for _, unit in ipairs(AMOUNT_UNITS) do
-		-- Rounding to one decimal can carry into the next unit ("1000.0 k"), so compare the rounded value.
-		if a >= unit[1] * 0.99995 then
-			return string.format("%.1f%s", count / unit[1], unit[2])
-		end
-	end
-	if a < 10 and count ~= math.floor(count) then
-		return string.format("%.1f", count)
-	end
-	return string.format("%d", math.floor(count + 0.5))
-end
-
-local function tile_line_def(tile, line)
-	local key = locale_key("cybersyn-gui.overview-" .. tile.name .. "-", line)
-	local tooltip = tile.tooltips and tile.tooltips[line] and { key .. "-tooltip" } or nil
-	local flow = {
+local function line_def(tile, i)
+	local base = "overview_" .. tile.name .. "_line" .. i
+	return {
 		type = "flow",
-		name = "overview_" .. tile.name .. "_" .. line .. "_flow",
+		name = base,
 		direction = "horizontal",
 		style = "cybersyn_overview_line_flow",
-		{
-			type = "label",
-			name = "overview_" .. tile.name .. "_" .. line .. "_label",
-			style = "cybersyn_overview_line_label",
-			caption = { key },
-			tooltip = tooltip,
-		},
+		ignored_by_interaction = true,
+		{ type = "label", name = base .. "_label", style = "cybersyn_overview_line_label", caption = "" },
 		{ type = "empty-widget", style = "flib_horizontal_pusher" },
+		{ type = "label", name = base .. "_value", style = "cybersyn_overview_line_value", caption = "" },
 	}
-	-- The bar sits in the value column, left of the percentage, so the right edge matches every other number.
-	if tile.name == "fleet" and line == "idle" then
-		flow[#flow + 1] = {
-			type = "progressbar",
-			name = "overview_fleet_idle_bar",
-			style = "cybersyn_overview_idle_bar",
-			value = 0,
-			tooltip = tooltip,
-		}
-	end
-	flow[#flow + 1] = {
-		type = "label",
-		name = "overview_" .. tile.name .. "_" .. line,
-		style = "cybersyn_overview_line_value",
-		caption = NO_VALUE,
-		tooltip = tooltip,
-	}
-	return flow
 end
 
 --- @param tile OverviewTileDef
@@ -203,155 +99,79 @@ local function tile_def(tile)
 		type = "flow",
 		direction = "vertical",
 		style = "cybersyn_overview_tile_body",
-	}
-	for _, line in ipairs(tile.lines) do
-		body[#body + 1] = tile_line_def(tile, line)
-	end
-	return {
-		type = "frame",
-		name = "overview_tile_" .. tile.name,
-		direction = "vertical",
-		style = "cybersyn_overview_tile",
+		ignored_by_interaction = true,
 		{
-			type = "frame",
+			type = "flow",
 			direction = "horizontal",
 			style = "cybersyn_overview_tile_header",
 			{
 				type = "sprite",
 				style = "cybersyn_overview_tile_icon",
-				sprite = helpers.is_valid_sprite_path(tile.sprite) and tile.sprite or "utility/questionmark",
+				sprite = tile.sprite,
 				resize_to_sprite = false,
 			},
-			{
-				type = "label",
-				name = "overview_tile_" .. tile.name .. "_caption",
-				style = "subheader_caption_label",
-				style_mods = { horizontally_squashable = true },
-				caption = { "cybersyn-gui.overview-tile-" .. tile.name },
-				tooltip = { "cybersyn-gui.overview-tile-" .. tile.name .. "-tooltip" },
-			},
+			{ type = "label", name = "overview_" .. tile.name .. "_caption", style = "cybersyn_overview_tile_caption" },
 			{ type = "empty-widget", style = "flib_horizontal_pusher" },
-			{
-				type = "label",
-				name = "overview_" .. tile.name .. "_headline",
-				style = "cybersyn_overview_big_number",
-				caption = NO_VALUE,
-				tooltip = { "cybersyn-gui.overview-tile-" .. tile.name .. "-tooltip" },
-			},
+			{ type = "label", name = "overview_" .. tile.name .. "_note", style = "cybersyn_subheader_note", caption = "" },
+			{ type = "label", name = "overview_" .. tile.name .. "_headline", style = "cybersyn_overview_big_number", caption = NO_VALUE },
 		},
+	}
+	for i = 1, tile.lines do
+		body[#body + 1] = line_def(tile, i)
+	end
+	return {
+		type = "button",
+		name = "overview_tile_" .. tile.name,
+		style = "cybersyn_overview_tile",
+		tags = { tile = tile.name },
+		handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_tile_click },
 		body,
 	}
 end
 
--- Wheel scrolling cannot snap to rows, so a panel pages by its capacity instead and never shows half a row.
---- @param panel string
---- @param action "prev"|"next"
---- @param caption string
-local function pager_button(panel, action, caption)
+local function header_cell(caption, width, right, name)
 	return {
-		type = "button",
-		name = "overview_" .. panel .. "_" .. action,
-		style = "tool_button",
+		type = "label",
+		name = name,
+		style = right and "cybersyn_unserved_header_value" or "cybersyn_unserved_header",
+		style_mods = { width = width },
 		caption = caption,
-		tooltip = { "cybersyn-gui.overview-page-" .. action },
-		visible = false,
-		tags = { overview_panel = panel, step = action == "next" and 1 or -1 },
-		handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_page_click },
 	}
 end
 
---- @param panel OverviewPanelDef
---- @param panel OverviewPanelDef
---- @param skip int? value column left out
---- @return int
-local function table_columns(panel, skip)
-	return 2 + #panel.columns - (skip and 1 or 0)
-end
-
---- @param panel OverviewPanelDef
---- @param skip int? value column left out; a table cannot hide a column, so it is built without it
-local function table_def(panel, skip)
-	local tbl = {
-		type = "table",
-		name = "overview_" .. panel.name .. "_table",
-		style = "cybersyn_overview_table",
-		column_count = table_columns(panel, skip),
-		{ type = "empty-widget", style_mods = { width = ICON_WIDTH, height = COLUMN_HEADER_HEIGHT } },
+--- The subheader's right side; manager.lua puts it after the shared search field, chip and progress note.
+--- @return flib.GuiElemDef[]
+function overview_tab.subheader_right()
+	local period_items = {}
+	local default_index = 1
+	for i, minutes in ipairs(PERIODS) do
+		period_items[i] = { "cybersyn-gui.overview-period-" .. minutes }
+		if minutes == DEFAULT_PERIOD then default_index = i end
+	end
+	return {
+		{
+			type = "checkbox",
+			name = "overview_show_acked",
+			caption = { "cybersyn-gui.overview-show-acked", "0" },
+			tooltip = { "cybersyn-gui.overview-show-acked-tooltip" },
+			state = false,
+			handler = { [defines.events.on_gui_checked_state_changed] = overview_tab.handle.overview_show_acked },
+		},
+		{ type = "empty-widget", style_mods = { width = 12 } },
 		{
 			type = "label",
-			style = "cybersyn_overview_cell_header",
-			style_mods = { horizontally_stretchable = true },
-			caption = { "cybersyn-gui.overview-col-" .. panel.subject },
+			style = "subheader_caption_label",
+			caption = { "cybersyn-gui.overview-period" },
+			tooltip = { "cybersyn-gui.overview-period-tooltip" },
 		},
-	}
-	for i, column in ipairs(panel.columns) do
-		if i ~= skip then
-			tbl[#tbl + 1] = {
-				type = "label",
-				style = "cybersyn_overview_cell_header_value",
-				style_mods = { width = column[2] },
-				caption = { "cybersyn-gui.overview-col-" .. column[1] },
-				tooltip = { "cybersyn-gui.overview-col-" .. column[1] .. "-tooltip" },
-			}
-		end
-	end
-	return tbl
-end
-
---- @param panel OverviewPanelDef
-local function panel_def(panel)
-	local name = panel.name
-	local tbl = table_def(panel)
-	return {
-		type = "frame",
-		name = "overview_panel_" .. name,
-		direction = "vertical",
-		style = "cybersyn_overview_panel",
 		{
-			type = "frame",
-			direction = "horizontal",
-			style = "cybersyn_overview_panel_header",
-			{
-				type = "label",
-				name = "overview_" .. name .. "_caption",
-				style = "subheader_caption_label",
-				-- A small natural width that squashes, so a long caption is cut instead of making its panel wider than
-				-- the other two.
-				style_mods = { natural_width = 80, horizontally_squashable = true },
-				caption = { "cybersyn-gui.overview-list-" .. name },
-				tooltip = { "cybersyn-gui.overview-list-" .. name .. "-tooltip" },
-			},
-			{ type = "empty-widget", style = "flib_horizontal_pusher" },
-			{
-				type = "label",
-				name = "overview_" .. name .. "_count",
-				style = "cybersyn_overview_count_label",
-			},
-			pager_button(name, "prev", "‹"),
-			pager_button(name, "next", "›"),
-		},
-		-- Never scrolls: it only keeps the table's natural width from widening its panel past the other two.
-		{
-			type = "scroll-pane",
-			style = "cybersyn_overview_panel_body",
-			style_mods = { height = BODY_HEIGHT },
-			horizontal_scroll_policy = "never",
-			vertical_scroll_policy = "never",
-			tbl,
-			{
-				type = "flow",
-				name = "overview_" .. name .. "_empty_flow",
-				direction = "horizontal",
-				style = "cybersyn_overview_empty_flow",
-				visible = false,
-				{
-					type = "label",
-					name = "overview_" .. name .. "_empty",
-					style = "cybersyn_overview_empty_label",
-					style_mods = { height = ROWS_HEIGHT },
-					caption = { "cybersyn-gui.overview-empty-" .. name },
-				},
-			},
+			type = "drop-down",
+			name = "overview_period_dropdown",
+			style = "cybersyn_overview_period_dropdown",
+			items = period_items,
+			selected_index = default_index,
+			tooltip = { "cybersyn-gui.overview-period-tooltip" },
+			handler = { [defines.events.on_gui_selection_state_changed] = overview_tab.handle.overview_period_changed },
 		},
 	}
 end
@@ -359,39 +179,31 @@ end
 function overview_tab.create()
 	local tiles = {
 		type = "flow",
+		name = "overview_tile_row",
 		direction = "horizontal",
 		style = "cybersyn_overview_tile_row",
-		style_mods = { height = TILE_ROW_HEIGHT },
 	}
 	for _, tile in ipairs(TILES) do
 		tiles[#tiles + 1] = tile_def(tile)
 	end
 
-	local period_items = {}
-	for i, minutes in ipairs(PERIODS) do
-		period_items[i] = { "cybersyn-gui.overview-period-" .. minutes }
-	end
-	local default_index = 1
-	for i, minutes in ipairs(PERIODS) do
-		if minutes == DEFAULT_PERIOD then default_index = i end
-	end
-
-	local panels = {
-		type = "flow",
-		direction = "vertical",
-		style = "cybersyn_overview_panels",
+	local tbl = {
+		type = "table",
+		name = TABLE,
+		style = "cybersyn_unserved_table",
+		column_count = TABLE_COLUMNS,
+		header_cell("", W.item),
+		header_cell({ "cybersyn-gui.unserved-col-requester" }, nil, false, "overview_unserved_h_requester"),
+		header_cell({ "cybersyn-gui.unserved-col-why" }, W.why),
+		header_cell({ "cybersyn-gui.unserved-col-provider" }, W.provider, false, "overview_unserved_h_provider"),
+		header_cell({ "cybersyn-gui.unserved-col-stock" }, W.stock, true),
+		header_cell({ "cybersyn-gui.unserved-col-lost" }, W.lost),
+		header_cell({ "cybersyn-gui.unserved-col-wait" }, W.wait, true),
+		header_cell("", W.ack),
 	}
-	for _, row in ipairs(PANEL_ROWS) do
-		local flow = {
-			type = "flow",
-			direction = "horizontal",
-			style = "cybersyn_overview_panel_row",
-		}
-		for _, panel in ipairs(row) do
-			flow[#flow + 1] = panel_def(panel)
-		end
-		panels[#panels + 1] = flow
-	end
+	tbl[5].tooltip = { "cybersyn-gui.unserved-col-stock-tooltip" }
+	tbl[6].tooltip = { "cybersyn-gui.unserved-col-lost-tooltip" }
+	tbl[7].tooltip = { "cybersyn-gui.unserved-col-wait-tooltip" }
 
 	return {
 		tab = {
@@ -404,842 +216,354 @@ function overview_tab.create()
 			type = "flow",
 			direction = "vertical",
 			style = "cybersyn_overview_content",
-			style_mods = { minimal_height = CONTENT_HEIGHT },
 			tiles,
 			{
-				type = "flow",
-				direction = "horizontal",
-				style = "cybersyn_overview_subheader",
+				type = "frame",
+				name = "overview_unserved_frame",
+				direction = "vertical",
+				style = "cybersyn_unserved_frame",
 				{
-					type = "label",
-					name = "overview_filter_note",
-					style = "cybersyn_overview_filter_note",
-					caption = "",
-				},
-				{ type = "empty-widget", style = "flib_horizontal_pusher" },
-				{
-					type = "label",
-					name = "overview_period_note",
-					style = "cybersyn_overview_filter_note",
-					caption = "",
-					tooltip = { "cybersyn-gui.overview-period-recorded-tooltip" },
-					visible = false,
-				},
-				{
-					type = "label",
-					style = "bold_label",
-					caption = { "cybersyn-gui.overview-period" },
-					tooltip = { "cybersyn-gui.overview-period-tooltip" },
+					type = "frame",
+					direction = "horizontal",
+					style = "cybersyn_unserved_caption_frame",
+					{ type = "label", name = "overview_unserved_table_caption", style = "subheader_caption_label",
+						caption = { "cybersyn-gui.unserved-caption" } },
+					{ type = "empty-widget", style = "flib_horizontal_pusher" },
+					{ type = "label", name = "overview_unserved_dropped", style = "cybersyn_subheader_note", visible = false },
+					{
+						type = "button",
+						name = "overview_unserved_count",
+						style = "cybersyn_unserved_count_button",
+						caption = "",
+						tooltip = { "cybersyn-gui.unserved-count-tooltip" },
+						handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_count_click },
+					},
 				},
 				{
-					type = "drop-down",
-					name = "overview_period_dropdown",
-					style = "cybersyn_overview_period_dropdown",
-					items = period_items,
-					selected_index = default_index,
-					tooltip = { "cybersyn-gui.overview-period-tooltip" },
-					handler = { [defines.events.on_gui_selection_state_changed] = overview_tab.handle.overview_period_changed },
+					type = "flow",
+					name = "overview_unserved_body",
+					direction = "vertical",
+					style_mods = { vertical_spacing = 0 },
+					tbl,
+					{
+						type = "flow",
+						name = "overview_unserved_empty_flow",
+						direction = "horizontal",
+						style = "cybersyn_overview_empty_flow",
+						visible = false,
+						{
+							type = "label",
+							name = "overview_unserved_empty",
+							style = "cybersyn_overview_empty_label",
+							caption = { "cybersyn-gui.unserved-empty" },
+						},
+					},
 				},
 			},
-			panels,
 		},
 	}
 end
 
--- MODEL
-
---- Calls fn(network_name) for each network a station or train belongs to.
---- @param network_name string?
---- @param network_mask int|{[string]: int}?
-local function each_network(network_name, network_mask, fn, a, b)
-	if network_name == NETWORK_EACH then
-		if type(network_mask) == "table" then
-			for name in pairs(network_mask) do
-				fn(name, a, b)
-			end
+--- Sizes from the window layout: tile widths, the two stretching columns and the table body's height (whole rows).
+--- @param player_data PlayerData
+--- @param layout ManagerLayout
+function overview_tab.apply_layout(player_data, layout)
+	local refs = player_data.refs
+	local cw = layout.content_width
+	local rows = layout.rows_by_tab[TAB]
+	local tile = math.floor((cw - 3 * 12) / 4)
+	local provider = math.floor(W.provider * math.min(cw, BASE_CONTENT_WIDTH) / BASE_CONTENT_WIDTH)
+	local fixed = W.item + W.why + provider + W.stock + W.lost + W.wait + W.ack
+	local requester = cw - FRAME_BORDER - TABLE_PADDING - (TABLE_COLUMNS - 1) * TABLE_SPACING - fixed
+	local widths = { tile = tile, requester = requester, provider = provider, rows = rows }
+	for _, t in ipairs(TILES) do
+		local button = refs["overview_tile_" .. t.name]
+		if button and button.valid then
+			button.style.width = tile
+			local body = button.children[1]
+			body.style.width = tile
+			body.style.height = 108
 		end
-	elseif network_name then
-		fn(network_name, a, b)
+	end
+	local old = player_data.overview_widths
+	player_data.overview_widths = widths
+	local h_req, h_prov = refs.overview_unserved_h_requester, refs.overview_unserved_h_provider
+	if h_req and h_req.valid then h_req.style.width = requester end
+	if h_prov and h_prov.valid then h_prov.style.width = provider end
+	local body = refs.overview_unserved_body
+	if body and body.valid then body.style.height = 20 + rows * 32 end
+	local empty = refs.overview_unserved_empty_flow
+	if empty and empty.valid then empty.style.height = rows * 32 end
+	-- Rows built for other widths are rebuilt rather than restyled cell by cell.
+	if not old or old.requester ~= requester or old.provider ~= provider then
+		local tbl = refs[TABLE]
+		if tbl and tbl.valid then
+			local children = tbl.children
+			for i = #children, TABLE_COLUMNS + 1, -1 do children[i].destroy() end
+		end
+		local state = util.gui_state(player_data, TABLE)
+		state.keys, state.sigs = nil, nil
 	end
 end
 
---- @param st SnapshotStation
---- @param hash string
---- @param starved {[string]: true}
-local function request_starved(st, hash, starved)
-	local name = st.network_name
-	if name == NETWORK_EACH then
-		local mask = st.network_mask
-		if type(mask) == "table" then
-			for net in pairs(mask) do
-				if starved[net .. ":" .. hash] then return true end
-			end
-		end
-		return false
-	end
-	return name ~= nil and starved[name .. ":" .. hash] == true
+-- ---------------------------------------------------------------- model
+
+--- @param a table
+--- @param b table
+--- @return boolean
+local function row_before(a, b)
+	local ea, eb = a.e, b.e
+	if ea.first_tick ~= eb.first_tick then return ea.first_tick < eb.first_tick end
+	local sa, sb = REASON_SEVERITY[ea.reason] or 0, REASON_SEVERITY[eb.reason] or 0
+	if sa ~= sb then return sa > sb end
+	if a.r_id ~= b.r_id then return a.r_id < b.r_id end
+	return a.hash < b.hash
 end
 
---- Keeps `list` sorted by `less` and at most `k` long.
-local function top_k_insert(list, k, row, less)
+--- Keeps `list` sorted by row_before and at most `k` long; allocates only for a row that makes the cut.
+local function top_k(list, k, r_id, hash, e)
 	local n = #list
 	if n >= k then
-		if not less(row, list[n]) then return end
+		local last = list[n].e
+		if e.first_tick > last.first_tick then return end
+	end
+	local row = { r_id = r_id, hash = hash, e = e }
+	if n >= k then
+		if not row_before(row, list[n]) then return end
 		list[n] = nil
 		n = n - 1
 	end
 	local i = n
-	while i >= 1 and less(row, list[i]) do
+	while i >= 1 and row_before(row, list[i]) do
 		list[i + 1] = list[i]
 		i = i - 1
 	end
 	list[i + 1] = row
 end
 
-local function waiting_less(a, b)
-	if a.start ~= b.start then return a.start < b.start end
-	if a.id ~= b.id then return a.id < b.id end
-	return a.hash < b.hash
-end
-
-local STATUS_GROUP = {
-	[STATUS_D] = "parked",
-	[STATUS_TO_P] = "to_provider",
-	[STATUS_P] = "loading",
-	[STATUS_TO_R] = "to_requester",
-	[STATUS_R] = "unloading",
-	[STATUS_TO_D] = "returning",
-	[STATUS_TO_D_BYPASS] = "returning",
-	[STATUS_TO_F] = "refuelling",
-	[STATUS_F] = "refuelling",
-}
-
-local function network_entry(networks, name)
-	local n = networks[name]
-	if not n then
-		n = { p = 0, r = 0, trains = 0, available = 0 }
-		networks[name] = n
-	end
-	return n
-end
-
-local function count_station_network(name, networks, st)
-	local n = network_entry(networks, name)
-	if st.is_p then n.p = n.p + 1 end
-	if st.is_r then n.r = n.r + 1 end
-end
-
-local function count_train_network(name, networks, tr)
-	local n = network_entry(networks, name)
-	n.trains = n.trains + 1
-	if tr.is_available then n.available = n.available + 1 end
-end
-
---- Rows carry a tooltip builder instead of the tooltip: only the rows on screen whose sig changed ever build one.
---- @param hash string
---- @param tail fun(): LocalisedString[]
---- @return table? row partial row with sprite, quality, caption and tooltip builder; nil when the item has no sprite
-local function item_row(hash, tail)
-	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
-	if not sprite then return nil end
-	return {
-		key = hash,
-		sprite = sprite,
-		quality = quality,
-		caption = name_tooltip[4],
-		tooltip = function()
-			local tooltip = { "", name_tooltip }
-			for _, part in ipairs(tail()) do
-				tooltip[#tooltip + 1] = part
-			end
-			tooltip[#tooltip + 1] = "\n"
-			tooltip[#tooltip + 1] = { "cybersyn-gui.item-click-hint" }
-			return tooltip
-		end,
-		tags = { kind = "item", item_hash = hash },
-	}
-end
-
-local MAX_NAME_ICONS = 2
-local SEPARATORS = "[%s/|,%-]*"
-
---- Station names often start with a run of icons. A squashed label cuts from the right, so the readable text after
---- the icons would be lost first; keep at most MAX_NAME_ICONS of them (the tooltip has the full name).
---- @param name string
---- @return string
-local function display_name(name)
-	if string.sub(name, 1, 1) ~= "[" then return name end
-	local pos, icons, keep_end = 1, 0, nil
-	while true do
-		local s, e = string.find(name, "^" .. SEPARATORS .. "%[[%w%-]+=[^%]]*%]", pos)
-		if not s then break end
-		icons = icons + 1
-		if icons == MAX_NAME_ICONS then keep_end = e end
-		pos = e + 1
-	end
-	if icons <= MAX_NAME_ICONS then return name end
-	local rest = string.gsub(string.sub(name, pos), "^" .. SEPARATORS, "")
-	return string.sub(name, 1, keep_end) .. "… " .. rest
-end
-
 --- @param st SnapshotStation
---- @param key string|number
---- @param sprite string?
---- @param quality string?
---- @param tail fun(): LocalisedString[]
-local function station_row(st, key, sprite, quality, tail)
-	local name = st.name
-	local caption = display_name(name)
-	return {
-		key = key,
-		sprite = sprite or "item/train-stop",
-		quality = quality,
-		caption = caption,
-		name_sig = caption,
-		tooltip = function()
-			local tooltip = { "", "[font=default-semibold]", name, "[/font]" }
-			for _, part in ipairs(tail()) do
-				tooltip[#tooltip + 1] = part
-			end
-			tooltip[#tooltip + 1] = "\n"
-			tooltip[#tooltip + 1] = constants.open_station_gui_tooltip
-			return tooltip
-		end,
-		tags = { kind = "station", station_id = st.id },
-	}
-end
-
---- The item a saturated station's trains are busy with: its largest delivery, in or out.
---- @param st SnapshotStation
---- @return string?
-local function main_delivery_hash(st)
-	local best, best_count
-	for hash, count in pairs(st.deliveries) do
-		local a = math.abs(count)
-		if a > 0 and (not best_count or a > best_count or (a == best_count and hash < best)) then
-			best, best_count = hash, a
-		end
-	end
-	return best
-end
-
--- Walking every snapshot station costs about 3 ms on a 2,000-station base, so after a completed pass the new figures
--- are built over several updates, this many stations at a time, while the previous ones stay on screen.
-local BASE_CHUNK = 500
--- The first figures after opening replace a placeholder, not figures on screen, so they are built in bigger chunks.
-local FIRST_CHUNK = 1000
-
---- Filters and tracking: a change of these is the player's own action and is shown at once.
---- @param f table
---- @param tracking boolean
---- @return string
-local function view_key(f, tracking)
-	return table.concat({
-		tracking and "t" or "", f.terms and table.concat(f.terms, " ") or "", f.network or "", tostring(f.mask),
-		tostring(f.surface or ""),
-	}, "\1")
-end
-
---- @param snapshot Snapshot
---- @return string
-local function data_key(snapshot)
-	return tostring(snapshot.tick) .. "\1" .. tostring(snapshot.pass) .. "\1" .. tostring(snapshot.starved_version)
-end
-
---- Accumulator of the snapshot-derived figures; wait ages are kept as start ticks so it does not depend on the tick.
---- @param snapshot Snapshot
---- @param filtered boolean
---- @return table
-local function new_base(snapshot, filtered)
-	local ids = {}
-	for id in pairs(snapshot.stations) do
-		ids[#ids + 1] = id
-	end
-	table.sort(ids)
-	return {
-		ids = ids,
-		i = 0,
-		st_tile = { total = 0, providers = 0, requesters = 0 },
-		demand = { total = 0, volume = 0, starved = 0, in_transit = 0 },
-		wait_starts = {},
-		starved_items = {},
-		waiting = {},
-		waiting_total = 0,
-		transit = filtered and {} or nil,
-		networks = {},
-	}
-end
-
---- @param base table
---- @param st SnapshotStation
---- @param tracking boolean
---- @param starved_set {[string]: true}
---- @param starved_items_set {[string]: true}
-local function add_station(base, st, tracking, starved_set, starved_items_set)
-	local st_tile, demand = base.st_tile, base.demand
-	st_tile.total = st_tile.total + 1
-	if st.is_p then st_tile.providers = st_tile.providers + 1 end
-	if st.is_r then st_tile.requesters = st_tile.requesters + 1 end
-	each_network(st.network_name, st.network_mask, count_station_network, base.networks, st)
-
-	local deliveries = st.deliveries
-	local wait = st.wait
-	for hash, req in pairs(st.requested) do
-		if req.active then
-			local volume = -req.count
-			demand.total = demand.total + 1
-			demand.volume = demand.volume + volume
-			local incoming = deliveries[hash]
-			if incoming and incoming > 0 then demand.in_transit = demand.in_transit + 1 end
-			local start = tracking and wait[hash] or nil
-			if start then
-				base.wait_starts[#base.wait_starts + 1] = start
-				base.waiting_total = base.waiting_total + 1
-				top_k_insert(base.waiting, LIMITS.waiting, { start = start, id = st.id, hash = hash, count = volume, st = st }, waiting_less)
-			end
-			-- The per-item set rejects almost every request without building a "network:item" key.
-			if starved_items_set[hash] and request_starved(st, hash, starved_set) then
-				demand.starved = demand.starved + 1
-				local agg = base.starved_items[hash]
-				if agg then
-					agg.count = agg.count + volume
-					agg.stations = agg.stations + 1
-					if start and (not agg.earliest or start < agg.earliest) then agg.earliest = start end
-				else
-					base.starved_items[hash] = { count = volume, stations = 1, earliest = start }
-				end
-			end
-		end
-	end
-
-	local transit = base.transit
-	if transit then
-		for hash, count in pairs(deliveries) do
-			if count > 0 then
-				local agg = transit[hash]
-				if agg then
-					agg.count = agg.count + count
-					agg.stations = agg.stations + 1
-				else
-					transit[hash] = { count = count, stations = 1 }
-				end
-			end
-		end
-	end
-end
-
---- Trains, depots and the sorted lists, once every station has been added.
---- @param base table
---- @param snapshot Snapshot
---- @param f table
---- @param filtered boolean
-local function finish_base(base, snapshot, f, filtered)
-	local networks = base.networks
-	for _, tr in pairs(snapshot.trains) do
-		if not filtered or util.train_passes(tr, f, true) then
-			each_network(tr.network_name, tr.network_mask, count_train_network, networks, tr)
-		end
-	end
-
-	local network_names = {}
-	for name in pairs(networks) do
-		if not f.network or f.network == name then
-			network_names[#network_names + 1] = name
-		end
-	end
-	util.sort_by(network_names, function(name)
-		local n = networks[name]
-		return n.p + n.r
-	end, false, function(name) return name end)
-	base.network_names = network_names
-	local st_tile = base.st_tile
-	st_tile.networks = #network_names
-
-	local depots = snapshot.depots
-	base.depot_tile = {
-		total = depots.total,
-		occupied = depots.parked,
-		empty = depots.total - depots.parked,
-	}
-
-	-- Oldest wait first, then the largest shortfall.
-	local starved_items = base.starved_items
-	local starved_hashes = {}
-	for hash, agg in pairs(starved_items) do
-		starved_hashes[#starved_hashes + 1] = hash
-		agg.tiebreak = string.format("%020.0f|%s", 1e15 - math.min(agg.count, 1e15 - 1), hash)
-	end
-	util.sort_by(starved_hashes, function(hash)
-		local agg = starved_items[hash]
-		return agg.earliest or (1e12 - agg.count)
-	end, true, function(hash) return starved_items[hash].tiebreak end)
-	base.starved_hashes = starved_hashes
-
-	local transit = base.transit or snapshot.inventory_all.in_transit
-	base.transit = transit
-	local transit_hashes = {}
-	for hash in pairs(transit) do
-		transit_hashes[#transit_hashes + 1] = hash
-	end
-	util.sort_by(transit_hashes, function(hash) return transit[hash].count end, false, function(hash) return hash end)
-	base.transit_hashes = transit_hashes
-
-
-	st_tile.headline = st_tile.total
-	base.depot_tile.headline = base.depot_tile.total
-	base.demand.headline = base.demand.total
-	base.ids = nil
-	base.i = nil
-end
-
---- Adds up to `budget` more stations to a base under construction; true once it is complete.
+--- @param item string
 --- @return boolean
-local function advance_base(base, snapshot, f, filtered, tracking, budget)
-	local stations = snapshot.stations
-	local starved_set, starved_items_set = snapshot.starved, snapshot.starved_items
-	local ids = base.ids
-	local n = #ids
-	local i = base.i
-	local stop = math.min(n, i + budget)
-	while i < stop do
-		i = i + 1
-		local st = stations[ids[i]]
-		if st and (not filtered or util.station_passes(st, f, true)) then
-			add_station(base, st, tracking, starved_set, starved_items_set)
-		end
-	end
-	base.i = i
-	if i < n then return false end
-	finish_base(base, snapshot, f, filtered)
-	return true
+local function station_has_item(st, item)
+	return st.provided[item] ~= nil or st.requested[item] ~= nil or st.deliveries[item] ~= nil
 end
 
---- Fleet figures from the trains the Trains tab shows right now. The collector refreshes trains at the start of a pass
---- and the station figures build over several updates after its end, so the fleet is kept apart from them: the Fleet
---- tile and the Trains tab always count the same trains.
---- @param snapshot Snapshot
---- @param f table
---- @param filtered boolean
---- @return table fleet
---- @return integer available trains available for dispatch, unfiltered like the rest of the Depots tile
-local function fleet_model(snapshot, f, filtered)
-	local fleet = { total = 0, parked = 0, to_provider = 0, loading = 0, to_requester = 0, unloading = 0, returning = 0, refuelling = 0, other = 0, alerts = 0 }
-	local available = 0
-	local train_passes = {}
-	for id, tr in pairs(snapshot.trains) do
-		if tr.is_available then available = available + 1 end
-		if not filtered or util.train_passes(tr, f, true) then
-			train_passes[id] = true
-			fleet.total = fleet.total + 1
-			local group = STATUS_GROUP[tr.status or STATUS_D] or "other"
-			fleet[group] = fleet[group] + 1
-		end
-	end
-	fleet.idle = fleet.total > 0 and fleet.parked / fleet.total or nil
-	for _, alert in ipairs(snapshot.alerts) do
-		if not filtered or train_passes[alert.train_id] then
-			fleet.alerts = fleet.alerts + 1
-		end
-	end
-	fleet.headline = fleet.total
-	return fleet, available
+--- @param a table
+--- @param b table
+--- @return boolean
+local function counts_before(a, b)
+	if a[2] ~= b[2] then return a[2] > b[2] end
+	return a[1] < b[1]
 end
 
--- Stations tile lines that count one station status each, as the Stations chips do.
-local STATUS_LINES = { no_power = "faulty", warming_up = "warming_up", starved = "starved", saturated = "saturated" }
-
---- Station status counts from the records as they are now, like the Stations chips: the collector refills records in
---- place and sets their status, so a figure kept from the last completed pass would disagree with a chip within a pass.
---- Only records with a counted status reach the filter, so this stays cheap on large bases.
---- @param snapshot Snapshot
---- @param f table
---- @param filtered boolean
---- @return SnapshotStation[] saturated the LIMITS.saturated busiest saturated stations, most deliveries first
---- @return {[string]: integer} counts per Stations tile line
-local function live_status(snapshot, f, filtered)
-	local list = {}
-	local counts = { faulty = 0, warming_up = 0, starved = 0, saturated = 0 }
-	for _, st in pairs(snapshot.stations) do
-		local line = STATUS_LINES[st.status]
-		if line and (not filtered or util.station_passes(st, f, true)) then
-			counts[line] = counts[line] + 1
-			if line == "saturated" then list[#list + 1] = st end
-		end
-	end
-	util.sort_by(list, function(st) return st.deliveries_total end, false, function(st) return st.id end)
-	for i = LIMITS.saturated + 1, #list do
-		list[i] = nil
-	end
-	return list, counts
-end
-
---- @param player_data PlayerData
---- @param snapshot Snapshot
---- @param f table
---- @param filtered boolean
---- @param vkey string
-local function cached_fleet(player_data, snapshot, f, filtered, vkey)
-	local cache = player_data.overview_cache
-	local key = tostring(snapshot.trains_version) .. "\1" .. vkey
-	if cache.fleet_key ~= key then
-		cache.fleet, cache.available = fleet_model(snapshot, f, filtered)
-		cache.fleet_key = key
-	end
-	return cache.fleet, cache.available
-end
-
---- The snapshot-derived figures for the player's filters. Kept in player_data, not in a Lua local, so every peer
---- shows the same figures. Nil until the first pass after opening has completed and its figures are built: before
---- that every figure would read zero, so the tab shows its collecting state instead.
---- @param player_data PlayerData
---- @param snapshot Snapshot
---- @param f table
---- @param filtered boolean
---- @param tracking boolean
---- @return table?
-local function cached_snapshot_model(player_data, snapshot, f, filtered, tracking)
-	if not snapshot.tick then return nil end
-	local vkey, dkey = view_key(f, tracking), data_key(snapshot)
-	local cache = player_data.overview_cache
-	if cache and cache.base and cache.view_key ~= vkey then
-		local base = new_base(snapshot, filtered)
-		advance_base(base, snapshot, f, filtered, tracking, math.huge)
-		player_data.overview_cache = { view_key = vkey, data_key = dkey, base = base }
-		return base
-	end
-	if not cache or cache.view_key ~= vkey then
-		cache = { view_key = vkey }
-		player_data.overview_cache = cache
-	end
-	if cache.data_key ~= dkey then
-		local build = cache.build
-		if not build then
-			build = new_base(snapshot, filtered)
-			build.data_key = dkey
-			cache.build = build
-		end
-		if advance_base(build, snapshot, f, filtered, tracking, cache.base and BASE_CHUNK or FIRST_CHUNK) then
-			cache.base = build
-			cache.data_key = build.data_key
-			build.data_key = nil
-			cache.build = nil
-		end
-	end
-	return cache.base
-end
-
-local COLLECTING_LISTS = { "starved", "waiting", "transit", "slowest", "saturated" }
-
---- Items delivered over the period, from storage.stats only, so it does not wait for the snapshot.
---- @param window table stats.aggregate(period)
---- @param period integer
+--- The diagnostics walk: the table's rows (top `rows` by wait, acknowledged ones apart) and the Unserved tile's
+--- counts, for the item filter. One pass over the unserved entries, never over the stations.
+--- @param d DiagState
+--- @param item string?
+--- @param rows int
+--- @param threshold int ticks a request must have waited for the tile
+--- @param now uint
 --- @return table
-local function delivered_list(window, period)
-	local period_caption = { "cybersyn-gui.overview-scope-" .. period }
-	local delivered_items = window.items
-	local span_minutes = math.max(window.span_ticks / 3600, 1)
-	local delivered_hashes = {}
-	for hash in pairs(delivered_items) do
-		delivered_hashes[#delivered_hashes + 1] = hash
+local function unserved_model(d, item, rows, threshold, now)
+	local out = {
+		open = {}, acked = {}, total = 0, acked_total = 0, old = 0, old_acked = 0, reasons = {}, throttling = {},
+	}
+	local want_ix
+	if item then
+		want_ix = d.item_ix[item]
+		if not want_ix then want_ix = -1 end
 	end
-	util.sort_by(delivered_hashes, function(hash) return delivered_items[hash] end, false, function(hash) return hash end)
-	local delivered_rows = {}
-	for _, hash in ipairs(delivered_hashes) do
-		if #delivered_rows >= LIMITS.delivered then break end
-		local count = delivered_items[hash]
-		local rate = amount(count / span_minutes)
-		local row = item_row(hash, function()
-			return {
-				"\n", { "cybersyn-gui.overview-delivered-amount", period_caption, format.number(count) },
-				"\n", { "cybersyn-gui.overview-delivered-rate", rate },
-			}
-		end)
-		if row then
-			row.order = count
-			row.value_sig = period
-			row.values = { amount(count), rate }
-			delivered_rows[#delivered_rows + 1] = row
+	local acks = storage.acks
+	local ack_requests = acks and acks.request
+	local reasons = out.reasons
+	local throttling = out.throttling
+	for r_id, by_item in pairs(d.unserved) do
+		local by_ack = ack_requests and ack_requests[r_id]
+		for ix, e in pairs(by_item) do
+			local reason = e.reason
+			if reason == REASON_R_AT_LIMIT then
+				throttling[r_id] = true
+			elseif reason == REASON_P_AT_LIMIT and e.p_station_id then
+				throttling[e.p_station_id] = true
+			end
+			if not want_ix or ix == want_ix then
+				local hash = d.item_hash[ix]
+				local acked = by_ack and by_ack[hash] and diag.is_acked("request", r_id, hash) ~= nil
+				local old = now - e.first_tick >= threshold
+				if acked then
+					out.acked_total = out.acked_total + 1
+					if old then out.old_acked = out.old_acked + 1 end
+					top_k(out.acked, rows, r_id, hash, e)
+				else
+					out.total = out.total + 1
+					if old then
+						out.old = out.old + 1
+						reasons[reason] = (reasons[reason] or 0) + 1
+					end
+					top_k(out.open, rows, r_id, hash, e)
+				end
+			end
 		end
 	end
-	return { rows = delivered_rows, total = #delivered_hashes }
+	local sorted = {}
+	for reason, n in pairs(reasons) do sorted[#sorted + 1] = { reason, n } end
+	table.sort(sorted, counts_before)
+	out.sorted_reasons = sorted
+	return out
 end
 
---- Everything the tab shows, from the snapshot and storage.stats only, with every list already sorted and cut.
+--- Stations failing: status from the records as they are now (as the Stations chips count them), throttling from
+--- the diagnostics walk, misconfigured from the lint bits. Only flagged records reach the item check.
+--- @param snapshot Snapshot
+--- @param item string?
+--- @param throttling {[uint]: true}
+--- @return table
+local function failing_model(snapshot, item, throttling)
+	local out = { no_power = 0, disabled = 0, throttling = 0, misconfigured = 0, total = 0, lint_bits = {} }
+	local bits = out.lint_bits
+	for id, st in pairs(snapshot.stations) do
+		local status = st.status
+		local lint = st.lint or 0
+		local np, dis, thr = status == "no_power", status == "disabled", throttling[id] == true
+		if (np or dis or thr or lint ~= 0) and (not item or station_has_item(st, item)) then
+			out.total = out.total + 1
+			if np then out.no_power = out.no_power + 1 end
+			if dis then out.disabled = out.disabled + 1 end
+			if thr then out.throttling = out.throttling + 1 end
+			if lint ~= 0 then
+				out.misconfigured = out.misconfigured + 1
+				local bit = 0
+				while lint ~= 0 and bit < 32 do
+					if bit32.btest(lint, 1) then bits[bit] = (bits[bit] or 0) + 1 end
+					lint = bit32.rshift(lint, 1)
+					bit = bit + 1
+				end
+			end
+		end
+	end
+	return out
+end
+
+--- Fleet headroom: the network whose fewest available trains over the period is lowest.
+--- @param window StatsWindow
+--- @return table
+local function fleet_model(window)
+	local mins = window.min_available_by_network
+	local now = stats.get().available_count
+	-- The counters only know networks that had a train available at some point; a network whose trains are all
+	-- busy or stuck since the load is the worst of all, at 0.
+	local seen = {}
+	for _, train in pairs(storage.trains) do
+		local net = train.network_name
+		if net == NETWORK_EACH then
+			local mask = train.network_mask
+			if type(mask) == "table" then
+				for n in pairs(mask) do seen[n] = true end
+			end
+		elseif net then
+			seen[net] = true
+		end
+	end
+	for name in pairs(seen) do
+		if mins[name] == nil then mins[name] = 0 end
+	end
+	local names = {}
+	for name in pairs(mins) do names[#names + 1] = name end
+	table.sort(names, function(a, b)
+		if mins[a] ~= mins[b] then return mins[a] < mins[b] end
+		return a < b
+	end)
+	local worst = names[1]
+	local minutes = math.max(window.span_ticks / 3600, 1 / 60)
+	local per_minute = window.deliveries / minutes
+	local busy = window.cycle_avg and per_minute * window.cycle_avg / 60 or nil
+	return {
+		worst = worst,
+		headline = worst and mins[worst] or nil,
+		now = worst and (now[worst] or 0) or nil,
+		failures = window.no_train_failures,
+		names = names,
+		mins = mins,
+		current = now,
+		per_minute = per_minute,
+		trip = window.cycle_avg,
+		busy = busy,
+	}
+end
+
+--- Everything the tab shows, from the snapshot, storage.diag and storage.stats.
 --- @param player_data PlayerData
 --- @return table
 function overview_tab.model(player_data)
 	local snapshot = collector.get()
-	local f = util.get_filters(player_data)
-	local filtered = util.filters_active(f, true)
 	local now = game.tick
+	local item = player_data.search_item
+	if item and not util.signal_hash_valid(item) then item = nil end
 	local period = get_period(player_data)
-	-- The planner reads its cached copy, so this matches what is actually being tracked.
+	local minutes = unserved_minutes(player_data)
+	local layout = player_data.layout
+	local rows = layout and layout.rows_by_tab[TAB] or 10
 	local tracking = mod_settings.track_request_wait_times == true
-	local base = cached_snapshot_model(player_data, snapshot, f, filtered, tracking)
 	local window = stats.aggregate(period)
-	local flow = {
-		headline = window.deliveries,
-		amount = window.amount,
-		dispatches = window.dispatches,
-		cycle = window.cycle_avg and window.cycle_avg * 60 or nil,
-		wait_avg = tracking and window.wait_avg or nil,
-		wait_max = tracking and window.wait_max or nil,
-	}
-	local lists = {}
-	lists.delivered = delivered_list(window, period)
-	if not base then
-		for _, name in ipairs(COLLECTING_LISTS) do
-			lists[name] = { rows = {}, total = 0, collecting = true }
-		end
-		return {
-			collecting = true,
-			recorded_ticks = window.partial and window.span_ticks or nil,
-			filtered = filtered,
-			item_filter = f.item,
-			tracking = tracking,
-			period = period,
-			networks = {},
-			network_names = {},
-			tiles = { stations = {}, fleet = {}, depots = {}, demand = {}, flow = flow },
-			lists = lists,
-		}
-	end
-	local fleet, available = cached_fleet(player_data, snapshot, f, filtered, view_key(f, tracking))
-	local depot_tile = {}
-	for k, v in pairs(base.depot_tile) do
-		depot_tile[k] = v
-	end
-	depot_tile.available = available
-	local saturated, counts = live_status(snapshot, f, filtered)
-	local saturated_total = counts.saturated
-	local st_tile = {}
-	for k, v in pairs(base.st_tile) do
-		st_tile[k] = v
-	end
-	for k, v in pairs(counts) do
-		st_tile[k] = v
-	end
-
-	local demand = {}
-	for k, v in pairs(base.demand) do
-		demand[k] = v
-	end
-	if tracking then
-		local a1, a5, a30, over = 0, 0, 0, 0
-		for _, start in ipairs(base.wait_starts) do
-			local age = now - start
-			if age < 3600 then
-				a1 = a1 + 1
-			elseif age < 18000 then
-				a5 = a5 + 1
-			elseif age < 108000 then
-				a30 = a30 + 1
-			else
-				over = over + 1
-			end
-		end
-		demand.age_1m, demand.age_5m, demand.age_30m, demand.age_over = a1, a5, a30, over
-	end
-
-	-- Rows (and their tooltips) are built for the kept top only.
-	local starved_items = base.starved_items
-	local starved_rows = {}
-	for _, hash in ipairs(base.starved_hashes) do
-		if #starved_rows >= LIMITS.starved then break end
-		local agg = starved_items[hash]
-		local row = item_row(hash, function()
-			local tail = {
-				"\n", { "cybersyn-gui.requested-by-stations", tostring(agg.stations) },
-				"\n", { "cybersyn-gui.amount", format.number(agg.count) },
-				"\n[color=red]", { "cybersyn-gui.overview-no-provider" }, "[/color]",
-			}
-			if agg.earliest then
-				tail[#tail + 1] = "\n"
-				tail[#tail + 1] = { "cybersyn-gui.waiting-for", util.format_duration(now - agg.earliest) }
-			end
-			return tail
-		end)
-		if row then
-			row.order = agg.earliest or (1e12 - agg.count)
-			row.values = { amount(agg.count), tostring(agg.stations), agg.earliest and short_duration(now - agg.earliest) or NO_VALUE }
-			starved_rows[#starved_rows + 1] = row
-		end
-	end
-	lists.starved = { rows = starved_rows, total = #base.starved_hashes }
-
-	local waiting_rows = {}
-	for i, w in ipairs(base.waiting) do
-		local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(w.hash)
-		local row = station_row(w.st, w.id .. "|" .. w.hash, sprite, quality, function()
-			return {
-				"\n", name_tooltip or w.hash,
-				"\n", { "cybersyn-gui.amount", format.number(w.count) },
-				"\n", { "cybersyn-gui.waiting-for", util.format_duration(now - w.start) },
-			}
-		end)
-		row.order = w.start
-		row.values = { amount(w.count), short_duration(now - w.start) }
-		waiting_rows[i] = row
-	end
-	lists.waiting = { rows = waiting_rows, total = base.waiting_total, disabled = not tracking }
-
-	local transit = base.transit
-	local transit_rows = {}
-	for _, hash in ipairs(base.transit_hashes) do
-		if #transit_rows >= LIMITS.transit then break end
-		local agg = transit[hash]
-		local row = item_row(hash, function()
-			return {
-				"\n", { "cybersyn-gui.in-transit-to-stations", tostring(agg.stations) },
-				"\n", { "cybersyn-gui.amount", format.number(agg.count) },
-			}
-		end)
-		if row then
-			row.order = agg.count
-			row.values = { amount(agg.count), tostring(agg.stations) }
-			transit_rows[#transit_rows + 1] = row
-		end
-	end
-	lists.transit = { rows = transit_rows, total = #base.transit_hashes }
-
-
-	-- One row per stats bucket: its slowest fulfilled request. Unfiltered, like every period figure.
-	local slowest_rows = {}
-	local slowest = {}
-	if tracking then
-		for i, b in ipairs(window.slowest) do
-			slowest[i] = b
-		end
-		util.sort_by(slowest, function(b) return b.wait_max end, false, function(b) return -b.start_tick end)
-		local minute_buckets = window.slowest_minutes
-		for i = 1, math.min(#slowest, LIMITS.slowest) do
-			local b = slowest[i]
-			local hash = b.wait_max_hash
-			local sprite, quality, name_tooltip
-			if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
-			-- Buckets recorded before wait_max_tick existed only know their start, so their age is a lower bound.
-			local age = now - (b.wait_max_tick or b.start_tick)
-			local when, when_sig
-			if age < stats.MINUTE then
-				when, when_sig = { "cybersyn-gui.overview-this-minute" }, "now"
-			elseif age < stats.HOUR then
-				local m = math.floor(age / stats.MINUTE)
-				when, when_sig = { "cybersyn-gui.overview-minutes-ago", tostring(m) }, "m" .. m
-			else
-				local h = math.floor(age / stats.HOUR)
-				when, when_sig = { "cybersyn-gui.overview-hours-ago", tostring(h) }, "h" .. h
-			end
-			local bucket_key = (period <= 60 or minute_buckets[b]) and "cybersyn-gui.overview-slowest-minute" or "cybersyn-gui.overview-slowest-hour"
-			local function tail()
-				return {
-					"\n", name_tooltip or { "cybersyn-gui.overview-unknown-item" },
-					"\n", { "cybersyn-gui.overview-slowest-row", util.format_duration(b.wait_max) },
-					"\n", { bucket_key, tostring(b.wait_n), util.format_duration(b.wait_sum / b.wait_n) },
-				}
-			end
-			-- A bucket's maximum moves to another station or item as requests are fulfilled, and the update path keeps
-			-- a row's icon and tags, so the key must change with them.
-			local key = b.start_tick .. "|" .. tostring(b.wait_max_station) .. "|" .. tostring(hash)
-			local st = snapshot.stations[b.wait_max_station]
-			local row
-			if st then
-				row = station_row(st, key, sprite, quality, tail)
-			else
-				row = {
-					key = key,
-					sprite = sprite or "utility/questionmark",
-					quality = quality,
-					caption = { "cybersyn-gui.overview-removed-station" },
-					name_sig = "",
-					tooltip = function()
-						local tooltip = { "", { "cybersyn-gui.overview-removed-station" } }
-						for _, part in ipairs(tail()) do
-							tooltip[#tooltip + 1] = part
-						end
-						return tooltip
-					end,
-					tags = { kind = "none" },
-				}
-			end
-			row.order = b.wait_max
-			row.values = { short_duration(b.wait_max), when }
-			row.value_sig = when_sig .. ":" .. b.wait_n
-			slowest_rows[i] = row
-		end
-	end
-	lists.slowest = { rows = slowest_rows, total = #slowest, disabled = not tracking }
-
-	local saturated_rows = {}
-	for i, st in ipairs(saturated) do
-		local hash = main_delivery_hash(st)
-		local sprite, quality
-		if hash then sprite, quality = util.item_sprite_and_tooltip(hash) end
-		local deliveries, limit = st.deliveries_total, st.trains_limit
-		local row = station_row(st, st.id .. "|" .. tostring(hash), sprite, quality, function()
-			return { "\n", { "cybersyn-gui.overview-saturated-row", tostring(deliveries), tostring(limit) } }
-		end)
-		row.order = st.deliveries_total
-		row.values = { st.deliveries_total .. "/" .. st.trains_limit }
-		saturated_rows[i] = row
-	end
-	lists.saturated = { rows = saturated_rows, total = saturated_total }
-
+	local d = storage.diag
+	local collecting = snapshot.tick == nil
+	local unserved = d and unserved_model(d, item, rows, minutes * 3600, now) or nil
+	local failing = not collecting and failing_model(snapshot, item, unserved and unserved.throttling or {}) or nil
+	local cycle = stats.get().cycle
 	return {
-		snapshot_tick = snapshot.tick,
-		recorded_ticks = window.partial and window.span_ticks or nil,
-		filtered = filtered,
-		item_filter = f.item,
-		tracking = tracking,
+		now = now,
+		item = item,
 		period = period,
-		networks = base.networks,
-		network_names = base.network_names,
-		tiles = {
-			stations = st_tile,
-			fleet = fleet,
-			depots = depot_tile,
-			demand = demand,
-			flow = flow,
+		minutes = minutes,
+		rows = rows,
+		tracking = tracking,
+		collecting = collecting,
+		diag = d ~= nil,
+		loaded_tick = d and d.loaded_tick or 0,
+		dropped = d and d.unserved_dropped or 0,
+		unserved = unserved,
+		failing = failing,
+		fleet = fleet_model(window),
+		throughput = {
+			deliveries = window.deliveries,
+			amount = window.amount,
+			dispatches = window.dispatches,
+			trip = window.cycle_avg,
+			wait_avg = tracking and window.wait_avg or nil,
+			wait_max = tracking and window.wait_max or nil,
+			recorded = window.partial and window.span_ticks or nil,
+			cycle_ticks = cycle.ticks_last or 0,
+			cycle_dispatches = cycle.dispatches_last or 0,
 		},
-		lists = lists,
 	}
 end
 
--- RENDER
+-- ---------------------------------------------------------------- render: tiles
 
-local function set_caption(elem, caption)
-	if elem and elem.valid and elem.caption ~= caption then
-		elem.caption = caption
-	end
-end
-
---- Captions and tooltips that are LocalisedStrings cannot be compared with the element's, so the last plain-string
---- signature written is kept per player and element, and the assignment skipped while it is unchanged.
+--- LocalisedString captions cannot be compared with the element's, so the last plain-string signature written is
+--- kept per player and element.
 --- @param cache table
 --- @param elem LuaGuiElement?
 --- @param sig string
 --- @param caption LocalisedString
-local function set_caption_sig(cache, elem, sig, caption)
+local function set_caption(cache, elem, sig, caption)
 	if not (elem and elem.valid) then return end
-	local name = elem.name
-	if cache[name] == sig then return end
-	cache[name] = sig
+	local key = elem.name
+	if cache[key] == sig then return end
+	cache[key] = sig
 	elem.caption = caption
 end
 
 --- @param cache table
---- @param elems (LuaGuiElement?)[]
+--- @param elem LuaGuiElement?
 --- @param sig string
 --- @param tooltip LocalisedString
-local function set_tooltip_sig(cache, elems, sig, tooltip)
-	for _, elem in ipairs(elems) do
-		if elem and elem.valid then
-			local key = elem.name .. "#tooltip"
-			if cache[key] ~= sig then
-				cache[key] = sig
-				elem.tooltip = tooltip
-			end
-		end
-	end
+local function set_tooltip(cache, elem, sig, tooltip)
+	if not (elem and elem.valid) then return end
+	local key = elem.name .. "#tooltip"
+	if cache[key] == sig then return end
+	cache[key] = sig
+	elem.tooltip = tooltip
 end
 
 --- @param player_data PlayerData
@@ -1250,48 +574,168 @@ local function caption_cache(player_data)
 	return state.captions
 end
 
-local function format_line(tile, line, value)
-	if value == nil then return NO_VALUE end
-	if tile == "flow" then
-		if line == "cycle" or line == "wait_avg" or line == "wait_max" then return short_duration(value) end
-		if line == "amount" then return amount(value) end
-	elseif tile == "demand" and line == "volume" then
-		return amount(value)
-	elseif tile == "fleet" and line == "idle" then
-		return string.format("%d%%", math.floor(value * 100 + 0.5))
-	end
-	return format.number(value)
+--- @param refs table
+--- @param cache table
+--- @param tile string
+--- @param i int
+--- @param label_sig string
+--- @param label LocalisedString
+--- @param value string
+local function set_line(refs, cache, tile, i, label_sig, label, value)
+	local base = "overview_" .. tile .. "_line" .. i
+	set_caption(cache, refs[base .. "_label"], label_sig, label)
+	set_caption(cache, refs[base .. "_value"], value, value)
 end
 
---- @param model table
+local function red_if(n, s)
+	if n and n > 0 then return "[color=255,90,90]" .. s .. "[/color]" end
+	return s
+end
+
+--- @param name string network signal name
 --- @return string
-local function networks_sig(model)
-	local sig = {}
-	for i, name in ipairs(model.network_names) do
-		local n = model.networks[name]
-		sig[i] = name .. ":" .. n.p .. ":" .. n.r .. ":" .. n.trains .. ":" .. n.available
-	end
-	return table.concat(sig, "|")
+local function network_icon(name)
+	local _, image = util.generate_item_references(name)
+	return image ~= "" and image or name
 end
 
---- @param model table
---- @return LocalisedString
-local function networks_tooltip(model)
-	local names, networks = model.network_names, model.networks
-	local tooltip = { "", { "cybersyn-gui.overview-stations-networks-tooltip" } }
-	for i = 1, math.min(#names, MAX_TOOLTIP_NETWORKS) do
-		local name = names[i]
-		local n = networks[name]
-		local _, image, localised = util.generate_item_references(name)
-		tooltip[#tooltip + 1] = {
-			"", "\n", image ~= "" and image or "", " ", localised or name, ": ",
-			{ "cybersyn-gui.overview-network-row", tostring(n.p), tostring(n.r), tostring(n.trains), tostring(n.available) },
-		}
+local function render_unserved_tile(refs, cache, model)
+	local u = model.unserved
+	local minutes = tostring(model.minutes)
+	set_caption(cache, refs.overview_unserved_caption, minutes, { "cybersyn-gui.overview-tile-unserved", minutes })
+	if not u or model.collecting then
+		set_caption(cache, refs.overview_unserved_headline, NO_VALUE, NO_VALUE)
+		set_caption(cache, refs.overview_unserved_note, "", "")
+		for i = 1, 4 do set_line(refs, cache, "unserved", i, "", "", "") end
+		local sig = u and "collecting" or "off"
+		set_tooltip(cache, refs.overview_tile_unserved, sig, u and { "cybersyn-gui.stations-collecting" } or { "cybersyn-gui.unserved-diag-off" })
+		return
 	end
-	if #names > MAX_TOOLTIP_NETWORKS then
-		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-more-networks", tostring(#names - MAX_TOOLTIP_NETWORKS) } }
+	set_caption(cache, refs.overview_unserved_headline, tostring(u.old), format.number(u.old))
+	local note = u.old_acked > 0 and { "cybersyn-gui.overview-acked-note", tostring(u.old_acked) } or ""
+	set_caption(cache, refs.overview_unserved_note, tostring(u.old_acked), note)
+	local sorted = u.sorted_reasons
+	for i = 1, 4 do
+		local entry = i <= TOP_REASONS and sorted[i] or nil
+		if entry then
+			set_line(refs, cache, "unserved", i, "r" .. entry[1], { "cybersyn-diag.chip-" .. REASON_KEYS[entry[1]] }, format.number(entry[2]))
+		elseif i == 4 and #sorted > TOP_REASONS then
+			local rest = 0
+			for k = TOP_REASONS + 1, #sorted do rest = rest + sorted[k][2] end
+			set_line(refs, cache, "unserved", i, "other", { "cybersyn-gui.overview-other-reasons" }, format.number(rest))
+		else
+			set_line(refs, cache, "unserved", i, "", "", "")
+		end
 	end
-	return tooltip
+	local parts = {}
+	for i, entry in ipairs(sorted) do parts[i] = entry[1] .. ":" .. entry[2] end
+	local sig = table.concat(parts, ",") .. "|" .. u.old_acked .. "|" .. model.minutes
+	local tooltip = { "", { "cybersyn-gui.overview-tile-unserved-tooltip", minutes } }
+	for i, entry in ipairs(sorted) do
+		if i > 18 then break end
+		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-diag.reason-" .. REASON_KEYS[entry[1]] }, ": ", format.number(entry[2]) }
+	end
+	if u.old_acked > 0 then
+		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-acked-line", tostring(u.old_acked) } }
+	end
+	set_tooltip(cache, refs.overview_tile_unserved, sig, tooltip)
+end
+
+local function render_fleet_tile(refs, cache, model)
+	local f = model.fleet
+	set_caption(cache, refs.overview_fleet_caption, "c", { "cybersyn-gui.overview-tile-fleet" })
+	set_caption(cache, refs.overview_fleet_note, "", "")
+	local headline = f.headline and format.number(f.headline) or NO_VALUE
+	if f.headline == 0 then headline = "[color=255,90,90]0[/color]" end
+	set_caption(cache, refs.overview_fleet_headline, headline, headline)
+	set_line(refs, cache, "fleet", 1, "now", { "cybersyn-gui.overview-fleet-now" }, f.now and format.number(f.now) or NO_VALUE)
+	set_line(refs, cache, "fleet", 2, "fail", { "cybersyn-gui.overview-fleet-failures" }, red_if(f.failures, format.number(f.failures)))
+	set_line(refs, cache, "fleet", 3, "worst", { "cybersyn-gui.overview-fleet-worst" }, f.worst and network_icon(f.worst) or NO_VALUE)
+	local parts = {}
+	for i, name in ipairs(f.names) do parts[i] = name .. ":" .. f.mins[name] .. ":" .. (f.current[name] or 0) end
+	local busy = f.busy and string.format("%.1f", f.busy) or "-"
+	local sig = table.concat(parts, ",") .. "|" .. busy .. "|" .. model.period
+	local tooltip = { "", { "cybersyn-gui.overview-tile-fleet-tooltip", { "cybersyn-gui.overview-scope-" .. model.period } } }
+	for i, name in ipairs(f.names) do
+		if i > MAX_TOOLTIP_NETWORKS then
+			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-more-networks", tostring(#f.names - MAX_TOOLTIP_NETWORKS) } }
+			break
+		end
+		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-fleet-network", network_icon(name),
+			format.number(f.mins[name]), format.number(f.current[name] or 0) } }
+	end
+	if f.busy then
+		tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-fleet-littles-law", string.format("%.1f", f.per_minute),
+			util.short_duration(f.trip * 60), busy } }
+	end
+	set_tooltip(cache, refs.overview_tile_fleet, sig, tooltip)
+end
+
+local function render_failing_tile(refs, cache, model)
+	local f = model.failing
+	set_caption(cache, refs.overview_failing_caption, "c", { "cybersyn-gui.overview-tile-failing" })
+	set_caption(cache, refs.overview_failing_note, "", "")
+	if not f then
+		set_caption(cache, refs.overview_failing_headline, NO_VALUE, NO_VALUE)
+		for i, line in ipairs(FAILING_LINES) do
+			set_line(refs, cache, "failing", i, line, { "cybersyn-gui.overview-failing-" .. string.gsub(line, "_", "-") }, NO_VALUE)
+		end
+		set_tooltip(cache, refs.overview_tile_failing, "collecting", { "cybersyn-gui.stations-collecting" })
+		return
+	end
+	set_caption(cache, refs.overview_failing_headline, tostring(f.total), red_if(f.total, format.number(f.total)))
+	for i, line in ipairs(FAILING_LINES) do
+		local n = f[line]
+		set_line(refs, cache, "failing", i, line, { "cybersyn-gui.overview-failing-" .. string.gsub(line, "_", "-") },
+			red_if(n, format.number(n)))
+	end
+	local bits = {}
+	for bit in pairs(f.lint_bits) do bits[#bits + 1] = bit end
+	table.sort(bits)
+	local parts = {}
+	for i, bit in ipairs(bits) do parts[i] = bit .. ":" .. f.lint_bits[bit] end
+	local sig = table.concat(parts, ",")
+	local tooltip = { "", { "cybersyn-gui.overview-tile-failing-tooltip" } }
+	if #bits > 0 then
+		tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-failing-lint-header" } }
+		for i, bit in ipairs(bits) do
+			if i > 16 then break end
+			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-failing-lint-bit", tostring(bit), format.number(f.lint_bits[bit]) } }
+		end
+	end
+	set_tooltip(cache, refs.overview_tile_failing, sig, tooltip)
+end
+
+local function render_throughput_tile(refs, cache, model)
+	local t = model.throughput
+	local period = tostring(model.period)
+	set_caption(cache, refs.overview_throughput_caption, period,
+		{ "", { "cybersyn-gui.overview-tile-throughput" }, " · ", { "cybersyn-gui.overview-scope-short-" .. period } })
+	local recorded = t.recorded and util.short_duration(t.recorded) or ""
+	set_caption(cache, refs.overview_throughput_note, recorded, t.recorded and { "cybersyn-gui.overview-period-recorded", recorded } or "")
+	set_caption(cache, refs.overview_throughput_headline, tostring(t.deliveries), format.number(t.deliveries))
+	local trip = t.trip and util.short_duration(t.trip * 60) or NO_VALUE
+	local wait_avg = t.wait_avg and util.short_duration(t.wait_avg) or NO_VALUE
+	local wait_max = t.wait_max and util.short_duration(t.wait_max) or NO_VALUE
+	set_line(refs, cache, "throughput", 1, "trip", { "cybersyn-gui.overview-throughput-trip" }, trip)
+	set_line(refs, cache, "throughput", 2, "wavg", { "cybersyn-gui.overview-throughput-wait-avg" }, wait_avg)
+	set_line(refs, cache, "throughput", 3, "wmax", { "cybersyn-gui.overview-throughput-wait-max" }, wait_max)
+	local per_cycle = t.cycle_ticks > 0 and string.format("%.1f", t.cycle_dispatches) or ""
+	local sig = table.concat({ t.amount, t.dispatches, tostring(model.tracking), t.cycle_ticks, per_cycle, period }, "|")
+	local tooltip = {
+		"", { "cybersyn-gui.overview-tile-throughput-tooltip", { "cybersyn-gui.overview-scope-" .. period } },
+		"\n", { "cybersyn-gui.overview-throughput-items", format.number(t.amount) },
+		"\n", { "cybersyn-gui.overview-throughput-dispatches", format.number(t.dispatches) },
+	}
+	if t.cycle_ticks > 0 then
+		tooltip[#tooltip + 1] = "\n"
+		tooltip[#tooltip + 1] = { "cybersyn-gui.overview-throughput-cycle", tostring(t.cycle_ticks), per_cycle }
+	end
+	if not model.tracking then
+		tooltip[#tooltip + 1] = "\n\n"
+		tooltip[#tooltip + 1] = { "cybersyn-gui.overview-throughput-wait-off" }
+	end
+	set_tooltip(cache, refs.overview_tile_throughput, sig, tooltip)
 end
 
 --- @param player_data PlayerData
@@ -1299,350 +743,537 @@ end
 local function render_tiles(player_data, model)
 	local refs = player_data.refs
 	local cache = caption_cache(player_data)
-	local tracking = model.tracking
-	for _, tile in ipairs(TILES) do
-		local values = model.tiles[tile.name]
-		local headline = values.headline
-		set_caption(refs["overview_" .. tile.name .. "_headline"], headline and format.number(headline)
-			or (model.collecting and NO_VALUE or "0"))
-		local colors = tile.colors
-		for _, line in ipairs(tile.lines) do
-			local value = values[line]
-			local caption = format_line(tile.name, line, value)
-			local color = colors and colors[line]
-			if color and value and value > 0 then
-				caption = "[color=" .. color .. "]" .. caption .. "[/color]"
-			end
-			set_caption(refs["overview_" .. tile.name .. "_" .. line], caption)
-		end
-	end
-
-	local idle = model.tiles.fleet.idle
-	local bar = refs.overview_fleet_idle_bar
-	if bar and bar.valid then
-		local value = idle or 0
-		if bar.value ~= value then bar.value = value end
-	end
-
-	local period = model.period
-	-- The short scope keeps the caption whole at the fixed tile width.
-	set_caption_sig(cache, refs.overview_tile_flow_caption, tostring(period),
-		{ "", { "cybersyn-gui.overview-tile-flow" }, " · ", { "cybersyn-gui.overview-scope-short-" .. period } })
-
-	-- The two wait panels already explain how to turn tracking on, so the tile only shows "–" with the hint as tooltip.
-	for _, line in ipairs(AGE_LINES) do
-		set_tooltip_sig(cache, { refs["overview_demand_" .. line .. "_label"], refs["overview_demand_" .. line] },
-			tracking and "on" or "off", tracking and "" or { "cybersyn-gui.overview-demand-age-off" })
-	end
-
-	for _, line in ipairs(WAIT_LINES) do
-		local key = "cybersyn-gui.overview-flow-" .. string.gsub(line, "_", "-")
-		set_tooltip_sig(cache, { refs["overview_flow_" .. line .. "_label"], refs["overview_flow_" .. line] },
-			tracking and "on" or "off", tracking and { key .. "-tooltip" } or { "cybersyn-gui.overview-flow-wait-off" })
-	end
-
-	local net_sig = networks_sig(model)
-	local net_label = refs.overview_stations_networks_label
-	if net_label and net_label.valid and cache[net_label.name .. "#tooltip"] ~= net_sig then
-		set_tooltip_sig(cache, { net_label, refs.overview_stations_networks }, net_sig, networks_tooltip(model))
-	end
-
-	local recorded = model.recorded_ticks
-	local period_note = refs.overview_period_note
-	if period_note and period_note.valid then
-		local show = recorded ~= nil
-		if period_note.visible ~= show then period_note.visible = show end
-		if show then
-			local text = short_duration(recorded)
-			set_caption_sig(cache, period_note, text, { "cybersyn-gui.overview-period-recorded", text })
-		end
-	end
+	render_unserved_tile(refs, cache, model)
+	render_fleet_tile(refs, cache, model)
+	render_failing_tile(refs, cache, model)
+	render_throughput_tile(refs, cache, model)
 
 	local dropdown = refs.overview_period_dropdown
 	if dropdown and dropdown.valid then
 		for i, minutes in ipairs(PERIODS) do
-			if minutes == period and dropdown.selected_index ~= i then dropdown.selected_index = i end
+			if minutes == model.period and dropdown.selected_index ~= i then dropdown.selected_index = i end
 		end
 	end
-
-	-- The tab deliberately ignores the item filter, so say so; otherwise a shift-click on an item row looks like a no-op.
-	local note_sig = (model.filtered and "f" or "") .. (model.item_filter and "i" or "")
-	local note_caption = ""
-	if model.filtered and model.item_filter then
-		note_caption = { "", { "cybersyn-gui.overview-filtered" }, " ", { "cybersyn-gui.overview-item-filter-ignored" } }
-	elseif model.filtered then
-		note_caption = { "cybersyn-gui.overview-filtered" }
-	elseif model.item_filter then
-		note_caption = { "", "[img=info] ", { "cybersyn-gui.overview-item-filter-ignored" } }
+	local toggle = refs.overview_show_acked
+	if toggle and toggle.valid then
+		local n = model.unserved and model.unserved.acked_total or 0
+		set_caption(cache, toggle, tostring(n), { "cybersyn-gui.overview-show-acked", tostring(n) })
+		local state = player_data.overview_show_acked == true
+		if toggle.state ~= state then toggle.state = state end
 	end
-	set_caption_sig(cache, refs.overview_filter_note, note_sig, note_caption)
-	set_tooltip_sig(cache, { refs.overview_filter_note }, note_sig, note_caption)
 end
 
---- @param scope string
---- @param row table
---- @param columns {[1]: string, [2]: int}[]
---- @param skip int? value column left out
-local function row_entry(scope, row, columns, skip)
-	local values = row.values
-	local sig_parts = {}
-	for i = 1, #columns do
-		local v = values[i]
-		sig_parts[i] = type(v) == "string" and v or ""
+-- ---------------------------------------------------------------- render: Unserved table
+
+--- @class OverviewNameView
+--- @field name string full rich-text name, for tooltips
+--- @field text string the name's text part
+--- @field icons {sprite: string, quality: string?}[]
+
+local parsed_cache = {}
+
+--- Name parts of a station the snapshot does not hold (yet): parsed once per distinct name. A pure function of the
+--- name, so a cache that differs between Lua states cannot desync anything.
+--- @param name string
+--- @return RichNameParts
+local function parse_name(name)
+	local p = parsed_cache[name]
+	if not p then
+		p = util.parse_rich_name(name)
+		parsed_cache[name] = p
 	end
-	local sig = table.concat(sig_parts, "|") .. "|" .. tostring(row.value_sig or "") .. "|" .. tostring(row.name_sig or "")
-		.. "|" .. tostring(skip or "")
-	local tooltip
-	local function tip()
-		tooltip = tooltip or row.tooltip()
-		return tooltip
+	return p
+end
+
+--- @param id uint?
+--- @param snapshot Snapshot
+--- @return OverviewNameView?
+--- @return SnapshotStation?
+local function station_view(id, snapshot)
+	if not id then return nil end
+	local st = snapshot.stations[id]
+	local name, parts
+	if st then
+		name, parts = st.name, st.name_parts
+	else
+		local station = storage.stations[id]
+		local stop = station and station.entity_stop
+		if not (stop and stop.valid) then return nil end
+		name = stop.backer_name
+		parts = parse_name(name)
+	end
+	local icons = {}
+	local lead = parts and parts.lead
+	if lead then
+		for i = 1, math.min(#lead, NAME_ICONS) do
+			icons[i] = { sprite = lead[i], quality = parts.lead_quality and parts.lead_quality[i] or nil }
+		end
+	end
+	local label = parts and parts.text or name
+	if label == nil or label == "" then label = name end
+	return { name = name, text = label, icons = icons }, st
+end
+
+--- @param view OverviewNameView
+--- @return string
+local function view_sig(view)
+	if not view then return "" end
+	return view.name
+end
+
+--- @param view OverviewNameView?
+--- @param extra LocalisedString?
+--- @return LocalisedString
+local function station_tooltip(view, extra)
+	if not view then return "" end
+	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]" }
+	if extra then
+		tooltip[#tooltip + 1] = "\n"
+		tooltip[#tooltip + 1] = extra
+	end
+	tooltip[#tooltip + 1] = "\n"
+	tooltip[#tooltip + 1] = util.LINK_FOOTER
+	return tooltip
+end
+
+--- A link cell: up to three icons from the name, then its text.
+--- @param view OverviewNameView?
+--- @param kind string
+--- @param id uint?
+--- @param width int
+--- @param tooltip LocalisedString
+--- @param acked boolean
+--- @return flib.GuiElemDef
+local function name_cell(view, kind, id, width, tooltip, acked)
+	local tags = id and { kind = kind, id = id } or {}
+	local handler = id and { [defines.events.on_gui_click] = util.handle.link_click } or nil
+	local icons = {
+		type = "flow",
+		direction = "horizontal",
+		style = "cybersyn_unserved_icon_flow",
+	}
+	if view then
+		for i, icon in ipairs(view.icons) do
+			icons[i] = {
+				type = "sprite-button",
+				style = "cybersyn_name_icon",
+				sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
+				quality = icon.quality,
+				tooltip = tooltip,
+				tags = tags,
+				handler = handler,
+			}
+		end
 	end
 	return {
-		key = row.key,
+		type = "flow",
+		direction = "horizontal",
+		style = "cybersyn_unserved_cell_flow",
+		style_mods = { width = width },
+		icons,
+		{
+			type = "button",
+			style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button",
+			style_mods = { maximal_width = width - ICON_ROW - 4 },
+			caption = view and view.text or NO_VALUE,
+			enabled = view ~= nil,
+			tooltip = tooltip,
+			tags = tags,
+			mouse_button_filter = { "left" },
+			handler = handler,
+		},
+	}
+end
+
+--- Rewrites a name cell in place (icons rebuilt when they differ).
+--- @param cell LuaGuiElement
+--- @param view OverviewNameView?
+--- @param kind string
+--- @param id uint?
+--- @param tooltip LocalisedString
+--- @param acked boolean
+local function update_name_cell(cell, view, kind, id, tooltip, acked)
+	local icons, button = cell.children[1], cell.children[2]
+	local tags = id and { kind = kind, id = id } or {}
+	icons.clear()
+	if view then
+		for _, icon in ipairs(view.icons) do
+			gui.add(icons, {
+				type = "sprite-button",
+				style = "cybersyn_name_icon",
+				sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
+				quality = icon.quality,
+				tooltip = tooltip,
+				tags = tags,
+				handler = id and { [defines.events.on_gui_click] = util.handle.link_click } or nil,
+			})
+		end
+	end
+	local style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button"
+	if button.style.name ~= style then
+		local w = button.style.maximal_width
+		button.style = style
+		button.style.maximal_width = w
+	end
+	button.caption = view and view.text or NO_VALUE
+	button.enabled = view ~= nil
+	button.tooltip = tooltip
+	-- flib keeps its handler name in the tags; only kind and id change.
+	local t = button.tags
+	t.kind, t.id = tags.kind, tags.id
+	button.tags = t
+end
+
+--- @param network_name string?
+--- @return LocalisedString
+local function network_text(network_name)
+	if not network_name then return "?" end
+	if network_name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
+	return network_icon(network_name)
+end
+
+local function surface_name(index)
+	local s = game.get_surface(index)
+	return s and s.name or tostring(index)
+end
+
+--- One table row's data and its cells.
+--- @param row {r_id: uint, hash: string, e: DiagEntry}
+--- @param acked boolean
+--- @param ctx table
+--- @return table? entry for util.sync_table_rows
+local function row_entry(row, acked, ctx)
+	local hash, e, r_id = row.hash, row.e, row.r_id
+	local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(hash)
+	if not sprite then return nil end
+	local now = ctx.now
+	local requester, r_st = station_view(r_id, ctx.snapshot)
+	local reason = e.reason
+	local p_id = reason ~= REASON_NO_PROVIDER and e.p_station_id or nil
+	local provider = p_id and station_view(p_id, ctx.snapshot) or nil
+	local lost = e.lost_n > 0 and e.lost_to and station_view(e.lost_to, ctx.snapshot) or nil
+	local wait = now - e.first_tick
+	local inherited = e.first_tick <= ctx.loaded_tick
+	local wait_caption = text.wait_caption(wait, inherited, util.short_duration)
+	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
+	local requested
+	if r_st then
+		local req = r_st.requested[hash]
+		if req then requested = -req.count end
+	end
+	local sig = table.concat({
+		reason, e.a, e.b, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to), e.lost_n, e.n,
+		acked and "a" or "", math.floor(wait / text.READ_STEP), text.read_step(read_age), tostring(requested),
+	}, "|")
+	local widths = ctx.widths
+	local key = r_id .. "|" .. hash
+	local function tooltips()
+		local read = read_age and text.read_ago(read_age, util.format_duration) or nil
+		local chip = text.chip_tooltip({
+			item = item_tooltip,
+			requested = requested,
+			requester = requester and requester.name or tostring(r_id),
+			reason = reason,
+			a = e.a,
+			b = e.b,
+			network = network_text(r_st and r_st.network_name),
+			rej = e.rej,
+			wait = wait,
+			inherited = inherited,
+			n = e.n,
+			read_age = read_age,
+			surface_name = surface_name,
+		}, util.format_duration)
+		local r_tip = station_tooltip(requester, read)
+		local p_tip = station_tooltip(provider, nil)
+		local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) }) or ""
+		local ack
+		if acked then
+			local a = diag.is_acked("request", r_id, hash)
+			local who = a and a.player_index and game.get_player(a.player_index)
+			local until_text = a and a.until_tick and util.format_duration(a.until_tick - now) or nil
+			ack = { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
+				until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.unserved-ack-reason" } }
+		else
+			ack = { "cybersyn-gui.unserved-ack-tooltip" }
+		end
+		local item_tip = { "", { "cybersyn-gui.item-click-hint" } }
+		return chip, r_tip, p_tip, l_tip, ack, item_tip
+	end
+	local stock = text.stock_caption(reason, e.a, e.b)
+	local value_style = acked and "cybersyn_unserved_value_acked" or "cybersyn_unserved_value"
+	local lost_caption = lost and ("×" .. e.lost_n) or ""
+	return {
+		key = key,
 		sig = sig,
+		row = row,
+		acked = acked,
 		build = function()
-			local handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_row_click }
-			local cells = {
-				util.hoverable({
+			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
+			local link = { [defines.events.on_gui_click] = util.handle.link_click }
+			return {
+				{
 					type = "sprite-button",
-					style = "cybersyn_overview_cell_icon",
-					sprite = row.sprite,
-					quality = row.quality,
-					tooltip = tip(),
-					tags = row.tags,
-					handler = handler,
-				}, scope),
-				util.hoverable({
-					type = "label",
-					style = "cybersyn_overview_cell_name",
-					caption = row.caption,
-					tooltip = tip(),
-					tags = row.tags,
-					handler = handler,
-				}, scope),
+					style = "cybersyn_unserved_item",
+					sprite = sprite,
+					quality = quality,
+					elem_tooltip = util.elem_tooltip(hash),
+					tooltip = item_tip,
+					tags = { kind = "item", id = hash },
+					mouse_button_filter = { "left", "right" },
+					handler = link,
+				},
+				name_cell(requester, "station", r_id, widths.requester, r_tip, acked),
+				{
+					type = "button",
+					style = acked and "cybersyn_chip_grey" or text.chip_style(reason),
+					style_mods = { width = W.why },
+					caption = text.chip_caption(reason),
+					tooltip = chip,
+				},
+				name_cell(provider, "station", p_id, widths.provider, p_tip, acked),
+				{ type = "label", style = value_style, style_mods = { width = W.stock }, caption = stock },
+				{
+					type = "flow",
+					direction = "horizontal",
+					style = "cybersyn_unserved_cell_flow",
+					style_mods = { width = W.lost },
+					{
+						type = "button",
+						style = "cybersyn_link_button",
+						style_mods = { maximal_width = W.lost - 32 },
+						caption = lost and lost.text or "",
+						tooltip = l_tip,
+						tags = lost and { kind = "station", id = e.lost_to } or {},
+						mouse_button_filter = { "left" },
+						handler = link,
+					},
+					{ type = "label", style = "cybersyn_unserved_cell", caption = lost_caption, tooltip = l_tip },
+				},
+				{ type = "label", style = value_style, style_mods = { width = W.wait }, caption = wait_caption },
+				{
+					type = "sprite-button",
+					style = "cybersyn_unserved_ack",
+					sprite = "utility/check_mark",
+					toggled = acked,
+					tooltip = ack,
+					tags = { r_id = r_id, hash = hash },
+					handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_ack_click },
+				},
 			}
-			for i, column in ipairs(columns) do
-				if i ~= skip then
-					cells[#cells + 1] = util.hoverable({
-						type = "label",
-						style = "cybersyn_overview_cell_value",
-						style_mods = { width = column[2] },
-						caption = values[i] or "",
-						tooltip = tip(),
-						tags = row.tags,
-						handler = handler,
-					}, scope)
-				end
-			end
-			return cells
 		end,
 		update = function(cells)
-			local t = tip()
-			for _, cell in ipairs(cells) do
-				cell.tooltip = t
+			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
+			cells[1].tooltip = item_tip
+			update_name_cell(cells[2], requester, "station", r_id, r_tip, acked)
+			local chip_style = acked and "cybersyn_chip_grey" or text.chip_style(reason)
+			if cells[3].style.name ~= chip_style then
+				cells[3].style = chip_style
+				cells[3].style.width = W.why
 			end
-			if row.name_sig then set_caption(cells[2], row.caption) end
-			local c = 2
-			for i = 1, #columns do
-				if i ~= skip then
-					c = c + 1
-					local cell = cells[c]
-					if cell then
-						local v = values[i] or ""
-						if type(v) == "string" then
-							set_caption(cell, v)
-						else
-							cell.caption = v
-						end
-					end
+			cells[3].caption = text.chip_caption(reason)
+			cells[3].tooltip = chip
+			update_name_cell(cells[4], provider, "station", p_id, p_tip, acked)
+			for _, c in ipairs({ { cells[5], W.stock }, { cells[7], W.wait } }) do
+				if c[1].style.name ~= value_style then
+					c[1].style = value_style
+					c[1].style.width = c[2]
 				end
 			end
+			cells[5].caption = stock
+			local lost_button, lost_label = cells[6].children[1], cells[6].children[2]
+			lost_button.caption = lost and lost.text or ""
+			lost_button.tooltip = l_tip
+			local t = lost_button.tags
+			t.kind, t.id = lost and "station" or nil, lost and e.lost_to or nil
+			lost_button.tags = t
+			lost_label.caption = lost_caption
+			lost_label.tooltip = l_tip
+			cells[7].caption = wait_caption
+			cells[8].toggled = acked
+			cells[8].tooltip = ack
 		end,
 	}
 end
 
 --- @param player_data PlayerData
---- @param name string
---- @param rows int
---- @return int offset first row shown, minus one
-local function panel_offset(player_data, name, rows)
-	local offsets = player_data.overview_offsets
-	local offset = offsets and offsets[name] or 0
-	local last_page = math.max(math.ceil(rows / CAPACITY) - 1, 0) * CAPACITY
-	if offset > last_page then offset = last_page end
-	if offset < 0 then offset = 0 end
-	if offsets and offsets[name] ~= offset then offsets[name] = offset end
-	return offset
-end
-
---- @param player_data PlayerData
 --- @param model table
-local function render_panels(player_data, model)
+local function render_table(player_data, model)
 	local refs = player_data.refs
+	local tbl = refs[TABLE]
+	if not (tbl and tbl.valid) then return end
 	local cache = caption_cache(player_data)
-	local period = model.period
-	for _, panel in ipairs(PANELS) do
-		local name = panel.name
-		local data = model.lists[name]
-		local tbl = refs["overview_" .. name .. "_table"]
-		if tbl and tbl.valid then
-			local scope = tbl.name
-			local disabled = data.disabled == true
-			local skip = panel.tracking_column and not model.tracking and panel.tracking_column or nil
-			if tbl.column_count ~= table_columns(panel, skip) then
-				local parent, index = tbl.parent, tbl.get_index_in_parent()
-				tbl.destroy()
-				local def = table_def(panel, skip)
-				def.index = index
-				tbl = gui.add(parent, def)[scope]
-				refs[scope] = tbl
-				local state = util.gui_state(player_data, scope)
-				state.keys, state.sigs = nil, nil
-			end
-			if tbl.visible == disabled then tbl.visible = not disabled end
-
-			local rows = data.rows
-			local n = #rows
-			local offset = panel_offset(player_data, name, n)
-			local entries = {}
-			for i = offset + 1, math.min(offset + CAPACITY, n) do
-				entries[#entries + 1] = row_entry(scope, rows[i], panel.columns, skip)
-			end
-			local columns = table_columns(panel, skip)
-			util.sync_table_rows(tbl, columns, columns, entries, util.gui_state(player_data, scope), util.hold_active(player_data, scope))
-
-			local paged = not disabled and n > CAPACITY
-			local prev, next = refs["overview_" .. name .. "_prev"], refs["overview_" .. name .. "_next"]
-			if prev and prev.valid and next and next.valid then
-				if prev.visible ~= paged then prev.visible = paged end
-				if next.visible ~= paged then next.visible = paged end
-				local back, forward = offset > 0, offset + CAPACITY < n
-				if prev.enabled ~= back then prev.enabled = back end
-				if next.enabled ~= forward then next.enabled = forward end
-			end
-
-			local empty = refs["overview_" .. name .. "_empty"]
-			local empty_flow = refs["overview_" .. name .. "_empty_flow"]
-			if empty and empty.valid and empty_flow and empty_flow.valid then
-				local show = disabled or n == 0
-				if empty_flow.visible ~= show then empty_flow.visible = show end
-				if show then
-					local sig, caption
-					if disabled then
-						sig, caption = "off", { "cybersyn-gui.overview-empty-" .. name .. "-disabled" }
-					elseif data.collecting then
-						sig, caption = "collecting", { "cybersyn-gui.stations-collecting" }
-					else
-						sig, caption = "empty" .. period, { "cybersyn-gui.overview-empty-" .. name, { "cybersyn-gui.overview-scope-" .. period } }
-					end
-					if cache[empty.name] ~= sig then
-						empty.style.height = disabled and COLUMN_HEADER_HEIGHT + ROWS_HEIGHT or ROWS_HEIGHT
-					end
-					set_caption_sig(cache, empty, sig, caption)
-				end
-			end
-
-			local caption_sig = panel.scope == "now" and "now" or tostring(period)
-			set_caption_sig(cache, refs["overview_" .. name .. "_caption"], caption_sig, {
-				"", { "cybersyn-gui.overview-list-" .. name }, " · ",
-				{ panel.scope == "now" and "cybersyn-gui.overview-scope-now" or "cybersyn-gui.overview-scope-" .. period },
-			})
-
-			local count = refs["overview_" .. name .. "_count"]
-			if disabled then
-				set_caption_sig(cache, count, "", "")
-			else
-				local total = format.number(data.total)
-				-- One form whether or not the panel pages, so every caption reads the same.
-				if n == 0 then
-					set_caption_sig(cache, count, "", "")
-				else
-					local first, last = offset + 1, math.min(offset + CAPACITY, n)
-					set_caption_sig(cache, count, first .. "-" .. last .. "/" .. total,
-						{ "cybersyn-gui.pager-range", tostring(first), tostring(last), total })
-				end
-				set_tooltip_sig(cache, { count }, n .. "/" .. data.total, n < data.total
-					and { "cybersyn-gui.overview-count-tooltip", tostring(n), total } or "")
+	local u = model.unserved
+	local widths = player_data.overview_widths
+	if not widths then return end
+	local entries = {}
+	local shown_total = 0
+	if u and not model.collecting then
+		local ctx = { now = model.now, snapshot = collector.get(), loaded_tick = model.loaded_tick, widths = widths }
+		local rows = model.rows
+		for _, row in ipairs(u.open) do
+			if #entries >= rows then break end
+			local entry = row_entry(row, false, ctx)
+			if entry then entries[#entries + 1] = entry end
+		end
+		if player_data.overview_show_acked then
+			for _, row in ipairs(u.acked) do
+				if #entries >= rows then break end
+				local entry = row_entry(row, true, ctx)
+				if entry then entries[#entries + 1] = entry end
 			end
 		end
+		shown_total = u.total + (player_data.overview_show_acked and u.acked_total or 0)
 	end
+	-- Rows key on (requester, item), so a wait that reorders them is a structural change the hover hold defers.
+	util.sync_table_rows(tbl, TABLE_COLUMNS, TABLE_COLUMNS, entries, util.gui_state(player_data, TABLE),
+		util.hold_active(player_data, TABLE))
+
+	local empty_flow, empty = refs.overview_unserved_empty_flow, refs.overview_unserved_empty
+	local show_empty = #entries == 0
+	if empty_flow.visible ~= show_empty then empty_flow.visible = show_empty end
+	if show_empty then
+		local sig, caption
+		if not u then
+			sig, caption = "off", { "cybersyn-gui.unserved-diag-off" }
+		elseif model.collecting then
+			sig, caption = "collecting", { "cybersyn-gui.stations-collecting" }
+		elseif model.item then
+			sig, caption = "empty-item", { "cybersyn-gui.unserved-empty-item" }
+		else
+			sig, caption = "empty", { "cybersyn-gui.unserved-empty" }
+		end
+		set_caption(cache, empty, sig, caption)
+	end
+
+	local count = refs.overview_unserved_count
+	if u and not model.collecting and shown_total > 0 then
+		local shown = tostring(#entries) .. "/" .. shown_total
+		set_caption(cache, count, shown, { "cybersyn-gui.unserved-count", format.number(#entries), format.number(shown_total) })
+	else
+		set_caption(cache, count, "", "")
+	end
+	local dropped = refs.overview_unserved_dropped
+	local n = model.dropped
+	if dropped and dropped.valid then
+		local show = n > 0
+		if dropped.visible ~= show then dropped.visible = show end
+		if show then set_caption(cache, dropped, tostring(n), { "cybersyn-gui.unserved-dropped", format.number(n) }) end
+	end
+	player_data.overview_rendered = #entries
 end
 
 --- @param map_data MapData
 --- @param player_data PlayerData
 function overview_tab.build(map_data, player_data)
 	local refs = player_data.refs
-	if not (refs.overview_stations_headline and refs.overview_stations_headline.valid) then return end
+	if not (refs.overview_unserved_headline and refs.overview_unserved_headline.valid) then return end
 	local model = overview_tab.model(player_data)
 	render_tiles(player_data, model)
-	render_panels(player_data, model)
+	render_table(player_data, model)
 end
+
+--- Rendered row count of the Unserved table, for dev.rows.
+--- @param player_data PlayerData
+--- @return int
+function overview_tab.rendered_rows(player_data)
+	local tbl = player_data.refs[TABLE]
+	if not (tbl and tbl.valid) then return 0 end
+	return #tbl.children / TABLE_COLUMNS - 1
+end
+
+dev.register_rows(TAB, overview_tab.rendered_rows)
 
 dev.register_dump(TAB, function(player_data)
 	local model = overview_tab.model(player_data)
 	local refs = player_data.refs
-	local out = {
-		period = model.period,
-		filtered = model.filtered,
-		tracking = model.tracking,
-		snapshot_tick = model.snapshot_tick,
-		capacity = CAPACITY,
-		offsets = player_data.overview_offsets,
-		recorded_ticks = model.recorded_ticks,
-		tiles = model.tiles,
-		rendered_tiles = {},
-		lists = {},
+	local u = model.unserved
+	local tiles = {
+		unserved = u and { headline = u.old, acked = u.old_acked, total = u.total, acked_total = u.acked_total,
+			reasons = {} } or nil,
+		failing = model.failing and { headline = model.failing.total, no_power = model.failing.no_power,
+			disabled = model.failing.disabled, throttling = model.failing.throttling,
+			misconfigured = model.failing.misconfigured } or nil,
+		fleet = { headline = model.fleet.headline, now = model.fleet.now, failures = model.fleet.failures,
+			worst = model.fleet.worst },
+		throughput = { deliveries = model.throughput.deliveries, amount = model.throughput.amount,
+			dispatches = model.throughput.dispatches },
 	}
+	if u then
+		for _, entry in ipairs(u.sorted_reasons) do tiles.unserved.reasons[REASON_NAMES[entry[1]]] = entry[2] end
+	end
+	local rendered_tiles = {}
 	for _, tile in ipairs(TILES) do
-		local lines = {}
-		local caption = refs["overview_tile_" .. tile.name .. "_caption"]
-		local headline = refs["overview_" .. tile.name .. "_headline"]
-		lines.caption = caption and caption.valid and caption.caption or nil
-		lines.headline = headline and headline.valid and headline.caption or nil
-		for _, line in ipairs(tile.lines) do
-			local flow = refs["overview_" .. tile.name .. "_" .. line .. "_flow"]
-			local elem = refs["overview_" .. tile.name .. "_" .. line]
-			if elem and elem.valid and flow.visible then lines[line] = elem.caption end
+		local out = {}
+		local function cap(name)
+			local e = refs[name]
+			return e and e.valid and e.caption or nil
 		end
-		out.rendered_tiles[tile.name] = lines
+		out.caption = cap("overview_" .. tile.name .. "_caption")
+		out.headline = cap("overview_" .. tile.name .. "_headline")
+		out.note = cap("overview_" .. tile.name .. "_note")
+		out.tooltip = refs["overview_tile_" .. tile.name] and refs["overview_tile_" .. tile.name].tooltip or nil
+		out.lines = {}
+		for i = 1, tile.lines do
+			out.lines[i] = { cap("overview_" .. tile.name .. "_line" .. i .. "_label"), cap("overview_" .. tile.name .. "_line" .. i .. "_value") }
+		end
+		rendered_tiles[tile.name] = out
 	end
-	for _, panel in ipairs(PANELS) do
-		local name = panel.name
-		local data = model.lists[name]
-		local keys, order, rendered = {}, {}, {}
-		for i, row in ipairs(data.rows) do
-			keys[i] = row.key
-			order[i] = row.order
+	local keys, order, rendered = {}, {}, {}
+	local state = util.gui_state(player_data, TABLE)
+	if u then
+		for i, row in ipairs(u.open) do
+			keys[i] = row.r_id .. "|" .. row.hash
+			order[i] = row.e.first_tick
 		end
-		local tbl = refs["overview_" .. name .. "_table"]
-		if tbl and tbl.valid and tbl.visible then
-			local columns = tbl.column_count
-			local children = tbl.children
-			for r = 1, #children / columns - 1 do
-				local base = r * columns
-				local cells = { children[base + 1].tags.item_hash or children[base + 1].tags.station_id or "" }
-				for c = 2, columns do
-					cells[c] = children[base + c].caption
-				end
-				cells.sprite = children[base + 1].sprite
-				rendered[r] = cells
-			end
-		end
-		local caption = refs["overview_" .. name .. "_caption"]
-		local count = refs["overview_" .. name .. "_count"]
-		local empty = refs["overview_" .. name .. "_empty"]
-		out.lists[name] = {
-			caption = caption and caption.valid and caption.caption or nil,
-			count = count and count.valid and count.caption or nil,
-			paged = refs["overview_" .. name .. "_next"] and refs["overview_" .. name .. "_next"].visible or false,
-			empty = empty and empty.valid and empty.parent.visible and empty.caption or nil,
-			total = data.total,
-			keys = keys,
-			order = order,
-			rendered = rendered,
-		}
 	end
-	return out
+	local tbl = refs[TABLE]
+	if tbl and tbl.valid then
+		local children = tbl.children
+		for r = 1, #children / TABLE_COLUMNS - 1 do
+			local base = r * TABLE_COLUMNS
+			local function c(i) return children[base + i] end
+			rendered[r] = {
+				item = c(1).tags.id,
+				requester = c(2).children[2].caption,
+				requester_id = c(2).children[2].tags.id,
+				chip = c(3).caption,
+				chip_style = c(3).style.name,
+				chip_tooltip = c(3).tooltip,
+				provider = c(4).children[2].caption,
+				stock = c(5).caption,
+				lost = c(6).children[2].caption,
+				wait = c(7).caption,
+				acked = c(8).toggled,
+			}
+		end
+	end
+	local empty = refs.overview_unserved_empty
+	return {
+		period = model.period,
+		minutes = model.minutes,
+		rows = model.rows,
+		tracking = model.tracking,
+		diag = model.diag,
+		collecting = model.collecting,
+		item = model.item,
+		show_acked = player_data.overview_show_acked == true,
+		tiles = tiles,
+		rendered_tiles = rendered_tiles,
+		dropped = model.dropped,
+		lists = {
+			unserved = {
+				keys = keys,
+				order = order,
+				total = u and u.total or 0,
+				acked_total = u and u.acked_total or 0,
+				rendered = rendered,
+				caption = refs.overview_unserved_count.caption,
+				empty = empty.parent.visible and empty.caption or nil,
+				sigs = state.sigs,
+			},
+		},
+	}
 end)
 
 dev.register_stats(stats.summary)
@@ -1658,9 +1289,6 @@ function overview_tab.wrapper(e, handler)
 	handler(player, player_data, player_data.refs, e)
 end
 
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param refs table<string, LuaGuiElement>
 --- @param e EventData.on_gui_selection_state_changed
 function overview_tab.handle.overview_period_changed(player, player_data, refs, e)
 	local element = e.element
@@ -1668,49 +1296,82 @@ function overview_tab.handle.overview_period_changed(player, player_data, refs, 
 	local minutes = PERIODS[element.selected_index]
 	if not minutes or minutes == player_data.overview_period then return end
 	player_data.overview_period = minutes
-	local offsets = player_data.overview_offsets
-	if offsets then
-		for _, panel in ipairs(PANELS) do
-			if panel.scope == "period" then offsets[panel.name] = nil end
+	util.rerender(player, player_data)
+end
+
+--- @param e EventData.on_gui_checked_state_changed
+function overview_tab.handle.overview_show_acked(player, player_data, refs, e)
+	player_data.overview_show_acked = e.element.state or nil
+	util.rerender(player, player_data)
+end
+
+--- Stations tab with the Unserved chip (phase 4), longest wait first.
+--- @param player_data PlayerData
+local function jump_unserved(player_data)
+	player_data.stations_chip = "unserved"
+	util.set_sort(player_data, "stations_tab", "wait", true)
+	util.select_tab(player_data, "stations_tab")
+end
+
+--- Every tile jumps to the tab that lists what it counts (PLAN3 §4.7).
+--- @param e EventData.on_gui_click
+function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
+	local tile = e.element.tags.tile
+	if tile == "unserved" then
+		jump_unserved(player_data)
+	elseif tile == "fleet" then
+		player_data.trains_chip = "parked"
+		local worst = overview_tab.model(player_data).fleet.worst
+		if worst then player_data.search_network_name = worst end
+		util.reset_pages(player_data)
+		util.set_sort(player_data, "trains_tab", "train_status", true)
+		util.select_tab(player_data, "trains_tab")
+		local manager = overview_tab.manager
+		if manager then manager.restore_filter_widgets(player_data) end
+	elseif tile == "failing" then
+		player_data.stations_chip = "failing"
+		util.set_sort(player_data, "stations_tab", "station_status", true)
+		util.select_tab(player_data, "stations_tab")
+	elseif tile == "throughput" then
+		util.set_sort(player_data, "inventory_tab", "amount", false)
+		util.select_tab(player_data, "inventory_tab")
+	else
+		return
+	end
+	local manager = overview_tab.manager
+	if manager then manager.refresh_sort_headers(player_data) end
+	util.rerender(player, player_data)
+end
+
+--- @param e EventData.on_gui_click
+function overview_tab.handle.overview_count_click(player, player_data, refs, e)
+	jump_unserved(player_data)
+	local manager = overview_tab.manager
+	if manager then manager.refresh_sort_headers(player_data) end
+	util.rerender(player, player_data)
+end
+
+--- Acknowledge (PLAN3 §4.13): click = 24 h, shift-click = 1 h, control-click = until the reason changes; a click
+--- on an acknowledged row ends it. Display state only; diag.ack writes the event and removes the stop's alerts.
+--- @param e EventData.on_gui_click
+function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
+	local tags = e.element.tags
+	local r_id, hash = tags.r_id, tags.hash
+	if not (r_id and hash) then return end
+	if diag.is_acked("request", r_id, hash) then
+		diag.unack("request", r_id, hash, player.index)
+	else
+		local until_tick
+		if e.control then
+			until_tick = nil
+		elseif e.shift then
+			until_tick = game.tick + HOUR
+		else
+			until_tick = game.tick + DAY
 		end
+		diag.ack("request", r_id, hash, player.index, until_tick)
 	end
 	util.rerender(player, player_data)
-end
-
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param refs table<string, LuaGuiElement>
---- @param e EventData.on_gui_click
-function overview_tab.handle.overview_page_click(player, player_data, refs, e)
-	local element = e.element
-	if not (element and element.valid) then return end
-	local name, step = element.tags.overview_panel, element.tags.step
-	if not (name and step and LIMITS[name]) then return end
-	local offsets = player_data.overview_offsets
-	if not offsets then
-		offsets = {}
-		player_data.overview_offsets = offsets
-	end
-	offsets[name] = math.max((offsets[name] or 0) + step * CAPACITY, 0)
-	util.rerender(player, player_data)
-end
-
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param refs table<string, LuaGuiElement>
---- @param e EventData.on_gui_click
-function overview_tab.handle.overview_row_click(player, player_data, refs, e)
-	local element = e.element
-	if not (element and element.valid) then return end
-	-- Repeated shift-clicks on one row must keep the layout held past the hover timeout.
-	util.touch_hover(e)
-	local tags = element.tags
-	local kind = tags.kind
-	if kind == "item" then
-		util.item_button_click(player, player_data, e, tags.item_hash --[[@as string]])
-	elseif kind == "station" then
-		stations_tab.handle.open_station_gui(player, player_data, refs, e)
-	end
 end
 
 gui.add_handlers(overview_tab.handle, overview_tab.wrapper)

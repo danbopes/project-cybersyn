@@ -1,11 +1,10 @@
--- PLAN3 phase 1: opening without a synchronous collection ("Collecting… n %" until a boosted pass completes), one
--- meaning of Saturated on the Overview tile, the Stations chip and the chip's rows (B2), one fleet total on the
--- Overview and the Trains tab, and the parsed station name in the snapshot.
+-- PLAN3 phase 1: opening without a synchronous collection ("Collecting… n %" in the subheader until a boosted pass
+-- completes), one meaning of each station status on the Overview tile, the Stations chip and the chip's rows (B2), the
+-- Trains tab losing a train mid-pass, and the parsed station name in the snapshot.
 
 local D, pi = lab.D, lab.pi
 
-local function caption_key(status)
-	local c = status.caption
+local function caption_key(c)
 	return type(c) == "table" and c[1] or c
 end
 
@@ -16,27 +15,21 @@ lab.suite("35_foundation", {
 		lab.dev("set_setting", "cybersyn-enable-planner", false)
 		remote.call(D, "close", pi)
 		lab.check("closing the only window drops the snapshot", lab.dev("summary").tick == nil)
+		lab.big_screen(pi)
 		remote.call(D, "open", pi, true)
 		local status = remote.call(D, "status", pi)
 		lab.check("open does not collect synchronously", status.snapshot_tick == nil, status)
-		lab.check("subheader says Collecting", caption_key(status) == "cybersyn-gui.collecting-progress", status.caption)
-		lab.check("progress starts at 0 %", status.collecting == 0 and status.caption[2] == "0", status)
+		-- PLAN3 §4.1/§4.3 (phase 3): the progress moved from the title bar to the tab's subheader.
+		lab.check("subheader says Collecting", caption_key(status.subheader) == "cybersyn-gui.collecting-progress", status)
+		lab.check("progress starts at 0 %", status.collecting == 0 and status.subheader[2] == "0", status)
+		lab.check("title bar shows no collecting progress", caption_key(status.caption) ~= "cybersyn-gui.collecting-progress", status)
 		remote.call(D, "select_tab", pi, "overview")
 		local ov = remote.call(D, "dump", pi, "overview")
-		local placeholder = true
-		for _, tile in ipairs({ "stations", "fleet", "depots", "demand" }) do
-			if ov.rendered_tiles[tile].headline ~= "–" then placeholder = false end
-		end
-		lab.check("overview tiles read – before the first pass", placeholder, ov.rendered_tiles)
-		local lists_ok = true
-		for _, name in ipairs({ "starved", "waiting", "transit", "slowest", "saturated" }) do
-			local l = ov.lists[name]
-			local key = type(l.empty) == "table" and l.empty[1]
-			if #l.keys ~= 0 or (key ~= "cybersyn-gui.stations-collecting" and key ~= "cybersyn-gui.overview-empty-" .. name .. "-disabled") then
-				lists_ok = false
-			end
-		end
-		lab.check("overview lists say Collecting before the first pass, with no rows", lists_ok, ov.lists)
+		lab.check("overview station tiles read – before the first pass", ov.rendered_tiles.failing.headline == "–"
+			and ov.rendered_tiles.unserved.headline == "–", ov.rendered_tiles)
+		local l = ov.lists.unserved
+		lab.check("overview table says Collecting before the first pass, with no rows",
+			#l.rendered == 0 and caption_key(l.empty) == "cybersyn-gui.stations-collecting", l.empty)
 		remote.call(D, "select_tab", pi, "stations")
 		local d = remote.call(D, "dump", pi, "stations")
 		lab.check("stations tab shows the collecting placeholder", d.total == 0 and d.warning == true, d)
@@ -48,7 +41,8 @@ lab.suite("35_foundation", {
 		lab.info("first pass completed after " .. updates .. " manager update(s)")
 		lab.check("first pass completes within 3 updates", updates >= 1 and updates <= 3, updates)
 		status = remote.call(D, "status", pi)
-		lab.check("subheader back to Updated", caption_key(status) == "cybersyn-gui.updated-ago" and status.collecting == nil, status)
+		lab.check("subheader progress gone, title bar back to Updated", status.subheader == nil
+			and caption_key(status.caption) == "cybersyn-gui.updated-ago" and status.collecting == nil, status)
 		lab.wait(1)
 	end,
 	function(ctx)
@@ -58,7 +52,7 @@ lab.suite("35_foundation", {
 		lab.check("stations tab shows every station after the pass", d.total == lab.dev("summary").station_count and d.total > 0, d.total)
 		remote.call(D, "select_tab", pi, "overview")
 		local tiles = remote.call(D, "dump", pi, "overview").tiles
-		lab.check("overview counts every station right after the pass", tiles.stations.total == d.total, tiles.stations.total)
+		lab.check("overview has station figures right after the pass", tiles.failing ~= nil, tiles)
 	end,
 
 	-- A first pass that takes several updates: the Stations tab shows no rows and no counts from part of the stations,
@@ -127,7 +121,7 @@ lab.suite("35_foundation", {
 		remote.call(D, "select_tab", pi, "overview")
 		remote.call(D, "open", pi, true)
 		local status = remote.call(D, "status", pi)
-		lab.check("paused reopen: caption says Collecting", caption_key(status) == "cybersyn-gui.collecting-progress", status.caption)
+		lab.check("paused reopen: subheader says Collecting", caption_key(status.subheader) == "cybersyn-gui.collecting-progress", status)
 		local updates = 0
 		while remote.call(D, "status", pi).snapshot_tick == nil and updates < 20 do
 			remote.call(D, "tick", 1)
@@ -136,9 +130,10 @@ lab.suite("35_foundation", {
 		lab.check("paused reopen: the first pass completes", updates >= 1 and updates <= 3, updates)
 		remote.call(D, "tick", 1)
 		local tiles = remote.call(D, "dump", pi, "overview").rendered_tiles
-		lab.check("paused reopen: overview tiles show data", tiles.stations.headline ~= "–" and tiles.fleet.headline ~= "–", tiles)
+		lab.check("paused reopen: overview tiles show data", tiles.failing.headline ~= "–" and tiles.fleet.headline ~= "–", tiles)
 		status = remote.call(D, "status", pi)
-		lab.check("paused reopen: caption back to Paused", caption_key(status) ~= "cybersyn-gui.collecting-progress", status.caption)
+		lab.check("paused reopen: subheader progress gone, title bar says Paused", status.subheader == nil
+			and status.title_visible and caption_key(status.caption) ~= "cybersyn-gui.collecting-progress", status)
 		local before = lab.dev("summary").tick
 		remote.call(D, "tick", 3)
 		lab.check("paused reopen: no further collection once data is shown", lab.dev("summary").tick == before, before)
@@ -180,19 +175,18 @@ lab.suite("35_foundation", {
 		local rows = remote.call(D, "dump", pi, "stations")
 		lab.set_status_filter(pi, nil)
 		remote.call(D, "select_tab", pi, "overview")
-		local tile = remote.call(D, "dump", pi, "overview").tiles.stations.saturated
-		lab.check("saturated: Overview tile == Stations chip == chip rows", tile == chips.saturated and chips.saturated == rows.total,
-			{ tile = tile, chip = chips.saturated, rows = rows.total })
+		-- PLAN3 §4.7 (phase 3): the Overview has no Saturated line any more; its Stations failing tile counts no power and
+		-- disabled from the same st.status the chips read.
+		local tile = remote.call(D, "dump", pi, "overview").tiles.failing
+		lab.check("saturated chip == its rows", chips.saturated == rows.total, { chip = chips.saturated, rows = rows.total })
 		lab.check("saturated: the station at its limit counts", chips.saturated >= 1, chips.saturated)
 		lab.check("saturated: limit 0 with a delivery is disabled", chips.disabled >= 1, chips.disabled)
-		local st_tile = remote.call(D, "dump", pi, "overview").tiles.stations
-		lab.check("stations tile lines == chips (no power, warming up, starved)", st_tile.faulty == chips.no_power
-			and st_tile.warming_up == chips.warming_up and st_tile.starved == chips.starved,
-			{ tile = { st_tile.faulty, st_tile.warming_up, st_tile.starved }, chip = { chips.no_power, chips.warming_up, chips.starved } })
+		lab.check("failing tile no power / disabled == chips", tile.no_power == chips.no_power and tile.disabled == chips.disabled,
+			{ tile = { tile.no_power, tile.disabled }, chip = { chips.no_power, chips.disabled } })
 
-		-- Mid-pass: the station at its limit gets room again. Once the pass has refilled its record (pass not yet
-		-- complete), the chip drops it at once; the tile and its rows must drop it in the same update.
-		local id = busy[1]
+		-- Mid-pass: the disabled station gets its limit back. Once the pass has refilled its record (pass not yet
+		-- complete), the chip drops it at once; the tile must drop it in the same update.
+		local id = busy[2]
 		local l = ctx.limits[id]
 		l.stop.trains_limit = l.entity
 		remote.call("cybersyn", "write_global", l.storage, "stations", id, "trains_limit")
@@ -202,34 +196,35 @@ lab.suite("35_foundation", {
 			remote.call(D, "tick", 1)
 			local live = lab.read("manager")
 			local rec = live.snapshot.stations[id]
-			if rec and rec.status ~= "saturated" then
+			if rec and rec.status ~= "disabled" then
 				mid = live.snapshot_build ~= nil
 				break
 			end
 		end
-		lab.check("saturated: the record changed before its pass completed", mid)
+		lab.check("disabled: the record changed before its pass completed", mid)
 		remote.call(D, "select_tab", pi, "stations")
 		chips = remote.call(D, "dump", pi, "stations").counts
 		remote.call(D, "select_tab", pi, "overview")
 		local ov = remote.call(D, "dump", pi, "overview")
-		lab.check("saturated mid-pass: Overview tile == Stations chip", ov.tiles.stations.saturated == chips.saturated,
-			{ tile = ov.tiles.stations.saturated, chip = chips.saturated })
+		lab.check("disabled mid-pass: failing tile == Stations chip", ov.tiles.failing.disabled == chips.disabled,
+			{ tile = ov.tiles.failing.disabled, chip = chips.disabled })
 	end,
 
-	-- One number per fact: the Fleet tile and the Trains tab count the same trains. On pY 123 they once showed 551 and
-	-- 552: the collector refreshes the trains at the start of a pass, while the Overview's figures were rebuilt only
-	-- after the pass completed. A train that leaves the fleet mid-pass reproduces it.
+	-- A train that leaves the fleet mid-pass leaves the Trains tab in the same update. The Fleet headroom tile reads the
+	-- planner's available-train counters (PLAN3 §4.4), so its "now" is the worst network's counter.
 	function(ctx)
 		remote.call(D, "clear_filters", pi)
 		lab.dev("collect")
-		local function totals()
+		local function trains_total()
 			remote.call(D, "select_tab", pi, "trains")
-			local trains = remote.call(D, "dump", pi, "trains").total
-			remote.call(D, "select_tab", pi, "overview")
-			return remote.call(D, "dump", pi, "overview").tiles.fleet.total, trains
+			return remote.call(D, "dump", pi, "trains").total
 		end
-		local fleet, trains = totals()
-		lab.check("fleet tile total == Trains tab total (no filter)", fleet == trains and trains > 0, { fleet = fleet, trains = trains })
+		remote.call(D, "select_tab", pi, "overview")
+		local fleet = remote.call(D, "dump", pi, "overview").tiles.fleet
+		local counts = lab.dev("diag_stats", 60).available_count
+		lab.check("fleet headroom now == the worst network's available counter", fleet.worst ~= nil
+			and fleet.now == (counts[fleet.worst] or 0), { fleet = fleet, counts = counts })
+		local trains = trains_total()
 		local id, train
 		for tid, t in pairs(lab.read("trains")) do
 			if not id or tid < id then id, train = tid, t end
@@ -238,13 +233,11 @@ lab.suite("35_foundation", {
 		-- reads it before the entity is put back.
 		remote.call("cybersyn", "write_global", nil, "trains", id, "entity")
 		for _ = 1, 3 do remote.call(D, "tick", 1) end
-		local fleet2, trains2 = totals()
+		local trains2 = trains_total()
 		remote.call("cybersyn", "write_global", train.entity, "trains", id, "entity")
 		lab.check("a train leaving mid-pass leaves the Trains tab", trains2 == trains - 1, { before = trains, after = trains2 })
-		lab.check("fleet tile total == Trains tab total mid-pass", fleet2 == trains2, { fleet = fleet2, trains = trains2 })
 		lab.dev("collect")
-		fleet, trains = totals()
-		lab.check("the train is back in both", fleet == trains and trains == trains2 + 1, { fleet = fleet, trains = trains })
+		lab.check("the train is back", trains_total() == trains2 + 1)
 	end,
 
 	-- The parser over the save's real names, and the snapshot carrying the result.

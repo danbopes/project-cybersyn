@@ -325,8 +325,20 @@ test("page_size: cached value, player setting, default", function()
 	-- Cached: a later setting change does not reach this player_data.
 	H.player_settings[1]["cybersyn-manager-page-size"].value = 10
 	assert_eq(u.page_size(pd), 100)
-	-- PLAN3: §4.3 makes the setting the maximum (default 200) and derives the page size from the window rows.
-	assert_eq(u.page_size({ player_index = 2 }), 50)
+	-- PLAN3 §4.3: the setting is the maximum (default 200); the window rows decide below it.
+	assert_eq(u.page_size({ player_index = 2 }), 200)
+end)
+
+test("page_size: a tab gets the window's rows, capped by the setting", function()
+	local u = util()
+	local pd = { page_size = 200, layout = { rows_by_tab = { stations_tab = 18, trains_tab = 12 } } }
+	assert_eq(u.page_size(pd, "stations_tab"), 18)
+	assert_eq(u.page_size(pd, "trains_tab"), 12)
+	assert_eq(u.page_size(pd, "other_tab"), 200)
+	assert_eq(u.page_size(pd), 200)
+	pd.page_size = 10
+	assert_eq(u.page_size(pd, "stations_tab"), 10)
+	assert_eq({ u.paginate({ page_size = 200, layout = pd.layout }, "stations_tab", 40) }, { 1, 18, 1, 3 })
 end)
 
 test("paginate: slices, clamping and stored page", function()
@@ -936,6 +948,7 @@ test("slot_table_build_from_station: provided green, active requests red, below 
 	assert_eq(defs[3], {
 		type = "sprite-button",
 		sprite = "item/stone",
+		elem_tooltip = { type = "item-with-quality", name = "stone", quality = "normal" },
 		enabled = false,
 		style = "ltnm_small_slot_button_red",
 		tags = { item_hash = "stone" },

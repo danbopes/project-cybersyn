@@ -1033,6 +1033,7 @@ local function main()
 	local manager_util = require("scripts.gui.util")
 	script.on_event(defines.events.on_gui_click, function(e)
 		manager_util.touch_hover(e)
+		manager_util.note_click(e)
 		flib_gui.dispatch(e)
 	end)
 
@@ -1044,6 +1045,13 @@ local function main()
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
 	script.on_event(defines.events.on_gui_closed, manager.on_gui_closed)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
+	script.on_event("cybersyn-manager-search", manager.on_search_input)
+	script.on_event({
+		defines.events.on_player_display_resolution_changed,
+		defines.events.on_player_display_scale_changed,
+	}, manager.on_display_changed)
+	script.on_event(defines.events.on_player_controller_changed, manager.on_controller_changed)
+	script.on_event(defines.events.on_gui_location_changed, flib_gui.dispatch)
 
 	register_tick()
 end

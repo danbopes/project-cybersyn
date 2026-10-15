@@ -297,7 +297,8 @@ local function train_case(locomotive)
 	local texts = {}
 	player.create_local_flying_text = function(spec) texts[#texts + 1] = spec.text end
 	player.play_sound = function() end
-	storage.trains = { [5] = { entity = { valid = true, id = 5 } } }
+	storage.trains = { [5] = { entity = { valid = true, id = 5,
+		locomotives = { front_movers = { locomotive }, back_movers = {} } } } }
 	trains_tab.handle.open_train_gui(player, pd, pd.refs, { element = { tags = { train_id = 5 } } })
 	package.loaded["__flib__.train"] = nil
 	return player, pd, texts

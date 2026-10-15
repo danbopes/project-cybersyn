@@ -13,14 +13,40 @@ local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local analytics = require("scripts.analytics")
+local sizing = require("scripts.gui.sizing")
 
 local manager = {}
 
 local DEFAULT_TAB = "overview_tab"
+-- Tabs whose content gets the banner and subheader, in pane order.
+local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "utilization_tab", "delivery_breakdown_tab" }
+-- Tabs the station-name search applies to.
+local SEARCH_TABS = { inventory_tab = true, stations_tab = true, trains_tab = true }
+-- The last render must be this old before the title bar says how old it is.
+local STALE_TICKS = 180
+
+local function set_frame_toggle(elem, selected)
+	if elem and elem.valid then
+		elem.style = selected and "flib_selected_frame_action_button" or "frame_action_button"
+	end
+end
 
 local function frame_toggle(name, sprite, tooltip, handler)
 	local def = templates.frame_action_button(name, sprite, tooltip, nil)
 	def.handler = { [defines.events.on_gui_click] = handler }
+	return def
+end
+
+--- @param def {content: flib.GuiElemDef}
+--- @param tab string
+--- @param handlers table
+--- @param right flib.GuiElemDef[]?
+local function add_header(def, tab, handlers, right)
+	local banner, subheader = templates.tab_header(tab, handlers, right, SEARCH_TABS[tab] == true)
+	local content = def.content
+	local children = content.children or content
+	table.insert(children, 1, subheader)
+	table.insert(children, 1, banner)
 	return def
 end
 
@@ -29,6 +55,29 @@ function manager.create(player)
 	local widths = constants.gui["en"]
 	---@type table<string, LuaGuiElement>
 	local refs = {}
+	local header = {
+		search_changed = manager.handle.manager_search_changed,
+		search_click = manager.handle.manager_search_click,
+		search_confirmed = manager.handle.manager_search_confirmed,
+		chip_click = manager.handle.manager_chip_click,
+	}
+	local tabs = {
+		add_header(overview_tab.create(), "overview_tab", header, overview_tab.subheader_right()),
+		add_header(inventory_tab.create(), "inventory_tab", header),
+		add_header(stations_tab.create(widths), "stations_tab", header),
+		add_header(trains_tab.create(widths), "trains_tab", header),
+	}
+	if analytics.is_enabled() then
+		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
+		tabs[#tabs + 1] = add_header(delivery_breakdown_tab.create(), "delivery_breakdown_tab", header)
+	end
+	local pane = {
+		name = "manager_tabbed_pane",
+		type = "tabbed-pane",
+		style = "ltnm_tabbed_pane",
+		handler = { [defines.events.on_gui_selected_tab_changed] = manager.handle.manager_tab_changed },
+	}
+	for i, t in ipairs(tabs) do pane[i] = t end
 
 	gui.add(player.gui.screen, {
 		{
@@ -36,6 +85,7 @@ function manager.create(player)
 			type = "frame",
 			direction = "vertical",
 			visible = false,
+			handler = { [defines.events.on_gui_location_changed] = manager.handle.manager_location_changed },
 			children = {
 				{
 					name = "manager_titlebar",
@@ -46,26 +96,25 @@ function manager.create(player)
 						{ type = "label", style = "frame_title", caption = { "mod-name.cybersyn" }, ignored_by_interaction = true },
 						{ type = "empty-widget", style = "flib_titlebar_drag_handle", ignored_by_interaction = true },
 						{
-							name = "manager_dispatcher_status_label",
-							type = "label",
-							style = "bold_label",
-							style_mods = { font_color = constants.colors.red.tbl, left_margin = -4, top_margin = 1 },
-							caption = { "cybersyn-gui.dispatcher-disabled" },
-							tooltip = { "cybersyn-gui.dispatcher-disabled-description" },
-							visible = not settings.global["cybersyn-enable-planner"].value,
-						},
-						{
 							name = "manager_updated_label",
 							type = "label",
+							visible = false,
 							style_mods = { top_margin = 1, right_margin = 4 },
 							tooltip = { "cybersyn-gui.updated-tooltip" },
 						},
 						{
-							name = "cybersyn_recent_items_flow",
-							type = "flow",
-							direction = "horizontal",
-							style_mods = { horizontal_spacing = 2 },
+							type = "sprite-button",
+							name = "manager_back_button",
+							style = "frame_action_button",
+							sprite = "flib_nav_backward_white",
+							hovered_sprite = "flib_nav_backward_black",
+							clicked_sprite = "flib_nav_backward_black",
+							visible = false,
+							tooltip = { "cybersyn-gui.back-from-map-tooltip" },
+							handler = { [defines.events.on_gui_click] = manager.handle.manager_back },
 						},
+						frame_toggle("manager_search_button", "utility/search", { "cybersyn-gui.search-button-tooltip" }, manager.handle.manager_toggle_search),
+						frame_toggle("manager_filter_button", "cybersyn_filter_white", { "cybersyn-gui.filter-button-tooltip" }, manager.handle.manager_toggle_filter_row),
 						frame_toggle("manager_pause_button", "cybersyn_pause_white", { "cybersyn-gui.pause-tooltip" }, manager.handle.manager_toggle_pause),
 						frame_toggle("manager_pin_button", "ltnm_pin_white", { "cybersyn-gui.pin-tooltip" }, manager.handle.manager_toggle_pinned),
 						frame_toggle(nil, "utility/close", { "gui.close-instruction" }, manager.handle.manager_close),
@@ -77,34 +126,31 @@ function manager.create(player)
 					direction = "vertical",
 					children = {
 						{
+							name = "manager_filter_row",
 							type = "frame",
-							style = "ltnm_main_toolbar_frame",
+							style = "cybersyn_filter_row",
+							visible = false,
 							children = {
-								{ type = "label", style = "subheader_caption_label", caption = { "cybersyn-gui.search-label" } },
-								{
-									name = "manager_text_search_field",
-									type = "textfield",
-									clear_and_focus_on_right_click = true,
-									tooltip = { "cybersyn-gui.search-tooltip" },
-									handler = { [defines.events.on_gui_text_changed] = manager.handle.manager_update_text_search },
-								},
-								{ type = "label", name = "manager_item_filter_label", style = "caption_label", caption = { "cybersyn-gui.search-item-label" } },
+								{ type = "label", style = "subheader_caption_label", caption = { "cybersyn-gui.search-item-label" } },
 								{
 									type = "choose-elem-button",
 									name = "manager_item_filter",
 									elem_type = "signal",
+									style = "slot_button_in_shallow_frame",
+									style_mods = { size = 28 },
 									handler = { [defines.events.on_gui_elem_changed] = manager.handle.manager_update_item_search },
 								},
-								{ type = "empty-widget", style = "flib_horizontal_pusher" },
-								{ type = "label", style = "caption_label", caption = { "cybersyn-gui.network-name-label" } },
+								{ type = "label", style = "subheader_caption_label", caption = { "cybersyn-gui.network-name-label" } },
 								{
 									type = "choose-elem-button",
 									name = "network",
 									elem_type = "signal",
+									style = "slot_button_in_shallow_frame",
+									style_mods = { size = 28 },
 									tooltip = { "cybersyn-gui.network-tooltip" },
 									handler = { [defines.events.on_gui_elem_changed] = manager.handle.manager_update_network_name },
 								},
-								{ type = "label", style = "caption_label", caption = { "cybersyn-gui.network-id-label" } },
+								{ type = "label", style = "subheader_caption_label", caption = { "cybersyn-gui.network-id-label" } },
 								{
 									name = "manager_network_mask_field",
 									type = "textfield",
@@ -115,12 +161,13 @@ function manager.create(player)
 									text = "-1",
 									handler = { [defines.events.on_gui_text_changed] = manager.handle.manager_update_network_mask },
 								},
-								{ type = "label", style = "caption_label", caption = { "cybersyn-gui.surface-label" } },
+								{ type = "label", name = "manager_surface_label", style = "subheader_caption_label", caption = { "cybersyn-gui.surface-label" } },
 								{
 									name = "manager_surface_dropdown",
 									type = "drop-down",
 									handler = { [defines.events.on_gui_selection_state_changed] = manager.handle.manager_update_surface },
 								},
+								{ type = "empty-widget", style = "flib_horizontal_pusher" },
 								{
 									name = "manager_clear_filters_button",
 									type = "sprite-button",
@@ -131,18 +178,7 @@ function manager.create(player)
 								},
 							},
 						},
-						{
-							name = "manager_tabbed_pane",
-							type = "tabbed-pane",
-							style = "ltnm_tabbed_pane",
-							handler = { [defines.events.on_gui_selected_tab_changed] = manager.handle.manager_tab_changed },
-							overview_tab.create(),
-							inventory_tab.create(),
-							stations_tab.create(widths),
-							trains_tab.create(widths),
-							analytics.is_enabled() and utilization_tab.create() or nil,
-							analytics.is_enabled() and delivery_breakdown_tab.create() or nil,
-						},
+						pane,
 					},
 				},
 			},
@@ -156,9 +192,207 @@ function manager.create(player)
 	return refs
 end
 
-local function set_frame_toggle(elem, selected)
-	if elem and elem.valid then
-		elem.style = selected and "flib_selected_frame_action_button" or "frame_action_button"
+-- ---------------------------------------------------------------- layout (PLAN3 §4.3)
+
+--- @return boolean
+function manager.dispatch_paused()
+	return settings.global["cybersyn-enable-planner"].value == false
+end
+
+--- Network, network id and surface live only in the filter row; while one is set the row stays open.
+--- @param player_data PlayerData
+--- @return boolean
+local function row_filters_active(player_data)
+	return player_data.search_network_name ~= nil or (player_data.search_network_mask or -1) ~= -1
+		or player_data.search_surface_idx ~= nil
+end
+
+--- @param player_data PlayerData
+--- @return boolean
+function manager.filter_row_shown(player_data)
+	return player_data.filter_row_open == true or row_filters_active(player_data)
+end
+
+--- The window size for this player's screen (or the screen dev.set_layout emulates); stored in player_data.layout.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @return ManagerLayout
+function manager.layout(player, player_data)
+	local o = player_data.layout_override
+	local res_w, res_h, scale
+	if o then
+		res_w, res_h, scale = o.width, o.height, o.scale
+	else
+		local res = player.display_resolution
+		res_w, res_h, scale = res.width, res.height, player.display_scale
+	end
+	local layout = sizing.compute(res_w, res_h, scale, manager.filter_row_shown(player_data), manager.dispatch_paused())
+	layout.res_width, layout.res_height, layout.scale = res_w, res_h, scale
+	player_data.layout = layout
+	return layout
+end
+
+local CONTENT_FRAMES = {
+	overview_tab = "manager_overview_content_frame",
+	inventory_tab = "manager_inventory_content_frame",
+	stations_tab = "manager_stations_content_frame",
+	trains_tab = "manager_trains_tab_content_frame",
+}
+
+--- Writes the layout into the window: its width, every tab's height and the per-tab row areas.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @return ManagerLayout
+function manager.apply_layout(player, player_data)
+	local layout = manager.layout(player, player_data)
+	local refs = player_data.refs
+	local window = refs.manager_window
+	if not (window and window.valid) then return layout end
+	window.style.width = layout.width
+	local height = layout.content_height + (manager.dispatch_paused() and sizing.BANNER_HEIGHT or 0)
+	for _, name in pairs(CONTENT_FRAMES) do
+		local content = refs[name]
+		if content and content.valid then
+			content.style.height = height
+			content.style.width = layout.content_width
+		end
+	end
+	overview_tab.apply_layout(player_data, layout)
+	inventory_tab.apply_layout(player_data, layout)
+	return layout
+end
+
+--- Restores the stored position, or centres the window when there is none or it would be off the screen.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.place_window(player, player_data)
+	local window = player_data.refs.manager_window
+	if not (window and window.valid) then return end
+	local res = player.display_resolution
+	local layout = player_data.layout
+	local width_px = (layout and layout.width or sizing.MAX_WIDTH) * player.display_scale
+	local loc = player_data.location
+	if loc and sizing.location_visible(loc, res.width, res.height, width_px) then
+		window.location = loc
+	else
+		player_data.location = nil
+		window.force_auto_center()
+	end
+end
+
+--- The resolution or UI scale changed, or the window was rebuilt: size it again and check its position.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.relayout(player, player_data)
+	local refs = player_data.refs
+	if not (refs and refs.manager_window and refs.manager_window.valid) then return end
+	manager.apply_layout(player, player_data)
+	-- A hidden window is placed when it opens; centring it now would use a stale size.
+	if player_data.is_manager_open then
+		manager.place_window(player, player_data)
+		manager.render(player, player_data)
+	end
+end
+
+-- ---------------------------------------------------------------- strips: banner, search, chip, filter row
+
+--- @param player_data PlayerData
+function manager.refresh_banners(player_data)
+	local refs = player_data.refs
+	local paused = manager.dispatch_paused()
+	local caption
+	if paused then
+		local by = storage.manager.paused_by
+		local who = by and by > 0 and game.get_player(by)
+		caption = who and { "cybersyn-gui.dispatch-paused-by", who.name } or { "cybersyn-gui.dispatch-paused" }
+	end
+	for _, tab in ipairs(HEADER_TABS) do
+		local banner = refs[tab .. "_banner"]
+		if banner and banner.valid then
+			banner.visible = paused
+			if paused then
+				local label = refs[tab .. "_banner_label"]
+				label.caption = caption
+				label.tooltip = { "cybersyn-gui.dispatch-paused-tooltip" }
+			end
+		end
+	end
+end
+
+--- @param player_data PlayerData
+--- @return boolean
+local function search_shown(player_data)
+	return player_data.search_open == true or player_data.search_query ~= nil
+end
+
+--- @param player_data PlayerData
+function manager.refresh_search_fields(player_data)
+	local refs = player_data.refs
+	local shown = search_shown(player_data)
+	local text = player_data.search_query or ""
+	for tab in pairs(SEARCH_TABS) do
+		local field = refs[tab .. "_search_field"]
+		if field and field.valid then
+			if field.visible ~= shown then field.visible = shown end
+			if field.text ~= text then field.text = text end
+		end
+	end
+	set_frame_toggle(refs.manager_search_button, shown)
+end
+
+--- @param player_data PlayerData
+function manager.refresh_chips(player_data)
+	local refs = player_data.refs
+	local hash = player_data.search_item
+	if hash and not util.signal_hash_valid(hash) then hash = nil end
+	local sig = hash or ""
+	if player_data.chip_sig == sig then return end
+	player_data.chip_sig = sig
+	local sprite, quality, name_tooltip = nil, nil, nil
+	if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
+	local shown = sprite ~= nil
+	for _, tab in ipairs(HEADER_TABS) do
+		local flow = refs[tab .. "_chip_flow"]
+		if flow and flow.valid then
+			flow.visible = shown
+			if shown then
+				local tooltip = tab == "overview_tab" and { "cybersyn-gui.filter-chip-overview-tooltip" } or { "cybersyn-gui.filter-chip-tooltip" }
+				local icon = refs[tab .. "_chip_icon"]
+				icon.sprite = sprite
+				icon.quality = quality
+				icon.elem_tooltip = util.elem_tooltip(hash)
+				icon.tooltip = tooltip
+				local chip = refs[tab .. "_chip"]
+				chip.caption = { "cybersyn-gui.filter-chip", name_tooltip[4] or hash }
+				chip.tooltip = tooltip
+			end
+		end
+	end
+end
+
+--- @param player_data PlayerData
+--- @return boolean
+local function any_filter(player_data)
+	return row_filters_active(player_data) or player_data.search_item ~= nil
+end
+
+--- Shows or hides the filter row; a change of its visibility changes the rows that fit.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.refresh_filter_row(player, player_data)
+	local refs = player_data.refs
+	local row = refs.manager_filter_row
+	if not (row and row.valid) then return end
+	local shown = manager.filter_row_shown(player_data)
+	local multi = #game.surfaces > 1
+	if refs.manager_surface_label.visible ~= multi then
+		refs.manager_surface_label.visible = multi
+		refs.manager_surface_dropdown.visible = multi
+	end
+	set_frame_toggle(refs.manager_filter_button, any_filter(player_data))
+	if row.visible ~= shown then
+		row.visible = shown
+		manager.apply_layout(player, player_data)
 	end
 end
 
@@ -182,12 +416,18 @@ function manager.refresh_toggles(player_data)
 		pin.hovered_sprite = sprite
 		pin.clicked_sprite = sprite
 	end
+	local back = refs.manager_back_button
+	if back and back.valid then back.visible = player_data.auto_pinned == true end
 end
 
---- Refreshes the "Updated Ns ago" label; cheap enough to run every manager update, paused or not.
+util.set_refresh_toggles(manager.refresh_toggles)
+
+--- The title-bar age (only once the last render is STALE_TICKS old, or while paused) and the subheaders'
+--- "Collecting… n %"; cheap enough to run every manager update, paused or not.
 --- @param player_data PlayerData
 function manager.update_status(player_data)
-	local label = player_data.refs.manager_updated_label
+	local refs = player_data.refs
+	local label = refs.manager_updated_label
 	if not label or not label.valid then return end
 	-- The caption tracks renders; the snapshot age cycles through a whole collector pass even while the window
 	-- refreshes every second, so it only goes in the tooltip.
@@ -197,10 +437,7 @@ function manager.update_status(player_data)
 	local data_age = data_tick and util.format_duration(game.tick - data_tick) or "-"
 	label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
 	local caption
-	local collecting = collector.collecting()
-	if collecting and not (player_data.paused and data_tick) then
-		caption = { "cybersyn-gui.collecting-progress", tostring(math.floor(collecting * 100)) }
-	elseif player_data.paused then
+	if player_data.paused then
 		caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
 	else
 		caption = { "cybersyn-gui.updated-ago", age }
@@ -213,6 +450,22 @@ function manager.update_status(player_data)
 		end
 	end
 	label.caption = caption
+	local stale = player_data.paused or not render_tick or game.tick - render_tick > STALE_TICKS
+	if label.visible ~= stale then label.visible = stale end
+
+	local collecting = collector.collecting()
+	local show = collecting ~= nil and not (player_data.paused and data_tick)
+	local percent = show and math.floor(collecting * 100) or -1
+	if player_data.collecting_shown ~= percent then
+		player_data.collecting_shown = percent
+		for _, tab in ipairs(HEADER_TABS) do
+			local note = refs[tab .. "_collecting"]
+			if note and note.valid then
+				note.visible = show
+				note.caption = show and { "cybersyn-gui.collecting-progress", tostring(percent) } or ""
+			end
+		end
+	end
 end
 
 --- Rebuilds the surface drop-down; only on open and when the number of surfaces changes.
@@ -245,7 +498,8 @@ function manager.rebuild_surface_dropdown(player_data)
 	player_data.surface_count = #game.surfaces
 end
 
---- Writes the stored filters into the toolbar widgets; done once on open instead of every update.
+--- Writes the stored filters into the filter row, the search fields and the chips; done on open and after a
+--- filter change, not every update.
 --- @param player_data PlayerData
 function manager.restore_filter_widgets(player_data)
 	local refs = player_data.refs
@@ -255,11 +509,15 @@ function manager.restore_filter_widgets(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
-	refs.manager_text_search_field.text = player_data.search_query or ""
 	refs.manager_item_filter.elem_value = player_data.search_item and util.signalid_from_hash(player_data.search_item) or nil
 	refs.network.elem_value = player_data.search_network_name and util.signalid_from_name(player_data.search_network_name) or nil
 	refs.manager_network_mask_field.text = tostring(player_data.search_network_mask or -1)
 	manager.rebuild_surface_dropdown(player_data)
+	manager.refresh_search_fields(player_data)
+	player_data.chip_sig = nil
+	manager.refresh_chips(player_data)
+	local player = game.get_player(player_data.player_index)
+	if player then manager.refresh_filter_row(player, player_data) end
 end
 
 local sort_headers = {
@@ -275,7 +533,8 @@ function manager.refresh_sort_headers(player_data)
 		local pane = refs[header.scroll_pane]
 		if pane and pane.valid then
 			local column, ascending = util.get_sort(player_data, tab, header.default)
-			util.sync_sort_header(pane.parent.children[1], column, ascending)
+			-- The header sits right above the scroll pane.
+			util.sync_sort_header(pane.parent.children[pane.get_index_in_parent() - 1], column, ascending)
 		end
 	end
 end
@@ -312,6 +571,19 @@ function manager.update(map_data, player_data)
 	end
 end
 
+--- Train alerts as the Trains tab's badge (PLAN3 §4.6).
+--- @param player_data PlayerData
+local function refresh_badges(player_data)
+	local tab = player_data.refs.manager_trains_tab
+	if not (tab and tab.valid) then return end
+	local n = #collector.get().alerts
+	if player_data.trains_badge ~= n then
+		player_data.trains_badge = n
+		tab.badge_text = n > 0 and tostring(n) or ""
+		tab.tooltip = n > 0 and { "cybersyn-gui.trains-badge-tooltip", tostring(n) } or ""
+	end
+end
+
 --- Renders the selected tab from the current snapshot and refreshes the status label.
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
@@ -321,9 +593,12 @@ function manager.render(player, player_data)
 	player_data.last_update_tick = game.tick
 	player_data.rendered_snapshot_tick = collector.get().tick
 	manager.update_status(player_data)
+	manager.refresh_chips(player_data)
+	refresh_badges(player_data)
 end
 
 util.set_rerender(manager.render)
+overview_tab.manager = manager
 
 manager.handle = {}
 
@@ -340,7 +615,7 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_open(player, player_data, refs)
 	-- A window built by an older version of this file survives a script update that has no version bump.
-	if not (refs.manager_updated_label and refs.manager_updated_label.valid) then
+	if not (refs.manager_filter_row and refs.manager_filter_row.valid) then
 		if refs.manager_window and refs.manager_window.valid then
 			refs.manager_window.destroy()
 		end
@@ -348,9 +623,15 @@ function manager.handle.manager_open(player, player_data, refs)
 		player_data.refs = refs
 		player_data.gui_state = {}
 	end
-	refs.manager_window.bring_to_front()
+	player_data.chip_sig = nil
+	player_data.collecting_shown = nil
+	player_data.trains_badge = nil
+	manager.refresh_banners(player_data)
+	manager.apply_layout(player, player_data)
 	refs.manager_window.visible = true
 	player_data.visible = true
+	manager.place_window(player, player_data)
+	refs.manager_window.bring_to_front()
 
 	if not player_data.pinning then
 		player.opened = refs.manager_window
@@ -367,8 +648,6 @@ function manager.handle.manager_open(player, player_data, refs)
 	if not util.select_tab(player_data, player_data.selected_tab or DEFAULT_TAB) then
 		util.select_tab(player_data, DEFAULT_TAB)
 	end
-
-	manager.build_recent_panel(player, player_data)
 
 	collector.ensure_fresh()
 	manager.render(player, player_data)
@@ -391,6 +670,7 @@ function manager.handle.manager_close(player, player_data, refs)
 	end
 	-- Cleanup above runs again on reopen otherwise.
 	player_data.previous_tab = nil
+	player_data.search_open = nil
 	util.close_manager_window(player, player_data, refs, true)
 end
 
@@ -409,6 +689,11 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 		return
 	end
 	if player_data.restore_opened and player_data.handed_back_tick == game.tick then return end
+	-- Escape while the search field has the keyboard cancels the search, not the window.
+	if manager.cancel_search(player, player_data) then
+		player.opened = refs.manager_window
+		return
+	end
 	manager.handle.manager_close(player, player_data, refs)
 end
 
@@ -438,6 +723,31 @@ function manager.restore_opened(player, player_data)
 	return player.opened == window
 end
 
+--- Leaving the remote view that "show on map" opened: the window it pinned is unpinned and takes player.opened
+--- again.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.on_controller_changed(player, player_data)
+	if not player_data.auto_pinned or player.controller_type == defines.controllers.remote then return end
+	player_data.auto_pinned = nil
+	player_data.pinning = false
+	manager.refresh_toggles(player_data)
+	local window = player_data.refs and player_data.refs.manager_window
+	if player_data.is_manager_open and window and window.valid then
+		player.opened = window
+	end
+end
+
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param refs table<string, LuaGuiElement>
+function manager.handle.manager_back(player, player_data, refs)
+	if player.controller_type == defines.controllers.remote then
+		player.exit_remote_view()
+	end
+	manager.on_controller_changed(player, player_data)
+end
+
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
@@ -454,7 +764,18 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_titlebar_click(player, player_data, refs, e)
 	if e.name == defines.events.on_gui_click and e.button == defines.mouse_button_type.middle then
+		player_data.location = nil
 		refs.manager_window.force_auto_center()
+	end
+end
+
+--- @param e EventData.on_gui_location_changed
+function manager.handle.manager_location_changed(player, player_data, refs, e)
+	local window = e.element
+	-- Centring a hidden window moves it too; only a position the player can see is worth keeping.
+	if window and window.valid and window == refs.manager_window and window.visible and player_data.is_manager_open then
+		local loc = window.location
+		player_data.location = { x = loc.x, y = loc.y }
 	end
 end
 
@@ -476,6 +797,8 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_toggle_pinned(player, player_data, refs)
 	player_data.pinning = not player_data.pinning
+	-- Pinning by hand keeps the window pinned after remote view.
+	player_data.auto_pinned = nil
 	manager.refresh_toggles(player_data)
 	if not player_data.is_manager_open then return end
 	if player_data.pinning then
@@ -486,6 +809,105 @@ function manager.handle.manager_toggle_pinned(player, player_data, refs)
 	else
 		player.opened = refs.manager_window
 	end
+end
+
+--- Opens the search field of the selected tab and gives it the keyboard; the Overview has none, so its search goes
+--- to the Stations tab.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.focus_search(player, player_data)
+	if not SEARCH_TABS[player_data.selected_tab] then
+		util.select_tab(player_data, "stations_tab")
+	end
+	player_data.search_open = true
+	manager.refresh_search_fields(player_data)
+	local field = player_data.refs[player_data.selected_tab .. "_search_field"]
+	if field and field.valid then
+		field.focus()
+		field.select_all()
+		player_data.search_focused = true
+	end
+	manager.render(player, player_data)
+end
+
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param refs table<string, LuaGuiElement>
+function manager.handle.manager_toggle_search(player, player_data, refs)
+	if search_shown(player_data) and SEARCH_TABS[player_data.selected_tab] then
+		player_data.search_open = nil
+		if player_data.search_query then
+			util.set_search_query(player_data, nil)
+			util.reset_pages(player_data)
+		end
+		manager.refresh_search_fields(player_data)
+		manager.render(player, player_data)
+	else
+		manager.focus_search(player, player_data)
+	end
+end
+
+--- The search custom input (linked to the game's focus-search, Ctrl+F by default): only while the window is open.
+--- @param e EventData.CustomInputEvent
+function manager.on_search_input(e)
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	if not (player_data and player_data.is_manager_open) then return end
+	local player = game.get_player(e.player_index)
+	if not player then return end
+	manager.focus_search(player, player_data)
+end
+
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param refs table<string, LuaGuiElement>
+--- @param e EventData.on_gui_text_changed
+function manager.handle.manager_search_changed(player, player_data, refs, e)
+	util.set_search_query(player_data, e.element.text)
+	util.reset_pages(player_data)
+	manager.refresh_search_fields(player_data)
+	manager.render(player, player_data)
+end
+
+--- @param e EventData.on_gui_click
+function manager.handle.manager_search_click(player, player_data, refs, e)
+	player_data.search_focused = true
+end
+
+--- @param e EventData.on_gui_confirmed
+function manager.handle.manager_search_confirmed(player, player_data, refs, e)
+	player_data.search_focused = nil
+end
+
+--- Escape while the search field has the keyboard: the text goes, the field closes, the window stays.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @return boolean handled
+function manager.cancel_search(player, player_data)
+	if not player_data.search_focused then return false end
+	player_data.search_focused = nil
+	player_data.search_open = nil
+	util.set_search_query(player_data, nil)
+	util.reset_pages(player_data)
+	manager.refresh_search_fields(player_data)
+	manager.render(player, player_data)
+	return true
+end
+
+--- The item chip (either half): any click removes the item filter.
+--- @param e EventData.on_gui_click
+function manager.handle.manager_chip_click(player, player_data, refs, e)
+	util.set_item_filter(player_data, nil)
+	manager.restore_filter_widgets(player_data)
+	manager.render(player, player_data)
+end
+
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param refs table<string, LuaGuiElement>
+function manager.handle.manager_toggle_filter_row(player, player_data, refs)
+	player_data.filter_row_open = not player_data.filter_row_open
+	manager.refresh_filter_row(player, player_data)
+	manager.render(player, player_data)
 end
 
 --- @param player LuaPlayer
@@ -506,16 +928,6 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
---- @param e EventData.on_gui_text_changed
-function manager.handle.manager_update_text_search(player, player_data, refs, e)
-	util.set_search_query(player_data, e.text)
-	util.reset_pages(player_data)
-	manager.render(player, player_data)
-end
-
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param refs table<string, LuaGuiElement>
 --- @param e EventData.on_gui_elem_changed
 function manager.handle.manager_update_item_search(player, player_data, refs, e)
 	local element = e.element
@@ -525,11 +937,11 @@ function manager.handle.manager_update_item_search(player, player_data, refs, e)
 		player_data.search_item = hash_signal(signal)
 		interface_raise_item_selected(e.player_index, signal.name)
 		interop_add_recent_item(e.player_index, signal.name, "cybersyn")
-		player_data.recent_panel_dirty = true
 	else
 		player_data.search_item = nil
 	end
 	util.reset_pages(player_data)
+	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
 
@@ -543,6 +955,7 @@ function manager.handle.manager_update_network_name(player, player_data, refs, e
 	local signal = element.elem_value --[[@as SignalID?]]
 	player_data.search_network_name = signal and signal.name or nil
 	util.reset_pages(player_data)
+	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
 
@@ -553,6 +966,7 @@ end
 function manager.handle.manager_update_network_mask(player, player_data, refs, e)
 	player_data.search_network_mask = tonumber(e.text) or -1
 	util.reset_pages(player_data)
+	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
 
@@ -570,6 +984,7 @@ function manager.handle.manager_update_surface(player, player_data, refs, e)
 	end
 	player_data.search_surface_idx = surface_index
 	util.reset_pages(player_data)
+	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
 
@@ -585,57 +1000,6 @@ function manager.handle.manager_tab_changed(player, player_data, refs, e)
 	if name then
 		player_data.selected_tab = name
 		manager.render(player, player_data)
-	end
-end
-
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param refs table<string, LuaGuiElement>
---- @param e GuiEventData
-function manager.handle.recent_item_click(player, player_data, refs, e)
-	local element = e.element
-	if not element then return end
-	local tags = element.tags
-	if tags and tags.item_name then
-		util.item_button_click(player, player_data, e, tags.item_name)
-	end
-end
-
---- Update the recent items buttons in the titlebar.
---- @param player LuaPlayer
---- @param player_data PlayerData
-function manager.build_recent_panel(player, player_data)
-	local flow = player_data.refs.cybersyn_recent_items_flow
-	if not flow then return end
-
-	flow.clear()
-
-	local items = storage.recent_external_items and storage.recent_external_items[player.index]
-	if not items or #items == 0 then return end
-
-	for i, entry in ipairs(items) do
-		local sprite_path
-		if prototypes.item[entry.item_name] then
-			sprite_path = "item/" .. entry.item_name
-		elseif prototypes.fluid[entry.item_name] then
-			sprite_path = "fluid/" .. entry.item_name
-		end
-
-		if sprite_path then
-			local proto = prototypes.item[entry.item_name] or prototypes.fluid[entry.item_name]
-			local tooltip = { "", proto and proto.localised_name or entry.item_name, "\n", { "cybersyn-gui.item-click-hint" } }
-			gui.add(flow, {
-				{
-					type = "sprite-button",
-					sprite = sprite_path,
-					tooltip = tooltip,
-					style = "frame_action_button",
-					tags = { item_name = entry.item_name },
-					mouse_button_filter = { "left", "right" },
-					handler = { [defines.events.on_gui_click] = manager.handle.recent_item_click },
-				},
-			})
-		end
 	end
 end
 

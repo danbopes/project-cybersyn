@@ -45,6 +45,18 @@ local diag = require("scripts.diag")
 --- @field utilization_selected {[string]: boolean}?
 --- @field inventory_cache table? inventory tab aggregate + top stations for one snapshot pass and filter set; dropped on close
 --- @field inventory_version integer? bumped per inventory_cache rebuild, see inventory.get_cache
+--- @field layout ManagerLayout? window size for the player's screen, see manager.layout
+--- @field layout_override {width: number, height: number, scale: number}? emulated screen (dev.set_layout)
+--- @field location {x: int, y: int}? window position in physical pixels, from on_gui_location_changed
+--- @field filter_row_open true? the title bar's filter toggle
+--- @field search_open true? the title bar's search toggle
+--- @field search_focused true? the search field was clicked or focused and not confirmed since
+--- @field auto_pinned true? "show on map" pinned the window; leaving remote view unpins it
+--- @field markers uint[]? render object ids of the player's show-on-map marker pair
+--- @field chip_sig string? item filter the chips show
+--- @field collecting_shown int? progress the subheaders show, -1 = none
+--- @field trains_badge int? alert count on the Trains tab
+--- @field unserved_minutes int? cached cybersyn-manager-unserved-minutes
 
 local function top_left_button_update(player, player_data)
 	local button_flow = mod_gui.get_button_flow(player)
@@ -188,6 +200,21 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 			player_data.page_size = nil
 			util.reset_pages(player_data)
 		end
+	elseif e.setting == "cybersyn-manager-unserved-minutes" then
+		local player_data = e.player_index and storage.manager.players[e.player_index]
+		if player_data then player_data.unserved_minutes = nil end
+	elseif e.setting == "cybersyn-enable-planner" then
+		-- Who paused the dispatcher, for the banner; nil player_index = the server or a script.
+		local manager_data = storage.manager
+		if not manager_data then return end
+		manager_data.paused_by = settings.global["cybersyn-enable-planner"].value == false and (e.player_index or 0) or nil
+		for i, v in pairs(manager_data.players) do
+			local player = game.get_player(i)
+			if player and v.refs and v.refs.manager_window and v.refs.manager_window.valid then
+				manager.refresh_banners(v)
+				manager.relayout(player, v)
+			end
+		end
 	elseif e.setting == "cybersyn-enable-analytics" then
 		-- Rebuild all GUIs when analytics setting changes to show/hide tabs
 		local manager_data = storage.manager
@@ -201,6 +228,29 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 		end
 	end
 end
+
+--- Forgets the player's window position and size and centres the window again (/cybersyn-reset-gui).
+--- @param player LuaPlayer
+function manager_gui.reset_gui(player)
+	local player_data = storage.manager and storage.manager.players[player.index]
+	if not player_data then return end
+	player_data.location = nil
+	player_data.layout = nil
+	player_data.layout_override = nil
+	player_data.filter_row_open = nil
+	local refs = player_data.refs
+	if refs and refs.manager_window and refs.manager_window.valid then
+		manager.apply_layout(player, player_data)
+		refs.manager_window.force_auto_center()
+		if player_data.is_manager_open then manager.render(player, player_data) end
+	end
+	player.print({ "cybersyn-gui.reset-gui-done" })
+end
+
+commands.add_command("cybersyn-reset-gui", { "cybersyn-gui.reset-gui-help" }, function(command)
+	local player = command.player_index and game.get_player(command.player_index)
+	if player then manager_gui.reset_gui(player) end
+end)
 
 commands.add_command("cybersyn_rebuild_manager_windows", nil, function(command)
 	local manager_data = storage.manager
@@ -306,14 +356,27 @@ function manager_gui.tick(storage)
 				else
 					manager.render(player, v)
 				end
-				if v.recent_panel_dirty then
-					v.recent_panel_dirty = nil
-					manager.build_recent_panel(player, v)
-				end
 			end
 		end
 	end
 end
+
+--- on_player_display_resolution_changed / on_player_display_scale_changed.
+function manager_gui.on_display_changed(e)
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	local player = game.get_player(e.player_index)
+	if player and player_data then manager.relayout(player, player_data) end
+end
+
+--- on_player_controller_changed.
+function manager_gui.on_controller_changed(e)
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	local player = game.get_player(e.player_index)
+	if player and player_data then manager.on_controller_changed(player, player_data) end
+end
+
+--- The cybersyn-manager-search custom input (linked to the game's focus-search).
+manager_gui.on_search_input = manager.on_search_input
 
 ---@param i string|uint
 ---@param v LuaPlayer

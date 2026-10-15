@@ -94,4 +94,79 @@ function templates.pager(tab, handler)
 	}
 end
 
+--- The strips at the top of every tab (PLAN3 §4.3): the dispatch-paused banner, then the subheader with the
+--- station-name search field (left), the item filter chip, the collecting progress and `right` (right-aligned).
+--- Element names are `<tab>_banner`, `<tab>_banner_label`, `<tab>_search_field`, `<tab>_chip_flow`,
+--- `<tab>_chip_icon`, `<tab>_chip`, `<tab>_collecting`.
+--- @param tab string canonical tab name, e.g. "stations_tab"
+--- @param handlers {search_changed: function, search_click: function, search_confirmed: function, chip_click: function}
+--- @param right flib.GuiElemDef[]? subheader children after the pusher
+--- @param search boolean? false = no search field (a tab the search does not apply to)
+--- @return flib.GuiElemDef banner
+--- @return flib.GuiElemDef subheader
+function templates.tab_header(tab, handlers, right, search)
+	local banner = {
+		type = "frame",
+		name = tab .. "_banner",
+		style = "cybersyn_banner_frame",
+		visible = false,
+		{ type = "label", name = tab .. "_banner_label", style = "cybersyn_banner_label" },
+	}
+	local subheader = {
+		type = "frame",
+		name = tab .. "_subheader",
+		style = "cybersyn_tab_subheader",
+	}
+	if search ~= false then
+		subheader[#subheader + 1] = {
+			type = "textfield",
+			name = tab .. "_search_field",
+			style = "cybersyn_search_field",
+			visible = false,
+			clear_and_focus_on_right_click = true,
+			lose_focus_on_confirm = true,
+			icon_selector = true,
+			tooltip = { "cybersyn-gui.search-tooltip" },
+			tags = { tab = tab },
+			handler = {
+				[defines.events.on_gui_text_changed] = handlers.search_changed,
+				[defines.events.on_gui_click] = handlers.search_click,
+				[defines.events.on_gui_confirmed] = handlers.search_confirmed,
+			},
+		}
+	end
+	subheader[#subheader + 1] = {
+		type = "flow",
+		name = tab .. "_chip_flow",
+		direction = "horizontal",
+		visible = false,
+		style_mods = { horizontal_spacing = 0, vertical_align = "center" },
+		{
+			type = "sprite-button",
+			name = tab .. "_chip_icon",
+			style = "cybersyn_item_chip_icon",
+			mouse_button_filter = { "left", "right" },
+			handler = { [defines.events.on_gui_click] = handlers.chip_click },
+		},
+		{
+			type = "button",
+			name = tab .. "_chip",
+			style = "cybersyn_item_chip",
+			mouse_button_filter = { "left", "right" },
+			handler = { [defines.events.on_gui_click] = handlers.chip_click },
+		},
+	}
+	subheader[#subheader + 1] = {
+		type = "label",
+		name = tab .. "_collecting",
+		style = "cybersyn_subheader_note",
+		visible = false,
+	}
+	subheader[#subheader + 1] = { type = "empty-widget", style = "flib_horizontal_pusher" }
+	for _, def in ipairs(right or {}) do
+		subheader[#subheader + 1] = def
+	end
+	return banner, subheader
+end
+
 return templates

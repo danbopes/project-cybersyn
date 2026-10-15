@@ -1,4 +1,3 @@
-local train_util = require("__flib__.train")
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
@@ -361,6 +360,7 @@ local function shipment_children(tr, filter_item)
 				style = hash == filter_item and "ltnm_selected_small_slot_button_default" or "ltnm_small_slot_button_default",
 				mouse_button_filter = { "left", "right" },
 				tooltip = { "", name_tooltip, "\n", { "cybersyn-gui.amount", format.number(count) }, "\n", { "cybersyn-gui.item-click-hint" } },
+				elem_tooltip = util.elem_tooltip(hash),
 				tags = { item_hash = hash },
 				handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_item_click },
 				{
@@ -760,6 +760,16 @@ dev.register_dump(TAB, function(player_data)
 	}
 end)
 
+dev.register_rows(TAB, function(player_data)
+	local pane = player_data.refs[SCROLL]
+	if not (pane and pane.valid) then return 0 end
+	local n = 0
+	for _, row in ipairs(pane.children) do
+		if row.tags.train_id then n = n + 1 end
+	end
+	return n
+end)
+
 trains_tab.handle = {}
 
 --- @param e {player_index: uint}
@@ -773,81 +783,14 @@ end
 --- @param e EventData.on_gui_click
 --- @param player_data PlayerData
 function trains_tab.handle.open_train_gui(player, player_data, refs, e)
-	local train_id = e.element.tags.train_id
-	--- @type Train?
-	local train = storage.trains[train_id]
-	local train_entity = train and train.entity
-
-	if not train_entity or not train_entity.valid then
-		util.error_flying_text(player, { "cybersyn-message.error-train-is-invalid" })
-		return
-	end
-	if e.shift then
-		local locomotive = front_locomotive(train_entity)
-		if locomotive then
-			player.centered_on = locomotive
-			if not player_data.pinning then util.close_manager_window(player, player_data, refs) end
-		end
-		return
-	end
-	local locomotive = train_util.get_main_locomotive(train_entity)
-	if not (locomotive and locomotive.valid) then
-		util.error_flying_text(player, { "cybersyn-gui.train-has-no-locomotive" })
-		return
-	end
-	util.open_entity(player, player_data, locomotive)
+	util.handle_link_click(player, player_data, e)
 end
 
 --- Station, depot or refueler name clicked. Left: stop GUI; shift: map; control: (station) combinator;
 --- alt: station control combinator.
 --- @param e EventData.on_gui_click
 function trains_tab.handle.open_stop(player, player_data, refs, e)
-	local tags = e.element.tags
-	local kind, id = tags.stop_kind, tags.stop_id
-	local record
-	if kind == "station" then
-		record = storage.stations[id]
-	elseif kind == "depot" then
-		record = storage.depots[id]
-	elseif kind == "refueler" then
-		record = storage.refuelers[id]
-	end
-	local stop = record and record.entity_stop
-	if not (stop and stop.valid) then
-		util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
-		return
-	end
-
-	if e.shift then
-		player.centered_on = stop
-		rendering.draw_circle({
-			color = constants.colors.red.tbl,
-			target = stop.position,
-			surface = stop.surface,
-			radius = 0.5,
-			filled = false,
-			width = 5,
-			time_to_live = 60 * 3,
-			players = { player },
-		})
-		if not player_data.pinning then util.close_manager_window(player, player_data, refs) end
-	elseif e.control then
-		local comb = kind == "station" and record.entity_comb1 or record.entity_comb
-		if comb and comb.valid then
-			util.open_entity(player, player_data, comb)
-		else
-			util.error_flying_text(player, { "cybersyn-message.error-cybernetic-combinator-not-found" })
-		end
-	elseif e.alt and kind == "station" then
-		local comb = record.entity_comb2
-		if comb and comb.valid then
-			util.open_entity(player, player_data, comb)
-		else
-			util.error_flying_text(player, { "cybersyn-message.error-station-control-combinator-not-found" })
-		end
-	else
-		util.open_entity(player, player_data, stop)
-	end
+	util.handle_link_click(player, player_data, e)
 end
 
 --- @param e EventData.on_gui_click

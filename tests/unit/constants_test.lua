@@ -2,9 +2,8 @@
 
 local constants = require("scripts.gui.constants")
 
-test("content frame height", function()
-	-- PLAN3: §4.3 removes gui_content_frame_height; the window height comes from the screen instead.
-	assert_eq(constants.gui_content_frame_height, 784)
+test("content frame height is gone (PLAN3 §4.3: the window height comes from the screen)", function()
+	assert_nil(constants.gui_content_frame_height)
 end)
 
 test("stations column widths after the override block", function()

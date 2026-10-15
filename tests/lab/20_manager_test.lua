@@ -37,14 +37,6 @@ local function network_oracle(f)
 	return out
 end
 
---- Whether a rendered Overview row shows the model row with key `key`: item rows carry the hash, station rows the
---- station id (waiting keys are "station|hash", slowest keys "tick|station|hash"), a removed station nothing.
-local function shows(cell, key)
-	if cell == key or cell == "" then return true end
-	if type(key) ~= "string" or type(cell) ~= "number" then return false end
-	return string.find("|" .. key, "|" .. cell .. "|", 1, true) ~= nil
-end
-
 local function render(tab)
 	remote.call(D, "select_tab", pi, tab)
 	return remote.call(D, "update", pi, 1)
@@ -82,6 +74,8 @@ lab.suite("20_manager", {
 		remote.call(D, "collect")
 		local st = remote.call(D, "open", pi)
 		lab.check("manager opens", st.is_open, st)
+		-- Timed at the player's own screen (3840x2160 at 1.5 in the dev save); the row checks below use lab.big_screen.
+		remote.call(D, "set_layout", pi)
 		remote.call(D, "clear_filters", pi)
 		for _, tab in ipairs(lab.TABS) do
 			local ok, sel = pcall(remote.call, D, "select_tab", pi, tab)
@@ -94,6 +88,7 @@ lab.suite("20_manager", {
 	end,
 
 	function(ctx)
+		lab.big_screen(pi)
 		ctx.first = lab.tab_keys(pi)
 		lab.wait(120)
 	end,
@@ -299,25 +294,22 @@ lab.suite("20_manager", {
 			lab.check("overview renders at period " .. minutes, ok2, err)
 			local d = remote.call(D, "dump", pi, "overview")
 			lab.check("overview model period " .. minutes, d.period == minutes, d.period)
-			totals[minutes] = d.lists.delivered.total
-			-- The rendered table shows the model's rows from the list's scroll offset on, one per row.
-			for name, list in pairs(d.lists) do
-				local offset = d.offsets and d.offsets[name] or 0
-				local bad
-				for r, cells in ipairs(list.rendered) do
-					if not shows(cells[1], list.keys[offset + r]) then
-						bad = { row = r, cell = cells[1], key = list.keys[offset + r] }
-						break
-					end
+			totals[minutes] = d.tiles.throughput.deliveries
+			-- The Unserved table shows the model's rows in order, one per table row, at most the layout's row count.
+			local list = d.lists.unserved
+			local bad
+			for r, cells in ipairs(list.rendered) do
+				if cells.requester_id .. "|" .. cells.item ~= list.keys[r] then
+					bad = { row = r, cells = cells, key = list.keys[r] }
+					break
 				end
-				local want = math.max(0, math.min(#list.keys - offset, d.capacity))
-				lab.check(string.format("overview %s rendered rows match the model at period %d", name, minutes),
-					not bad and (#list.rendered == want or (want == 0 and #list.rendered == 0)),
-					bad or { rendered = #list.rendered, want = want })
 			end
+			local want = math.min(#list.keys, d.rows)
+			lab.check(string.format("overview unserved rendered rows match the model at period %d", minutes),
+				not bad and #list.rendered == want, bad or { rendered = #list.rendered, want = want })
 		end
-		lab.check("delivered over 10 min never exceeds delivered over 24 h", totals[10] <= totals[1440], totals)
-		lab.info("delivered list totals by period " .. serpent.line(totals, { comment = false }))
+		lab.check("deliveries over 10 min never exceed deliveries over 24 h", totals[10] <= totals[1440], totals)
+		lab.info("throughput deliveries by period " .. serpent.line(totals, { comment = false }))
 		remote.call(D, "set_period", pi, 60)
 	end,
 

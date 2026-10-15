@@ -13,6 +13,8 @@ local TAB = "stations_tab"
 local SCROLL = "manager_stations_tab_scroll_pane"
 local CHIPS = "manager_stations_status_flow"
 local UNLIMITED = collector.UNLIMITED
+-- Every row is as tall as two slot lines, so the window's row count holds (scripts/gui/sizing.lua).
+local ROW_HEIGHT = require("scripts.gui.sizing").ROW_HEIGHT[TAB]
 
 --- Severity order: the status sort and the filter chips both follow it.
 local STATUSES = collector.STATUSES
@@ -685,6 +687,7 @@ end
 --- @param w table stations column widths
 local function restyle_row(refs, row, color, w)
 	row.style = "ltnm_table_row_frame_" .. color
+	row.style.minimal_height = ROW_HEIGHT
 	local frame = "ltnm_small_slot_table_frame_" .. color
 	refs.pr_frame.style = frame
 	refs.pr_frame.style.width = w.provided_requested
@@ -714,6 +717,7 @@ local function row_def(st, m, color, item, widths)
 	return util.hoverable({
 		type = "frame",
 		style = "ltnm_table_row_frame_" .. color,
+		style_mods = { minimal_height = ROW_HEIGHT },
 		direction = "horizontal",
 		tags = { station_id = st.id },
 		util.hoverable({
@@ -971,6 +975,11 @@ dev.register_dump(TAB, function(player_data)
 end)
 
 
+dev.register_rows(TAB, function(player_data)
+	local pane = player_data.refs[SCROLL]
+	return pane and pane.valid and pane.visible and #pane.children or 0
+end)
+
 stations_tab.handle = {}
 
 --- @param e {player_index: uint}
@@ -985,52 +994,7 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function stations_tab.handle.open_station_gui(player, player_data, refs, e)
-	local station_id = e.element.tags.station_id
-	--- @type Station
-	local station = storage.stations[station_id]
-	if not station then
-		util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
-		return
-	end
-	local station_entity = station.entity_stop
-	local station_comb1 = station.entity_comb1
-	local station_comb2 = station.entity_comb2
-
-	if not station_entity or not station_entity.valid then
-		util.error_flying_text(player, { "message.ltnm-error-station-is-invalid" })
-		return
-	end
-
-	if e.shift then
-		player.centered_on = station_entity
-
-		rendering.draw_circle({
-			color = constants.colors.red.tbl,
-			target = station_entity.position,
-			surface = station_entity.surface,
-			radius = 0.5,
-			filled = false,
-			width = 5,
-			time_to_live = 60 * 3,
-			players = { player },
-		})
-
-		if not player_data.pinning then util.close_manager_window(player, player_data, refs) end
-	elseif e.control then
-		if station_comb1 ~= nil and station_comb1.valid then
-			util.open_entity(player, player_data, station_comb1)
-		else
-			util.error_flying_text(player, { "cybersyn-message.error-cybernetic-combinator-not-found" })
-		end
-	elseif e.alt then
-		if station_comb2 ~= nil and station_comb2.valid then
-			util.open_entity(player, player_data, station_comb2)
-		else
-			util.error_flying_text(player, { "cybersyn-message.error-station-control-combinator-not-found" })
-		end
-	else
-		util.open_entity(player, player_data, station_entity)
-	end
+	util.handle_link_click(player, player_data, e)
 end
 
 --- @param e EventData.on_gui_click

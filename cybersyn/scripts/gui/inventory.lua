@@ -15,6 +15,7 @@ local GRID_COLUMNS = 9
 local TOOLBAR_HEIGHT = 28
 local GRID_HEADER_HEIGHT = 20
 local SPACING = 8
+local SLOT_ROW = 40
 local TOP_N = 5
 local WAIT_SIG_TICKS = 600
 -- A completed pass changes a few hundred buttons on a large base; each costs ~15 us (tooltip rebuild plus API
@@ -50,11 +51,12 @@ local function grid_def(grid)
 		{
 			type = "frame",
 			style = "deep_frame_in_shallow_frame",
-			style_mods = { horizontally_stretchable = true, vertically_stretchable = true },
+			style_mods = { horizontally_stretchable = true },
 			{
 				type = "scroll-pane",
+				name = "inventory_" .. grid .. "_scroll",
 				style = "ltnm_slot_table_scroll_pane",
-				style_mods = { horizontally_stretchable = true, vertically_stretchable = true },
+				style_mods = { horizontally_stretchable = true },
 				vertical_scroll_policy = "auto-and-reserve-space",
 				{
 					type = "table",
@@ -72,7 +74,7 @@ local function sort_toolbar_def()
 		type = "flow",
 		name = "inventory_sort_toolbar",
 		direction = "horizontal",
-		style_mods = { vertical_align = "center", horizontal_spacing = 12, height = TOOLBAR_HEIGHT },
+		style_mods = { vertical_align = "center", horizontal_spacing = 12, height = TOOLBAR_HEIGHT, top_margin = SPACING },
 		{ type = "label", style = "bold_label", caption = { "cybersyn-gui.inventory-sort-by" } },
 	}
 	for _, column in ipairs(SORT_COLUMNS) do
@@ -103,8 +105,8 @@ function inventory_tab.create()
 			name = "manager_inventory_content_frame",
 			type = "flow",
 			direction = "vertical",
-			-- Same height as the other tabs, so the window does not grow below them; the grids get exactly 18 slot rows.
-			style_mods = { vertical_spacing = SPACING, height = constants.gui_content_frame_height },
+			-- Its height and the grids' slot rows come from the window layout (inventory_tab.apply_layout).
+			style_mods = { vertical_spacing = 0 },
 			sort_toolbar_def(),
 			{
 				name = "inventory_empty_flow",
@@ -121,7 +123,7 @@ function inventory_tab.create()
 				name = "inventory_grids_flow",
 				type = "flow",
 				direction = "horizontal",
-				style_mods = { horizontal_spacing = 12, vertically_stretchable = true },
+				style_mods = { horizontal_spacing = 12, top_margin = SPACING },
 				grid_def("provided"),
 				grid_def("in_transit"),
 				grid_def("requested"),
@@ -129,6 +131,28 @@ function inventory_tab.create()
 		},
 	}
 end
+
+--- Whole slot rows: each grid's scroll pane shows exactly the layout's row count.
+--- @param player_data PlayerData
+--- @param layout ManagerLayout
+function inventory_tab.apply_layout(player_data, layout)
+	local rows = layout.rows_by_tab[TAB]
+	for _, grid in ipairs(GRIDS) do
+		local pane = player_data.refs["inventory_" .. grid .. "_scroll"]
+		if pane and pane.valid then pane.style.height = rows * SLOT_ROW end
+	end
+end
+
+--- Visible slot rows of the grids, for dev.rows.
+--- @param player_data PlayerData
+--- @return int
+function inventory_tab.rendered_rows(player_data)
+	local pane = player_data.refs.inventory_provided_scroll
+	if not (pane and pane.valid) then return 0 end
+	return math.floor((pane.style.maximal_height or 0) / SLOT_ROW)
+end
+
+dev.register_rows(TAB, inventory_tab.rendered_rows)
 
 --- Keeps the TOP_N largest entries in a flat {mag, id, name, mag, id, name, ...} list, ties broken by station id
 --- so the list does not depend on station iteration order.
@@ -395,6 +419,7 @@ local function entry_build(ctx, entry)
 		sprite = sprite,
 		quality = quality,
 		style = entry.style,
+		elem_tooltip = util.elem_tooltip(hash),
 		tags = { item_hash = hash },
 		handler = { [defines.events.on_gui_click] = inventory_tab.handle.on_inventory_item_click },
 		tooltip = entry_tooltip(ctx, entry),

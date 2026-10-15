@@ -512,16 +512,49 @@ function util.touch_hover(e)
 	end
 end
 
+--- Lowercase form used for station names and search terms alike. Rich-text tags stay as they are, so a query that
+--- contains an icon tag matches the names that show that icon.
+--- @param text string
+--- @return string
+function util.normalize(text)
+	return helpers.multilingual_to_lower(text)
+end
+
+--- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
+--- plain = true), never as Lua patterns, so "[", "%" or "-" in a query match themselves.
+--- Any click in the manager other than on a search field takes the keyboard away from it, so a later Escape closes
+--- the window again instead of cancelling the search (manager.cancel_search).
+--- @param e EventData.on_gui_click
+function util.note_click(e)
+	local elem = e.element
+	if not (elem and elem.valid) then return end
+	local manager_data = storage.manager
+	local player_data = manager_data and manager_data.players[e.player_index]
+	if not (player_data and player_data.search_focused) then return end
+	if not string.find(elem.name, "_search_field$") then player_data.search_focused = nil end
+end
+
 --- @param text string?
 --- @return string[]?
 function util.search_terms(text)
 	if not text then return nil end
 	local terms = {}
-	for term in string.gmatch(string.lower(text), "%S+") do
+	for term in string.gmatch(util.normalize(text), "%S+") do
 		terms[#terms + 1] = term
 	end
 	if #terms == 0 then return nil end
 	return terms
+end
+
+--- True when every term occurs in `name_lower` (already normalised).
+--- @param name_lower string
+--- @param terms string[]
+--- @return boolean
+function util.terms_match(name_lower, terms)
+	for i = 1, #terms do
+		if not string.find(name_lower, terms[i], 1, true) then return false end
+	end
+	return true
 end
 
 --- @param player_data PlayerData
@@ -597,12 +630,7 @@ end
 function util.station_passes(st, f, ignore_item)
 	if f.surface and st.surface_index ~= f.surface then return false end
 	local terms = f.terms
-	if terms then
-		local name = st.name_lower
-		for i = 1, #terms do
-			if not string.find(name, terms[i], 1, true) then return false end
-		end
-	end
+	if terms and not util.terms_match(st.name_lower, terms) then return false end
 	if not util.network_passes(st.network_name, st.network_mask, f) then return false end
 	local item = f.item
 	if item and not ignore_item then
@@ -631,7 +659,7 @@ end
 --- @return boolean
 function util.train_terms_pass(tr, terms)
 	local stations = collector.get().stations
-	local depot = tr.depot_name and string.lower(tr.depot_name)
+	local depot = tr.depot_name and util.normalize(tr.depot_name)
 	local p = tr.p_station_id and stations[tr.p_station_id]
 	local r = tr.r_station_id and stations[tr.r_station_id]
 	p = p and p.name_lower
@@ -686,15 +714,21 @@ function util.set_sort(player_data, tab, column, ascending)
 	util.reset_page(player_data, tab)
 end
 
+--- Rows per page of a list tab: as many as its window height fits (player_data.layout), at most the
+--- cybersyn-manager-page-size setting.
 --- @param player_data PlayerData
+--- @param tab string?
 --- @return integer
-function util.page_size(player_data)
+function util.page_size(player_data, tab)
 	local size = player_data.page_size
 	if not size then
 		local setting = settings.get_player_settings(player_data.player_index)["cybersyn-manager-page-size"]
-		size = setting and setting.value --[[@as integer]] or 50
+		size = setting and setting.value --[[@as integer]] or 200
 		player_data.page_size = size
 	end
+	local layout = tab and player_data.layout
+	local rows = layout and layout.rows_by_tab and layout.rows_by_tab[tab]
+	if rows and rows < size then return rows end
 	return size
 end
 
@@ -719,7 +753,7 @@ end
 --- @return integer page
 --- @return integer pages
 function util.paginate(player_data, tab, total)
-	local size = util.page_size(player_data)
+	local size = util.page_size(player_data, tab)
 	local pages = math.max(1, math.ceil(total / size))
 	player_data.page = player_data.page or {}
 	local page = math.min(math.max(player_data.page[tab] or 1, 1), pages)
@@ -889,6 +923,7 @@ local function slot_button(hash, count, color, tooltip_tail)
 		enabled = false,
 		style = "ltnm_small_slot_button_" .. color,
 		tooltip = tooltip,
+		elem_tooltip = util.elem_tooltip(hash),
 		tags = { item_hash = hash },
 		children = {
 			{
@@ -997,6 +1032,227 @@ end
 function util.open_entity(player, player_data, entity)
 	player_data.return_to = { entity = entity, tick = game.tick, controller = player.controller_type }
 	player.opened = entity
+end
+
+-- ---------------------------------------------------------------- links (PLAN3 §4.6)
+
+local elem_tooltip_cache = {}
+
+--- The native item or fluid tooltip of an item hash (stacks above a custom tooltip), or nil for anything else.
+--- @param hash string
+--- @return ElemID?
+function util.elem_tooltip(hash)
+	local cached = elem_tooltip_cache[hash]
+	if cached == nil then
+		local name, quality = unhash_signal(hash)
+		if prototypes.item[name] and not (quality and not prototypes.quality[quality]) then
+			cached = { type = "item-with-quality", name = name, quality = quality or "normal" }
+		elseif prototypes.fluid[name] then
+			cached = { type = "fluid", name = name }
+		else
+			cached = false
+		end
+		elem_tooltip_cache[hash] = cached
+	end
+	return cached or nil
+end
+
+--- The modifier line at the end of every link cell's tooltip.
+util.LINK_FOOTER = { "cybersyn-gui.link-footer" }
+
+local MARKER_TICKS = 300
+
+--- @param train_entity LuaTrain
+--- @return LuaEntity?
+local function main_locomotive(train_entity)
+	local locomotives = train_entity.locomotives
+	return locomotives.front_movers[1] or locomotives.back_movers[1]
+end
+
+--- One marker pair per player (map and world view); drawing a new pair removes the old one.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param target LuaEntity
+function util.draw_markers(player, player_data, target)
+	local old = player_data.markers
+	if old then
+		for _, id in ipairs(old) do
+			local obj = rendering.get_object_by_id(id)
+			if obj and obj.valid then obj.destroy() end
+		end
+	end
+	local common = {
+		color = { 1, 0.27, 0.27 },
+		target = target,
+		surface = target.surface,
+		radius = 2,
+		filled = false,
+		width = 6,
+		time_to_live = MARKER_TICKS,
+		players = { player },
+	}
+	common.render_mode = "game"
+	local world = rendering.draw_circle(common)
+	common.render_mode = "chart"
+	common.radius = 4
+	local chart = rendering.draw_circle(common)
+	player_data.markers = { world.id, chart.id }
+end
+
+local refresh_toggles_fn
+
+--- Lets manager.lua repaint the title-bar toggles without a require cycle.
+--- @param fn fun(player_data: PlayerData)
+function util.set_refresh_toggles(fn)
+	refresh_toggles_fn = fn
+end
+
+--- Remote view closes an unpinned manager (PLAN3 §1), so the window is pinned first and unpinned again when the
+--- player leaves remote view (manager.on_controller_changed).
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+local function pin_for_map(player, player_data)
+	if not player_data.is_manager_open or player_data.pinning then return end
+	player_data.pinning = true
+	player_data.auto_pinned = true
+	local window = player_data.refs and player_data.refs.manager_window
+	-- Releasing player.opened raises on_gui_closed, which a pinned window ignores.
+	if window and window.valid and player.opened == window then player.opened = nil end
+	if refresh_toggles_fn then refresh_toggles_fn(player_data) end
+end
+
+--- Where the camera must look so that `position` lands in the middle of the larger free strip beside the window.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param position MapPosition
+--- @return MapPosition
+local function offset_position(player, player_data, position)
+	local window = player_data.refs and player_data.refs.manager_window
+	local res = player.display_resolution
+	if not (window and window.valid and window.visible and res.width > 0) then return position end
+	local loc = window.location
+	local layout = player_data.layout
+	local width_px = (layout and layout.width or 1440) * player.display_scale
+	local left, right = loc.x, res.width - (loc.x + width_px)
+	local screen_x
+	if left >= right then
+		screen_x = left / 2
+	else
+		screen_x = loc.x + width_px + right / 2
+	end
+	-- 32 physical pixels per tile at zoom 1.
+	local per_tile = 32 * player.zoom
+	return { x = position.x - (screen_x - res.width / 2) / per_tile, y = position.y }
+end
+
+--- Shift-click on a link: remote view on the target, the target beside the manager, a marker pair on it.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param target LuaEntity
+--- @param follow LuaEntity? an entity for remote view to follow (a train's front stock)
+function util.show_on_map(player, player_data, target, follow)
+	pin_for_map(player, player_data)
+	if follow then
+		player.centered_on = follow
+	else
+		player.set_controller({ type = defines.controllers.remote, position = target.position, surface = target.surface })
+		-- Remote view keeps its own zoom, known only once the view is open.
+		local pos = offset_position(player, player_data, target.position)
+		if pos ~= target.position then
+			player.set_controller({ type = defines.controllers.remote, position = pos, surface = target.surface })
+		end
+	end
+	util.draw_markers(player, player_data, target)
+	local back = player_data.refs and player_data.refs.manager_back_button
+	if back and back.valid then back.visible = player_data.auto_pinned == true end
+end
+
+--- @param e EventData.on_gui_click
+--- @return string? kind
+--- @return any id
+local function link_target(e)
+	local tags = e.element.tags
+	local kind, id = tags.kind, tags.id
+	if kind and id ~= nil then return kind, id end
+	if tags.item_hash then return "item", tags.item_hash end
+	if tags.train_id then return "train", tags.train_id end
+	if tags.stop_kind then return tags.stop_kind, tags.stop_id end
+	if tags.station_id then return "station", tags.station_id end
+	return nil, nil
+end
+
+--- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
+--- right on an item = clear the item filter. Tags {kind = "station"|"depot"|"refueler"|"train"|"item", id}; the
+--- older tag shapes of the Stations and Trains rows are read too.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param e EventData.on_gui_click
+function util.handle_link_click(player, player_data, e)
+	local kind, id = link_target(e)
+	if not kind then return end
+	if kind == "item" then
+		util.item_button_click(player, player_data, e, id)
+		return
+	end
+	if e.button and e.button ~= defines.mouse_button_type.left then return end
+	if kind == "train" then
+		local train = storage.trains[id]
+		local entity = train and train.entity
+		if not (entity and entity.valid) then
+			util.error_flying_text(player, { "cybersyn-message.error-train-is-invalid" })
+			return
+		end
+		local locomotive = main_locomotive(entity)
+		if e.shift then
+			local front = entity.front_stock
+			if front then util.show_on_map(player, player_data, front, front) end
+			return
+		end
+		if not (locomotive and locomotive.valid) then
+			util.error_flying_text(player, { "cybersyn-gui.train-has-no-locomotive" })
+			return
+		end
+		util.open_entity(player, player_data, locomotive)
+		return
+	end
+	local record
+	if kind == "station" then
+		record = storage.stations[id]
+	elseif kind == "depot" then
+		record = storage.depots[id]
+	elseif kind == "refueler" then
+		record = storage.refuelers[id]
+	end
+	local stop = record and record.entity_stop
+	if not (stop and stop.valid) then
+		util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
+		return
+	end
+	if e.shift then
+		util.show_on_map(player, player_data, stop)
+	elseif e.control then
+		local comb = kind == "station" and record.entity_comb1 or record.entity_comb
+		if comb and comb.valid then
+			util.open_entity(player, player_data, comb)
+		else
+			util.error_flying_text(player, { "cybersyn-message.error-cybernetic-combinator-not-found" })
+		end
+	elseif e.alt and kind == "station" then
+		local comb = record.entity_comb2
+		if comb and comb.valid then
+			util.open_entity(player, player_data, comb)
+		else
+			util.error_flying_text(player, { "cybersyn-message.error-station-control-combinator-not-found" })
+		end
+	else
+		util.open_entity(player, player_data, stop)
+	end
+end
+
+--- @param e EventData.on_gui_click
+function util.handle.link_click(player, player_data, refs, e)
+	util.touch_hover(e)
+	util.handle_link_click(player, player_data, e)
 end
 
 --- @param force boolean? Close even when pinned (close button, toggle shortcut).

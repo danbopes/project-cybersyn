@@ -151,24 +151,12 @@ styles.ltnm_warning_flow = {
 
 -- FRAME STYLES
 
+-- The height comes from the player's screen at runtime (scripts/gui/sizing.lua).
 styles.ltnm_main_content_frame = {
 	type = "frame_style",
 	parent = "deep_frame_in_shallow_frame",
-	height = constants.gui_content_frame_height,
 }
 
-styles.ltnm_main_toolbar_frame = {
-	type = "frame_style",
-	parent = "subheader_frame",
-	top_margin = 4,
-	bottom_margin = 12,
-	vertical_align = "center",
-	horizontal_flow_style = {
-		type = "horizontal_flow_style",
-		horizontal_spacing = 12,
-		vertical_align = "center",
-	},
-}
 
 styles.ltnm_small_slot_table_frame_light = {
 	type = "frame_style",
@@ -271,20 +259,6 @@ styles.ltnm_table_toolbar_frame = {
 	},
 }
 
-styles.ltnm_main_warning_frame = {
-	type = "frame_style",
-	parent = "deep_frame_in_shallow_frame",
-	height = constants.gui_content_frame_height,
-	graphical_set = {
-		base = {
-			position = { 85, 0 },
-			corner_size = 8,
-			center = { position = { 411, 25 }, size = { 1, 1 } },
-			draw_type = "outer",
-		},
-		shadow = default_inner_shadow,
-	},
-}
 
 -- LABEL STYLES
 
@@ -489,44 +463,220 @@ data:extend({
 	},
 })
 
+-- WINDOW (PLAN3 §4.3)
+
+data:extend({
+	data_util.build_sprite("cybersyn_filter_white", { 0, 0 }, "__cybersyn__/graphics/gui/filter-white.png", 32),
+	{
+		-- Ctrl+F (or whatever the player bound to the game's search) while the manager is open.
+		type = "custom-input",
+		name = "cybersyn-manager-search",
+		key_sequence = "",
+		linked_game_control = "focus-search",
+		action = "lua",
+	},
+})
+
+styles.cybersyn_tab_subheader = {
+	type = "frame_style",
+	parent = "subheader_frame",
+	horizontally_stretchable = "on",
+	left_padding = 8,
+	right_padding = 8,
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 8,
+		vertical_align = "center",
+	},
+}
+
+styles.cybersyn_filter_row = {
+	type = "frame_style",
+	parent = "cybersyn_tab_subheader",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 12,
+		vertical_align = "center",
+	},
+}
+
+-- The red of the negative subheader, without its negative margin.
+styles.cybersyn_banner_frame = {
+	type = "frame_style",
+	parent = "cybersyn_tab_subheader",
+	graphical_set = {
+		base = {
+			center = { position = { 411, 25 }, size = { 1, 1 } },
+			bottom = { position = { 411, 26 }, size = { 1, 8 } },
+		},
+		shadow = bottom_shadow,
+	},
+}
+
+styles.cybersyn_banner_label = {
+	type = "label_style",
+	parent = "bold_label",
+	font_color = { 1, 1, 1 },
+}
+
+styles.cybersyn_subheader_note = {
+	type = "label_style",
+	font_color = { 0.7, 0.7, 0.7 },
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_search_field = {
+	type = "textbox_style",
+	width = 200,
+}
+
+-- Item filter chip: "[icon] Filtered: Iron plate ×".
+styles.cybersyn_item_chip_icon = {
+	type = "button_style",
+	parent = "flib_slot_button_orange",
+	size = 28,
+}
+
+styles.cybersyn_item_chip = {
+	type = "button_style",
+	parent = "button",
+	height = 28,
+	minimal_width = 0,
+	left_padding = 8,
+	right_padding = 8,
+	default_font_color = { 0, 0, 0 },
+	default_graphical_set = {
+		base = { position = { 0, 17 }, corner_size = 8, tint = { 1, 0.78, 0.45 } },
+		shadow = default_dirt,
+	},
+	hovered_graphical_set = {
+		base = { position = { 34, 17 }, corner_size = 8, tint = { 1, 0.78, 0.45 } },
+		shadow = default_dirt,
+		glow = default_glow(default_glow_color, 0.5),
+	},
+	clicked_graphical_set = {
+		base = { position = { 51, 17 }, corner_size = 8, tint = { 1, 0.78, 0.45 } },
+		shadow = default_dirt,
+	},
+}
+
+-- Reason chips (PLAN3 §8): red = nothing changes on its own, orange = waiting on stock or capacity, grey = a setting.
+local function chip(tint)
+	local style = {
+		type = "button_style",
+		parent = "button",
+		height = 28,
+		minimal_width = 0,
+		left_padding = 8,
+		right_padding = 8,
+		horizontally_squashable = "on",
+		font = "default-semibold",
+		default_font_color = { 0, 0, 0 },
+		hovered_font_color = { 0, 0, 0 },
+		clicked_font_color = { 0, 0, 0 },
+	}
+	if tint then
+		style.default_graphical_set = {
+			base = { position = { 0, 17 }, corner_size = 8, tint = tint },
+			shadow = default_dirt,
+		}
+		style.hovered_graphical_set = {
+			base = { position = { 34, 17 }, corner_size = 8, tint = tint },
+			shadow = default_dirt,
+			glow = default_glow(default_glow_color, 0.5),
+		}
+		style.clicked_graphical_set = {
+			base = { position = { 51, 17 }, corner_size = 8, tint = tint },
+			shadow = default_dirt,
+		}
+	end
+	return style
+end
+styles.cybersyn_chip_red = chip({ 1, 0.5, 0.45 })
+styles.cybersyn_chip_orange = chip({ 1, 0.78, 0.45 })
+styles.cybersyn_chip_grey = chip(nil)
+
+-- A link cell: text that opens what it names (scripts/gui/util.lua util.handle_link_click).
+styles.cybersyn_link_button = {
+	type = "button_style",
+	parent = "transparent_button",
+	font = "default-semibold",
+	horizontal_align = "left",
+	minimal_width = 0,
+	height = 32,
+	left_padding = 2,
+	right_padding = 2,
+	horizontally_squashable = "on",
+	default_font_color = { 0.9, 0.9, 0.9 },
+	hovered_font_color = { 1, 0.74, 0.4 },
+	clicked_font_color = { 1, 0.74, 0.4 },
+	disabled_font_color = { 0.5, 0.5, 0.5 },
+	disabled_graphical_set = {},
+}
+
+styles.cybersyn_link_button_acked = {
+	type = "button_style",
+	parent = "cybersyn_link_button",
+	default_font_color = { 0.5, 0.5, 0.5 },
+}
+
+styles.cybersyn_name_icon = {
+	type = "button_style",
+	parent = "transparent_slot",
+	size = 20,
+}
+
 -- OVERVIEW TAB STYLES
 
 styles.cybersyn_overview_content = {
 	type = "vertical_flow_style",
-	vertical_spacing = 8,
+	vertical_spacing = 0,
 	horizontally_stretchable = "on",
 }
 
 styles.cybersyn_overview_tile_row = {
 	type = "horizontal_flow_style",
 	horizontal_spacing = 12,
-	horizontally_stretchable = "on",
+	top_margin = 12,
+	height = 108,
 }
 
--- Fixed so the period, the data or a caption can never shift the row: five tiles and four 12 px gaps fill the
--- tab's content width.
+local shallow_base = {
+	position = { 17, 0 },
+	corner_size = 8,
+	center = { position = { 76, 8 }, size = { 1, 1 } },
+	draw_type = "outer",
+}
+
+-- A whole tile is one button (it jumps to the matching tab); it looks like a shallow frame and glows on hover.
 styles.cybersyn_overview_tile = {
-	type = "frame_style",
-	parent = "inside_shallow_frame",
-	width = 228,
-	vertically_stretchable = "on",
-	vertical_flow_style = {
-		type = "vertical_flow_style",
-		vertical_spacing = 0,
-	},
+	type = "button_style",
+	parent = "button",
+	height = 108,
+	padding = 0,
+	minimal_width = 0,
+	default_graphical_set = { base = shallow_base, shadow = default_inner_shadow },
+	hovered_graphical_set = { base = shallow_base, shadow = default_inner_shadow, glow = default_glow(default_glow_color, 0.5) },
+	clicked_graphical_set = { base = shallow_base, shadow = default_inner_shadow },
+	disabled_graphical_set = { base = shallow_base, shadow = default_inner_shadow },
+	clicked_vertical_offset = 0,
+}
+
+-- 4 + header 28 + four 18 px lines + 4 = the 108 px tile.
+styles.cybersyn_overview_tile_body = {
+	type = "vertical_flow_style",
+	vertical_spacing = 0,
+	top_padding = 4,
+	bottom_padding = 4,
+	left_padding = 10,
+	right_padding = 10,
 }
 
 styles.cybersyn_overview_tile_header = {
-	type = "frame_style",
-	parent = "subheader_frame",
-	horizontally_stretchable = "on",
-	left_padding = 8,
-	right_padding = 10,
-	horizontal_flow_style = {
-		type = "horizontal_flow_style",
-		horizontal_spacing = 6,
-		vertical_align = "center",
-	},
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 6,
+	height = 28,
 }
 
 styles.cybersyn_overview_tile_icon = {
@@ -535,20 +685,16 @@ styles.cybersyn_overview_tile_icon = {
 	stretch_image_to_widget_size = true,
 }
 
+styles.cybersyn_overview_tile_caption = {
+	type = "label_style",
+	parent = "caption_label",
+	horizontally_squashable = "on",
+}
+
 styles.cybersyn_overview_big_number = {
 	type = "label_style",
 	font = "default-large-bold",
 	font_color = { 255, 230, 192 },
-}
-
-styles.cybersyn_overview_tile_body = {
-	type = "vertical_flow_style",
-	top_padding = 6,
-	bottom_padding = 6,
-	left_padding = 10,
-	right_padding = 10,
-	vertical_spacing = 0,
-	horizontally_stretchable = "on",
 }
 
 styles.cybersyn_overview_line_flow = {
@@ -556,12 +702,12 @@ styles.cybersyn_overview_line_flow = {
 	vertical_align = "center",
 	horizontal_spacing = 8,
 	height = 18,
-	horizontally_stretchable = "on",
 }
 
 styles.cybersyn_overview_line_label = {
 	type = "label_style",
 	font_color = { 0.85, 0.85, 0.85 },
+	horizontally_squashable = "on",
 }
 
 styles.cybersyn_overview_line_value = {
@@ -571,90 +717,50 @@ styles.cybersyn_overview_line_value = {
 	minimal_width = 40,
 }
 
-styles.cybersyn_overview_idle_bar = {
-	type = "progressbar_style",
-	parent = "progressbar",
-	bar_width = 8,
-	width = 64,
-}
-
-styles.cybersyn_overview_subheader = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 8,
-	height = 28,
-	horizontally_stretchable = "on",
-}
-
-styles.cybersyn_overview_filter_note = {
-	type = "label_style",
-	font_color = { 0.7, 0.7, 0.7 },
-	horizontally_squashable = "on",
-}
-
 styles.cybersyn_overview_period_dropdown = {
 	type = "dropdown_style",
 	parent = "dropdown",
 	width = 140,
 }
 
-styles.cybersyn_overview_panels = {
-	type = "vertical_flow_style",
-	vertical_spacing = 12,
-	horizontally_stretchable = "on",
-}
-
-styles.cybersyn_overview_panel_row = {
-	type = "horizontal_flow_style",
-	horizontal_spacing = 12,
-	horizontally_stretchable = "on",
-}
-
--- Fixed like the tiles: a stretched frame grows with its natural content, so a panel whose header or names were
--- wider ended up wider than its neighbours and the two rows' edges drifted apart. Three panels and two 12 px gaps
--- equal the tile row (5 x 228 + 4 x 12).
-styles.cybersyn_overview_panel = {
+styles.cybersyn_unserved_frame = {
 	type = "frame_style",
 	parent = "inside_deep_frame",
-	width = 388,
-	horizontally_squashable = "on",
+	top_margin = 12,
+	horizontally_stretchable = "on",
 	vertical_flow_style = {
 		type = "vertical_flow_style",
 		vertical_spacing = 0,
 	},
 }
 
-styles.cybersyn_overview_panel_header = {
+styles.cybersyn_unserved_caption_frame = {
 	type = "frame_style",
 	parent = "subheader_frame",
 	horizontally_stretchable = "on",
 	left_padding = 8,
-	right_padding = 10,
-}
-
-styles.cybersyn_overview_count_label = {
-	type = "label_style",
-	font_color = { 0.7, 0.7, 0.7 },
-}
-
-styles.cybersyn_overview_panel_body = {
-	type = "scroll_pane_style",
-	parent = "flib_naked_scroll_pane_no_padding",
-	horizontally_stretchable = "on",
-	vertical_flow_style = {
-		type = "vertical_flow_style",
-		vertical_spacing = 0,
+	right_padding = 8,
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 8,
+		vertical_align = "center",
 	},
 }
 
-styles.cybersyn_overview_table = {
+styles.cybersyn_unserved_count_button = {
+	type = "button_style",
+	parent = "cybersyn_link_button",
+	height = 28,
+	font = "default-bold",
+}
+
+styles.cybersyn_unserved_table = {
 	type = "table_style",
 	parent = "table",
 	horizontal_spacing = 8,
 	vertical_spacing = 0,
 	left_padding = 4,
 	right_padding = 10,
-	horizontally_stretchable = "on",
 	odd_row_graphical_set = {
 		filename = "__core__/graphics/gui-new.png",
 		position = { 472, 25 },
@@ -662,29 +768,31 @@ styles.cybersyn_overview_table = {
 	},
 }
 
-styles.cybersyn_overview_cell_icon = {
+styles.cybersyn_unserved_item = {
 	type = "button_style",
 	parent = "transparent_slot",
-	size = 28,
+	size = 32,
 }
 
-styles.cybersyn_overview_cell_name = {
-	type = "label_style",
-	font = "default-semibold",
-	height = 32,
-	vertical_align = "center",
-	horizontally_stretchable = "on",
-	horizontally_squashable = "on",
-}
-
-styles.cybersyn_overview_cell_value = {
+styles.cybersyn_unserved_cell = {
 	type = "label_style",
 	height = 32,
 	vertical_align = "center",
+}
+
+styles.cybersyn_unserved_value = {
+	type = "label_style",
+	parent = "cybersyn_unserved_cell",
 	horizontal_align = "right",
 }
 
-styles.cybersyn_overview_cell_header = {
+styles.cybersyn_unserved_value_acked = {
+	type = "label_style",
+	parent = "cybersyn_unserved_value",
+	font_color = { 0.5, 0.5, 0.5 },
+}
+
+styles.cybersyn_unserved_header = {
 	type = "label_style",
 	font = "default-small-semibold",
 	font_color = { 0.6, 0.6, 0.6 },
@@ -693,16 +801,36 @@ styles.cybersyn_overview_cell_header = {
 	horizontally_squashable = "on",
 }
 
-styles.cybersyn_overview_cell_header_value = {
+styles.cybersyn_unserved_header_value = {
 	type = "label_style",
-	parent = "cybersyn_overview_cell_header",
+	parent = "cybersyn_unserved_header",
 	horizontal_align = "right",
-	horizontally_squashable = "off",
+}
+
+styles.cybersyn_unserved_cell_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 4,
+	height = 32,
+}
+
+styles.cybersyn_unserved_icon_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 2,
+	width = 64,
+}
+
+styles.cybersyn_unserved_ack = {
+	type = "button_style",
+	parent = "tool_button",
+	size = 28,
 }
 
 styles.cybersyn_overview_empty_flow = {
 	type = "horizontal_flow_style",
 	horizontal_align = "center",
+	vertical_align = "center",
 	horizontally_stretchable = "on",
 }
 
@@ -712,5 +840,5 @@ styles.cybersyn_overview_empty_label = {
 	single_line = false,
 	horizontal_align = "center",
 	vertical_align = "center",
-	maximal_width = 320,
+	maximal_width = 600,
 }

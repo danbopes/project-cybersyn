@@ -60,7 +60,7 @@ local function state(pi)
 		last_update_tick = pd.last_update_tick,
 		rendered_snapshot_tick = pd.rendered_snapshot_tick,
 		page = pd.page,
-		page_size = util.page_size(pd),
+		page_size = util.page_size(pd, pd.selected_tab),
 		sort = pd.sort,
 		filters = util.get_filters(pd),
 		hover = pd.hover,
@@ -140,11 +140,171 @@ function interface.open(pi, async)
 	return state(pi)
 end
 
---- The title-bar status caption and the boosted pass progress (nil when no boosted pass runs).
+--- The selected tab's subheader progress ("Collecting… n %", nil while hidden), the title-bar status caption and
+--- whether it shows, and the boosted pass progress (nil when no boosted pass runs).
 function interface.status(pi)
 	local _, pd, refs = context(pi)
 	local label = refs.manager_updated_label
-	return { caption = label and label.valid and label.caption or nil, collecting = collector.collecting(), snapshot_tick = collector.get().tick }
+	local note = refs[(pd.selected_tab or "overview_tab") .. "_collecting"]
+	return {
+		subheader = note and note.valid and note.visible and note.caption or nil,
+		caption = label and label.valid and label.caption or nil,
+		title_visible = label and label.valid and label.visible or false,
+		collecting = collector.collecting(),
+		snapshot_tick = collector.get().tick,
+	}
+end
+
+local ROW_COUNTERS = {}
+
+--- Tab modules report how many rows they render (PLAN3 §6 gate 5).
+--- @param tab string
+--- @param fn fun(player_data: PlayerData): int
+function dev.register_rows(tab, fn)
+	ROW_COUNTERS[canonical(tab)] = fn
+end
+
+--- Computed against rendered rows of a tab, and the window height against 0.85 of the screen.
+function interface.rows(pi, tab)
+	local player, pd = context(pi)
+	tab = canonical(tab or pd.selected_tab or "overview")
+	local layout = pd.layout or manager.layout(player, pd)
+	local fn = ROW_COUNTERS[tab]
+	return {
+		tab = tab,
+		computed = layout.rows_by_tab[tab],
+		rendered = fn and fn(pd) or nil,
+		page_size = util.page_size(pd, tab),
+		width = layout.width,
+		content_height = layout.content_height,
+		window_height = layout.window_height,
+		max_height = math.floor(0.85 * layout.screen_height),
+		screen = { layout.screen_width, layout.screen_height, layout.scale },
+	}
+end
+
+--- Emulates another screen (physical resolution and UI scale) for the layout; no arguments = the player's own.
+function interface.set_layout(pi, width, height, scale)
+	local player, pd = context(pi)
+	pd.layout_override = width and { width = width, height = height, scale = scale or 1 } or nil
+	manager.relayout(player, pd)
+	return interface.rows(pi, pd.selected_tab)
+end
+
+--- The search custom input (Ctrl+F) as the player would press it.
+function interface.search_input(pi)
+	manager.on_search_input({ player_index = pi, input_name = "cybersyn-manager-search" })
+	local _, pd, refs = context(pi)
+	local field = refs[(pd.selected_tab or "") .. "_search_field"]
+	return { selected_tab = pd.selected_tab, open = pd.search_open == true, visible = field and field.valid and field.visible or false }
+end
+
+--- Escape in the focused search field.
+function interface.cancel_search(pi)
+	local player, pd = context(pi)
+	pd.search_focused = true
+	return manager.cancel_search(player, pd)
+end
+
+--- The strips at the top of every tab: banner, search field, item chip, collecting note.
+function interface.header(pi)
+	local _, pd, refs = context(pi)
+	local out = {}
+	for _, tab in ipairs({ "overview_tab", "inventory_tab", "stations_tab", "trains_tab" }) do
+		local function get(name)
+			local e = refs[tab .. name]
+			return e and e.valid and e or nil
+		end
+		local banner, label, field, chip, flow = get("_banner"), get("_banner_label"), get("_search_field"), get("_chip"), get("_chip_flow")
+		out[tab] = {
+			banner = banner and banner.visible or false,
+			banner_caption = label and label.caption or nil,
+			search = field and field.visible or false,
+			search_text = field and field.text or nil,
+			chip = flow and flow.visible or false,
+			chip_caption = chip and chip.caption or nil,
+			chip_tooltip = chip and chip.tooltip or nil,
+		}
+	end
+	out.filter_row = refs.manager_filter_row.visible
+	out.filter_button = refs.manager_filter_button.style.name
+	out.search_button = refs.manager_search_button.style.name
+	out.back_button = refs.manager_back_button.visible
+	out.trains_badge = refs.manager_trains_tab.badge_text
+	out.location = pd.location
+	out.layout_width = pd.layout and pd.layout.width
+	return out
+end
+
+--- Clicks child `index` of the element refs[ref] (or the element itself when index is nil) through flib, with
+--- optional modifiers {shift, control, alt, right}.
+function interface.click(pi, ref, index, mods)
+	local _, pd, refs = context(pi)
+	local elem = refs[ref]
+	if not (elem and elem.valid) then return "no element " .. tostring(ref) end
+	if index then elem = elem.children[index] end
+	if not elem then return "no child " .. tostring(index) end
+	mods = mods or {}
+	return flib_gui.dispatch({
+		name = defines.events.on_gui_click,
+		element = elem,
+		player_index = pi,
+		tick = game.tick,
+		button = mods.right and defines.mouse_button_type.right or defines.mouse_button_type.left,
+		shift = mods.shift == true,
+		control = mods.control == true,
+		alt = mods.alt == true,
+	})
+end
+
+--- /cybersyn-reset-gui for player `pi`.
+function interface.reset_gui(pi)
+	local player = context(pi)
+	manager_gui.reset_gui(player)
+	return interface.header(pi)
+end
+
+--- A runtime-global setting written as player `pi` would from the settings GUI: the change event carries that
+--- player's index (a script write carries none).
+function interface.set_setting_as(pi, name, value)
+	interface.set_setting(name, value)
+	manager_gui.on_runtime_mod_setting_changed({ setting = name, setting_type = "runtime-global", player_index = pi })
+	return settings.global[name].value
+end
+
+--- A player setting of this mod for player `pi`, written from the mod's context.
+function interface.set_player_setting(pi, name, value)
+	local proto = prototypes.mod_setting[name]
+	if not (proto and proto.mod == script.mod_name and proto.setting_type == "runtime-per-user") then
+		error("not a runtime-per-user setting of " .. script.mod_name .. ": " .. tostring(name))
+	end
+	settings.get_player_settings(pi)[name] = { value = value }
+	local _, pd = context(pi)
+	pd.unserved_minutes = nil
+	pd.page_size = nil
+	return settings.get_player_settings(pi)[name].value
+end
+
+--- Clicks a link cell's semantics (util.handle_link_click) without a cursor.
+function interface.link_click(pi, kind, id, mods)
+	local player, pd = context(pi)
+	mods = mods or {}
+	local fake = {
+		element = { tags = { kind = kind, id = id } },
+		button = mods.right and defines.mouse_button_type.right or defines.mouse_button_type.left,
+		shift = mods.shift == true, control = mods.control == true, alt = mods.alt == true,
+		player_index = pi,
+	}
+	util.handle_link_click(player, pd, fake)
+	return {
+		controller = player.controller_type,
+		pinning = pd.pinning == true,
+		auto_pinned = pd.auto_pinned == true,
+		markers = pd.markers,
+		opened = player.opened and player.opened.name or nil,
+		item = pd.search_item,
+		tab = pd.selected_tab,
+	}
 end
 
 --- util.parse_rich_name, for checking the parser against names from a real save.

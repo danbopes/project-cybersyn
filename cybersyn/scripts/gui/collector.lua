@@ -704,7 +704,7 @@ local function collect_station(b, id, station)
 	end
 	if st.name ~= name or not st.name_parts then
 		st.name = name
-		st.name_lower = string.lower(name)
+		st.name_lower = helpers.multilingual_to_lower(name)
 		st.name_parts = parsed_name(name)
 	end
 	st.surface_index = stop.surface_index

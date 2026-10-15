@@ -1,0 +1,102 @@
+-- Manager window size from the player's screen (PLAN3 §4.3): the width is a share of the screen, and the height is a
+-- fixed chrome plus whole rows, so no tab ever shows half a row. Pure arithmetic in logical pixels (physical pixels
+-- divided by the UI scale); the GUI applies the result as style sizes, which the engine scales back up.
+
+local sizing = {}
+
+sizing.MAX_WIDTH = 1440
+sizing.MIN_WIDTH = 960
+sizing.WIDTH_SHARE = 0.75
+sizing.HEIGHT_SHARE = 0.85
+sizing.MIN_ROWS = 3
+
+-- Everything outside a tab's content: frame border and title bar, the tab strip, the tab pane's padding. The
+-- wireframe's 124 (titlebar 44, tabs 48, padding 12, bottom 20) measured 126 on screenshots: the window frame is 894 px
+-- tall at UI scale 1.0 and 1,820 px at 1.5 (1,213 logical) with 17 and 27 Overview rows, shadow excluded.
+sizing.OUTER_HEIGHT = 126
+-- Frame border and the tab pane's side padding: the tab content is this much narrower than the window.
+sizing.OUTER_WIDTH = 48
+-- Optional strips: the filter row above the tabs, the dispatch-paused banner at the top of every tab.
+sizing.FILTER_ROW_HEIGHT = 36
+sizing.BANNER_HEIGHT = 36
+
+-- Fixed part of each tab's content, rows excluded.
+sizing.TAB_CHROME = {
+	-- subheader 36, gap 12, tiles 108, gap 12, table caption 36, column header 20
+	overview_tab = 224,
+	-- subheader 36, sort header 36, subfooter 36, frame borders
+	stations_tab = 112,
+	trains_tab = 112,
+	-- subheader 36, sort bar 28, two gaps of 8, grid caption 20, frame borders
+	inventory_tab = 108,
+}
+
+-- Row height per tab. Stations and Trains keep their current row frames until phase 4 restyles them to the 32 and
+-- 36 px rows of the wireframe: a Stations row is held at two slot lines (88 px; a station with more than 12 provided
+-- and requested items still grows), a Trains row is its 60 px minimap plus padding. Inventory counts slot rows.
+sizing.ROW_HEIGHT = {
+	overview_tab = 32,
+	stations_tab = 88,
+	trains_tab = 67,
+	inventory_tab = 40,
+}
+
+--- @class ManagerLayout
+--- @field width int window width
+--- @field content_width int tab content width
+--- @field content_height int tab content height without the banner
+--- @field window_height int the whole window, every optional strip included
+--- @field rows_by_tab {[string]: int}
+--- @field screen_width int logical
+--- @field screen_height int logical
+
+--- @param res_w number display_resolution.width (physical px)
+--- @param res_h number display_resolution.height
+--- @param scale number display_scale
+--- @param filter_row boolean? the filter row is shown
+--- @param banner boolean? the dispatch-paused banner is shown
+--- @return ManagerLayout
+function sizing.compute(res_w, res_h, scale, filter_row, banner)
+	if not scale or scale <= 0 then scale = 1 end
+	local sw = math.floor(res_w / scale)
+	local sh = math.floor(res_h / scale)
+	local width = math.max(sizing.MIN_WIDTH, math.min(sizing.MAX_WIDTH, math.floor(sizing.WIDTH_SHARE * sw)))
+	local extra = (filter_row and sizing.FILTER_ROW_HEIGHT or 0) + (banner and sizing.BANNER_HEIGHT or 0)
+	local space = math.floor(sizing.HEIGHT_SHARE * sh) - sizing.OUTER_HEIGHT - extra
+	local chrome = sizing.TAB_CHROME
+	local heights = sizing.ROW_HEIGHT
+	-- The Overview sets the content height; every other tab fits as many of its own rows into the same height, so
+	-- switching tabs never resizes the window.
+	local overview_rows = math.max(sizing.MIN_ROWS, math.floor((space - chrome.overview_tab) / heights.overview_tab))
+	local content = chrome.overview_tab + overview_rows * heights.overview_tab
+	local rows = {}
+	for tab, h in pairs(heights) do
+		rows[tab] = math.max(sizing.MIN_ROWS, math.floor((content - chrome[tab]) / h))
+	end
+	return {
+		width = width,
+		content_width = width - sizing.OUTER_WIDTH,
+		content_height = content,
+		window_height = sizing.OUTER_HEIGHT + extra + content,
+		rows_by_tab = rows,
+		screen_width = sw,
+		screen_height = sh,
+	}
+end
+
+--- Whether a stored window position (physical px, top left) keeps the title bar on a screen of this size.
+--- @param location {x: number, y: number}?
+--- @param res_w number
+--- @param res_h number
+--- @param width_px number window width in physical px
+--- @return boolean
+function sizing.location_visible(location, res_w, res_h, width_px)
+	if not location then return false end
+	local x, y = location.x or location[1], location.y or location[2]
+	if not (x and y) then return false end
+	-- At least a 100 px wide grip of the title bar must stay reachable.
+	local grip = 100
+	return x + width_px >= grip and x <= res_w - grip and y >= 0 and y <= res_h - 60
+end
+
+return sizing

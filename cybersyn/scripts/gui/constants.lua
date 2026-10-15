@@ -81,7 +81,6 @@ constants.gui = {
 	},
 }
 
-constants.gui_content_frame_height = 784
 
 constants.gui_translations = {
 	delivering_to = { "cybersyn-gui.delivering-to" },

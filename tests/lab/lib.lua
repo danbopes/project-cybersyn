@@ -167,6 +167,12 @@ function lab.tab_keys(pi)
 	return keys
 end
 
+--- An emulated 8K screen at UI scale 1 for player `pi`: the window then fits more rows than this save has stations, so
+--- every characterization list is one page, as before the window was sized from the screen (PLAN3 §4.3).
+function lab.big_screen(pi)
+	return remote.call(lab.D, "set_layout", pi or lab.pi, 7680, 4320, 1)
+end
+
 --- The filter cases both the golden summary and 20_manager apply, as {label, filter}.
 --- @param item string? an item hash to filter by
 --- @return {[1]: string, [2]: table}[]
@@ -200,6 +206,7 @@ function lab.golden(pi)
 	pi = pi or lab.pi
 	local D = lab.D
 	local out = { filters = {}, sorts = {}, stations = {}, overview_model = {} }
+	lab.big_screen(pi)
 	remote.call(D, "clear_filters", pi)
 	lab.set_status_filter(pi, nil)
 	for tab, def in pairs(lab.DEFAULT_SORT) do remote.call(D, "set_sort", pi, tab, def[1], def[2]) end
@@ -262,7 +269,7 @@ function lab.golden(pi)
 		local d = remote.call(D, "dump", pi, "overview")
 		local lists = {}
 		for name, list in pairs(d.lists) do
-			lists[name] = { keys = list.keys, order = list.order, total = list.total }
+			lists[name] = { keys = list.keys, order = list.order, total = list.total, acked_total = list.acked_total }
 		end
 		out.overview_model[tostring(minutes)] = { tiles = d.tiles, lists = lists }
 	end
