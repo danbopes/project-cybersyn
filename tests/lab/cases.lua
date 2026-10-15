@@ -26,7 +26,7 @@
 --   served      true for the control case: the runner expects the delivery and its trip.
 --   lift_station  the requester the lift must get served, when it is not r_station (LOST_PRIORITY: the winner).
 --   expect_settled  the reason after the flap window when it is not `expect` (a broken schedule makes the
---               planner drop the train; a lost priority is a counter on top of the requester's own reason).
+--               planner drop the train; a lost priority is a counter on top of the reason P_RESERVED).
 --   kind        "reason" (default) or "counter" (LOST_PRIORITY: lost_n/lost_to, not a reason).
 --   no_loss     the requester must not count a priority loss (LOST_PRIORITY_NO_TRAIN: lo is evaluated, and fails,
 --               in the same call as hi).
@@ -60,7 +60,7 @@ cases = {
 		"CONTROL", "NO_PROVIDER", "R_AT_LIMIT", "R_DISABLED", "R_IS_PROVIDING", "LOST_PRIORITY", "P_AT_LIMIT",
 		"P_IS_REQUESTING", "MASK_MISMATCH", "NO_SURFACE_ROUTE", "P_BELOW_THRESHOLD", "NO_TRAINS_ON_NETWORK",
 		"TRAIN_FILTERED_MANUAL", "TRAIN_FILTERED_MASK", "TRAIN_FILTERED_SCHEDULE", "CAPACITY", "R_LAYOUT",
-		"P_LAYOUT", "ALL_IN_INTERRUPT", "LOST_PRIORITY_LO_FIRST", "LOST_PRIORITY_NO_TRAIN",
+		"P_LAYOUT", "ALL_IN_INTERRUPT", "LOST_PRIORITY_LO_FIRST", "LOST_PRIORITY_NO_TRAIN", "LOST_PRIORITY_BELOW",
 	},
 	-- One unused network name per scenario; signal-A and signal-B belong to the save.
 	NETWORKS = {
@@ -70,7 +70,7 @@ cases = {
 		P_BELOW_THRESHOLD = "signal-M", NO_TRAINS_ON_NETWORK = "signal-N", TRAIN_FILTERED_MANUAL = "signal-O",
 		TRAIN_FILTERED_MASK = "signal-P", TRAIN_FILTERED_SCHEDULE = "signal-Q", CAPACITY = "signal-R",
 		R_LAYOUT = "signal-S", P_LAYOUT = "signal-T", ALL_IN_INTERRUPT = "signal-U",
-		LOST_PRIORITY_LO_FIRST = "signal-V", LOST_PRIORITY_NO_TRAIN = "signal-W",
+		LOST_PRIORITY_LO_FIRST = "signal-V", LOST_PRIORITY_NO_TRAIN = "signal-W", LOST_PRIORITY_BELOW = "signal-X",
 	},
 }
 
@@ -572,8 +572,9 @@ end
 --- for hi) and lo, evaluated next in the same call, finds no provider left, although that provider and train
 --- would serve it on its own. The call then ends at the r591 return. That is the starvation a priority causes.
 --- `lo_first` puts lo ahead of hi in the polling queue: the planner then picks lo first and replaces it with hi.
---- Lift: the provider goes to 5,000 and hi is served.
-local function lost_priority(name, ctx, lo_first)
+--- `lo_threshold` (default 1,000) above the provider's 2,000 makes lo short on its own: no loss, P_BELOW_THRESHOLD
+--- against lo's own threshold. Lift: the provider goes to 5,000 and hi is served.
+local function lost_priority(name, ctx, lo_first, lo_threshold)
 	local case = base(name, ctx)
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 2000) })
@@ -590,17 +591,24 @@ local function lost_priority(name, ctx, lo_first)
 	case.r_station, case.p_station = case.r.id, case.p.id
 	case.winner = case.hi.id
 	case.lift_station = case.hi.id
-	case.kind = "counter"
-	case.expect = "LOST_PRIORITY"
-	-- lo's own reason is the lock that starved it: the provider's stock against the threshold it is kept for.
-	case.expect_settled = "P_BELOW_THRESHOLD"
-	case.expect_ab = { 2000, 3000 }
+	if lo_threshold then
+		case.expect = "P_BELOW_THRESHOLD"
+		case.no_loss = true
+		case.no_offer = true
+		case.expect_ab = { 2000, lo_threshold }
+	else
+		case.kind = "counter"
+		case.expect = "LOST_PRIORITY"
+		-- The provider holds enough for lo (2,000 of the 1,000 it needs) but is kept for hi.
+		case.expect_settled = "P_RESERVED"
+		case.expect_ab = { 2000, 1000 }
+	end
 	case.stages = {
 		{
 			when = function(c) return cases.trains_ready(c) end,
 			run = function(c)
 				cases.set_signals(c.hi, request(c, -3000, 3000, { { PRIORITY, 10, "virtual" } }))
-				cases.set_signals(c.r, request(c, -2000, 1000))
+				cases.set_signals(c.r, request(c, lo_threshold and -3000 or -2000, lo_threshold or 1000))
 			end,
 		},
 	}
@@ -628,6 +636,8 @@ end
 function cases.LOST_PRIORITY(ctx) return lost_priority("LOST_PRIORITY", ctx, false) end
 
 function cases.LOST_PRIORITY_LO_FIRST(ctx) return lost_priority("LOST_PRIORITY_LO_FIRST", ctx, true) end
+
+function cases.LOST_PRIORITY_BELOW(ctx) return lost_priority("LOST_PRIORITY_BELOW", ctx, false, 2500) end
 
 --- The same two requesters (2,000/2,000 each) on a network with no train: every call picks hi, fails it for want
 --- of a train, then picks lo, which fails for the same reason of its own. lo is evaluated, so it lost nothing to

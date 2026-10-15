@@ -85,7 +85,9 @@ STATE_DISPATCH = 2
 DIFFERENT_SURFACE_DISTANCE = 1000000000
 
 -- Diagnostics (scripts/diag.lua, PLAN3 §4.5). Reason codes name the tick_dispatch site that rejected a request.
--- Lost priority is a counter on an entry, not a reason; there is no "no path" reason (the planner never paths).
+-- Lost priority is a counter on an entry; P_RESERVED is the reason of a requester whose only provider was locked by
+-- a requester evaluated ahead of it although it held enough for this one. There is no "no path" reason (the
+-- planner never paths).
 REASON_NO_PROVIDER = 1
 REASON_R_AT_LIMIT = 2
 REASON_R_DISABLED = 3
@@ -101,11 +103,12 @@ REASON_CAPACITY = 12
 REASON_R_LAYOUT = 13
 REASON_P_LAYOUT = 14
 REASON_ALL_IN_INTERRUPT = 15
+REASON_P_RESERVED = 16
 
 REASON_NAMES = {
 	"NO_PROVIDER", "R_AT_LIMIT", "R_DISABLED", "R_IS_PROVIDING", "P_AT_LIMIT", "P_IS_REQUESTING", "MASK_MISMATCH",
 	"NO_SURFACE_ROUTE", "P_BELOW_THRESHOLD", "NO_TRAINS_ON_NETWORK", "TRAIN_FILTERED", "CAPACITY", "R_LAYOUT",
-	"P_LAYOUT", "ALL_IN_INTERRUPT",
+	"P_LAYOUT", "ALL_IN_INTERRUPT", "P_RESERVED",
 }
 --- Locale key suffix per reason: [cybersyn-diag] reason-<key>, chip-<key>, why-<key>, fix-<key>.
 REASON_KEYS = {}
@@ -121,6 +124,7 @@ REASON_SEVERITY = {
 	[REASON_P_AT_LIMIT] = 2, [REASON_P_IS_REQUESTING] = 1, [REASON_MASK_MISMATCH] = 3, [REASON_NO_SURFACE_ROUTE] = 3,
 	[REASON_P_BELOW_THRESHOLD] = 2, [REASON_NO_TRAINS_ON_NETWORK] = 3, [REASON_TRAIN_FILTERED] = 3,
 	[REASON_CAPACITY] = 3, [REASON_R_LAYOUT] = 3, [REASON_P_LAYOUT] = 3, [REASON_ALL_IN_INTERRUPT] = 2,
+	[REASON_P_RESERVED] = 2,
 }
 
 -- Rejection counters of one evaluation (an unserved entry's `rej`): the five provider sites in the order a provider

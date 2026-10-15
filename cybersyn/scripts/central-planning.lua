@@ -488,9 +488,9 @@ local function tick_dispatch(map_data, mod_settings)
 	local stations = map_data.stations
 	local d = map_data.diag
 	local verify_interrupt = map_data.diag_verify_interrupt
-	-- The latest provider a requester's evaluation locked in this call (the P_BELOW_THRESHOLD table_remove): a later
-	-- requester that finds no provider left lost it to that requester (diagnostics on only).
-	local lock_r, lock_p, lock_a, lock_b
+	-- The latest provider a requester's evaluation locked in this call (the P_BELOW_THRESHOLD table_remove), its stock
+	-- and override threshold: a later requester that finds no provider left is tested against it (diagnostics on only).
+	local lock_r, lock_p, lock_stop, lock_count, lock_override
 
 	local r_stops
 	local p_stops
@@ -626,6 +626,9 @@ local function tick_dispatch(map_data, mod_settings)
 			network_name = r_stop.network_name --[[@as string]]
 		end
 		local trains = map_data.available_trains[network_name]
+		-- The stale-train cleanup below empties a network's table without removing it; empty means none available
+		-- (B3), and the train loop does nothing over either.
+		if trains and next(trains) == nil then trains = nil end
 		local is_fluid = item_type == "fluid"
 		if not is_fluid and r_station.is_stack then
 			r_threshold = r_threshold * get_stack_size(map_data, item_name)
@@ -736,7 +739,8 @@ local function tick_dispatch(map_data, mod_settings)
 					if rej_site < REJ_BELOW or effective_count > rej_a then
 						rej_site, rej_p, rej_a, rej_b = REJ_BELOW, p_stop.station_id, effective_count, effective_threshold
 					end
-					lock_r, lock_p, lock_a, lock_b = r_station_id, p_stop.station_id, effective_count, effective_threshold
+					lock_r, lock_p, lock_stop, lock_count, lock_override =
+						r_station_id, p_stop.station_id, p_stop, effective_count, override_threshold
 				end
 				goto p_continue_remove
 			end
@@ -944,10 +948,32 @@ local function tick_dispatch(map_data, mod_settings)
 			-- The train-side reason is the furthest train check any train passed; correctness 0 means no provider got as
 			-- far as the train checks, and only the diagnostics' site counters know which provider check stopped it.
 			local failure_reason, reason
+			local a, b, lost_to = 0, 0, nil
+			local closest_p_id = closest_to_correct_p_station and closest_to_correct_p_station.entity_stop.unit_number
+			local p_station_id = closest_p_id
 			if correctness == 0 then
 				failure_reason = FAILURE_REASON_NO_PROVIDER_STOCK
 				if d then
-					reason = rej_site > 0 and REJ_REASON[rej_site] or (lock_r and REASON_P_BELOW_THRESHOLD) or REASON_NO_PROVIDER
+					if rej_site > 0 then
+						reason, a, b, p_station_id = REJ_REASON[rej_site], rej_a, rej_b, rej_p
+					elseif lock_r then
+						-- Every provider left was locked by an earlier requester of this call. The latest lock is tested
+						-- against this requester's own mask and threshold: only a provider that would have served it was
+						-- lost to the other requester. The surface route is not re-tested.
+						local p_flag = get_network_mask(lock_stop, network_name)
+						local r_flag = get_network_mask(r_stop, network_name)
+						local threshold = (lock_override and lock_override <= r_threshold) and lock_override or r_threshold
+						p_station_id = lock_p
+						if band(p_flag, r_flag) == 0 then
+							reason, a, b = REASON_MASK_MISMATCH, r_flag, p_flag
+						elseif lock_count < threshold then
+							reason, a, b = REASON_P_BELOW_THRESHOLD, lock_count, threshold
+						else
+							reason, a, b, lost_to = REASON_P_RESERVED, lock_count, threshold, lock_r
+						end
+					else
+						reason = REASON_NO_PROVIDER
+					end
 				end
 			elseif not trains then
 				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_NO_TRAINS_ON_NETWORK
@@ -963,17 +989,9 @@ local function tick_dispatch(map_data, mod_settings)
 				-- B3: every usable train is inside an interrupt, which is not a layout mismatch.
 				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_ALL_IN_INTERRUPT
 			end
-			local p_station_id = closest_to_correct_p_station and closest_to_correct_p_station.entity_stop.unit_number
-			analytics.record_failed_dispatch(map_data, r_station_id, item_hash, failure_reason, wait_so_far, p_station_id, reason)
+			analytics.record_failed_dispatch(map_data, r_station_id, item_hash, failure_reason, wait_so_far, closest_p_id, reason)
 			if d then
-				local a, b, lost_to = 0, 0, nil
-				if correctness == 0 then
-					if rej_site > 0 then
-						a, b, p_station_id = rej_a, rej_b, rej_p
-					elseif lock_r then
-						a, b, p_station_id, lost_to = lock_a, lock_b, lock_p, lock_r
-					end
-				elseif reason == REASON_NO_TRAINS_ON_NETWORK then
+				if reason == REASON_NO_TRAINS_ON_NETWORK then
 					b = diag.fleet_size(d, network_name)
 				elseif reason == REASON_TRAIN_FILTERED then
 					a = diag_rej[REJ_T_MASK] + diag_rej[REJ_T_MANUAL] + diag_rej[REJ_T_SURFACE]
