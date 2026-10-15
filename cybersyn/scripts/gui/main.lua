@@ -32,6 +32,9 @@ local util = require("scripts.gui.util")
 --- @field last_update_tick uint? game tick of the last render
 --- @field rendered_snapshot_tick uint? snapshot tick shown by the last render
 --- @field pinning boolean
+--- @field return_to {entity: LuaEntity, unit_number: uint?, tick: uint}? entity GUI a manager link opened, see util.open_entity
+--- @field restore_opened true? player.opened goes back to the unpinned manager on the next manager tick
+--- @field restored_tick uint? game tick manager.restore_opened last handed player.opened back
 --- @field selected_tab string? "overview_tab"|"inventory_tab"|"stations_tab"|"trains_tab"|"utilization_tab"|"delivery_breakdown_tab"
 --- @field previous_tab string?
 --- @field delivery_times_interval uint?
@@ -86,6 +89,35 @@ function manager_gui.on_lua_shortcut(e)
 		else
 			manager.wrapper(e, manager.handle.manager_toggle)
 		end
+	end
+end
+
+--- Did this close event end the GUI a manager link opened? Combinators replace their entity GUI with a custom
+--- frame tagged with the combinator's unit number, so that frame closing counts too.
+--- @param e EventData.on_gui_closed
+--- @param return_to {entity: LuaEntity, unit_number: uint?}
+local function closes_return_target(e, return_to)
+	if e.entity then return e.entity == return_to.entity end
+	local element = e.element
+	if element and element.valid and element.name == COMBINATOR_NAME then
+		return return_to.unit_number ~= nil and element.tags.id == return_to.unit_number
+	end
+	return false
+end
+
+--- Registered for every on_gui_closed (scripts/main.lua), so no registration depends on game state.
+--- @param e EventData.on_gui_closed
+function manager_gui.on_gui_closed(e)
+	manager_gui.on_lua_shortcut(e)
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	local return_to = player_data and player_data.return_to
+	if not return_to or not closes_return_target(e, return_to) then return end
+	player_data.return_to = nil
+	local player = game.get_player(e.player_index)
+	if not player then return end
+	-- The engine may still hold the closing GUI as player.opened here; then the next manager tick hands it back.
+	if not manager.restore_opened(player, player_data) then
+		player_data.restore_opened = true
 	end
 end
 
@@ -269,6 +301,9 @@ function manager_gui.tick(storage)
 		end
 		if v.is_manager_open then
 			local player = game.get_player(i)
+			if player and v.restore_opened and manager.restore_opened(player, v) then
+				v.restore_opened = nil
+			end
 			if player then
 				surface_count = surface_count or #game.surfaces
 				if v.surface_count ~= surface_count then

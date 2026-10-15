@@ -787,7 +787,12 @@ function trains_tab.handle.open_train_gui(player, player_data, refs, e)
 		end
 		return
 	end
-	train_util.open_gui(player.index, train_entity)
+	local locomotive = train_util.get_main_locomotive(train_entity)
+	if not (locomotive and locomotive.valid) then
+		util.error_flying_text(player, { "cybersyn-gui.train-has-no-locomotive" })
+		return
+	end
+	util.open_entity(player, player_data, locomotive)
 end
 
 --- Station, depot or refueler name clicked. Left: stop GUI; shift: map; control: (station) combinator;
@@ -826,19 +831,19 @@ function trains_tab.handle.open_stop(player, player_data, refs, e)
 	elseif e.control then
 		local comb = kind == "station" and record.entity_comb1 or record.entity_comb
 		if comb and comb.valid then
-			player.opened = comb
+			util.open_entity(player, player_data, comb)
 		else
 			util.error_flying_text(player, { "cybersyn-message.error-cybernetic-combinator-not-found" })
 		end
 	elseif e.alt and kind == "station" then
 		local comb = record.entity_comb2
 		if comb and comb.valid then
-			player.opened = comb
+			util.open_entity(player, player_data, comb)
 		else
 			util.error_flying_text(player, { "cybersyn-message.error-station-control-combinator-not-found" })
 		end
 	else
-		player.opened = stop
+		util.open_entity(player, player_data, stop)
 	end
 end
 

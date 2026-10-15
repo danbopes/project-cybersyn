@@ -988,6 +988,17 @@ function util.signed_int32(val)
 	return (val >= MAX_INT and val - (2 * MAX_INT)) or val
 end
 
+--- Opens an entity's GUI from a manager link. Taking player.opened closes an unpinned manager, so the link records
+--- what it opened; the manager stays on screen (manager.handle.manager_closed_by_game) and takes player.opened back
+--- when that GUI closes (manager_gui.on_gui_closed).
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param entity LuaEntity
+function util.open_entity(player, player_data, entity)
+	player_data.return_to = { entity = entity, unit_number = entity.unit_number, tick = game.tick }
+	player.opened = entity
+end
+
 --- @param force boolean? Close even when pinned (close button, toggle shortcut).
 function util.close_manager_window(player, player_data, refs, force)
 	if player_data.pinning and not force then
@@ -998,6 +1009,9 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.visible = false
 	-- Cleared first: releasing player.opened re-enters the close path through on_gui_closed.
 	player_data.is_manager_open = false
+	player_data.return_to = nil
+	player_data.restore_opened = nil
+	player_data.restored_tick = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.stations_query = nil

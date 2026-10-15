@@ -400,7 +400,31 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_closed_by_game(player, player_data, refs)
 	if player_data.pinning or not player_data.is_manager_open then return end
+	-- A link of this window just opened an entity GUI: stay on screen and take player.opened back afterwards.
+	local return_to = player_data.return_to
+	if return_to and return_to.tick == game.tick then return end
+	-- Some entity GUIs (the locomotive's) are still being torn down when on_gui_closed hands player.opened back, and
+	-- the engine then releases it again in the same tick: retry on the next manager tick instead of closing.
+	if player_data.restored_tick == game.tick then
+		player_data.restore_opened = true
+		return
+	end
 	manager.handle.manager_close(player, player_data, refs)
+end
+
+--- Gives player.opened back to an unpinned manager whose link opened a GUI that has now closed, unless another GUI
+--- took player.opened meanwhile.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @return boolean done
+function manager.restore_opened(player, player_data)
+	local refs = player_data.refs
+	local window = refs and refs.manager_window
+	if player_data.pinning or not player_data.is_manager_open or not (window and window.valid) then return true end
+	if player.opened ~= nil then return player.opened == window end
+	player.opened = window
+	player_data.restored_tick = game.tick
+	return player.opened == window
 end
 
 --- @param player LuaPlayer

@@ -994,18 +994,18 @@ function stations_tab.handle.open_station_gui(player, player_data, refs, e)
 		if not player_data.pinning then util.close_manager_window(player, player_data, refs) end
 	elseif e.control then
 		if station_comb1 ~= nil and station_comb1.valid then
-			player.opened = station_comb1
+			util.open_entity(player, player_data, station_comb1)
 		else
 			util.error_flying_text(player, { "cybersyn-message.error-cybernetic-combinator-not-found" })
 		end
 	elseif e.alt then
 		if station_comb2 ~= nil and station_comb2.valid then
-			player.opened = station_comb2
+			util.open_entity(player, player_data, station_comb2)
 		else
 			util.error_flying_text(player, { "cybersyn-message.error-station-control-combinator-not-found" })
 		end
 	else
-		player.opened = station_entity
+		util.open_entity(player, player_data, station_entity)
 	end
 end
 
