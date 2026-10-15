@@ -295,13 +295,18 @@ function stations_tab.query(player_data)
 	if not sort_keys[column] then column = "name" end
 	-- The first pass after opening is still filling records: rows and counts from part of the stations would change
 	-- on every update and disagree with the other tabs, so there are none until it completes.
-	if not snapshot.tick then
-		return {}, {}, { status = {}, now = game.tick, snapshot = snapshot }, column, ascending
+	local cache = player_data.stations_query
+	-- The first build after a boosted pass is split over the next two updates, so no tick carries more than one of
+	-- the pass's last batch, classifying and sorting every station (~5 ms on pY 123) or writing every row of the page
+	-- (6-8 ms there for 50 rows): the completing update shows the placeholder still, the next one fills the query
+	-- cache and still shows the placeholder, the one after renders from it.
+	if not snapshot.tick or (not cache and snapshot.boosted and snapshot.tick == game.tick) then
+		return {}, {}, { status = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
 	end
+	local first_build = not cache and snapshot.boosted
 
 	local fsig = filter_sig(f)
 	local epoch, pos = collector.log_position()
-	local cache = player_data.stations_query
 	local ids, first, last
 	if cache and cache.fsig == fsig and cache.column == column then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
@@ -349,6 +354,9 @@ function stations_tab.query(player_data)
 			end
 		end
 		cache.rows, cache.rows_order, cache.rows_wanted, cache.rows_version = rows, cache.order, wanted or false, cache.version
+	end
+	if first_build then
+		return {}, {}, { status = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
 	end
 	return rows, cache.counts, ctx, column, ascending
 end
@@ -818,7 +826,7 @@ function stations_tab.build(map_data, player_data)
 	local rows, counts, ctx = stations_tab.query(player_data)
 	local first, last = util.paginate(player_data, TAB, #rows)
 	render_chips(player_data, counts, util.gui_state(player_data, CHIPS))
-	if not ctx.snapshot.tick then
+	if ctx.pending then
 		-- Rows from before the window was closed stay hidden rather than destroyed: most of them are reused, not
 		-- built again, once the first pass completes.
 		scroll_pane.visible = false

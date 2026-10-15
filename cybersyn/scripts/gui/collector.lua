@@ -13,9 +13,12 @@ local collector = {}
 local PASS_UPDATES = 20
 local MIN_BATCH = 25
 local MAX_BATCH = 200
--- Opening the window on a snapshot older than this starts a fresh pass at BOOST times the batch size.
+-- Opening the window on a snapshot older than this starts a fresh pass at BOOST times the batch size. PLAN3 §4.1 asked
+-- for 4x; on pY 123 (2,030 stations) a 4x step of the first pass took 6-7 ms and allocated ~2.7 MB, and the GC work
+-- that allocation drives landed in the same updates (31-41 ms when a cycle finished). 2x keeps a step near 3.5 ms
+-- (§2.11: 5 ms per update) at the price of a first pass of about 11 updates there.
 local STALE_ON_OPEN_TICKS = 600
-local BOOST = 4
+local BOOST = 2
 local IDLE_TICKS = 30 * 60 * 60
 -- Unset train stop limits read back as uint max; the planner treats anything this large as unlimited.
 local UNLIMITED = 2100000000
@@ -84,6 +87,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field tick uint? game tick the last pass completed; nil = never collected
 --- @field started_tick uint
 --- @field pass int? counts completed passes; two passes can complete on one tick (dev collect)
+--- @field boosted true? completed by the opening boost in collector.tick: views may defer a full rebuild to the next update
 --- @field station_count int
 --- @field train_count int
 --- @field trains_version int bumped whenever trains, fleet, depots and alerts are summarised again
@@ -1052,7 +1056,10 @@ function collector.tick()
 	local manager = storage.manager
 	if not manager or not collector.wanted() then return false end
 	if manager.collect_boost then
-		if collector.step(nil, BOOST) then manager.collect_boost = nil end
+		if collector.step(nil, BOOST) then
+			manager.collect_boost = nil
+			manager.snapshot.boosted = true
+		end
 	else
 		collector.step()
 	end

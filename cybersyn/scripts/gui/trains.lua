@@ -665,7 +665,7 @@ function trains_tab.build(map_data, player_data)
 	if last < first then
 		local empty_key
 		if not snapshot.tick then
-			empty_key = "cybersyn-gui.stations-collecting"
+			empty_key = "cybersyn-gui.trains-collecting"
 		elseif util.filters_active(util.get_filters(player_data)) and next(snapshot.trains) then
 			empty_key = "cybersyn-gui.trains-no-match"
 		else

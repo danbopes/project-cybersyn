@@ -198,3 +198,37 @@ test("query: removed station leaves rows and counts", function()
 	assert_eq(counts.saturated, 0)
 	assert_eq(ids(rows), { 1, 2, 3, 4, 6, 7, 8, 9 })
 end)
+
+test("query: the first build after a boosted pass is spread over the two updates after the one that completed it", function()
+	local stations_tab, _, snap = setup()
+	local pd = { player_index = 1 }
+	snap.boosted = true
+	snap.tick = 20
+	local rows, counts, ctx = stations_tab.query(pd)
+	assert_eq(#rows, 0)
+	assert_eq(counts, {})
+	assert_true(ctx.pending)
+	assert_nil(pd.stations_query)
+	-- Next update: classified and sorted into the cache, rows still pending.
+	game.tick = 21
+	rows, counts, ctx = stations_tab.query(pd)
+	assert_eq(#rows, 0)
+	assert_true(ctx.pending)
+	assert_eq(#pd.stations_query.order, 9)
+	game.tick = 22
+	rows, counts, ctx = stations_tab.query(pd)
+	assert_eq(#rows, 9)
+	assert_eq(counts.all, 9)
+	assert_nil(ctx.pending)
+	-- Only the first build waits: a cache in hand keeps showing rows on the completing update.
+	snap.tick = 21
+	rows = stations_tab.query(pd)
+	assert_eq(#rows, 9)
+end)
+
+test("query: a pass completed by dev collect or the regular step shows rows at once", function()
+	local stations_tab, _, snap = setup()
+	snap.tick = 20
+	local rows = stations_tab.query({ player_index = 1 })
+	assert_eq(#rows, 9)
+end)

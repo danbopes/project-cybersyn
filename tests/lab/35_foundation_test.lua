@@ -49,7 +49,12 @@ lab.suite("35_foundation", {
 		lab.check("first pass completes within 3 updates", updates >= 1 and updates <= 3, updates)
 		status = remote.call(D, "status", pi)
 		lab.check("subheader back to Updated", caption_key(status) == "cybersyn-gui.updated-ago" and status.collecting == nil, status)
-		d = remote.call(D, "dump", pi, "stations")
+		lab.wait(1)
+	end,
+	function(ctx)
+		-- The first Stations build after a boosted pass spreads over the next two renders.
+		remote.call(D, "tick", 2)
+		local d = remote.call(D, "dump", pi, "stations")
 		lab.check("stations tab shows every station after the pass", d.total == lab.dev("summary").station_count and d.total > 0, d.total)
 		remote.call(D, "select_tab", pi, "overview")
 		local tiles = remote.call(D, "dump", pi, "overview").tiles
@@ -75,6 +80,44 @@ lab.suite("35_foundation", {
 		lab.check("stations on the step that completes it: rows == chip count == stations",
 			last.total == last.counts.all and last.total == lab.dev("summary").station_count, seen)
 		lab.dev("collect")
+	end,
+
+	-- The update that completes a boosted first pass leaves the first Stations build (classify, sort, every row) to the
+	-- next update, so the two never add up in one tick on a large base.
+	function(ctx)
+		-- No manager tick of the game's own between the steps: each update here is a dev tick.
+		ctx.ups = settings.global["cybersyn-manager-updates-per-second"].value
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", 0)
+		remote.call(D, "close", pi)
+		remote.call(D, "select_tab", pi, "stations")
+		remote.call(D, "open", pi, true)
+		local updates, d = 0, nil
+		while remote.call(D, "status", pi).snapshot_tick == nil and updates < 20 do
+			remote.call(D, "tick", 1)
+			updates = updates + 1
+		end
+		d = remote.call(D, "dump", pi, "stations")
+		lab.check("stations: the completing update still shows the collecting placeholder", d.total == 0 and d.warning == true,
+			{ updates = updates, total = d.total })
+		ctx.defer_tick = game.tick
+		lab.wait(1)
+	end,
+	function(ctx)
+		lab.check("stations: deferred build runs in a later tick", game.tick > ctx.defer_tick, game.tick)
+		remote.call(D, "tick", 1)
+		local d = remote.call(D, "dump", pi, "stations")
+		-- dump runs the query again, so only the rendered state shows what this update drew.
+		lab.check("stations: the next update sorts but still shows the placeholder", d.warning == true and d.visible == false,
+			{ warning = d.warning, visible = d.visible })
+		ctx.defer_tick = game.tick
+		lab.wait(1)
+	end,
+	function(ctx)
+		remote.call(D, "tick", 1)
+		local d = remote.call(D, "dump", pi, "stations")
+		lab.check("stations: the update after that shows every station", d.total == lab.dev("summary").station_count and d.total > 0
+			and not d.warning and d.visible and #d.ids == d.total, { total = d.total, rendered = #d.ids })
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
 	end,
 
 	-- Paused, closed and reopened: the window still collects once and shows that data, then stays frozen.
