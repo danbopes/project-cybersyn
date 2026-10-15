@@ -1,6 +1,6 @@
 -- PLAN3 phase 1: opening without a synchronous collection ("Collecting… n %" until a boosted pass completes), one
--- meaning of Saturated on the Overview tile, the Stations chip and the chip's rows (B2), and the parsed station name in the
--- snapshot.
+-- meaning of Saturated on the Overview tile, the Stations chip and the chip's rows (B2), one fleet total on the
+-- Overview and the Trains tab, and the parsed station name in the snapshot.
 
 local D, pi = lab.D, lab.pi
 
@@ -73,6 +73,37 @@ lab.suite("40_foundation", {
 			{ tile = tile, chip = chips.saturated, rows = rows.total })
 		lab.check("saturated: the station at its limit counts", chips.saturated >= 1, chips.saturated)
 		lab.check("saturated: limit 0 with a delivery is disabled", chips.disabled >= 1, chips.disabled)
+	end,
+
+	-- One number per fact: the Fleet tile and the Trains tab count the same trains. On pY 123 they once showed 551 and
+	-- 552: the collector refreshes the trains at the start of a pass, while the Overview's figures were rebuilt only
+	-- after the pass completed. A train that leaves the fleet mid-pass reproduces it.
+	function(ctx)
+		remote.call(D, "clear_filters", pi)
+		lab.dev("collect")
+		local function totals()
+			remote.call(D, "select_tab", pi, "trains")
+			local trains = remote.call(D, "dump", pi, "trains").total
+			remote.call(D, "select_tab", pi, "overview")
+			return remote.call(D, "dump", pi, "overview").tiles.fleet.total, trains
+		end
+		local fleet, trains = totals()
+		lab.check("fleet tile total == Trains tab total (no filter)", fleet == trains and trains > 0, { fleet = fleet, trains = trains })
+		local id, train
+		for tid, t in pairs(lab.read("trains")) do
+			if not id or tid < id then id, train = tid, t end
+		end
+		-- Without a valid entity the collector drops the train from the snapshot; the planner is off, so nothing else
+		-- reads it before the entity is put back.
+		remote.call("cybersyn", "write_global", nil, "trains", id, "entity")
+		for _ = 1, 3 do remote.call(D, "tick", 1) end
+		local fleet2, trains2 = totals()
+		remote.call("cybersyn", "write_global", train.entity, "trains", id, "entity")
+		lab.check("a train leaving mid-pass leaves the Trains tab", trains2 == trains - 1, { before = trains, after = trains2 })
+		lab.check("fleet tile total == Trains tab total mid-pass", fleet2 == trains2, { fleet = fleet2, trains = trains2 })
+		lab.dev("collect")
+		fleet, trains = totals()
+		lab.check("the train is back in both", fleet == trains and trains == trains2 + 1, { fleet = fleet, trains = trains })
 	end,
 
 	-- The parser over the save's real names, and the snapshot carrying the result.

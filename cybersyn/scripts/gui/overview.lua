@@ -744,27 +744,11 @@ end
 --- @param filtered boolean
 local function finish_base(base, snapshot, f, filtered)
 	local networks = base.networks
-	local fleet = { total = 0, parked = 0, to_provider = 0, loading = 0, to_requester = 0, unloading = 0, returning = 0, refuelling = 0, other = 0, alerts = 0 }
-	-- Unfiltered like the rest of the Depots tile, so the tile never mixes scopes.
-	local available = 0
-	local train_passes = {}
-	for id, tr in pairs(snapshot.trains) do
-		if tr.is_available then available = available + 1 end
+	for _, tr in pairs(snapshot.trains) do
 		if not filtered or util.train_passes(tr, f, true) then
-			train_passes[id] = true
-			fleet.total = fleet.total + 1
-			local group = STATUS_GROUP[tr.status or STATUS_D] or "other"
-			fleet[group] = fleet[group] + 1
 			each_network(tr.network_name, tr.network_mask, count_train_network, networks, tr)
 		end
 	end
-	fleet.idle = fleet.total > 0 and fleet.parked / fleet.total or nil
-	for _, alert in ipairs(snapshot.alerts) do
-		if not filtered or train_passes[alert.train_id] then
-			fleet.alerts = fleet.alerts + 1
-		end
-	end
-	base.fleet = fleet
 
 	local network_names = {}
 	for name in pairs(networks) do
@@ -785,7 +769,6 @@ local function finish_base(base, snapshot, f, filtered)
 		total = depots.total,
 		occupied = depots.parked,
 		empty = depots.total - depots.parked,
-		available = available,
 	}
 
 	-- Oldest wait first, then the largest shortfall.
@@ -818,7 +801,6 @@ local function finish_base(base, snapshot, f, filtered)
 	base.saturated_total = st_tile.saturated
 
 	st_tile.headline = st_tile.total
-	fleet.headline = fleet.total
 	base.depot_tile.headline = base.depot_tile.total
 	base.demand.headline = base.demand.total
 	base.ids = nil
@@ -845,6 +827,52 @@ local function advance_base(base, snapshot, f, filtered, tracking, budget)
 	if i < n then return false end
 	finish_base(base, snapshot, f, filtered)
 	return true
+end
+
+--- Fleet figures from the trains the Trains tab shows right now. The collector refreshes trains at the start of a pass
+--- and the station figures build over several updates after its end, so the fleet is kept apart from them: the Fleet
+--- tile and the Trains tab always count the same trains.
+--- @param snapshot Snapshot
+--- @param f table
+--- @param filtered boolean
+--- @return table fleet
+--- @return integer available trains available for dispatch, unfiltered like the rest of the Depots tile
+local function fleet_model(snapshot, f, filtered)
+	local fleet = { total = 0, parked = 0, to_provider = 0, loading = 0, to_requester = 0, unloading = 0, returning = 0, refuelling = 0, other = 0, alerts = 0 }
+	local available = 0
+	local train_passes = {}
+	for id, tr in pairs(snapshot.trains) do
+		if tr.is_available then available = available + 1 end
+		if not filtered or util.train_passes(tr, f, true) then
+			train_passes[id] = true
+			fleet.total = fleet.total + 1
+			local group = STATUS_GROUP[tr.status or STATUS_D] or "other"
+			fleet[group] = fleet[group] + 1
+		end
+	end
+	fleet.idle = fleet.total > 0 and fleet.parked / fleet.total or nil
+	for _, alert in ipairs(snapshot.alerts) do
+		if not filtered or train_passes[alert.train_id] then
+			fleet.alerts = fleet.alerts + 1
+		end
+	end
+	fleet.headline = fleet.total
+	return fleet, available
+end
+
+--- @param player_data PlayerData
+--- @param snapshot Snapshot
+--- @param f table
+--- @param filtered boolean
+--- @param vkey string
+local function cached_fleet(player_data, snapshot, f, filtered, vkey)
+	local cache = player_data.overview_cache
+	local key = tostring(snapshot.trains_version) .. "\1" .. vkey
+	if cache.fleet_key ~= key then
+		cache.fleet, cache.available = fleet_model(snapshot, f, filtered)
+		cache.fleet_key = key
+	end
+	return cache.fleet, cache.available
 end
 
 --- The snapshot-derived figures for the player's filters. Kept in player_data, not in a Lua local, so every peer
@@ -896,6 +924,12 @@ function overview_tab.model(player_data)
 	-- The planner reads its cached copy, so this matches what is actually being tracked.
 	local tracking = mod_settings.track_request_wait_times == true
 	local base = cached_snapshot_model(player_data, snapshot, f, filtered, tracking)
+	local fleet, available = cached_fleet(player_data, snapshot, f, filtered, view_key(f, tracking))
+	local depot_tile = {}
+	for k, v in pairs(base.depot_tile) do
+		depot_tile[k] = v
+	end
+	depot_tile.available = available
 
 	local demand = {}
 	for k, v in pairs(base.demand) do
@@ -1111,8 +1145,8 @@ function overview_tab.model(player_data)
 		network_names = base.network_names,
 		tiles = {
 			stations = base.st_tile,
-			fleet = base.fleet,
-			depots = base.depot_tile,
+			fleet = fleet,
+			depots = depot_tile,
 			demand = demand,
 			flow = flow,
 		},
