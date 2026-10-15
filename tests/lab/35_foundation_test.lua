@@ -207,8 +207,8 @@ lab.suite("35_foundation", {
 	-- The parser over the save's real names, and the snapshot carrying the result.
 	function(ctx)
 		local parts = remote.call(D, "parse_name", "[item=iron-plate,quality=rare] Iron [virtual-signal=signal-A]")
-		lab.check("parse_name: lead, text, tail", parts.text == "Iron" and parts.lead[1].sprite == "item/iron-plate"
-			and parts.lead[1].quality == "rare" and parts.tail[1].sprite == "virtual-signal/signal-A", parts)
+		lab.check("parse_name: lead, text, tail", parts.text == "Iron" and parts.lead[1] == "item/iron-plate"
+			and parts.lead_quality[1] == "rare" and parts.tail[1] == "virtual-signal/signal-A" and not parts.tail_quality, parts)
 		local ok = true
 		for id, st in pairs(lab.read("stations")) do
 			local name = st.entity_stop.backer_name

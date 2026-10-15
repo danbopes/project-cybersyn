@@ -38,7 +38,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field id uint
 --- @field name string full rich-text backer name
 --- @field name_lower string
---- @field name_parts RichNameParts parsed from name, recomputed only when the name changes
+--- @field name_parts RichNameParts parsed from name, looked up again only when the name changes; shared, read-only
 --- @field status string one of collector.STATUSES, see collector.station_status
 --- @field surface_index uint
 --- @field network_name string?
@@ -135,6 +135,7 @@ function collector.init()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
 	manager.collect_spare = nil
+	manager.name_parts = nil
 	collector.reset_log()
 end
 
@@ -193,6 +194,7 @@ function collector.release_if_unused()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
 	manager.collect_spare = nil
+	manager.name_parts = nil
 	collector.reset_log()
 end
 
@@ -622,6 +624,25 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 end
 
 --- @param b Snapshot
+--- Parsed names are shared by every station with that name (read-only; pY 123 has 1,254 distinct names among 2,030
+--- stations). The map lives as long as the snapshot, so names renamed away stay in it until the last window closes.
+--- @param name string
+--- @return RichNameParts
+local function parsed_name(name)
+	local manager = storage.manager
+	local names = manager.name_parts
+	if not names then
+		names = {}
+		manager.name_parts = names
+	end
+	local parts = names[name]
+	if not parts then
+		parts = rich_name.parse(name)
+		names[name] = parts
+	end
+	return parts
+end
+
 --- @param id uint
 --- @param station Station
 local function collect_station(b, id, station)
@@ -643,7 +664,7 @@ local function collect_station(b, id, station)
 	if st.name ~= name or not st.name_parts then
 		st.name = name
 		st.name_lower = string.lower(name)
-		st.name_parts = rich_name.parse(name)
+		st.name_parts = parsed_name(name)
 	end
 	st.surface_index = stop.surface_index
 	-- Collectable values are written only when they change: rewriting a table during a GC cycle queues it for the

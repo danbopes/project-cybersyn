@@ -10,8 +10,22 @@ local function icon(sprite, quality)
 	return { sprite = sprite, quality = quality }
 end
 
+--- The expected compact shape: sprite strings, qualities by index, nothing for an empty side or a zero overflow.
 local function parts(lead, text, tail, lead_overflow, tail_overflow)
-	return { lead = lead or {}, text = text, tail = tail or {}, lead_overflow = lead_overflow or 0, tail_overflow = tail_overflow or 0 }
+	local p = { text = text }
+	for side, icons in pairs({ lead = lead or {}, tail = tail or {} }) do
+		for i, ic in ipairs(icons) do
+			p[side] = p[side] or {}
+			p[side][i] = ic.sprite
+			if ic.quality then
+				p[side .. "_quality"] = p[side .. "_quality"] or {}
+				p[side .. "_quality"][i] = ic.quality
+			end
+		end
+	end
+	if lead_overflow and lead_overflow > 0 then p.lead_overflow = lead_overflow end
+	if tail_overflow and tail_overflow > 0 then p.tail_overflow = tail_overflow end
+	return p
 end
 
 test("plain names: text only, trimmed", function()
@@ -69,6 +83,12 @@ end)
 test("unicode text is kept byte for byte", function()
 	assert_eq(parse("[item=coal] Kohle → Schmelze ÄÖÜ"), parts({ icon("item/coal") }, "Kohle → Schmelze ÄÖÜ"))
 	assert_eq(parse("日本 [fluid=water]"), parts({}, "日本", { icon("fluid/water") }))
+end)
+
+test("compact shape: no empty sides, no zero overflow, qualities only where named", function()
+	assert_eq(parse("Iron Mine"), { text = "Iron Mine" })
+	assert_eq(parse("[item=coal] C [fluid=water,quality=rare]"),
+		{ text = "C", lead = { "item/coal" }, tail = { "fluid/water" }, tail_quality = { "rare" } })
 end)
 
 test("util.parse_rich_name is the same function", function()

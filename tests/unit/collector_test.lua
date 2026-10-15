@@ -258,7 +258,7 @@ test("full pass: provider record", function()
 		name = "Iron Mine",
 		name_lower = "iron mine",
 		-- PLAN3 §4.1: no tiebreak string (sorts compare name_lower, then id); §4.2: parsed name and status.
-		name_parts = { lead = {}, text = "Iron Mine", tail = {}, lead_overflow = 0, tail_overflow = 0 },
+		name_parts = { text = "Iron Mine" },
 		status = "saturated",
 		surface_index = 1,
 		network_name = "signal-A",
@@ -705,7 +705,7 @@ test("second pass: changed inputs replace every field of the previous record", f
 		id = 1,
 		name = "Iron Mine",
 		name_lower = "iron mine",
-		name_parts = { lead = {}, text = "Iron Mine", tail = {}, lead_overflow = 0, tail_overflow = 0 },
+		name_parts = { text = "Iron Mine" },
 		status = "no_power",
 		surface_index = 1,
 		network_name = "signal-A",
@@ -733,7 +733,7 @@ test("second pass: changed inputs replace every field of the previous record", f
 		id = 2,
 		name = "Smelter",
 		name_lower = "smelter",
-		name_parts = { lead = {}, text = "Smelter", tail = {}, lead_overflow = 0, tail_overflow = 0 },
+		name_parts = { text = "Smelter" },
 		status = "disabled",
 		surface_index = 1,
 		network_name = "signal-A",
@@ -1034,10 +1034,7 @@ test("name_parts: parsed on first sight and again only after a rename", function
 	storage.stations[1].entity_stop.backer_name = "[item=iron-ore] Iron Mine [virtual-signal=signal-P]"
 	collector.run_to_completion()
 	local st = collector.get().stations[1]
-	assert_eq(st.name_parts, {
-		lead = { { sprite = "item/iron-ore" } }, text = "Iron Mine", tail = { { sprite = "virtual-signal/signal-P" } },
-		lead_overflow = 0, tail_overflow = 0,
-	})
+	assert_eq(st.name_parts, { lead = { "item/iron-ore" }, text = "Iron Mine", tail = { "virtual-signal/signal-P" } })
 	assert_eq(st.name_lower, "[item=iron-ore] iron mine [virtual-signal=signal-p]")
 	local parts = st.name_parts
 	collector.run_to_completion()
@@ -1047,6 +1044,18 @@ test("name_parts: parsed on first sight and again only after a rename", function
 	assert_eq(st.name, "Iron Mine 2")
 	assert_eq(st.name_lower, "iron mine 2")
 	assert_eq(st.name_parts.text, "Iron Mine 2")
+end)
+
+test("name_parts: one shared table per distinct name, dropped with the snapshot", function()
+	scenario()
+	storage.stations[2].entity_stop.backer_name = storage.stations[1].entity_stop.backer_name
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_same(snap.stations[1].name_parts, snap.stations[2].name_parts)
+	assert_same(storage.manager.name_parts[snap.stations[1].name], snap.stations[1].name_parts)
+	storage.manager.players = {}
+	collector.release_if_unused()
+	assert_nil(storage.manager.name_parts)
 end)
 
 local function ladder_station(over)

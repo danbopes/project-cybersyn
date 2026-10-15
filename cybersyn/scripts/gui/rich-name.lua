@@ -5,6 +5,8 @@
 local rich_name = {}
 
 --- Icons kept on each side; the rest is counted in lead_overflow / tail_overflow.
+--- The parts are kept per station in the snapshot, so they hold no empty tables and no zero counts: the first
+--- version, with an icon table per icon, cost ~1.45 KB per station (2.9 MB on a 2,030-station save).
 rich_name.MAX_ICONS = 3
 
 --- Rich-text tag types that name a sprite, mapped to their sprite path prefix.
@@ -20,11 +22,13 @@ local SPRITE_TYPES = {
 --- @field quality string? quality name of a `[item=x,quality=y]` tag
 
 --- @class RichNameParts
---- @field lead RichNameIcon[] at most MAX_ICONS icons before the text, in name order
 --- @field text string the name between the icon runs, trimmed; may still hold tags this parser does not turn into icons
---- @field tail RichNameIcon[] at most MAX_ICONS icons after the text, in name order
---- @field lead_overflow integer leading icons beyond MAX_ICONS
---- @field tail_overflow integer trailing icons beyond MAX_ICONS
+--- @field lead string[]? sprite paths of at most MAX_ICONS icons before the text, in name order; nil when none
+--- @field lead_quality {[integer]: string}? quality per `lead` index, only for icons that name one
+--- @field lead_overflow integer? leading icons beyond MAX_ICONS; nil when none
+--- @field tail string[]? sprite paths of at most MAX_ICONS icons after the text, in name order; nil when none
+--- @field tail_quality {[integer]: string}?
+--- @field tail_overflow integer?
 
 --- Parses the tag starting at `pos` (a "["). Returns the icon and the position after the "]", or nil when the tag is
 --- not an icon tag this module understands.
@@ -71,10 +75,32 @@ local function only_space(name, from, to)
 	return from > to or string.find(string.sub(name, from, to), "^%s*$") ~= nil
 end
 
+--- @param parts RichNameParts
+--- @param side "lead"|"tail"
+--- @param icon RichNameIcon
+local function add_icon(parts, side, icon)
+	local sprites = parts[side]
+	if not sprites then
+		sprites = {}
+		parts[side] = sprites
+	end
+	local i = #sprites + 1
+	sprites[i] = icon.sprite
+	if icon.quality then
+		local key = side .. "_quality"
+		local qualities = parts[key]
+		if not qualities then
+			qualities = {}
+			parts[key] = qualities
+		end
+		qualities[i] = icon.quality
+	end
+end
+
 --- @param name string full rich-text name
 --- @return RichNameParts
 function rich_name.parse(name)
-	local parts = { lead = {}, text = "", tail = {}, lead_overflow = 0, tail_overflow = 0 }
+	local parts = { text = "" }
 	if type(name) ~= "string" or name == "" then return parts end
 	local found = scan(name)
 	local n = #found
@@ -96,18 +122,15 @@ function rich_name.parse(name)
 	end
 	local text_to = next_start - 1
 
-	for i = 1, lead_n do
-		if i <= max then
-			parts.lead[i] = found[i].icon
-		else
-			parts.lead_overflow = parts.lead_overflow + 1
-		end
+	for i = 1, math.min(lead_n, max) do
+		add_icon(parts, "lead", found[i].icon)
 	end
+	if lead_n > max then parts.lead_overflow = lead_n - max end
 	local tail_n = n - tail_first + 1
 	local skip = math.max(tail_n - max, 0)
-	parts.tail_overflow = skip
+	if skip > 0 then parts.tail_overflow = skip end
 	for i = tail_first + skip, n do
-		parts.tail[#parts.tail + 1] = found[i].icon
+		add_icon(parts, "tail", found[i].icon)
 	end
 	parts.text = string.match(string.sub(name, text_from, text_to), "^%s*(.-)%s*$")
 	return parts
