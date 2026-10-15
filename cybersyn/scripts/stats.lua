@@ -27,12 +27,19 @@ stats.HOUR = HOUR
 --- @field wait_max_station uint? requester station id of the longest wait
 --- @field wait_max_hash string? item hash of the longest wait
 --- @field wait_max_tick uint? when the longest wait ended (its train was dispatched)
+--- @field avail_min {[string]: int}? per network, the fewest available trains seen while this bucket was current;
+---   only networks whose count changed inside the bucket (an unchanged count is the current one)
+--- @field no_train_failures int? requests that turned unserved for want of a train (diagnostics transitions into
+---   NO_TRAINS_ON_NETWORK, TRAIN_FILTERED or CAPACITY)
 
 --- @class Stats
 --- @field minute {[int]: StatsBucket} ring of one-minute buckets
 --- @field hour {[int]: StatsBucket} ring of one-hour buckets
 --- @field totals {deliveries: int, dispatches: int, items: int, since_tick: uint}
---- @field cycle {ema_seconds: number?}
+--- @field cycle {ema_seconds: number?, ticks_last: uint, dispatches_last: int, calls_last: int} the planner-cycle
+---   figures (ticks_last, dispatches_last, calls_last) are declared here and written from phase 2b on
+--- @field available_count {[string]: int} available trains per network, kept equal to the sizes of
+---   storage.available_trains by add_available_train / remove_available_train
 
 --- @return Stats
 local function new_stats()
@@ -40,7 +47,8 @@ local function new_stats()
 		minute = {},
 		hour = {},
 		totals = { deliveries = 0, dispatches = 0, items = 0, since_tick = game and game.tick or 0 },
-		cycle = { ema_seconds = nil },
+		cycle = { ema_seconds = nil, ticks_last = 0, dispatches_last = 0, calls_last = 0 },
+		available_count = {},
 	}
 end
 
@@ -60,6 +68,10 @@ local function get()
 	-- Early builds kept a fixed sample ring, which covered under a minute on busy bases.
 	s.cycle.samples = nil
 	s.cycle.next = nil
+	s.cycle.ticks_last = s.cycle.ticks_last or 0
+	s.cycle.dispatches_last = s.cycle.dispatches_last or 0
+	s.cycle.calls_last = s.cycle.calls_last or 0
+	s.available_count = s.available_count or {}
 	return s
 end
 
@@ -84,8 +96,23 @@ local function purge_invalid_hashes(s)
 	end
 end
 
+--- Recounts the available-train counters from the planner's own table, so a save from before them (or a change the
+--- O(1) updates could not see) starts exact.
+--- @param s Stats
+local function recount_available(s)
+	local counts = s.available_count
+	for name in pairs(counts) do counts[name] = 0 end
+	for name, ids in pairs(storage.available_trains or {}) do
+		local n = 0
+		for _ in pairs(ids) do n = n + 1 end
+		counts[name] = n
+	end
+end
+
 function stats.init()
-	purge_invalid_hashes(get())
+	local s = get()
+	purge_invalid_hashes(s)
+	recount_available(s)
 end
 
 --- @return Stats
@@ -107,6 +134,73 @@ local function bucket(ring, slots, width, tick)
 		ring[index] = b
 	end
 	return b
+end
+
+--- @param ring {[int]: StatsBucket}
+--- @param slots int
+--- @param width uint
+--- @param tick uint
+--- @param name string
+--- @param old int
+--- @param new int
+local function note_available(ring, slots, width, tick, name, old, new)
+	local b = bucket(ring, slots, width, tick)
+	local mins = b.avail_min
+	if not mins then
+		mins = {}
+		b.avail_min = mins
+	end
+	-- `old` held since the previous change, which may predate this bucket, so it counts towards its minimum.
+	local m = mins[name]
+	if not m or old < m then m = old end
+	if new < m then m = new end
+	mins[name] = m
+end
+
+--- add_available_train / remove_available_train changed a network's available count by `delta`; O(1).
+--- @param name string network name
+--- @param delta int
+function stats.available_changed(name, delta)
+	local s = get()
+	local counts = s.available_count
+	local old = counts[name] or 0
+	local new = old + delta
+	if new < 0 then new = 0 end
+	counts[name] = new
+	-- Increases count too: the level before one may have held since before the window began.
+	local tick = game.tick
+	note_available(s.minute, MINUTE_SLOTS, MINUTE, tick, name, old, new)
+	note_available(s.hour, HOUR_SLOTS, HOUR, tick, name, old, new)
+end
+
+--- A request turned unserved for want of a train (from diagnostics transitions).
+function stats.record_no_train_failure()
+	local s = get()
+	local tick = game.tick
+	local m = bucket(s.minute, MINUTE_SLOTS, MINUTE, tick)
+	m.no_train_failures = (m.no_train_failures or 0) + 1
+	local h = bucket(s.hour, HOUR_SLOTS, HOUR, tick)
+	h.no_train_failures = (h.no_train_failures or 0) + 1
+end
+
+--- Fewest available trains per network over the window: the current count, lowered by every minimum a bucket of
+--- the window recorded. A network whose count never changed in the window reports its current count.
+--- @param ring {[int]: StatsBucket}
+--- @param oldest uint
+--- @param tick uint
+--- @return {[string]: int}
+local function min_available(s, ring, oldest, tick)
+	local out = {}
+	for name, n in pairs(s.available_count) do out[name] = n end
+	for _, b in pairs(ring) do
+		local mins = b.avail_min
+		if mins and b.start_tick >= oldest and b.start_tick <= tick then
+			for name, m in pairs(mins) do
+				if out[name] == nil or m < out[name] then out[name] = m end
+			end
+		end
+	end
+	return out
 end
 
 --- Called from create_delivery once the schedule is applied.
@@ -266,6 +360,8 @@ end
 --- @field wait_max uint? ticks
 --- @field slowest StatsBucket[] buckets with a fulfilled request, as they are; read only
 --- @field slowest_minutes {[StatsBucket]: true} entries of `slowest` that are minute buckets in an hour-bucket period
+--- @field min_available_by_network {[string]: int} fewest available trains per network during the period
+--- @field no_train_failures int requests that turned unserved for want of a train during the period
 
 -- Merged per-item amounts of the closed buckets of a period, per period. Closed buckets never change (records go to
 -- the current bucket), so this is valid until the current bucket rolls over. A pure function of storage.stats and the
@@ -324,6 +420,7 @@ function stats.aggregate(minutes)
 		wait_n = 0,
 		slowest = {},
 		slowest_minutes = {},
+		no_train_failures = 0,
 	}
 	local items = out.items
 	for hash, n in pairs(closed_items_of(s, minutes, ring, oldest, current)) do
@@ -334,6 +431,7 @@ function stats.aggregate(minutes)
 		if b.start_tick >= oldest and b.start_tick <= tick then
 			out.deliveries = out.deliveries + b.deliveries
 			out.dispatches = out.dispatches + b.dispatches
+			if b.no_train_failures then out.no_train_failures = out.no_train_failures + b.no_train_failures end
 			local live = b.start_tick >= current
 			for hash, n in pairs(b.items) do
 				if live then items[hash] = (items[hash] or 0) + n end
@@ -368,10 +466,27 @@ function stats.aggregate(minutes)
 		out.slowest = slowest
 	end
 	out.amount = amount
+	out.min_available_by_network = min_available(s, ring, oldest, tick)
 	if out.cycle_n > 0 then out.cycle_avg = cycle_sum / out.cycle_n end
 	if out.wait_n > 0 then out.wait_avg = wait_sum / out.wait_n end
 	out.wait_max = wait_max
 	return out
+end
+
+--- Fewest available trains per network over the last `minutes` (Overview Fleet headroom, PLAN3 §4.4).
+--- @param minutes int
+--- @return {[string]: int}
+function stats.min_available(minutes)
+	local s = get()
+	local tick = game.tick
+	local ring, width, count
+	if minutes <= MINUTE_SLOTS then
+		ring, width, count = s.minute, MINUTE, minutes
+	else
+		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
+	end
+	local current = tick - tick % width
+	return min_available(s, ring, current - (count - 1) * width, tick)
 end
 
 --- Plain-data summary for the dev interface.
