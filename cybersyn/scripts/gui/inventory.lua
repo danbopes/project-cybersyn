@@ -674,13 +674,16 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 end
 
 --- Empty grids alone do not say whether nothing matches or nothing has been collected yet. The message replaces
---- the grids, centred like the empty state of the Stations and Trains tabs.
+--- the grids, centred like the empty state of the Stations and Trains tabs. It follows the aggregate the grids show,
+--- which reaches a completed pass a render or two after the pass itself (get_cache spreads the refresh).
 --- @param refs table<string, LuaGuiElement>
-local function render_empty_label(refs, snapshot, f, inv)
+--- @param cache table from get_cache
+local function render_empty_label(refs, cache, f)
 	local label, flow, grids = refs.inventory_empty_label, refs.inventory_empty_flow, refs.inventory_grids_flow
 	if not (label and label.valid and flow and flow.valid and grids and grids.valid) then return end
+	local inv = cache.inv
 	local key
-	if not snapshot.tick then
+	if not cache.tick then
 		key = "cybersyn-gui.stations-collecting"
 	elseif not (next(inv.provided) or next(inv.requested) or next(inv.in_transit)) then
 		key = util.filters_active(f, true) and "cybersyn-gui.inventory-no-match" or "cybersyn-gui.inventory-empty"
@@ -706,7 +709,10 @@ function inventory_tab.build(map_data, player_data)
 	local cache, rebuilt = get_cache(player_data, snapshot, f)
 	-- A background refresh aggregates on one render and applies on the next, so neither carries both costs.
 	if rebuilt and cache.background then return end
-	render_empty_label(refs, snapshot, f, cache.inv)
+	render_empty_label(refs, cache, f)
+	-- The grids are hidden until a completed pass is aggregated. Left alone meanwhile, the buttons from before the
+	-- window was closed are mostly reused then instead of all being built again (~20 ms for 600 items).
+	if not cache.tick then return end
 	local version = cache.version
 	local selected = f.item
 	local now = game.tick

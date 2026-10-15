@@ -710,8 +710,11 @@ function trains_tab.build(map_data, player_data)
 
 	local summary = refs.manager_trains_tab_summary
 	if summary and summary.valid then
+		-- Zero counts before the first pass reached the trains would read as an idle fleet.
+		local show = snapshot.tick ~= nil or #rows > 0
+		if summary.visible ~= show then summary.visible = show end
 		local caption, sig = summary_caption(rows, alerts)
-		if state.summary_sig ~= sig then
+		if show and state.summary_sig ~= sig then
 			summary.caption = caption
 			state.summary_sig = sig
 		end

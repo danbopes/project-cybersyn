@@ -21,6 +21,22 @@ lab.suite("40_foundation", {
 		lab.check("open does not collect synchronously", status.snapshot_tick == nil, status)
 		lab.check("subheader says Collecting", caption_key(status) == "cybersyn-gui.collecting-progress", status.caption)
 		lab.check("progress starts at 0 %", status.collecting == 0 and status.caption[2] == "0", status)
+		remote.call(D, "select_tab", pi, "overview")
+		local ov = remote.call(D, "dump", pi, "overview")
+		local placeholder = true
+		for _, tile in ipairs({ "stations", "fleet", "depots", "demand" }) do
+			if ov.rendered_tiles[tile].headline ~= "–" then placeholder = false end
+		end
+		lab.check("overview tiles read – before the first pass", placeholder, ov.rendered_tiles)
+		local lists_ok = true
+		for _, name in ipairs({ "starved", "waiting", "transit", "slowest", "saturated" }) do
+			local l = ov.lists[name]
+			local key = type(l.empty) == "table" and l.empty[1]
+			if #l.keys ~= 0 or (key ~= "cybersyn-gui.stations-collecting" and key ~= "cybersyn-gui.overview-empty-" .. name .. "-disabled") then
+				lists_ok = false
+			end
+		end
+		lab.check("overview lists say Collecting before the first pass, with no rows", lists_ok, ov.lists)
 		remote.call(D, "select_tab", pi, "stations")
 		local d = remote.call(D, "dump", pi, "stations")
 		lab.check("stations tab shows the collecting placeholder", d.total == 0 and d.warning == true, d)
@@ -38,6 +54,27 @@ lab.suite("40_foundation", {
 		remote.call(D, "select_tab", pi, "overview")
 		local tiles = remote.call(D, "dump", pi, "overview").tiles
 		lab.check("overview counts every station right after the pass", tiles.stations.total == d.total, tiles.stations.total)
+	end,
+
+	-- A first pass that takes several updates: the Stations tab shows no rows and no counts from part of the stations,
+	-- then every station on the update that completes it.
+	function(ctx)
+		remote.call(D, "close", pi)
+		remote.call(D, "open", pi, true)
+		remote.call(D, "select_tab", pi, "stations")
+		local seen, ok, done, last = {}, true, false, nil
+		for _ = 1, 20 do
+			done = remote.call(D, "step", pi, 4)
+			last = remote.call(D, "dump", pi, "stations")
+			seen[#seen + 1] = last.total .. "/" .. tostring(last.counts.all)
+			if done then break end
+			if last.total ~= 0 or last.counts.all ~= nil or not last.warning then ok = false end
+		end
+		lab.check("stations: the first pass took several steps", #seen >= 5 and done, seen)
+		lab.check("stations during the first pass: collecting placeholder, no rows, no counts", ok, seen)
+		lab.check("stations on the step that completes it: rows == chip count == stations",
+			last.total == last.counts.all and last.total == lab.dev("summary").station_count, seen)
+		lab.dev("collect")
 	end,
 
 	-- B2: Saturated has one meaning (deliveries at a finite limit). A station at its limit is saturated; one with a
@@ -73,6 +110,10 @@ lab.suite("40_foundation", {
 			{ tile = tile, chip = chips.saturated, rows = rows.total })
 		lab.check("saturated: the station at its limit counts", chips.saturated >= 1, chips.saturated)
 		lab.check("saturated: limit 0 with a delivery is disabled", chips.disabled >= 1, chips.disabled)
+		local st_tile = remote.call(D, "dump", pi, "overview").tiles.stations
+		lab.check("stations tile lines == chips (no power, warming up, starved)", st_tile.faulty == chips.no_power
+			and st_tile.warming_up == chips.warming_up and st_tile.starved == chips.starved,
+			{ tile = { st_tile.faulty, st_tile.warming_up, st_tile.starved }, chip = { chips.no_power, chips.warming_up, chips.starved } })
 
 		-- Mid-pass: the station at its limit gets room again. Once the pass has refilled its record (pass not yet
 		-- complete), the chip drops it at once; the tile and its rows must drop it in the same update.

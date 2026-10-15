@@ -267,6 +267,16 @@ function interface.tick_split(pi)
 		collector.get().tick ~= before and " (pass done)" or "" }
 end
 
+--- One collector step over at most `budget` stations, then a render of player `pi`: a pass in small steps on a
+--- small save.
+--- @return boolean completed
+function interface.step(pi, budget)
+	local player, pd = context(pi)
+	local done = collector.step(budget)
+	manager.render(player, pd)
+	return done
+end
+
 --- Times `n` collector steps at the default batch size, then one full pass.
 function interface.bench_collect(n)
 	n = n or 1

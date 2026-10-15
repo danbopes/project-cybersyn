@@ -293,6 +293,11 @@ function stations_tab.query(player_data)
 	local wanted = status_filter(player_data)
 	local column, ascending = util.get_sort(player_data, TAB, "name")
 	if not sort_keys[column] then column = "name" end
+	-- The first pass after opening is still filling records: rows and counts from part of the stations would change
+	-- on every update and disagree with the other tabs, so there are none until it completes.
+	if not snapshot.tick then
+		return {}, {}, { status = {}, now = game.tick, snapshot = snapshot }, column, ascending
+	end
 
 	local fsig = filter_sig(f)
 	local epoch, pos = collector.log_position()
@@ -758,11 +763,13 @@ local function row_def(st, m, color, item, widths)
 	}, SCROLL), defs
 end
 
+--- @param count integer? nil while the first pass after opening runs
 local function chip_caption(status, count)
+	local number = count and format.number(count) or "–"
 	if status == "all" then
-		return { "", { "cybersyn-gui.station-status-all" }, "  ", format.number(count) }
+		return { "", { "cybersyn-gui.station-status-all" }, "  ", number }
 	end
-	return { "", "[img=flib_indicator_" .. STATUS_COLOR[status] .. "] ", { status_key(status) }, "  ", format.number(count) }
+	return { "", "[img=flib_indicator_" .. STATUS_COLOR[status] .. "] ", { status_key(status) }, "  ", number }
 end
 
 --- Status chips: counts over the filtered set, click to filter by that status.
@@ -778,7 +785,7 @@ local function render_chips(player_data, counts, state)
 		local selected = wanted == s
 		entries[i] = {
 			key = s,
-			sig = count .. (selected and "+" or "-"),
+			sig = tostring(count) .. (selected and "+" or "-"),
 			build = function()
 				return {
 					type = "button",
@@ -811,6 +818,17 @@ function stations_tab.build(map_data, player_data)
 	local rows, counts, ctx = stations_tab.query(player_data)
 	local first, last = util.paginate(player_data, TAB, #rows)
 	render_chips(player_data, counts, util.gui_state(player_data, CHIPS))
+	if not ctx.snapshot.tick then
+		-- Rows from before the window was closed stay hidden rather than destroyed: most of them are reused, not
+		-- built again, once the first pass completes.
+		scroll_pane.visible = false
+		local warning = refs.manager_stations_warning_flow
+		if warning and warning.valid then
+			warning.visible = true
+			refs.manager_stations_warning_label.caption = { "cybersyn-gui.stations-collecting" }
+		end
+		return
+	end
 
 	local item = player_data.search_item
 	local minute = math.floor(ctx.now / 3600)
@@ -890,9 +908,7 @@ function stations_tab.build(map_data, player_data)
 		warning.visible = empty
 		if empty then
 			local caption
-			if not ctx.snapshot.tick then
-				caption = { "cybersyn-gui.stations-collecting" }
-			elseif counts.all > 0 or util.filters_active(util.get_filters(player_data)) then
+			if counts.all > 0 or util.filters_active(util.get_filters(player_data)) then
 				caption = { "cybersyn-gui.stations-no-match" }
 			else
 				caption = { "cybersyn-gui.no-stations" }

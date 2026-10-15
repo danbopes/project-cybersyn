@@ -948,17 +948,16 @@ end
 function collector.step(budget, scale)
 	local manager = storage.manager
 	local b = manager.snapshot_build
-	local budgeted = budget or scale
 	-- Listing the stations and summarising the fleet each cost about as much as a batch of stations, so a default
-	-- step does only one of them.
+	-- step does only one of them and a boosted step both, but no stations on top.
 	if not b then
 		b = start_pass(manager)
-		if not budgeted then return false end
+		if not (budget or scale) then return false end
 	end
 	if b.trains_pending then
 		b.trains_pending = nil
 		summarize_trains(b)
-		if not budgeted then return false end
+		if not budget then return false end
 	end
 	local ids = b.ids
 	local n = #ids

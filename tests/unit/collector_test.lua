@@ -555,7 +555,11 @@ test("ensure_fresh: never collected or older than 600 ticks boosts the next pass
 	assert_nil(collector.get().tick)
 	assert_true(storage.manager.collect_boost)
 	assert_eq(collector.collecting(), 0)
-	-- Six stations fit one boosted step (4 x the minimum batch), listing and trains included.
+	-- The first boosted step lists the stations and summarises the trains, with no stations on top.
+	assert_true(collector.tick())
+	assert_nil(collector.get().tick)
+	assert_eq(collector.collecting(), 0)
+	-- Six stations fit the next boosted step (4 x the minimum batch).
 	assert_true(collector.tick())
 	assert_eq(collector.get().tick, 1000)
 	assert_nil(storage.manager.collect_boost)
@@ -584,7 +588,9 @@ test("collecting: progress of the boosted pass", function()
 		storage.stations[id] = { entity_stop = stop("S" .. id), entity_comb1 = comb(WORKING, {}), network_name = "signal-A", network_mask = 1 }
 	end
 	collector.ensure_fresh()
-	-- 106 stations: default batch 25, boosted 100.
+	-- 106 stations: default batch 25, boosted 100, after a first step that only lists them and the trains.
+	assert_false(collector.step(nil, 4))
+	assert_eq(collector.collecting(), 0)
 	assert_false(collector.step(nil, 4))
 	assert_eq(collector.collecting(), 100 / 106)
 	assert_true(collector.tick())
