@@ -302,7 +302,8 @@ end
 --- @param name string
 --- @param why string
 function lab.skip(name, why)
-	out("SKIP " .. name .. " (" .. why .. ")")
+	local suite = lab.cur and lab.cur.name or "lab"
+	out("SKIP " .. suite .. ": " .. name .. " (" .. why .. ")")
 end
 
 function lab.resume()

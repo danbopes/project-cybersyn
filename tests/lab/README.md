@@ -9,7 +9,7 @@ tests/lab/run.sh <scratch> <rcon port> [save.zip] [--record]
 - `<scratch>`: the lab's scratch dir (one lab per scratch dir and port; the game port is rcon + 7000).
 - `save.zip`: defaults to `~/factorio_20/manager-facelift/saves/layout-dev.zip`. The suite's expectations (30 stations, 6 trains, the `cyb-bench` stimulus) belong to that save; other saves boot but will fail those checks.
 - `--record`: rewrite `tests/baseline/` from this run (see below).
-- Prints one `PASS`/`FAIL`/`INFO` line per check and a `SKIP <check> (<why>)` line for each check whose subject does not exist yet, then `SKIP k` and `PASS n FAIL m`; exits non-zero on any failure (a SKIP is not a failure). A test file that prints no `DONE` (never calls `lab.suite`, or returns early) or runs no checks fails. A first RCON login that fails is retried once with a fresh start. The full RCON transcript is in `<scratch>/lab-run.log`, the result lines in `<scratch>/lab-results.txt`.
+- Prints one `PASS`/`FAIL`/`INFO` line per check and a `SKIP <suite>: <check> (<why>)` line for each check whose subject does not exist yet, then `SKIP k` and `PASS n FAIL m`; exits non-zero on any failure (a SKIP is not a failure). A test file that prints no `DONE` (never calls `lab.suite`, or returns early) or runs no checks fails. A first RCON login that fails is retried once with a fresh start. The full RCON transcript is in `<scratch>/lab-run.log`, the result lines in `<scratch>/lab-results.txt`.
 - Environment overrides: `MOD=<mod root>` (default: the `cybersyn/` next to `tests/`), `LAB=<lab.sh>`, `TRACE_LENGTH` (ticks, default 10800), `TRACE_SPEED` (default 20). Changing `TRACE_LENGTH` makes the trace incomparable with the baseline.
 
 ## What runs, in order
@@ -30,7 +30,7 @@ Each RCON command is its own chunk, so state lives in the global `lab`. A test f
 
 `lab.wait_until(cond, max_ticks[, speed])` is `lab.wait` that ends early once `cond()` is true (checked on every `lab.resume()`); the next step must check the condition itself.
 
-Helpers: `lab.check(name, cond, detail)`, `lab.skip(name, why)` (prints `SKIP name (why)`), `lab.info(text or LocalisedString)`, `lab.dev(fn, ...)` (`cybersyn-manager-dev`), `lab.read(...)` (`cybersyn` `read_global`), `lab.tab_keys(pi)` (row identities of every tab in display order), `lab.ordered(keys, n, ascending)`, `lab.subset`, `lab.same_list`, `lab.count`, `lab.set_of`, `lab.filter_cases(item)`, `lab.set_status_filter(pi, status)`, `lab.golden(pi)` (the fixed-tick golden groups below); shared tables `lab.SORTS`, `lab.DEFAULT_SORT`, `lab.STATUSES`, `lab.PERIODS`.
+Helpers: `lab.check(name, cond, detail)`, `lab.skip(name, why)` (prints `SKIP <suite>: name (why)`), `lab.info(text or LocalisedString)`, `lab.dev(fn, ...)` (`cybersyn-manager-dev`), `lab.read(...)` (`cybersyn` `read_global`), `lab.tab_keys(pi)` (row identities of every tab in display order), `lab.ordered(keys, n, ascending)`, `lab.subset`, `lab.same_list`, `lab.count`, `lab.set_of`, `lab.filter_cases(item)`, `lab.set_status_filter(pi, status)`, `lab.golden(pi)` (the fixed-tick golden groups below); shared tables `lab.SORTS`, `lab.DEFAULT_SORT`, `lab.STATUSES`, `lab.PERIODS`.
 
 ## The golden dispatch trace
 
@@ -75,47 +75,59 @@ Regenerate with `tests/lab/run.sh <scratch> <port> --record`, then run once more
 - RCON command size (`lab.sh file`): no limit found. Files of 0.9 KB to 3.8 MB of Lua and a single 20 MB string literal were accepted and executed whole; responses of 8 MB came back whole. Files are sent as one command, nothing is chunked. The practical limit is `RCON_TIMEOUT` (120 s per command, `cyblab.py`).
 - One `lab.sh cmd` round trip: about 65 ms (Python start plus RCON).
 - Boot to RCON: 2 s. Trace window: 10,800 ticks in about 9 s at speed 20 (about 1,240 ticks/s).
-- Whole run: about 14 s wall, against a 90 s budget (13.9 s with the station trace and `lab.golden`); 15.6 to 15.8 s with the reason-code suite (1.65 s of it).
+- Whole run: about 14 s wall, against a 90 s budget (13.9 s with the station trace and `lab.golden`); 15.8 to 17.4 s with the reason-code suite (1.7 s of it, 20 scenarios).
 
 ## Reason-code scenarios (`cases.lua`, `40_reason_codes_test.lua`)
 
-One scenario per reason code of PLAN3 §4.5, written before the diagnostics core (`scripts/diag.lua`) exists. Today every scenario proves it is the situation it claims and that the planner does not serve it; the reason itself is checked against the core's dev API once that API is there.
+One scenario per reason code of PLAN3 §4.5, written before the diagnostics core (`scripts/diag.lua`) exists. Today every scenario's observable checks show the situation it is built for (the requester asks, a provider offers the item at the requester's threshold unless the provider's stock is the point, the precondition holds) and that the planner does not serve it; which `tick_dispatch` site rejects it is only checked against the core's dev API once that API is there.
 
 ### Construction
 
 `cases.<NAME>({k = row})` builds a self-contained scenario and returns `{name, expect, r_station, p_station, item, network, trains, cleanup, ...}` (`cases.lua` header lists every field). Each scenario gets:
 
 - its own row on `cyb-bench` at `y = 2040 + 32 k` (the save's world ends at `y` 129): 330 tiles of straight east-west rail, substations and an electric energy interface. No row shares rail or poles with another or with the save.
-- its own network name, a virtual signal nobody else uses (`signal-C` … `signal-U`), so the planner never matches it with the save's `signal-A`/`signal-B` stations or with another scenario (Cybersyn keys requests, providers and available trains by network name).
+- its own network name, a virtual signal nobody else uses (`signal-C` … `signal-V`), so the planner never matches it with the save's `signal-A`/`signal-B` stations or with another scenario (Cybersyn keys requests, providers and available trains by network name).
 - its own depot at the east end and its own trains (locomotive, cargo wagon, locomotive: 40 stacks), built east of the depot and driving there on their own. All stops face west, as in the benchmark world: providers sit west of the depot and requesters west of the providers, so every leg is west-bound.
 - stops built like `harness/benchmarks/cybersyn/build.lua` (Cybersyn combinator 1.5 east and 2.5 north of the stop, so the stop is in its search box, constant combinator wired red to its input, `second_constant` bits 0/1/2 for both/provide/request plus 4 for "disable allow list") and promoted out of warm-up through `write_global`, as `harness/suites/cybersyn.lua` does.
 
-Because the scenarios cannot see each other they are all built at once; the whole file takes about 4,000 game ticks, 1.65 s wall.
+Because the scenarios cannot see each other they are all built at once; the whole file takes about 4,300 game ticks, 1.7 s wall.
 
 A scenario is switched on in stages, one per planner cycle, each once its condition holds (a train parked, a delivery created). The last stage always switches on the request under test, so the key (requester, item) is never evaluated before the scenario is complete. A train that has to hold a delivery open (a train limit or a station's delivery counter) has its fuel taken out at the depot before it is dispatched: the planner does not look at fuel, and the train never leaves.
 
 ### Runner
 
-A handler on Cybersyn's `tick_init` event counts planner cycles; an `on_tick` handler advances the scenarios and samples them on the first tick after each cycle boundary, so every sample describes whole dispatcher cycles and nothing depends on when RCON commands arrive. For each scenario: arm, take the first sample after the cycle in which the request was first evaluated, wait at least two more cycles and 2,400 ticks (the 30 s flap window plus 10 s), take the settled sample and evaluate the preconditions, then lift the cause where the scenario has one and wait for the delivery. A delivery is any `on_train_status_changed` to status 1 (to provider) whose train goes to the requester with the item in its manifest. Teardown destroys every entity with `raise_destroy`, deletes the second surface and compares Cybersyn's `stations`, `trains`, `depots`, `available_trains`, `layouts`, `refuelers`, warm-up queue, live `active_station_ids`, `connected_surfaces` and the surface list with a fingerprint taken before the suite (and checks 30 stations and an empty scenario area). The `stats` counters keep the scenarios' deliveries, as they would a player's.
+A handler on Cybersyn's `tick_init` event counts planner cycles (and keeps the longest cycle seen); an `on_tick` handler advances the scenarios and samples them on the first tick after each cycle boundary, so every sample describes whole dispatcher cycles and nothing depends on when RCON commands arrive. For each scenario: arm, take the first sample after the cycle in which the request was first evaluated, wait at least two more cycles and 2,400 ticks (the 30 s flap window plus 10 s), take the settled sample (with `diag_counts`, while the cause is still in place) and evaluate the preconditions, then lift the cause where the scenario has one, wait for the delivery and two more cycles. A delivery is any `on_train_status_changed` to status 1 (to provider) whose train goes to the requester with the item in its manifest. Teardown destroys every entity with `raise_destroy`, deletes the second surface and compares Cybersyn's `stations`, `trains`, `depots`, `available_trains`, `layouts`, `refuelers`, warm-up queue, live `active_station_ids`, `connected_surfaces` and the surface list with a fingerprint taken before the suite (and checks 30 stations and an empty scenario area). The `stats` counters keep the scenarios' deliveries, as they would a player's.
 
-Checks for every scenario, today: it builds, every stop is registered, it arms, its preconditions (below), the requester's combinator shows a failed request (`display_state` bit 2) and no delivery reached the requester while the cause was in place.
+Checks for every scenario, today: every stop is registered, it arms, its preconditions (below; every scenario except NO_PROVIDER and P_BELOW_THRESHOLD also checks that its provider polled the item at no less than the requester's `r_threshold`), the requester's combinator shows a failed request (`display_state` bit 2) and no delivery reached the requester while the cause was in place. A constructor that throws is one FAIL line `<NAME>: scenario builds`.
 
 ### When the diagnostics core lands
 
-Detected by `remote.interfaces["cybersyn-manager-dev"].diag_unserved`. Without it each scenario prints `SKIP <NAME> (no diag api)`. With it the runner sets `cybersyn-diagnostics` to `basic`, calls `diag_reset`, and per scenario checks:
+Detected by `remote.interfaces["cybersyn-manager-dev"].diag_unserved`. Without it each scenario prints `SKIP 40_reason_codes: <NAME> (no diag api)`; if the `cybersyn-diagnostics` setting exists (the core has landed) but that function does not, the suite FAILs instead of skipping. With it the runner sets `cybersyn-diagnostics` to `basic`, calls `diag_reset`, and per scenario checks:
 
-- right after the first failing evaluation: `diag_unserved(r_station)[item].pending == expect`, or `reason == expect` with no pending (PLAN3 lets a key's first entry take effect at once);
-- after the flap window: `reason == expect` (or the scenario's `expect_settled`, below);
-- for NO_PROVIDER, R_DISABLED, P_BELOW_THRESHOLD after lifting the cause: a `served` event for the requester in `diag_events(seq_before_lift + 1, …)` and no unserved entry left;
-- once for the suite: `diag_counts()` has every expected code.
+- right after the first failing evaluation: `diag_unserved(r_station)[item].pending == expect`, or `reason == expect` with no pending (PLAN3 lets a key's first entry take effect at once); for LOST_PRIORITY instead `lost_n >= 1` and `lost_to == hi`;
+- after the flap window: `reason == expect` (or the scenario's `expect_settled`), and `diag_counts()[reason] >= 1` read at that same sample;
+- the payload numbers `a`/`b` (PLAN3 §4.5 B1) where they are defined, at the settled sample: R_AT_LIMIT 1/1, P_AT_LIMIT 1/1, P_BELOW_THRESHOLD 500/2,000, CAPACITY 50/40 (slots needed / largest capacity), NO_SURFACE_ROUTE the provider's and the requester's surface index (either order), NO_TRAINS_ON_NETWORK and both LOST_PRIORITY cases 0/0, TRAIN_FILTERED_MANUAL and _MASK 1/0 (available / usable); TRAIN_FILTERED_SCHEDULE `b == 0` at the first sample;
+- the TRAIN_FILTERED cause split in `rej`: TRAIN_FILTERED_MASK counts under `TRAIN_MASK`, _MANUAL and _SCHEDULE under `TRAIN_MANUAL`, and nothing under the other two of `TRAIN_MASK`, `TRAIN_MANUAL`, `TRAIN_SURFACE`;
+- the flap rule on TRAIN_FILTERED_SCHEDULE, the one scenario where the dispatcher itself changes the reason: a sample after the first shows `reason` TRAIN_FILTERED with NO_TRAINS_ON_NETWORK pending, and NO_TRAINS_ON_NETWORK is confirmed at least one cycle and 1,800 ticks (less two of the longest cycles, the sampling error) later;
+- after a lift: a `served` event for the requester that is lifted (hi for LOST_PRIORITY) with a `seq` above `diag_state().seq` taken before the lift, and no unserved entry left for it;
+- after teardown: `diag_unserved` is empty for every removed stop.
 
-These checks were run against a throwaway stub of the dev API (a scratch copy of the mod classifying at the `tick_dispatch` sites per §4.5; not committed): all scenarios produced their code, three runs identical. Two mutation probes were caught: the planner ignoring a zero network mask (MASK_MISMATCH gets a delivery) and correctness 5 classified as a layout mismatch (bug B3: ALL_IN_INTERRUPT reads R_LAYOUT).
+The dev-API contract these checks rely on (p2 brief deliverable 5, plus what it leaves open, settled here):
+
+- `diag_counts()` counts live unserved entries by their confirmed reason (the number the Overview and the HUD line show), not evaluations; the suite reads it while the cause is in place.
+- `diag_events(from_seq, limit)` may treat `from_seq` as inclusive or exclusive: the suite asks from `seq` and drops events with a `seq` not above it. `kind` is the string `"served"` or an integer that `diag_state().kinds` maps to it; `station` is the requester's unit number; `diag_unserved` is keyed by the item hash (`"iron-plate"`).
+- LOST_PRIORITY: when an item's requester loop ends at the r591 return, every requester that lost a requester pick on priority during that call (skipped at the `prior < best_r_prior` goto, or picked and then replaced by a higher priority) gets `lost_n += 1` and `lost_to` = the requester that beat it; the dispatch success path records nothing. Both polling orders are built (LOST_PRIORITY, LOST_PRIORITY_LO_FIRST), so a core that only counts at the goto fails the second.
+- TRAIN_FILTERED's `rej` split uses the keys `TRAIN_MASK` (the train's mask shares no bit), `TRAIN_MANUAL` (manual mode, or a schedule `validate_train_base_schedule` rejects) and `TRAIN_SURFACE` (`is_delivery_allowed_for_train` false).
+
+Validated against a throwaway stub of the dev API written to that contract and PLAN3 §4.5 (a scratch copy of the mod, not committed: live counts, losses applied only at r591, exclusive `from_seq`, first entry immediate, flap rule, a/b and the `rej` split): every reason check passes. Mutation probes on the stub, each caught: the flap rule confirming at once (2 FAILs on TRAIN_FILTERED_SCHEDULE), manual rejections counted as mask (2), losses counted only at the goto (LOST_PRIORITY_LO_FIRST, 2), CAPACITY's a/b swapped (1), a destroyed stop's entries never removed (teardown, 1), the setting present without the dev API (1); an inclusive `from_seq` passes, as it should. Earlier probes against the first stub: the planner ignoring a zero network mask (MASK_MISMATCH gets a delivery) and correctness 5 classified as a layout mismatch (bug B3: ALL_IN_INTERRUPT reads R_LAYOUT).
+
+Adding the `cybersyn-diagnostics` setting alone (a copy of the mod with only that setting, nothing else changed) moves the golden trace on layout-dev: first divergence at event 36, tick 22259 instead of 22265. The phase that adds the setting re-records the baseline with that note.
 
 ### The scenarios
 
 Item `iron-plate` unless noted; "request N/T" is a requester signal of -N with a `cybersyn-request-threshold` of T.
 
-**CONTROL** (no code). Provider 5,000, requester 2,000/1,000, one train. The runner stands in for inserters: loads the manifest at the provider, empties the train at the requester (and clears its request, since its combinator never sees stock arrive), and sends it round the east end of the line when it has no path home (as `dispatch_trace.lua` does). Checks: exactly one delivery, the train reached provider and requester, the delivery completed and the train is back at its depot and available. This is what makes "no delivery" in every other scenario meaningful.
+**CONTROL** (no code). Provider 5,000, requester 2,000/1,000, one train. The runner stands in for inserters: loads the manifest at the provider, empties the train at the requester (and clears its request, since its combinator never sees stock arrive), and sends it round the east end of the line when it has no path home (as `dispatch_trace.lua` does). Checks: exactly one delivery when the case settles and still one when the trip is over, the train reached provider and requester, the delivery completed and the train is back at its depot and available. This is what makes "no delivery" in every other scenario meaningful.
 
 **NO_PROVIDER**. The network's only provider offers copper plates; the requester asks for iron 2,000/1,000. Preconditions: the requester polled iron as requested; the provider polls copper but no iron. Lift: the provider also offers iron 5,000; the requester must be served.
 
@@ -123,9 +135,11 @@ Item `iron-plate` unless noted; "request N/T" is a requester signal of -N with a
 
 **R_DISABLED**. Requester with train limit 0 requests 2,000/1,000; provider 5,000; one train. Precondition: `trains_limit` 0 in Cybersyn's station. Lift: the limit is removed; the requester must be served.
 
-**R_IS_PROVIDING**. Stop A (provide and request) provides 5,000; requester B takes 2,000 and the train is held, so A has a pickup of iron in progress. Then B stops requesting, a second provider C offers 5,000, a second train arrives, and A requests 3,000/1,000. Preconditions: A's `deliveries[iron]` < 0, C offers iron.
+**R_IS_PROVIDING**. Stop A (provide and request) provides 5,000; requester B takes 2,000 and the train is held, so A has a pickup of iron in progress. Then B stops requesting, a second provider C offers 5,000, a second train arrives, and A requests 3,000/1,000. Preconditions: A's `deliveries[iron]` < 0 (C offering iron is the common check).
 
-**LOST_PRIORITY** (a counter, not a reason). Provider with exactly 2,000; requesters "hi" (`cybersyn-priority` 10) and "lo" (0) both 2,000/2,000; one train. Hi wins and the provider is empty afterwards. Preconditions: priorities 10 and 0, the provider's whole stock went to hi; hi got exactly one delivery, lo none. With the core: `lost_n >= 1` and `lost_to == hi` after the first evaluation, and lo's settled reason NO_PROVIDER (`expect_settled`: the only provider has nothing left).
+**LOST_PRIORITY** (a counter, not a reason; settles on NO_TRAINS_ON_NETWORK). Provider with exactly 2,000; requesters "hi" (`cybersyn-priority` 10) and "lo" (0) both 2,000/2,000, hi ahead of lo in the polling queue; the network's depot has no train. Every cycle the planner picks hi, fails it for want of a train and only then evaluates lo, so the item's requester loop ends at the r591 return with lo having lost to hi (the requester-side recording site of PLAN3 §4.5; with a train, hi's success would end the call on the dispatch path, where nothing is recorded). Preconditions: priorities 10 and 0, hi polled before lo, no train on the network. Lift: a train is built at the depot; hi is served exactly once and lo never is (the stock is one delivery). With the core: `lost_n >= 1` and `lost_to == hi` after the first evaluation, reason NO_TRAINS_ON_NETWORK, a served event for hi.
+
+**LOST_PRIORITY_LO_FIRST**. The same with lo ahead of hi in the polling queue: the planner picks lo first and replaces it with hi, so lo never reaches the priority goto; the loss must be counted all the same.
 
 **P_AT_LIMIT**. Provider (10,000) with train limit 1 serves requester 1; the train is held. A second train arrives, then requester 2 asks for 2,000/1,000. Preconditions: the provider is at 1 of 1, the second train is available.
 
@@ -133,7 +147,7 @@ Item `iron-plate` unless noted; "request N/T" is a requester signal of -N with a
 
 **MASK_MISMATCH**. Requester mask 1, provider mask 2 (the network signal's value on each combinator), depot mask 3 so the train serves both. Preconditions: the masks in Cybersyn's stations and train.
 
-**NO_SURFACE_ROUTE**. The provider stands on `rc-island`, a flat surface the test creates (and deletes); the requester and the train are on `cyb-bench`. No surface connection exists. The brief asked for the requester on nauvis; on layout-dev nauvis is natural terrain with an enemy base and no stations, so this follows PLAN3 §6.2 instead ("the `cyb-bench` surface plus a second surface created by the test"). Preconditions: the provider offers iron, the two stops are on different surfaces, `connected_surfaces` is empty.
+**NO_SURFACE_ROUTE**. The provider stands on `rc-island`, a flat surface the test creates (and deletes); the requester and the train are on `cyb-bench`. No surface connection exists. The brief asked for the requester on nauvis; on layout-dev nauvis is natural terrain with an enemy base and no stations, so this follows PLAN3 §6.2 instead ("the `cyb-bench` surface plus a second surface created by the test"). Preconditions: the two stops are on different surfaces, `connected_surfaces` is empty.
 
 **P_BELOW_THRESHOLD**. Provider 500, requester 3,000/2,000. Precondition: the provider polled 500. Lift: the provider goes to 5,000; the requester must be served.
 
@@ -143,7 +157,7 @@ Item `iron-plate` unless noted; "request N/T" is a requester signal of -N with a
 
 **TRAIN_FILTERED_MASK** (expects TRAIN_FILTERED). Stations mask 1, depot (train) mask 2. Precondition: the three masks, the train available.
 
-**TRAIN_FILTERED_SCHEDULE** (expects TRAIN_FILTERED, settles on NO_TRAINS_ON_NETWORK). The only train's schedule is cleared under manual control and the train is handed back one cycle later, so Cybersyn never sees a departure and keeps it available with no records. The first evaluation rejects it (`validate_train_base_schedule`) and also removes it from Cybersyn, so from the second evaluation on the network has no train. Preconditions: the schedule is empty, the planner dropped the train.
+**TRAIN_FILTERED_SCHEDULE** (expects TRAIN_FILTERED, settles on NO_TRAINS_ON_NETWORK). The only train's schedule is cleared under manual control and the train is handed back one cycle later, so Cybersyn never sees a departure and keeps it available with no records. The first evaluation rejects it (`validate_train_base_schedule`) and also removes it from Cybersyn, so from the second evaluation on the network has no train. Preconditions: the schedule is empty, the planner dropped the train. The chip a player then sees ("No train", 0 of a fleet of 0) points away from the broken schedule; whether the core keeps TRAIN_FILTERED there is a phase-2 decision, and `expect_settled` follows it.
 
 **CAPACITY**. Requester 10,000/5,000 (50 stacks), provider 20,000, the only train carries 40 stacks. Precondition: the train's `item_slot_capacity` 40 and the requester's threshold 5,000.
 

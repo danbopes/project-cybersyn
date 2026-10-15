@@ -2,14 +2,15 @@
 -- (§4.5), built by tests/lab/cases.lua on rows far south of the save's world and torn down again at the end.
 --
 -- Two kinds of checks per scenario:
---   observable: the scenario is what it claims, read from Cybersyn's own tables (the request was polled, the
---     precondition holds, the requester's combinator shows a failed request, no delivery was created while the
---     cause was in place). They hold with or without the diagnostics core. A control case on the same kind of
+--   observable: the scenario is the situation it is built for, read from Cybersyn's own tables (the request was
+--     polled, a provider offers the item unless its stock is the point, the precondition holds, the requester's
+--     combinator shows a failed request, no delivery was created while the cause was in place). They hold with or without the diagnostics core. A control case on the same kind of
 --     track is dispatched, loaded, unloaded and returns, so "no delivery" elsewhere means something.
 --   reason: against the dev API of the diagnostics core (`diag_unserved` etc. on cybersyn-manager-dev). Without it
---     each scenario prints `SKIP <code> (no diag api)`; with it, the code must be pending (or already set, for a
+--     each scenario prints `SKIP 40_reason_codes: <NAME> (no diag api)`; with it, the code must be pending (or already set, for a
 --     first entry) right after the first failing evaluation and be the confirmed reason after the flap window
---     (two evaluations and 30 s), and lifting the cause must produce a `served` event.
+--     (two evaluations and 30 s), with the payload numbers a/b where PLAN3 §4.5 (B1) defines them, counted by
+--     diag_counts while it is live, and lifting the cause must produce a `served` event.
 --
 -- Everything time-critical runs inside the game tick: a handler on Cybersyn's tick_init event marks the planner
 -- cycle boundaries, and an on_tick handler advances each scenario one stage per cycle and samples it right after
@@ -29,6 +30,11 @@ local function has_diag()
 	return i ~= nil and i.diag_unserved ~= nil
 end
 
+-- The core's setting is the sign that it landed; an API missing next to it must not read as "not written yet".
+local function core_present()
+	return prototypes.mod_setting["cybersyn-diagnostics"] ~= nil
+end
+
 local function dev(fn, ...)
 	return remote.call(DEV, fn, ...)
 end
@@ -41,6 +47,8 @@ local rc = {
 	statuses = {},
 	diag = has_diag(),
 	errors = {},
+	cycle_tick = nil,
+	max_cycle_ticks = 0,
 }
 lab.rc = rc
 
@@ -50,19 +58,18 @@ local function kind_is(kind, name)
 	return type(kind) == "number" and st and st.kinds and st.kinds[kind] == name or false
 end
 
---- The highest event sequence number the core has written so far.
-local function last_seq()
-	local events = dev("diag_events", 0, 1000000) or {}
-	local seq = 0
-	for _, e in ipairs(events) do
-		if e.seq and e.seq > seq then seq = e.seq end
-	end
-	return seq
+local function diag_entry(case, station)
+	local t = dev("diag_unserved", station or case.r_station)
+	return t and t[case.item]
 end
 
-local function diag_entry(case)
-	local t = dev("diag_unserved", case.r_station)
-	return t and t[case.item]
+--- Whether a `served` event for `station` was written after `seq`. The contract does not say whether
+--- diag_events' from_seq is inclusive, so the query starts at `seq` and the filter drops it.
+local function served_after(seq, station)
+	for _, ev in ipairs(dev("diag_events", seq, 1000) or {}) do
+		if ev.seq and ev.seq > seq and kind_is(ev.kind, "served") and ev.station == station then return true end
+	end
+	return false
 end
 
 local function copy(t)
@@ -87,6 +94,7 @@ end
 
 local function finish(case)
 	case.phase = "done"
+	if case.armed_tick then case.res.delivered_end = deliveries_to(case, case.armed_tick) end
 end
 
 --- One planner cycle has completed since the last call: advance or sample every scenario.
@@ -125,20 +133,25 @@ local function boundary()
 					case.phase = "settling"
 				end
 			elseif case.phase == "settling" then
+				if rc.diag and case.flap then
+					local e = diag_entry(case)
+					res.samples = res.samples or {}
+					res.samples[#res.samples + 1] = { tick = tick, cycle = rc.cycle, reason = e and e.reason,
+						pending = e and e.pending }
+				end
 				if rc.cycle >= res.first_cycle + 2 and tick >= case.first_tick + SETTLE_TICKS then
-					res.settled = rc.diag and copy(diag_entry(case)) or nil
+					if rc.diag then
+						res.settled = copy(diag_entry(case))
+						res.counts = copy(dev("diag_counts"))
+					end
 					res.pre = case.pre(case)
 					res.display_failed = display_failed(case)
 					res.delivered = deliveries_to(case, case.armed_tick)
-					if case.winner then
-						res.winner_delivered = deliveries_to({ r_station = case.winner, item = case.item },
-							case.armed_tick)
-					end
 					if case.served then
 						case.phase = "serving"
 						case.serve_tick = tick
 					elseif case.lift then
-						res.lift_seq = rc.diag and last_seq() or nil
+						res.lift_seq = rc.diag and dev("diag_state").seq or nil
 						case.lift(case)
 						case.lift_tick = tick
 						case.phase = "lifting"
@@ -147,17 +160,20 @@ local function boundary()
 					end
 				end
 			elseif case.phase == "lifting" then
-				res.lift_delivered = deliveries_to(case, case.lift_tick)
+				local target = case.lift_station or case.r_station
+				res.lift_delivered = deliveries_to({ r_station = target, item = case.item }, case.lift_tick)
 				if rc.diag then
-					res.served_event = false
-					for _, ev in ipairs(dev("diag_events", res.lift_seq + 1, 1000) or {}) do
-						if kind_is(ev.kind, "served") and ev.station == case.r_station then res.served_event = true end
-					end
-					local e = diag_entry(case)
-					res.entry_after_lift = e ~= nil
+					res.served_event = served_after(res.lift_seq, target)
+					res.entry_after_lift = diag_entry(case, target) ~= nil
 				end
-				local done = res.lift_delivered > 0 and (not rc.diag or res.served_event)
-				if done or tick - case.lift_tick > LIFT_TIMEOUT then finish(case) end
+				-- Two more cycles after the delivery, so a requester the lift must not serve has been evaluated again.
+				if not res.lift_done_cycle and res.lift_delivered > 0 and (not rc.diag or res.served_event) then
+					res.lift_done_cycle = rc.cycle
+				end
+				if (res.lift_done_cycle and rc.cycle >= res.lift_done_cycle + 2) or
+					tick - case.lift_tick > LIFT_TIMEOUT then
+					finish(case)
+				end
 			elseif case.phase == "serving" then
 				local t = cases.ctrain(case.trains[1])
 				local seen = rc.statuses[case.trains[1]] or {}
@@ -179,6 +195,11 @@ end
 local function tick()
 	if rc.cycle ~= rc.seen then
 		rc.seen = rc.cycle
+		if rc.cycle_tick then
+			local len = game.tick - rc.cycle_tick
+			if len > rc.max_cycle_ticks then rc.max_cycle_ticks = len end
+		end
+		rc.cycle_tick = game.tick
 		boundary()
 	end
 	for _, case in ipairs(rc.list) do
@@ -203,12 +224,86 @@ local function all_done()
 	return true
 end
 
+--- Payload numbers of an entry against the case's expectation; nil in the expectation matches anything.
+local function ab_matches(e, want)
+	local a, b = e and e.a, e and e.b
+	local function eq(x, y) return y == nil or x == y end
+	if eq(a, want[1]) and eq(b, want[2]) then return true end
+	return want.unordered == true and eq(b, want[1]) and eq(a, want[2])
+end
+
+local TRAIN_CAUSES = { "TRAIN_MASK", "TRAIN_MANUAL", "TRAIN_SURFACE" }
+
+--- The rejection is counted under the expected TRAIN_FILTERED cause and under no other.
+local function rej_matches(e, want)
+	local rej = e and e.rej or {}
+	for _, cause in ipairs(TRAIN_CAUSES) do
+		local n = rej[cause] or 0
+		if (cause == want) ~= (n > 0) then return false end
+	end
+	return true
+end
+
+--- The flap rule held the dispatcher's own transition back: an evaluation after the first still showed the old
+--- reason with the new one pending, and the new one was confirmed only a flap window after it became pending.
+--- Samples are taken on cycle boundaries, so the measured window can be short by up to one cycle at each end.
+local function flap_checks(n, case, res)
+	local from, to = case.flap.from, case.flap.to
+	local pending_at, confirmed_at
+	for _, s in ipairs(res.samples or {}) do
+		if not pending_at and s.reason == from and s.pending == to then pending_at = s end
+		if not confirmed_at and s.reason == to then confirmed_at = s end
+	end
+	lab.check(n .. ": " .. from .. " held with " .. to .. " pending", pending_at ~= nil, res.samples)
+	local slack = 2 * rc.max_cycle_ticks
+	lab.check(n .. ": " .. to .. " confirmed only after the flap window",
+		pending_at ~= nil and confirmed_at ~= nil and confirmed_at.cycle >= pending_at.cycle + 1 and
+		confirmed_at.tick - pending_at.tick >= FLAP_TICKS - slack,
+		{ pending = pending_at, confirmed = confirmed_at, slack = slack })
+end
+
+--- The reason checks of one failing scenario against the diagnostics core.
+local function reason_checks(n, case, res)
+	local code = case.expect
+	local first, settled = res.first or {}, res.settled or {}
+	if case.kind == "counter" then
+		lab.check(n .. ": lost_n counted after the first evaluation", (first.lost_n or 0) >= 1, first)
+		lab.check(n .. ": lost_to is the winner", first.lost_to == case.winner, first.lost_to)
+	else
+		lab.check(n .. ": " .. code .. " pending after the first evaluation",
+			first.pending == code or (first.pending == nil and first.reason == code), first)
+	end
+	local want = case.expect_settled or code
+	lab.check(n .. ": reason " .. want .. " after the flap window", settled.reason == want, settled)
+	-- diag_counts counts live entries by confirmed reason (the Overview's and the HUD's number), so it is read
+	-- while the cause is still in place.
+	lab.check(n .. ": diag_counts counts " .. want .. " while it is live", ((res.counts or {})[want] or 0) >= 1,
+		res.counts)
+	local ab = case.expect_ab
+	if ab then
+		local e = ab.at == "first" and first or settled
+		lab.check(n .. ": payload a/b", ab_matches(e, ab), { want = ab, a = e.a, b = e.b })
+		if case.expect_rej then
+			lab.check(n .. ": rejection counted under " .. case.expect_rej, rej_matches(e, case.expect_rej), e.rej)
+		end
+	end
+	if case.flap then flap_checks(n, case, res) end
+	if case.lift then
+		lab.check(n .. ": served event after the cause is lifted", res.served_event == true)
+		lab.check(n .. ": unserved entry gone after the cause is lifted", res.entry_after_lift == false)
+	end
+end
+
 lab.suite("40_reason_codes", {
 	function()
 		lab.check("cases.lua loaded", cases ~= nil and cases.ORDER ~= nil)
 		lab.check("planner enabled", settings.global["cybersyn-enable-planner"].value == true)
 		rc.before = cases.fingerprint()
 		lab.check("save has its 30 stations before the suite", #rc.before.stations == 30, #rc.before.stations)
+		if core_present() then
+			lab.check("diagnostics core present with its dev api", rc.diag,
+				"cybersyn-diagnostics exists but cybersyn-manager-dev has no diag_unserved")
+		end
 		if rc.diag then
 			local setting = settings.global["cybersyn-diagnostics"]
 			rc.diag_setting = setting and setting.value
@@ -262,7 +357,6 @@ lab.suite("40_reason_codes", {
 		for _, err in ipairs(rc.errors) do lab.check("runner error", false, err) end
 		for _, case in ipairs(rc.list) do
 			local n, res = case.name, case.res
-			lab.check(n .. ": scenario builds", true)
 			local registered = true
 			for _, st in ipairs(case.stations) do
 				if not (lab.read("stations", st.id) or lab.read("depots", st.id)) then registered = false end
@@ -277,51 +371,28 @@ lab.suite("40_reason_codes", {
 					lab.check(n .. ": train reached the requester", trip[4] == true)
 					lab.check(n .. ": delivery completed", trip[5] == true or trip[6] == true)
 					lab.check(n .. ": train back at its depot and available", res.back == true)
+					lab.check(n .. ": no second delivery by the end of the trip", res.delivered_end == 1,
+						res.delivered_end)
 				else
 					lab.check(n .. ": requester shows a failed request", res.display_failed)
 					lab.check(n .. ": no delivery to the requester while the cause is in place", res.delivered == 0,
 						res.delivered)
-					if case.winner then
-						lab.check(n .. ": the higher-priority requester got the delivery", res.winner_delivered == 1,
-							res.winner_delivered)
-					end
-					if case.lift then
+					if case.lift_station then
+						lab.check(n .. ": the higher-priority requester is served once a train arrives",
+							(res.lift_delivered or 0) == 1, res.lift_delivered)
+						lab.check(n .. ": the lower-priority requester is never served", res.delivered_end == 0,
+							res.delivered_end)
+					elseif case.lift then
 						lab.check(n .. ": served once the cause is lifted", (res.lift_delivered or 0) > 0,
 							res.lift_delivered)
 					end
-					local code = case.expect
 					if rc.diag then
-						local first, settled = res.first or {}, res.settled or {}
-						if case.kind == "counter" then
-							lab.check(n .. ": lost_n counted after the first evaluation", (first.lost_n or 0) >= 1,
-								first)
-							lab.check(n .. ": lost_to is the winner", first.lost_to == case.winner, first.lost_to)
-						else
-							lab.check(n .. ": " .. code .. " pending after the first evaluation",
-								first.pending == code or (first.pending == nil and first.reason == code), first)
-						end
-						local want = case.expect_settled or code
-						lab.check(n .. ": reason " .. want .. " after the flap window", settled.reason == want, settled)
-						if case.lift then
-							lab.check(n .. ": served event after the cause is lifted", res.served_event == true)
-							lab.check(n .. ": unserved entry gone after the cause is lifted",
-								res.entry_after_lift == false)
-						end
+						reason_checks(n, case, res)
 					else
 						lab.skip(n, "no diag api")
 					end
 				end
 			end
-		end
-		if rc.diag then
-			local counts = dev("diag_counts") or {}
-			local missing = {}
-			for _, case in ipairs(rc.list) do
-				if case.expect and case.kind ~= "counter" and not ((counts[case.expect] or 0) > 0) then
-					missing[#missing + 1] = case.expect
-				end
-			end
-			lab.check("diag_counts counts every reason the scenarios produced", #missing == 0, missing)
 		end
 	end,
 
@@ -333,8 +404,8 @@ lab.suite("40_reason_codes", {
 			local ok, err = pcall(case.cleanup)
 			if not ok then lab.check(case.name .. ": cleanup", false, err) end
 		end
-		if rc.diag and rc.diag_setting then dev("set_setting", "cybersyn-diagnostics", rc.diag_setting) end
-		-- Cybersyn drops destroyed stops at once; active_station_ids is pruned lazily during the next poll.
+		-- Cybersyn drops destroyed stops at once; active_station_ids is pruned lazily during the next poll, and the
+		-- diagnostics core sweeps entries older than two cycles.
 		lab.wait(600, SPEED)
 	end,
 
@@ -350,5 +421,16 @@ lab.suite("40_reason_codes", {
 			area = { { cases.X_MIN - 64, cases.Y0 - 64 }, { cases.X_MAX + 64, cases.Y0 + cases.ROW * #cases.ORDER + 64 } },
 		})
 		lab.check("cleanup: no entity left on the scenario rows", left == 0, left)
+		if rc.diag then
+			local left_keys = {}
+			for _, case in ipairs(rc.list) do
+				for _, st in ipairs(case.stations) do
+					local t = dev("diag_unserved", st.id)
+					if t and next(t) ~= nil then left_keys[#left_keys + 1] = case.name .. "/" .. st.name end
+				end
+			end
+			lab.check("cleanup: no unserved entry left for a removed stop", #left_keys == 0, left_keys)
+			if rc.diag_setting then dev("set_setting", "cybersyn-diagnostics", rc.diag_setting) end
+		end
 	end,
 })
