@@ -142,6 +142,9 @@ while :; do
 done
 emit "INFO dispatch_trace: window done after $(python3 -I -c "import time; print(f'{time.time() - $T0:.1f}')") s"
 
+# Scenario constructors for the reason-code suite; loaded after the trace so nothing in it can touch the window.
+collect cases "$(lab file "$HERE/cases.lua" 2>&1)"
+
 for f in "$HERE"/*_test.lua; do
 	name=$(basename "$f" .lua)
 	run_suite_output "$name" "$(lab file "$f" 2>&1)"

@@ -23,7 +23,7 @@ Plain Lua 5.2 against the mod's real modules (`constants`, `lib`, `factorio-api`
 tests/lab/run.sh <scratch> <rcon port> [save.zip] [--record]
 ```
 
-Boots `~/factorio_20/manager-facelift/saves/layout-dev.zip` headless (2 s), records a golden dispatch trace with a fixed stimulus, runs `aitest` and drives every manager tab, sort, filter, period and pager through the `cybersyn-manager-dev` remote interface, then compares against `tests/baseline/`. One `PASS`/`FAIL`/`INFO` line per check, `PASS n FAIL m` at the end, non-zero exit on failure. The lab is always stopped. Details, the suite protocol and helpers are in `tests/lab/README.md`. New suites go in `tests/lab/NN_name_test.lua` (only `*_test.lua` files run).
+Boots `~/factorio_20/manager-facelift/saves/layout-dev.zip` headless (2 s), records a golden dispatch trace with a fixed stimulus, runs `aitest` and drives every manager tab, sort, filter, period and pager through the `cybersyn-manager-dev` remote interface, builds one planner scenario per reason code (`40_reason_codes_test.lua`), then compares against `tests/baseline/`. One `PASS`/`FAIL`/`INFO` line per check (`SKIP` for a check whose subject does not exist yet, such as the reason checks before the diagnostics core lands), `SKIP k` and `PASS n FAIL m` at the end, non-zero exit on failure. The lab is always stopped. Details, the suite protocol and helpers are in `tests/lab/README.md`. New suites go in `tests/lab/NN_name_test.lua` (only `*_test.lua` files run).
 
 ## 3. Screenshots
 
