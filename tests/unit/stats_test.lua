@@ -406,3 +406,77 @@ test("cycle_average: ignores a minute slot that starts after the current tick", 
 	stats.get().minute[6] = { start_tick = 5 * MIN, deliveries = 1, dispatches = 0, items = {}, cycle_sum = 100, cycle_n = 1 }
 	assert_eq({ stats.cycle_average(10) }, { nil, 0 })
 end)
+
+-- PLAN3 §4.1: aggregate caches the closed buckets' per-item amounts per period until the current bucket rolls over.
+
+local function uncached_items(minutes)
+	local s = stats.get()
+	local tick = game.tick
+	local ring, width, count
+	if minutes <= 60 then
+		ring, width, count = s.minute, MIN, minutes
+	else
+		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), 24)
+	end
+	local oldest = tick - tick % width - (count - 1) * width
+	local items = {}
+	for _, b in pairs(ring) do
+		if b.start_tick >= oldest and b.start_tick <= tick then
+			for hash, n in pairs(b.items) do items[hash] = (items[hash] or 0) + n end
+		end
+	end
+	return items
+end
+
+test("aggregate cache: deliveries in the current bucket show at once and match an uncached sum", function()
+	at(0)
+	stats.get()
+	for m = 0, 14 do
+		deliver(m * MIN + 10, { { name = "coal", count = m + 1 }, { name = "stone", count = 2 } }, m * MIN)
+		for _, period in ipairs({ 10, 60, 1440 }) do
+			assert_eq(stats.aggregate(period).items, uncached_items(period), "minute " .. m .. " period " .. period)
+		end
+		deliver(m * MIN + 20, { { name = "iron-plate", count = 5 } }, m * MIN)
+		for _, period in ipairs({ 10, 60, 1440 }) do
+			local out = stats.aggregate(period)
+			assert_eq(out.items, uncached_items(period), "minute " .. m .. " period " .. period .. " after a second delivery")
+			local amount = 0
+			for _, n in pairs(out.items) do amount = amount + n end
+			assert_eq(out.amount, amount)
+		end
+	end
+end)
+
+test("aggregate cache: closed buckets are read once per bucket boundary and per period", function()
+	at(0)
+	stats.get()
+	deliver(MIN + 10, { { name = "coal", count = 4 } }, MIN)
+	at(2 * MIN + 5)
+	assert_eq(stats.aggregate(10).items, { coal = 4 })
+	-- A closed bucket never changes in play; changing one here shows whether it is read again.
+	stats.get().minute[2].items.coal = 40
+	at(2 * MIN + 3000)
+	assert_eq(stats.aggregate(10).items, { coal = 4 })
+	-- Another period has its own cache.
+	assert_eq(stats.aggregate(60).items, { coal = 40 })
+	at(3 * MIN)
+	assert_eq(stats.aggregate(10).items, { coal = 40 })
+	-- A replaced stats table is never served from the old cache.
+	storage.stats = nil
+	at(3 * MIN + 1)
+	assert_eq(stats.aggregate(10).items, {})
+end)
+
+test("aggregate cache: the hour ring caches closed hours until the hour rolls over", function()
+	at(0)
+	stats.get()
+	deliver(10, { { name = "coal", count = 1 } }, 0)
+	deliver(HOUR + 10, { { name = "coal", count = 2 } }, HOUR)
+	at(HOUR + 20)
+	assert_eq(stats.aggregate(1440).items, { coal = 3 })
+	stats.get().hour[1].items.coal = 100
+	deliver(HOUR + 2 * MIN, { { name = "stone", count = 1 } }, HOUR)
+	assert_eq(stats.aggregate(1440).items, { coal = 3, stone = 1 })
+	at(2 * HOUR)
+	assert_eq(stats.aggregate(1440).items, { coal = 102, stone = 1 })
+end)

@@ -267,8 +267,37 @@ end
 --- @field slowest StatsBucket[] buckets with a fulfilled request, as they are; read only
 --- @field slowest_minutes {[StatsBucket]: true} entries of `slowest` that are minute buckets in an hour-bucket period
 
+-- Merged per-item amounts of the closed buckets of a period, per period. Closed buckets never change (records go to
+-- the current bucket), so this is valid until the current bucket rolls over. A pure function of storage.stats and the
+-- tick, so a Lua state that rebuilds it after a load computes exactly what one that kept it holds.
+--- @type {[int]: {stats: Stats, current: uint, items: {[string]: int}}}
+local closed_items = {}
+
+--- @param s Stats
+--- @param minutes int
+--- @param ring {[int]: StatsBucket}
+--- @param oldest uint
+--- @param current uint start tick of the current bucket of `ring`
+--- @return {[string]: int}
+local function closed_items_of(s, minutes, ring, oldest, current)
+	local c = closed_items[minutes]
+	if c and c.stats == s and c.current == current then return c.items end
+	local items = {}
+	for _, b in pairs(ring) do
+		if b.start_tick >= oldest and b.start_tick < current then
+			for hash, n in pairs(b.items) do
+				items[hash] = (items[hash] or 0) + n
+			end
+		end
+	end
+	closed_items[minutes] = { stats = s, current = current, items = items }
+	return items
+end
+
 --- Everything the Overview shows for one period: minute buckets for 10 and 60 minutes, hour buckets for longer
---- periods (rounded up to whole hours), the current partial bucket included.
+--- periods (rounded up to whole hours), the current partial bucket included. Per-item amounts of the closed buckets
+--- are cached until the current bucket rolls over; the scalar sums are redone every call in ring order, so floating
+--- point totals come out bit for bit the same as an uncached pass.
 --- @param minutes int 10, 60 or 1440
 --- @return StatsWindow
 function stats.aggregate(minutes)
@@ -280,7 +309,8 @@ function stats.aggregate(minutes)
 	else
 		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
 	end
-	local oldest = tick - tick % width - (count - 1) * width
+	local current = tick - tick % width
+	local oldest = current - (count - 1) * width
 	local since = s.totals.since_tick or 0
 	local out = {
 		minutes = minutes,
@@ -296,13 +326,17 @@ function stats.aggregate(minutes)
 		slowest_minutes = {},
 	}
 	local items = out.items
+	for hash, n in pairs(closed_items_of(s, minutes, ring, oldest, current)) do
+		items[hash] = n
+	end
 	local amount, cycle_sum, wait_sum, wait_max = 0, 0, 0, nil
 	for _, b in pairs(ring) do
 		if b.start_tick >= oldest and b.start_tick <= tick then
 			out.deliveries = out.deliveries + b.deliveries
 			out.dispatches = out.dispatches + b.dispatches
+			local live = b.start_tick >= current
 			for hash, n in pairs(b.items) do
-				items[hash] = (items[hash] or 0) + n
+				if live then items[hash] = (items[hash] or 0) + n end
 				amount = amount + n
 			end
 			if b.cycle_n then
