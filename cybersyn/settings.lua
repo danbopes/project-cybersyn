@@ -153,6 +153,14 @@ data:extend({
 		-- About 9 ms per Stations render at 500 rows on a 2,000-station base; 200 stays near the 5 ms budget.
 		maximum_value = 200,
 	},
+	{
+		type = "bool-setting",
+		name = "cybersyn-manager-dev-interface",
+		order = "ab",
+		setting_type = "startup",
+		-- On in this fork: the headless lab pins startup settings from the save, which records none for this key.
+		default_value = true,
+	},
 	--{
 	--  type = "bool-setting",
 	--  name = "cybersyn-disable-top-left-button",

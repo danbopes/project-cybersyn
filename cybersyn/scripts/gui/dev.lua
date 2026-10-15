@@ -1,6 +1,7 @@
 -- Test hooks for driving the manager headlessly over RCON (remote interface "cybersyn-manager-dev"). Dev only: not a
--- stable API, and nothing in the mod or its compatibility code calls it. It is registered unconditionally because a
--- remote interface that depends on a setting or game state would differ between a server and a joining client.
+-- stable API, and nothing in the mod or its compatibility code calls it. It is registered only when the startup
+-- setting cybersyn-manager-dev-interface is on: startup settings are the same for every peer, unlike game state or
+-- runtime settings, so a server and a joining client always agree on it.
 -- Tab modules register dumpers here, so this file must not require the tab modules or manager.lua.
 
 local flib_gui = require("__flib__.gui")
@@ -383,12 +384,18 @@ function interface.set_setting(name, value)
 	return settings.global[name].value
 end
 
+--- @return boolean
+function dev.enabled()
+	local setting = settings.startup["cybersyn-manager-dev-interface"]
+	return setting ~= nil and setting.value == true
+end
+
 --- @param gui_main table scripts/gui/main.lua module (manager_gui)
 --- @param gui_manager table scripts/gui/manager.lua module
 function dev.register(gui_main, gui_manager)
 	manager_gui = gui_main
 	manager = gui_manager
-	if not remote.interfaces["cybersyn-manager-dev"] then
+	if dev.enabled() and not remote.interfaces["cybersyn-manager-dev"] then
 		remote.add_interface("cybersyn-manager-dev", interface)
 	end
 end

@@ -1045,7 +1045,7 @@ end
 gui.add_handlers(stations_tab.handle, stations_tab.wrapper)
 
 -- The shared dev interface has no per-tab setters; the status filter is local to this tab.
-if not remote.interfaces["cybersyn-manager-dev-stations"] then
+if dev.enabled() and not remote.interfaces["cybersyn-manager-dev-stations"] then
 	remote.add_interface("cybersyn-manager-dev-stations", {
 		set_status_filter = function(pi, status)
 			local player = game.get_player(pi)

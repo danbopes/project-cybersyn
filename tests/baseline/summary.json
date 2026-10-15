@@ -3,8 +3,9 @@
   "item big-electric-pole": {
    "inventory": {
     "in_transit": [
-     "electric-mining-drill",
-     "belt-immunity-equipment",
+     "blueprint",
+     "efficiency-module-3",
+     "battery",
      "steam",
      "heavy-oil",
      "lubricant"
@@ -107,20 +108,20 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": [
@@ -136,11 +137,12 @@
      "chemical-science-pack"
     ],
     "transit": [
+     "battery",
      "heavy-oil",
      "steam",
      "lubricant",
-     "electric-mining-drill",
-     "belt-immunity-equipment"
+     "efficiency-module-3",
+     "blueprint"
     ],
     "waiting": [
      "177|advanced-circuit",
@@ -166,11 +168,11 @@
     ]
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 10,
-    "transit": 5,
+    "transit": 6,
     "waiting": 164
    },
    "stations": [
@@ -184,7 +186,8 @@
   "mask 2": {
    "inventory": {
     "in_transit": [
-     "belt-immunity-equipment"
+     "blueprint",
+     "battery"
     ],
     "provided": [
      "big-electric-pole",
@@ -221,25 +224,26 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": {},
     "transit": [
-     "belt-immunity-equipment"
+     "battery",
+     "blueprint"
     ],
     "waiting": [
      "358|barrel",
@@ -257,19 +261,19 @@
      "365|water",
      "377|automation-science-pack",
      "377|battery",
+     "377|belt-immunity-equipment",
      "377|blueprint",
-     "358|automation-science-pack",
      "358|battery-mk2-equipment",
      "358|belt-immunity-equipment",
-     "373|automation-science-pack"
+     "373|barrel"
     ]
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 0,
-    "transit": 1,
+    "transit": 2,
     "waiting": 33
    },
    "stations": [
@@ -353,20 +357,20 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": [
@@ -410,9 +414,9 @@
     ]
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 10,
     "transit": 3,
     "waiting": 83
@@ -445,8 +449,9 @@
   "network signal-B": {
    "inventory": {
     "in_transit": [
-     "electric-mining-drill",
-     "belt-immunity-equipment"
+     "blueprint",
+     "efficiency-module-3",
+     "battery"
     ],
     "provided": [
      "big-electric-pole",
@@ -546,20 +551,20 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": [
@@ -575,8 +580,9 @@
      "chemical-science-pack"
     ],
     "transit": [
-     "electric-mining-drill",
-     "belt-immunity-equipment"
+     "battery",
+     "efficiency-module-3",
+     "blueprint"
     ],
     "waiting": [
      "358|barrel",
@@ -594,19 +600,19 @@
      "365|water",
      "377|automation-science-pack",
      "377|battery",
+     "377|belt-immunity-equipment",
      "377|blueprint",
      "746|chemical-plant",
      "746|cliff-explosives",
-     "746|coal",
-     "746|concrete"
+     "746|coal"
     ]
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 10,
-    "transit": 2,
+    "transit": 3,
     "waiting": 101
    },
    "stations": [
@@ -691,20 +697,20 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": [
@@ -748,9 +754,9 @@
     ]
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 10,
     "transit": 3,
     "waiting": 81
@@ -777,8 +783,9 @@
   "surface cyb-bench": {
    "inventory": {
     "in_transit": [
-     "electric-mining-drill",
-     "belt-immunity-equipment",
+     "blueprint",
+     "efficiency-module-3",
+     "battery",
      "steam",
      "heavy-oil",
      "lubricant"
@@ -881,20 +888,20 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": [
@@ -910,11 +917,12 @@
      "chemical-science-pack"
     ],
     "transit": [
+     "battery",
      "heavy-oil",
      "steam",
      "lubricant",
-     "electric-mining-drill",
-     "belt-immunity-equipment"
+     "efficiency-module-3",
+     "blueprint"
     ],
     "waiting": [
      "177|advanced-circuit",
@@ -940,11 +948,11 @@
     ]
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 10,
-    "transit": 5,
+    "transit": 6,
     "waiting": 164
    },
    "stations": [
@@ -996,20 +1004,20 @@
    },
    "overview": {
     "delivered": [
-     "battery",
-     "efficiency-module",
-     "big-electric-pole",
+     "automation-science-pack",
      "efficiency-module-3",
+     "big-electric-pole",
+     "electric-engine-unit",
+     "electric-furnace",
      "battery-mk2-equipment",
-     "belt-immunity-equipment",
+     "battery",
      "blueprint"
     ],
     "saturated": {},
     "slowest": [
-     "21600|377|battery-mk2-equipment",
-     "32400|377|belt-immunity-equipment",
-     "28800|1142|electric-mining-drill",
-     "25200|358|battery",
+     "25200|377|battery-mk2-equipment",
+     "28800|358|blueprint",
+     "21600|1127|efficiency-module-3",
      "0|565|lubricant"
     ],
     "starved": {},
@@ -1017,9 +1025,9 @@
     "waiting": {}
    },
    "overview_total": {
-    "delivered": 7,
+    "delivered": 8,
     "saturated": 0,
-    "slowest": 5,
+    "slowest": 4,
     "starved": 0,
     "transit": 0,
     "waiting": 0
@@ -1033,24 +1041,26 @@
    "lists": {
     "delivered": {
      "keys": [
-      "battery",
-      "efficiency-module",
-      "big-electric-pole",
+      "automation-science-pack",
       "efficiency-module-3",
+      "big-electric-pole",
+      "electric-engine-unit",
+      "electric-furnace",
       "battery-mk2-equipment",
-      "belt-immunity-equipment",
+      "battery",
       "blueprint"
      ],
      "order": [
-      14660,
-      6000,
+      14220,
+      4000,
       2000,
       2000,
+      2000,
+      1600,
       800,
-      800,
-      6
+      4
      ],
-     "total": 7
+     "total": 8
     },
     "saturated": {
      "keys": {},
@@ -1059,20 +1069,18 @@
     },
     "slowest": {
      "keys": [
-      "21600|377|battery-mk2-equipment",
-      "32400|377|belt-immunity-equipment",
-      "28800|1142|electric-mining-drill",
-      "25200|358|battery",
+      "25200|377|battery-mk2-equipment",
+      "28800|358|blueprint",
+      "21600|1127|efficiency-module-3",
       "0|565|lubricant"
      ],
      "order": [
-      24544,
-      10078,
-      9794,
-      6078,
+      27726,
+      10142,
+      2270,
       274
      ],
-     "total": 5
+     "total": 4
     },
     "starved": {
      "keys": [
@@ -1093,30 +1101,32 @@
       24,
       24,
       24,
-      22248,
-      22248,
-      22248,
-      22248,
-      22248
+      22242,
+      22242,
+      22242,
+      22242,
+      22242
      ],
      "total": 10
     },
     "transit": {
      "keys": [
+      "battery",
       "heavy-oil",
       "steam",
       "lubricant",
-      "electric-mining-drill",
-      "belt-immunity-equipment"
+      "efficiency-module-3",
+      "blueprint"
      ],
      "order": [
+      7330,
       5104,
       5052,
       5026,
       2000,
-      800
+      3
      ],
-     "total": 5
+     "total": 6
     },
     "waiting": {
      "keys": [
@@ -1169,11 +1179,11 @@
    "tiles": {
     "demand": {
      "age_1m": 5,
-     "age_30m": 57,
-     "age_5m": 102,
+     "age_30m": 58,
+     "age_5m": 101,
      "age_over": 0,
      "headline": 164,
-     "in_transit": 5,
+     "in_transit": 6,
      "starved": 27,
      "total": 164,
      "volume": 3070730
@@ -1200,12 +1210,12 @@
      "unloading": 0
     },
     "flow": {
-     "amount": 26266,
-     "cycle": 1375.7777777777778,
+     "amount": 26624,
+     "cycle": 1375.5555555555554,
      "dispatches": 14,
      "headline": 9,
-     "wait_avg": 6986.375,
-     "wait_max": 24544
+     "wait_avg": 4875.176470588235,
+     "wait_max": 27726
     },
     "stations": {
      "faulty": 0,
@@ -1224,24 +1234,26 @@
    "lists": {
     "delivered": {
      "keys": [
-      "battery",
-      "efficiency-module",
-      "big-electric-pole",
+      "automation-science-pack",
       "efficiency-module-3",
+      "big-electric-pole",
+      "electric-engine-unit",
+      "electric-furnace",
       "battery-mk2-equipment",
-      "belt-immunity-equipment",
+      "battery",
       "blueprint"
      ],
      "order": [
-      14660,
-      6000,
+      14220,
+      4000,
       2000,
       2000,
+      2000,
+      1600,
       800,
-      800,
-      6
+      4
      ],
-     "total": 7
+     "total": 8
     },
     "saturated": {
      "keys": {},
@@ -1250,20 +1262,18 @@
     },
     "slowest": {
      "keys": [
-      "21600|377|battery-mk2-equipment",
-      "32400|377|belt-immunity-equipment",
-      "28800|1142|electric-mining-drill",
-      "25200|358|battery",
+      "25200|377|battery-mk2-equipment",
+      "28800|358|blueprint",
+      "21600|1127|efficiency-module-3",
       "0|565|lubricant"
      ],
      "order": [
-      24544,
-      10078,
-      9794,
-      6078,
+      27726,
+      10142,
+      2270,
       274
      ],
-     "total": 5
+     "total": 4
     },
     "starved": {
      "keys": [
@@ -1284,30 +1294,32 @@
       24,
       24,
       24,
-      22248,
-      22248,
-      22248,
-      22248,
-      22248
+      22242,
+      22242,
+      22242,
+      22242,
+      22242
      ],
      "total": 10
     },
     "transit": {
      "keys": [
+      "battery",
       "heavy-oil",
       "steam",
       "lubricant",
-      "electric-mining-drill",
-      "belt-immunity-equipment"
+      "efficiency-module-3",
+      "blueprint"
      ],
      "order": [
+      7330,
       5104,
       5052,
       5026,
       2000,
-      800
+      3
      ],
-     "total": 5
+     "total": 6
     },
     "waiting": {
      "keys": [
@@ -1360,11 +1372,11 @@
    "tiles": {
     "demand": {
      "age_1m": 5,
-     "age_30m": 57,
-     "age_5m": 102,
+     "age_30m": 58,
+     "age_5m": 101,
      "age_over": 0,
      "headline": 164,
-     "in_transit": 5,
+     "in_transit": 6,
      "starved": 27,
      "total": 164,
      "volume": 3070730
@@ -1391,12 +1403,12 @@
      "unloading": 0
     },
     "flow": {
-     "amount": 26266,
-     "cycle": 1375.7777777777778,
+     "amount": 26624,
+     "cycle": 1375.5555555555554,
      "dispatches": 14,
      "headline": 9,
-     "wait_avg": 6986.375,
-     "wait_max": 24544
+     "wait_avg": 4875.176470588235,
+     "wait_max": 27726
     },
     "stations": {
      "faulty": 0,
@@ -1415,24 +1427,26 @@
    "lists": {
     "delivered": {
      "keys": [
-      "battery",
-      "efficiency-module",
-      "big-electric-pole",
+      "automation-science-pack",
       "efficiency-module-3",
+      "big-electric-pole",
+      "electric-engine-unit",
+      "electric-furnace",
       "battery-mk2-equipment",
-      "belt-immunity-equipment",
+      "battery",
       "blueprint"
      ],
      "order": [
-      14660,
-      6000,
+      14220,
+      4000,
       2000,
       2000,
+      2000,
+      1600,
       800,
-      800,
-      6
+      4
      ],
-     "total": 7
+     "total": 8
     },
     "saturated": {
      "keys": {},
@@ -1441,20 +1455,18 @@
     },
     "slowest": {
      "keys": [
-      "21600|377|battery-mk2-equipment",
-      "32400|377|belt-immunity-equipment",
-      "28800|1142|electric-mining-drill",
-      "25200|358|battery",
+      "25200|377|battery-mk2-equipment",
+      "28800|358|blueprint",
+      "21600|1127|efficiency-module-3",
       "0|565|lubricant"
      ],
      "order": [
-      24544,
-      10078,
-      9794,
-      6078,
+      27726,
+      10142,
+      2270,
       274
      ],
-     "total": 5
+     "total": 4
     },
     "starved": {
      "keys": [
@@ -1475,30 +1487,32 @@
       24,
       24,
       24,
-      22248,
-      22248,
-      22248,
-      22248,
-      22248
+      22242,
+      22242,
+      22242,
+      22242,
+      22242
      ],
      "total": 10
     },
     "transit": {
      "keys": [
+      "battery",
       "heavy-oil",
       "steam",
       "lubricant",
-      "electric-mining-drill",
-      "belt-immunity-equipment"
+      "efficiency-module-3",
+      "blueprint"
      ],
      "order": [
+      7330,
       5104,
       5052,
       5026,
       2000,
-      800
+      3
      ],
-     "total": 5
+     "total": 6
     },
     "waiting": {
      "keys": [
@@ -1551,11 +1565,11 @@
    "tiles": {
     "demand": {
      "age_1m": 5,
-     "age_30m": 57,
-     "age_5m": 102,
+     "age_30m": 58,
+     "age_5m": 101,
      "age_over": 0,
      "headline": 164,
-     "in_transit": 5,
+     "in_transit": 6,
      "starved": 27,
      "total": 164,
      "volume": 3070730
@@ -1582,12 +1596,12 @@
      "unloading": 0
     },
     "flow": {
-     "amount": 26266,
-     "cycle": 1375.7777777777778,
+     "amount": 26624,
+     "cycle": 1375.5555555555554,
      "dispatches": 14,
      "headline": 9,
-     "wait_avg": 6986.375,
-     "wait_max": 24544
+     "wait_avg": 4875.176470588235,
+     "wait_max": 27726
     },
     "stations": {
      "faulty": 0,
@@ -1610,18 +1624,20 @@
      "in_transit": {
       "column": "amount",
       "hashes": [
-       "belt-immunity-equipment",
-       "electric-mining-drill",
+       "blueprint",
+       "efficiency-module-3",
        "lubricant",
        "steam",
-       "heavy-oil"
+       "heavy-oil",
+       "battery"
       ],
       "keys": [
-       800,
+       3,
        2000,
        5026,
        5052,
-       5104
+       5104,
+       7330
       ],
       "stale": 0
      },
@@ -1828,18 +1844,20 @@
      "in_transit": {
       "column": "amount",
       "hashes": [
+       "battery",
        "heavy-oil",
        "steam",
        "lubricant",
-       "electric-mining-drill",
-       "belt-immunity-equipment"
+       "efficiency-module-3",
+       "blueprint"
       ],
       "keys": [
+       7330,
        5104,
        5052,
        5026,
        2000,
-       800
+       3
       ],
       "stale": 0
      },
@@ -2048,15 +2066,17 @@
      "in_transit": {
       "column": "item_order",
       "hashes": [
-       "electric-mining-drill",
-       "belt-immunity-equipment",
+       "blueprint",
+       "efficiency-module-3",
+       "battery",
        "steam",
        "heavy-oil",
        "lubricant"
       ],
       "keys": [
-       80,
-       201,
+       65,
+       99,
+       120,
        257,
        261,
        262
@@ -2269,15 +2289,17 @@
        "lubricant",
        "heavy-oil",
        "steam",
-       "belt-immunity-equipment",
-       "electric-mining-drill"
+       "battery",
+       "efficiency-module-3",
+       "blueprint"
       ],
       "keys": [
        262,
        261,
        257,
-       201,
-       80
+       120,
+       99,
+       65
       ],
       "stale": 0
      },
@@ -2486,13 +2508,15 @@
      "in_transit": {
       "column": "stations",
       "hashes": [
-       "electric-mining-drill",
-       "belt-immunity-equipment",
+       "blueprint",
+       "efficiency-module-3",
+       "battery",
        "steam",
        "heavy-oil",
        "lubricant"
       ],
       "keys": [
+       1,
        1,
        1,
        1,
@@ -2704,13 +2728,15 @@
      "in_transit": {
       "column": "stations",
       "hashes": [
-       "electric-mining-drill",
-       "belt-immunity-equipment",
+       "blueprint",
+       "efficiency-module-3",
+       "battery",
        "steam",
        "heavy-oil",
        "lubricant"
       ],
       "keys": [
+       1,
        1,
        1,
        1,
@@ -2924,15 +2950,17 @@
      "in_transit": {
       "column": "item_order",
       "hashes": [
-       "electric-mining-drill",
-       "belt-immunity-equipment",
+       "blueprint",
+       "efficiency-module-3",
+       "battery",
        "steam",
        "heavy-oil",
        "lubricant"
       ],
       "keys": [
-       80,
-       201,
+       65,
+       99,
+       120,
        257,
        261,
        262
@@ -3036,13 +3064,12 @@
      "requested": {
       "column": "wait",
       "hashes": [
-       "efficiency-module",
-       "display-panel",
-       "electric-furnace",
        "efficiency-module-3",
+       "electric-furnace",
+       "display-panel",
+       "efficiency-module",
        "discharge-defense-equipment",
        "battery-mk2-equipment",
-       "belt-immunity-equipment",
        "electric-mining-drill",
        "efficiency-module-2",
        "electric-engine-unit",
@@ -3065,6 +3092,7 @@
        "blueprint",
        "battery",
        "automation-science-pack",
+       "belt-immunity-equipment",
        "water",
        "steam",
        "crude-oil",
@@ -3086,13 +3114,12 @@
        "artillery-targeting-remote"
       ],
       "keys": [
-       -22354,
-       -22256,
-       -22256,
-       -22256,
-       -22256,
-       -22236,
-       -22236,
+       -24604,
+       -22252,
+       -22250,
+       -22250,
+       -22250,
+       -22230,
        -34,
        -34,
        -34,
@@ -3112,6 +3139,7 @@
        -20,
        -20,
        -20,
+       -16,
        -16,
        -16,
        -16,
@@ -3142,15 +3170,17 @@
      "in_transit": {
       "column": "item_order",
       "hashes": [
-       "electric-mining-drill",
-       "belt-immunity-equipment",
+       "blueprint",
+       "efficiency-module-3",
+       "battery",
        "steam",
        "heavy-oil",
        "lubricant"
       ],
       "keys": [
-       80,
-       201,
+       65,
+       99,
+       120,
        257,
        261,
        262
@@ -3276,6 +3306,7 @@
        "blueprint",
        "battery",
        "automation-science-pack",
+       "belt-immunity-equipment",
        "artillery-wagon",
        "arithmetic-combinator",
        "assembling-machine-2",
@@ -3296,12 +3327,11 @@
        "distractor-capsule",
        "discharge-defense-remote",
        "battery-mk2-equipment",
-       "belt-immunity-equipment",
        "display-panel",
-       "electric-furnace",
-       "efficiency-module-3",
+       "efficiency-module",
        "discharge-defense-equipment",
-       "efficiency-module"
+       "electric-furnace",
+       "efficiency-module-3"
       ],
       "keys": [
        -10,
@@ -3326,6 +3356,7 @@
        -16,
        -16,
        -16,
+       -16,
        -20,
        -20,
        -20,
@@ -3345,13 +3376,12 @@
        -34,
        -34,
        -34,
-       -22236,
-       -22236,
-       -22256,
-       -22256,
-       -22256,
-       -22256,
-       -22354
+       -22230,
+       -22250,
+       -22250,
+       -22250,
+       -22252,
+       -24604
       ],
       "stale": 0
      }
@@ -3449,12 +3479,12 @@
      1138,
      181,
      185,
-     358,
      365,
      369,
      373,
-     1142,
      377,
+     1142,
+     358,
      565,
      934
     ],
@@ -3462,7 +3492,7 @@
      565,
      934,
      1142,
-     377,
+     358,
      169,
      173,
      550,
@@ -3485,22 +3515,22 @@
      1138,
      181,
      185,
-     358,
      365,
      369,
-     373
+     373,
+     377
     ]
    },
    "last_delivery": {
     "asc": [
+     358,
      369,
-     377,
      1138,
      1142,
-     373,
+     377,
      1123,
      1127,
-     358,
+     373,
      565,
      934,
      169,
@@ -3547,14 +3577,14 @@
      365,
      565,
      934,
-     358,
+     373,
      1123,
      1127,
-     373,
+     377,
      1138,
      1142,
-     369,
-     377
+     358,
+     369
     ]
    },
    "name": {
@@ -3945,19 +3975,19 @@
    },
    "shipment": {
     "asc": [
-     15,
      43,
      8,
      36,
      22,
+     15,
      29
     ],
     "desc": [
+     15,
      22,
      36,
      8,
      43,
-     15,
      29
     ]
    },
@@ -4103,7 +4133,7 @@
    "3": 2
   },
   "fleet_total": 6,
-  "in_transit_items": 5,
+  "in_transit_items": 6,
   "layouts": 1,
   "provided_items": 43,
   "requested_items": 48,
@@ -4121,8 +4151,9 @@
  "tabs": {
   "inventory": {
    "in_transit": [
-    "electric-mining-drill",
-    "belt-immunity-equipment",
+    "blueprint",
+    "efficiency-module-3",
+    "battery",
     "steam",
     "heavy-oil",
     "lubricant"
@@ -4225,20 +4256,20 @@
   },
   "overview": {
    "delivered": [
-    "battery",
-    "efficiency-module",
-    "big-electric-pole",
+    "automation-science-pack",
     "efficiency-module-3",
+    "big-electric-pole",
+    "electric-engine-unit",
+    "electric-furnace",
     "battery-mk2-equipment",
-    "belt-immunity-equipment",
+    "battery",
     "blueprint"
    ],
    "saturated": {},
    "slowest": [
-    "21600|377|battery-mk2-equipment",
-    "32400|377|belt-immunity-equipment",
-    "28800|1142|electric-mining-drill",
-    "25200|358|battery",
+    "25200|377|battery-mk2-equipment",
+    "28800|358|blueprint",
+    "21600|1127|efficiency-module-3",
     "0|565|lubricant"
    ],
    "starved": [
@@ -4254,11 +4285,12 @@
     "chemical-science-pack"
    ],
    "transit": [
+    "battery",
     "heavy-oil",
     "steam",
     "lubricant",
-    "electric-mining-drill",
-    "belt-immunity-equipment"
+    "efficiency-module-3",
+    "blueprint"
    ],
    "waiting": [
     "177|advanced-circuit",
@@ -4284,11 +4316,11 @@
    ]
   },
   "overview_total": {
-   "delivered": 7,
+   "delivered": 8,
    "saturated": 0,
-   "slowest": 5,
+   "slowest": 4,
    "starved": 10,
-   "transit": 5,
+   "transit": 6,
    "waiting": 164
   },
   "stations": [
