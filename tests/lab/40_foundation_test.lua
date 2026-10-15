@@ -73,6 +73,31 @@ lab.suite("40_foundation", {
 			{ tile = tile, chip = chips.saturated, rows = rows.total })
 		lab.check("saturated: the station at its limit counts", chips.saturated >= 1, chips.saturated)
 		lab.check("saturated: limit 0 with a delivery is disabled", chips.disabled >= 1, chips.disabled)
+
+		-- Mid-pass: the station at its limit gets room again. Once the pass has refilled its record (pass not yet
+		-- complete), the chip drops it at once; the tile and its rows must drop it in the same update.
+		local id = busy[1]
+		local l = ctx.limits[id]
+		l.stop.trains_limit = l.entity
+		remote.call("cybersyn", "write_global", l.storage, "stations", id, "trains_limit")
+		ctx.limits[id] = nil
+		local mid = false
+		for _ = 1, 8 do
+			remote.call(D, "tick", 1)
+			local live = lab.read("manager")
+			local rec = live.snapshot.stations[id]
+			if rec and rec.status ~= "saturated" then
+				mid = live.snapshot_build ~= nil
+				break
+			end
+		end
+		lab.check("saturated: the record changed before its pass completed", mid)
+		remote.call(D, "select_tab", pi, "stations")
+		chips = remote.call(D, "dump", pi, "stations").counts
+		remote.call(D, "select_tab", pi, "overview")
+		local ov = remote.call(D, "dump", pi, "overview")
+		lab.check("saturated mid-pass: Overview tile == Stations chip", ov.tiles.stations.saturated == chips.saturated,
+			{ tile = ov.tiles.stations.saturated, chip = chips.saturated })
 	end,
 
 	-- One number per fact: the Fleet tile and the Trains tab count the same trains. On pY 123 they once showed 551 and

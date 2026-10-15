@@ -657,13 +657,12 @@ local function new_base(snapshot, filtered)
 	return {
 		ids = ids,
 		i = 0,
-		st_tile = { total = 0, providers = 0, requesters = 0, warming_up = 0, faulty = 0, saturated = 0, starved = 0 },
+		st_tile = { total = 0, providers = 0, requesters = 0, warming_up = 0, faulty = 0, starved = 0 },
 		demand = { total = 0, volume = 0, starved = 0, in_transit = 0 },
 		wait_starts = {},
 		starved_items = {},
 		waiting = {},
 		waiting_total = 0,
-		saturated = {},
 		transit = filtered and {} or nil,
 		networks = {},
 	}
@@ -681,11 +680,6 @@ local function add_station(base, st, tracking, starved_set, starved_items_set)
 	if st.is_r then st_tile.requesters = st_tile.requesters + 1 end
 	if st.warming_up then st_tile.warming_up = st_tile.warming_up + 1 end
 	if not st.comb_ok then st_tile.faulty = st_tile.faulty + 1 end
-	-- One meaning everywhere (PLAN3 §4.2): the collector's status, deliveries at a finite train limit.
-	if st.status == "saturated" then
-		st_tile.saturated = st_tile.saturated + 1
-		base.saturated[#base.saturated + 1] = st
-	end
 	each_network(st.network_name, st.network_mask, count_station_network, base.networks, st)
 
 	local deliveries = st.deliveries
@@ -793,12 +787,6 @@ local function finish_base(base, snapshot, f, filtered)
 	util.sort_by(transit_hashes, function(hash) return transit[hash].count end, false, function(hash) return hash end)
 	base.transit_hashes = transit_hashes
 
-	local saturated = base.saturated
-	util.sort_by(saturated, function(st) return st.deliveries_total end, false, function(st) return st.id end)
-	for i = LIMITS.saturated + 1, #saturated do
-		saturated[i] = nil
-	end
-	base.saturated_total = st_tile.saturated
 
 	st_tile.headline = st_tile.total
 	base.depot_tile.headline = base.depot_tile.total
@@ -858,6 +846,31 @@ local function fleet_model(snapshot, f, filtered)
 	end
 	fleet.headline = fleet.total
 	return fleet, available
+end
+
+--- Saturated stations from the records as they are now, like the Stations chip: the collector refills records in place
+--- and sets their status, so a figure kept from the last completed pass would disagree with the chip within a pass.
+--- Only saturated records reach the filter, so this stays cheap on large bases.
+--- @param snapshot Snapshot
+--- @param f table
+--- @param filtered boolean
+--- @return SnapshotStation[] top the LIMITS.saturated busiest, most deliveries first
+--- @return integer total
+local function live_saturated(snapshot, f, filtered)
+	local list = {}
+	-- The first pass after opening is still filling records; every other figure waits for it too.
+	if not snapshot.tick then return list, 0 end
+	for _, st in pairs(snapshot.stations) do
+		if st.status == "saturated" and (not filtered or util.station_passes(st, f, true)) then
+			list[#list + 1] = st
+		end
+	end
+	local total = #list
+	util.sort_by(list, function(st) return st.deliveries_total end, false, function(st) return st.id end)
+	for i = LIMITS.saturated + 1, total do
+		list[i] = nil
+	end
+	return list, total
 end
 
 --- @param player_data PlayerData
@@ -930,6 +943,12 @@ function overview_tab.model(player_data)
 		depot_tile[k] = v
 	end
 	depot_tile.available = available
+	local saturated, saturated_total = live_saturated(snapshot, f, filtered)
+	local st_tile = {}
+	for k, v in pairs(base.st_tile) do
+		st_tile[k] = v
+	end
+	st_tile.saturated = saturated_total
 
 	local demand = {}
 	for k, v in pairs(base.demand) do
@@ -1120,7 +1139,7 @@ function overview_tab.model(player_data)
 	lists.slowest = { rows = slowest_rows, total = #slowest, disabled = not tracking }
 
 	local saturated_rows = {}
-	for i, st in ipairs(base.saturated) do
+	for i, st in ipairs(saturated) do
 		local hash = main_delivery_hash(st)
 		local sprite, quality
 		if hash then sprite, quality = util.item_sprite_and_tooltip(hash) end
@@ -1132,7 +1151,7 @@ function overview_tab.model(player_data)
 		row.values = { st.deliveries_total .. "/" .. st.trains_limit }
 		saturated_rows[i] = row
 	end
-	lists.saturated = { rows = saturated_rows, total = base.saturated_total }
+	lists.saturated = { rows = saturated_rows, total = saturated_total }
 
 	return {
 		snapshot_tick = snapshot.tick,
@@ -1144,7 +1163,7 @@ function overview_tab.model(player_data)
 		networks = base.networks,
 		network_names = base.network_names,
 		tiles = {
-			stations = base.st_tile,
+			stations = st_tile,
 			fleet = fleet,
 			depots = depot_tile,
 			demand = demand,
