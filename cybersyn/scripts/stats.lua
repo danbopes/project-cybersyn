@@ -26,6 +26,7 @@ stats.HOUR = HOUR
 --- @field wait_max uint? longest of those waits, in ticks
 --- @field wait_max_station uint? requester station id of the longest wait
 --- @field wait_max_hash string? item hash of the longest wait
+--- @field wait_max_tick uint? when the longest wait ended (its train was dispatched)
 
 --- @class Stats
 --- @field minute {[int]: StatsBucket} ring of one-minute buckets
@@ -134,6 +135,7 @@ local function add_wait(b, ticks, station_id, hash)
 		b.wait_max = ticks
 		b.wait_max_station = station_id
 		b.wait_max_hash = hash
+		b.wait_max_tick = game.tick
 	end
 end
 
@@ -252,6 +254,7 @@ end
 --- @class StatsWindow
 --- @field minutes int
 --- @field span_ticks uint time the buckets cover so far, for rates
+--- @field partial boolean recording started inside the period, so span_ticks is shorter than the period
 --- @field deliveries int
 --- @field dispatches int
 --- @field items {[string]: int} delivered amount per item hash
@@ -277,9 +280,11 @@ function stats.aggregate(minutes)
 		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
 	end
 	local oldest = tick - tick % width - (count - 1) * width
+	local since = s.totals.since_tick or 0
 	local out = {
 		minutes = minutes,
-		span_ticks = tick - math.max(oldest, s.totals.since_tick or 0) + 1,
+		span_ticks = tick - math.max(oldest, since) + 1,
+		partial = since > oldest,
 		deliveries = 0,
 		dispatches = 0,
 		items = {},

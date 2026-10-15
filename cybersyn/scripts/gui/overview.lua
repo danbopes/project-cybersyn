@@ -10,6 +10,7 @@ local stations_tab = require("scripts.gui.stations")
 
 --- @class PlayerData
 --- @field overview_period int? minutes covered by the Overview's period figures: 10, 60 or 1440; see get_period
+--- @field overview_offsets {[string]: int}? first row shown per Overview panel, a multiple of the panel capacity
 
 local overview_tab = {}
 
@@ -18,19 +19,24 @@ local TAB = "overview_tab"
 local PERIODS = { 10, 60, 1440 }
 local DEFAULT_PERIOD = 60
 
--- Vertical budget of the tab. Rows have a fixed height and the panels take whatever the tiles and the subheader
--- leave, so the panel capacity is a whole number of rows and nothing is ever cut in half.
+-- Vertical budget of the tab. The tabbed pane is as tall as its tallest tab, which leaves 774 in game rather than
+-- gui_content_frame_height, and a tab's content is not stretched to fill it, so the budget is that measured height.
+-- Rows have a fixed height and a panel shows a whole page of them, so no row is ever cut in half.
+local CONTENT_HEIGHT = 774
 local TILE_ROW_HEIGHT = 216
 local SUBHEADER_HEIGHT = 28
 local SPACING = 8
 local PANEL_SPACING = 12
 local PANEL_CAPTION_HEIGHT = 36
 local COLUMN_HEADER_HEIGHT = 20
-local ROW_HEIGHT = 30
+-- A deep frame is this much taller than its content, and its bottom border covers about as much of the content.
+local FRAME_BORDER = 2
+local ROW_HEIGHT = 32
 local ICON_WIDTH = 28
-local PANEL_AREA_HEIGHT = constants.gui_content_frame_height - TILE_ROW_HEIGHT - SUBHEADER_HEIGHT - 2 * SPACING
+local PANEL_AREA_HEIGHT = CONTENT_HEIGHT - TILE_ROW_HEIGHT - SUBHEADER_HEIGHT - 2 * SPACING
 local PANEL_HEIGHT = math.floor((PANEL_AREA_HEIGHT - PANEL_SPACING) / 2)
-local CAPACITY = math.floor((PANEL_HEIGHT - PANEL_CAPTION_HEIGHT - COLUMN_HEADER_HEIGHT) / ROW_HEIGHT)
+local BODY_HEIGHT = PANEL_HEIGHT - FRAME_BORDER - PANEL_CAPTION_HEIGHT
+local CAPACITY = math.floor((BODY_HEIGHT - COLUMN_HEADER_HEIGHT) / ROW_HEIGHT)
 local ROWS_HEIGHT = CAPACITY * ROW_HEIGHT
 
 local NO_VALUE = "–"
@@ -92,11 +98,12 @@ local WAIT_LINES = { "wait_avg", "wait_max" }
 --- @field limit int rows kept; more than CAPACITY scroll
 --- @field columns {[1]: string, [2]: int}[] value columns: locale suffix and width
 --- @field tracking true? shows a hint instead of rows while wait tracking is off
+--- @field tracking_column int? value column that is hidden while wait tracking is off
 
 --- @type OverviewPanelDef[][] two rows of three
 local PANEL_ROWS = {
 	{
-		{ name = "starved", scope = "now", subject = "item", limit = 20, columns = { { "amount", 56 }, { "stations", 52 }, { "waiting", 60 } } },
+		{ name = "starved", scope = "now", subject = "item", limit = 20, columns = { { "amount", 56 }, { "stations", 52 }, { "waiting", 60 } }, tracking_column = 3 },
 		{ name = "waiting", scope = "now", subject = "station", limit = 20, columns = { { "amount", 56 }, { "waiting", 60 } }, tracking = true },
 		{ name = "transit", scope = "now", subject = "item", limit = 20, columns = { { "amount", 56 }, { "stations", 52 } } },
 	},
@@ -232,20 +239,46 @@ local function tile_def(tile)
 				name = "overview_" .. tile.name .. "_headline",
 				style = "cybersyn_overview_big_number",
 				caption = NO_VALUE,
+				tooltip = { "cybersyn-gui.overview-tile-" .. tile.name .. "-tooltip" },
 			},
 		},
 		body,
 	}
 end
 
+-- Wheel scrolling cannot snap to rows, so a panel pages by its capacity instead and never shows half a row.
+--- @param panel string
+--- @param action "prev"|"next"
+--- @param caption string
+local function pager_button(panel, action, caption)
+	return {
+		type = "button",
+		name = "overview_" .. panel .. "_" .. action,
+		style = "tool_button",
+		caption = caption,
+		tooltip = { "cybersyn-gui.overview-page-" .. action },
+		visible = false,
+		tags = { overview_panel = panel, step = action == "next" and 1 or -1 },
+		handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_page_click },
+	}
+end
+
 --- @param panel OverviewPanelDef
-local function panel_def(panel)
-	local name = panel.name
+--- @param panel OverviewPanelDef
+--- @param skip int? value column left out
+--- @return int
+local function table_columns(panel, skip)
+	return 2 + #panel.columns - (skip and 1 or 0)
+end
+
+--- @param panel OverviewPanelDef
+--- @param skip int? value column left out; a table cannot hide a column, so it is built without it
+local function table_def(panel, skip)
 	local tbl = {
 		type = "table",
-		name = "overview_" .. name .. "_table",
+		name = "overview_" .. panel.name .. "_table",
 		style = "cybersyn_overview_table",
-		column_count = 2 + #panel.columns,
+		column_count = table_columns(panel, skip),
 		{ type = "empty-widget", style_mods = { width = ICON_WIDTH, height = COLUMN_HEADER_HEIGHT } },
 		{
 			type = "label",
@@ -254,15 +287,24 @@ local function panel_def(panel)
 			caption = { "cybersyn-gui.overview-col-" .. panel.subject },
 		},
 	}
-	for _, column in ipairs(panel.columns) do
-		tbl[#tbl + 1] = {
-			type = "label",
-			style = "cybersyn_overview_cell_header_value",
-			style_mods = { width = column[2] },
-			caption = { "cybersyn-gui.overview-col-" .. column[1] },
-			tooltip = { "cybersyn-gui.overview-col-" .. column[1] .. "-tooltip" },
-		}
+	for i, column in ipairs(panel.columns) do
+		if i ~= skip then
+			tbl[#tbl + 1] = {
+				type = "label",
+				style = "cybersyn_overview_cell_header_value",
+				style_mods = { width = column[2] },
+				caption = { "cybersyn-gui.overview-col-" .. column[1] },
+				tooltip = { "cybersyn-gui.overview-col-" .. column[1] .. "-tooltip" },
+			}
+		end
 	end
+	return tbl
+end
+
+--- @param panel OverviewPanelDef
+local function panel_def(panel)
+	local name = panel.name
+	local tbl = table_def(panel)
 	return {
 		type = "frame",
 		name = "overview_panel_" .. name,
@@ -276,6 +318,9 @@ local function panel_def(panel)
 				type = "label",
 				name = "overview_" .. name .. "_caption",
 				style = "subheader_caption_label",
+				-- A small natural width that squashes, so a long caption is cut instead of making its panel wider than
+				-- the other two.
+				style_mods = { natural_width = 80, horizontally_squashable = true },
 				caption = { "cybersyn-gui.overview-list-" .. name },
 				tooltip = { "cybersyn-gui.overview-list-" .. name .. "-tooltip" },
 			},
@@ -285,14 +330,16 @@ local function panel_def(panel)
 				name = "overview_" .. name .. "_count",
 				style = "cybersyn_overview_count_label",
 			},
+			pager_button(name, "prev", "‹"),
+			pager_button(name, "next", "›"),
 		},
+		-- Never scrolls: it only keeps the table's natural width from widening its panel past the other two.
 		{
 			type = "scroll-pane",
-			name = "overview_" .. name .. "_scroll",
-			style = "cybersyn_overview_panel_scroll",
-			style_mods = { height = COLUMN_HEADER_HEIGHT + ROWS_HEIGHT },
+			style = "cybersyn_overview_panel_body",
+			style_mods = { height = BODY_HEIGHT },
 			horizontal_scroll_policy = "never",
-			vertical_scroll_policy = "auto",
+			vertical_scroll_policy = "never",
 			tbl,
 			{
 				type = "flow",
@@ -360,7 +407,7 @@ function overview_tab.create()
 			type = "flow",
 			direction = "vertical",
 			style = "cybersyn_overview_content",
-			style_mods = { height = constants.gui_content_frame_height },
+			style_mods = { minimal_height = CONTENT_HEIGHT },
 			tiles,
 			{
 				type = "flow",
@@ -375,7 +422,15 @@ function overview_tab.create()
 				{ type = "empty-widget", style = "flib_horizontal_pusher" },
 				{
 					type = "label",
-					style = "caption_label",
+					name = "overview_period_note",
+					style = "cybersyn_overview_filter_note",
+					caption = "",
+					tooltip = { "cybersyn-gui.overview-period-recorded-tooltip" },
+					visible = false,
+				},
+				{
+					type = "label",
+					style = "bold_label",
 					caption = { "cybersyn-gui.overview-period" },
 					tooltip = { "cybersyn-gui.overview-period-tooltip" },
 				},
@@ -762,6 +817,7 @@ function overview_tab.model(player_data)
 		})
 		if row then
 			row.order = count
+			row.value_sig = period
 			row.values = { amount(count), rate }
 			delivered_rows[#delivered_rows + 1] = row
 		end
@@ -782,14 +838,17 @@ function overview_tab.model(player_data)
 			local hash = b.wait_max_hash
 			local sprite, quality, name_tooltip
 			if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
-			-- Ages count whole buckets, so an hour bucket never claims more precision than it has.
-			local ago, when
-			if period > 60 then
-				ago = math.floor((now - b.start_tick) / stats.HOUR)
-				when = ago < 1 and { "cybersyn-gui.overview-this-hour" } or { "cybersyn-gui.overview-hours-ago", tostring(ago) }
+			-- Buckets recorded before wait_max_tick existed only know their start, so their age is a lower bound.
+			local age = now - (b.wait_max_tick or b.start_tick)
+			local when, when_sig
+			if age < stats.MINUTE then
+				when, when_sig = { "cybersyn-gui.overview-this-minute" }, "now"
+			elseif age < stats.HOUR then
+				local m = math.floor(age / stats.MINUTE)
+				when, when_sig = { "cybersyn-gui.overview-minutes-ago", tostring(m) }, "m" .. m
 			else
-				ago = math.floor((now - b.start_tick) / stats.MINUTE)
-				when = ago < 1 and { "cybersyn-gui.overview-this-minute" } or { "cybersyn-gui.overview-minutes-ago", tostring(ago) }
+				local h = math.floor(age / stats.HOUR)
+				when, when_sig = { "cybersyn-gui.overview-hours-ago", tostring(h) }, "h" .. h
 			end
 			local tail = {
 				"\n", name_tooltip or { "cybersyn-gui.overview-unknown-item" },
@@ -817,7 +876,7 @@ function overview_tab.model(player_data)
 			end
 			row.order = b.wait_max
 			row.values = { short_duration(b.wait_max), when }
-			row.value_sig = (period > 60 and "h" or "m") .. ago
+			row.value_sig = when_sig .. ":" .. b.wait_n
 			slowest_rows[i] = row
 		end
 	end
@@ -843,6 +902,7 @@ function overview_tab.model(player_data)
 
 	return {
 		snapshot_tick = snapshot.tick,
+		recorded_ticks = window.partial and window.span_ticks or nil,
 		filtered = filtered,
 		item_filter = f.item,
 		tracking = tracking,
@@ -920,27 +980,34 @@ local function format_line(tile, line, value)
 end
 
 --- @param model table
---- @return string sig
---- @return LocalisedString tooltip
+--- @return string
+local function networks_sig(model)
+	local sig = {}
+	for i, name in ipairs(model.network_names) do
+		local n = model.networks[name]
+		sig[i] = name .. ":" .. n.p .. ":" .. n.r .. ":" .. n.trains .. ":" .. n.available
+	end
+	return table.concat(sig, "|")
+end
+
+--- @param model table
+--- @return LocalisedString
 local function networks_tooltip(model)
 	local names, networks = model.network_names, model.networks
-	local sig = {}
 	local tooltip = { "", { "cybersyn-gui.overview-stations-networks-tooltip" } }
-	for i, name in ipairs(names) do
+	for i = 1, math.min(#names, MAX_TOOLTIP_NETWORKS) do
+		local name = names[i]
 		local n = networks[name]
-		sig[i] = name .. ":" .. n.p .. ":" .. n.r .. ":" .. n.trains .. ":" .. n.available
-		if i <= MAX_TOOLTIP_NETWORKS then
-			local _, image, localised = util.generate_item_references(name)
-			tooltip[#tooltip + 1] = {
-				"", "\n", image ~= "" and image or "", " ", localised or name, ": ",
-				{ "cybersyn-gui.overview-network-row", tostring(n.p), tostring(n.r), tostring(n.trains), tostring(n.available) },
-			}
-		end
+		local _, image, localised = util.generate_item_references(name)
+		tooltip[#tooltip + 1] = {
+			"", "\n", image ~= "" and image or "", " ", localised or name, ": ",
+			{ "cybersyn-gui.overview-network-row", tostring(n.p), tostring(n.r), tostring(n.trains), tostring(n.available) },
+		}
 	end
 	if #names > MAX_TOOLTIP_NETWORKS then
 		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-more-networks", tostring(#names - MAX_TOOLTIP_NETWORKS) } }
 	end
-	return table.concat(sig, "|"), tooltip
+	return tooltip
 end
 
 --- @param player_data PlayerData
@@ -988,8 +1055,24 @@ local function render_tiles(player_data, model)
 			tracking and "on" or "off", tracking and { key .. "-tooltip" } or { "cybersyn-gui.overview-flow-wait-off" })
 	end
 
-	local net_sig, net_tooltip = networks_tooltip(model)
-	set_tooltip_sig(cache, { refs.overview_stations_networks_label, refs.overview_stations_networks }, net_sig, net_tooltip)
+	local net_sig = networks_sig(model)
+	local net_label = refs.overview_stations_networks_label
+	if net_label and net_label.valid and cache[net_label.name .. "#tooltip"] ~= net_sig then
+		set_tooltip_sig(cache, { net_label, refs.overview_stations_networks }, net_sig, networks_tooltip(model))
+	end
+
+	local recorded = model.recorded_ticks
+	local period_note = refs.overview_period_note
+	if period_note and period_note.valid then
+		local show = recorded ~= nil
+		if period_note.visible ~= show then period_note.visible = show end
+		if show then
+			-- Minutes are enough here, and they keep the caption from being rewritten every update.
+			local minutes = math.floor(recorded / stats.MINUTE)
+			local text = minutes < 60 and (minutes .. "m") or string.format("%dh %02dm", math.floor(minutes / 60), minutes % 60)
+			set_caption_sig(cache, period_note, text, { "cybersyn-gui.overview-period-recorded", text })
+		end
+	end
 
 	local dropdown = refs.overview_period_dropdown
 	if dropdown and dropdown.valid then
@@ -1015,7 +1098,8 @@ end
 --- @param scope string
 --- @param row table
 --- @param columns {[1]: string, [2]: int}[]
-local function row_entry(scope, row, columns)
+--- @param skip int? value column left out
+local function row_entry(scope, row, columns, skip)
 	local values = row.values
 	local sig_parts = {}
 	for i = 1, #columns do
@@ -1023,6 +1107,7 @@ local function row_entry(scope, row, columns)
 		sig_parts[i] = type(v) == "string" and v or ""
 	end
 	local sig = table.concat(sig_parts, "|") .. "|" .. tostring(row.value_sig or "") .. "|" .. tostring(row.name_sig or "")
+		.. "|" .. tostring(skip or "")
 	return {
 		key = row.key,
 		sig = sig,
@@ -1048,15 +1133,17 @@ local function row_entry(scope, row, columns)
 				}, scope),
 			}
 			for i, column in ipairs(columns) do
-				cells[#cells + 1] = util.hoverable({
-					type = "label",
-					style = "cybersyn_overview_cell_value",
-					style_mods = { width = column[2] },
-					caption = values[i] or "",
-					tooltip = row.tooltip,
-					tags = row.tags,
-					handler = handler,
-				}, scope)
+				if i ~= skip then
+					cells[#cells + 1] = util.hoverable({
+						type = "label",
+						style = "cybersyn_overview_cell_value",
+						style_mods = { width = column[2] },
+						caption = values[i] or "",
+						tooltip = row.tooltip,
+						tags = row.tags,
+						handler = handler,
+					}, scope)
+				end
 			end
 			return cells
 		end,
@@ -1065,17 +1152,37 @@ local function row_entry(scope, row, columns)
 				cell.tooltip = row.tooltip
 			end
 			if row.name_sig then set_caption(cells[2], row.caption) end
+			local c = 2
 			for i = 1, #columns do
-				local cell = cells[i + 2]
-				local v = values[i] or ""
-				if type(v) == "string" then
-					set_caption(cell, v)
-				elseif cell then
-					cell.caption = v
+				if i ~= skip then
+					c = c + 1
+					local cell = cells[c]
+					if cell then
+						local v = values[i] or ""
+						if type(v) == "string" then
+							set_caption(cell, v)
+						else
+							cell.caption = v
+						end
+					end
 				end
 			end
 		end,
 	}
+end
+
+--- @param player_data PlayerData
+--- @param name string
+--- @param rows int
+--- @return int offset first row shown, minus one
+local function panel_offset(player_data, name, rows)
+	local offsets = player_data.overview_offsets
+	local offset = offsets and offsets[name] or 0
+	local last_page = math.max(math.ceil(rows / CAPACITY) - 1, 0) * CAPACITY
+	if offset > last_page then offset = last_page end
+	if offset < 0 then offset = 0 end
+	if offsets and offsets[name] ~= offset then offsets[name] = offset end
+	return offset
 end
 
 --- @param player_data PlayerData
@@ -1091,18 +1198,43 @@ local function render_panels(player_data, model)
 		if tbl and tbl.valid then
 			local scope = tbl.name
 			local disabled = data.disabled == true
-			if tbl.visible == disabled then tbl.visible = not disabled end
-			local entries = {}
-			for i, row in ipairs(data.rows) do
-				entries[i] = row_entry(scope, row, panel.columns)
+			local skip = panel.tracking_column and not model.tracking and panel.tracking_column or nil
+			if tbl.column_count ~= table_columns(panel, skip) then
+				local parent, index = tbl.parent, tbl.get_index_in_parent()
+				tbl.destroy()
+				local def = table_def(panel, skip)
+				def.index = index
+				tbl = gui.add(parent, def)[scope]
+				refs[scope] = tbl
+				local state = util.gui_state(player_data, scope)
+				state.keys, state.sigs = nil, nil
 			end
-			local columns = 2 + #panel.columns
+			if tbl.visible == disabled then tbl.visible = not disabled end
+
+			local rows = data.rows
+			local n = #rows
+			local offset = panel_offset(player_data, name, n)
+			local entries = {}
+			for i = offset + 1, math.min(offset + CAPACITY, n) do
+				entries[#entries + 1] = row_entry(scope, rows[i], panel.columns, skip)
+			end
+			local columns = table_columns(panel, skip)
 			util.sync_table_rows(tbl, columns, columns, entries, util.gui_state(player_data, scope), util.hold_active(player_data, scope))
+
+			local paged = not disabled and n > CAPACITY
+			local prev, next = refs["overview_" .. name .. "_prev"], refs["overview_" .. name .. "_next"]
+			if prev and prev.valid and next and next.valid then
+				if prev.visible ~= paged then prev.visible = paged end
+				if next.visible ~= paged then next.visible = paged end
+				local back, forward = offset > 0, offset + CAPACITY < n
+				if prev.enabled ~= back then prev.enabled = back end
+				if next.enabled ~= forward then next.enabled = forward end
+			end
 
 			local empty = refs["overview_" .. name .. "_empty"]
 			local empty_flow = refs["overview_" .. name .. "_empty_flow"]
 			if empty and empty.valid and empty_flow and empty_flow.valid then
-				local show = disabled or #data.rows == 0
+				local show = disabled or n == 0
 				if empty_flow.visible ~= show then empty_flow.visible = show end
 				if show then
 					local sig = disabled and "off" or ("empty" .. period)
@@ -1124,10 +1256,18 @@ local function render_panels(player_data, model)
 			if disabled then
 				set_caption_sig(cache, count, "", "")
 			else
-				local shown, total = #data.rows, format.number(data.total)
-				local partial = shown < data.total
-				set_caption_sig(cache, count, partial and (shown .. "/" .. total) or total,
-					partial and { "cybersyn-gui.overview-shown-of", tostring(shown), total } or total)
+				local total = format.number(data.total)
+				if n > CAPACITY then
+					local first, last = offset + 1, math.min(offset + CAPACITY, n)
+					set_caption_sig(cache, count, first .. "-" .. last .. "/" .. total,
+						{ "cybersyn-gui.pager-range", tostring(first), tostring(last), total })
+				elseif n < data.total then
+					set_caption_sig(cache, count, n .. "/" .. total, { "cybersyn-gui.overview-shown-of", tostring(n), total })
+				else
+					set_caption_sig(cache, count, total, total)
+				end
+				set_tooltip_sig(cache, { count }, n .. "/" .. data.total, n < data.total
+					and { "cybersyn-gui.overview-count-tooltip", tostring(n), total } or "")
 			end
 		end
 	end
@@ -1152,6 +1292,8 @@ dev.register_dump(TAB, function(player_data)
 		tracking = model.tracking,
 		snapshot_tick = model.snapshot_tick,
 		capacity = CAPACITY,
+		offsets = player_data.overview_offsets,
+		recorded_ticks = model.recorded_ticks,
 		tiles = model.tiles,
 		rendered_tiles = {},
 		lists = {},
@@ -1178,8 +1320,8 @@ dev.register_dump(TAB, function(player_data)
 			order[i] = row.order
 		end
 		local tbl = refs["overview_" .. name .. "_table"]
-		local columns = 2 + #panel.columns
 		if tbl and tbl.valid and tbl.visible then
+			local columns = tbl.column_count
 			local children = tbl.children
 			for r = 1, #children / columns - 1 do
 				local base = r * columns
@@ -1196,6 +1338,7 @@ dev.register_dump(TAB, function(player_data)
 		out.lists[name] = {
 			caption = caption and caption.valid and caption.caption or nil,
 			count = count and count.valid and count.caption or nil,
+			paged = refs["overview_" .. name .. "_next"] and refs["overview_" .. name .. "_next"].visible or false,
 			empty = empty and empty.valid and empty.parent.visible and empty.caption or nil,
 			total = data.total,
 			keys = keys,
@@ -1229,6 +1372,30 @@ function overview_tab.handle.overview_period_changed(player, player_data, refs, 
 	local minutes = PERIODS[element.selected_index]
 	if not minutes or minutes == player_data.overview_period then return end
 	player_data.overview_period = minutes
+	local offsets = player_data.overview_offsets
+	if offsets then
+		for _, panel in ipairs(PANELS) do
+			if panel.scope == "period" then offsets[panel.name] = nil end
+		end
+	end
+	util.rerender(player, player_data)
+end
+
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param refs table<string, LuaGuiElement>
+--- @param e EventData.on_gui_click
+function overview_tab.handle.overview_page_click(player, player_data, refs, e)
+	local element = e.element
+	if not (element and element.valid) then return end
+	local name, step = element.tags.overview_panel, element.tags.step
+	if not (name and step and LIMITS[name]) then return end
+	local offsets = player_data.overview_offsets
+	if not offsets then
+		offsets = {}
+		player_data.overview_offsets = offsets
+	end
+	offsets[name] = math.max((offsets[name] or 0) + step * CAPACITY, 0)
 	util.rerender(player, player_data)
 end
 

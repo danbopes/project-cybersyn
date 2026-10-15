@@ -600,7 +600,7 @@ styles.cybersyn_overview_count_label = {
 	font_color = { 0.7, 0.7, 0.7 },
 }
 
-styles.cybersyn_overview_panel_scroll = {
+styles.cybersyn_overview_panel_body = {
 	type = "scroll_pane_style",
 	parent = "flib_naked_scroll_pane_no_padding",
 	horizontally_stretchable = "on",
@@ -634,7 +634,7 @@ styles.cybersyn_overview_cell_icon = {
 styles.cybersyn_overview_cell_name = {
 	type = "label_style",
 	font = "default-semibold",
-	height = 30,
+	height = 32,
 	vertical_align = "center",
 	horizontally_stretchable = "on",
 	horizontally_squashable = "on",
@@ -642,7 +642,7 @@ styles.cybersyn_overview_cell_name = {
 
 styles.cybersyn_overview_cell_value = {
 	type = "label_style",
-	height = 30,
+	height = 32,
 	vertical_align = "center",
 	horizontal_align = "right",
 }
