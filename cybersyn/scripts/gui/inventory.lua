@@ -10,7 +10,12 @@ local inventory_tab = {}
 
 local TAB = "inventory_tab"
 local GRIDS = { "provided", "in_transit", "requested" }
-local GRID_COLUMNS = { provided = 12, in_transit = 8, requested = 8 }
+-- Equal columns let the three grids share the tab width evenly; nine is the most that fits in a third of it.
+local GRID_COLUMNS = 9
+local SLOT_SIZE = 40
+local TOOLBAR_HEIGHT = 28
+local GRID_HEADER_HEIGHT = 20
+local SPACING = 8
 local TOP_N = 5
 local WAIT_SIG_TICKS = 600
 -- A completed pass changes a few hundred buttons on a large base; each costs ~15 us (tooltip rebuild plus API
@@ -30,32 +35,33 @@ end
 
 --- @param grid string
 local function grid_def(grid)
-	local columns = GRID_COLUMNS[grid]
 	local locale = string.gsub(grid, "_", "-")
 	return {
 		type = "flow",
 		direction = "vertical",
+		style_mods = { horizontally_stretchable = true, vertical_spacing = SPACING },
 		{
 			type = "label",
 			name = "inventory_" .. grid .. "_header",
 			style = "bold_label",
+			style_mods = { height = GRID_HEADER_HEIGHT },
 			caption = { "cybersyn-gui." .. locale },
 			tooltip = { "cybersyn-gui.inventory-" .. locale .. "-legend" },
 		},
 		{
 			type = "frame",
 			style = "deep_frame_in_shallow_frame",
-			style_mods = { height = constants.gui_inventory_table_height },
+			style_mods = { horizontally_stretchable = true, vertically_stretchable = true },
 			{
 				type = "scroll-pane",
 				style = "ltnm_slot_table_scroll_pane",
-				style_mods = { width = 40 * columns + 12, minimal_height = constants.gui_inventory_table_height },
+				style_mods = { horizontally_stretchable = true, vertically_stretchable = true },
 				vertical_scroll_policy = "auto-and-reserve-space",
 				{
 					type = "table",
 					name = grid_table_name(grid),
 					style = "slot_table",
-					column_count = columns,
+					column_count = GRID_COLUMNS,
 				},
 			},
 		},
@@ -67,7 +73,7 @@ local function sort_toolbar_def()
 		type = "flow",
 		name = "inventory_sort_toolbar",
 		direction = "horizontal",
-		style_mods = { vertical_align = "center", horizontal_spacing = 12 },
+		style_mods = { vertical_align = "center", horizontal_spacing = 12, height = TOOLBAR_HEIGHT },
 		{ type = "label", style = "bold_label", caption = { "cybersyn-gui.inventory-sort-by" } },
 	}
 	for _, column in ipairs(SORT_COLUMNS) do
@@ -98,7 +104,9 @@ function inventory_tab.create()
 			name = "manager_inventory_content_frame",
 			type = "flow",
 			direction = "vertical",
-			style_mods = { vertical_spacing = 8 },
+			-- Same height as the other tabs, so the window does not grow below them; without the empty-filter
+			-- label the grids get exactly 17 slot rows.
+			style_mods = { vertical_spacing = SPACING, height = constants.gui_content_frame_height },
 			sort_toolbar_def(),
 			{
 				name = "inventory_empty_label",
@@ -109,7 +117,7 @@ function inventory_tab.create()
 			{
 				type = "flow",
 				direction = "horizontal",
-				style_mods = { horizontal_spacing = 12 },
+				style_mods = { horizontal_spacing = 12, vertically_stretchable = true },
 				grid_def("provided"),
 				grid_def("in_transit"),
 				grid_def("requested"),

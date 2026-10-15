@@ -55,7 +55,7 @@ end
 styles.ltnm_train_minimap_button = {
 	type = "button_style",
 	parent = "button",
-	size = 90,
+	size = 60,
 	default_graphical_set = {},
 	hovered_graphical_set = {
 		base = { position = { 81, 80 }, size = 1, opacity = 0.7 },
@@ -346,7 +346,7 @@ styles.ltnm_minimap_label = {
 	type = "label_style",
 	font = "default-game",
 	font_color = default_font_color,
-	size = 90,
+	size = 60,
 	vertical_align = "bottom",
 	horizontal_align = "right",
 	right_padding = 4,
@@ -365,9 +365,43 @@ styles.ltnm_column_label = {
 
 -- MINIMAP STYLES
 
+-- 60 px keeps the locomotive's surroundings readable while fitting nine rows on a page.
 styles.ltnm_train_minimap = {
 	type = "minimap_style",
-	size = 90,
+	size = 60,
+}
+
+styles.ltnm_train_row_frame_light = {
+	type = "frame_style",
+	parent = "ltnm_table_row_frame_light",
+	top_padding = 4,
+	bottom_padding = 4,
+}
+
+styles.ltnm_train_row_frame_dark = {
+	type = "frame_style",
+	parent = "ltnm_table_row_frame_dark",
+	top_padding = 4,
+	bottom_padding = 4,
+}
+
+styles.ltnm_subfooter_frame = {
+	type = "frame_style",
+	parent = "subheader_frame",
+	left_padding = 8,
+	right_padding = 8,
+	horizontally_stretchable = "on",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 12,
+		vertical_align = "center",
+	},
+}
+
+styles.ltnm_squashable_semibold_label = {
+	type = "label_style",
+	parent = "ltnm_semibold_label",
+	horizontally_squashable = "on",
 }
 
 -- CHART OVERLAY BUTTON STYLE
@@ -421,7 +455,7 @@ styles.ltnm_tabbed_pane = {
 		parent = "tabbed_pane_frame",
 		left_padding = 12,
 		right_padding = 12,
-		bottom_padding = 8,
+		bottom_padding = 12,
 	},
 }
 
