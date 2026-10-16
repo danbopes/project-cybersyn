@@ -1,0 +1,156 @@
+-- PLAN3 §4.7 (phase 4): the pure rules of the Stations, Trains and Inventory tabs (scripts/gui/tab-logic.lua).
+
+local H = require("harness")
+
+local function logic()
+	return H.load("scripts.gui.tab-logic")
+end
+
+local function id(x) return x end
+
+test("single_value: one distinct value hides the column, nil counts as a value", function()
+	local l = logic()
+	assert_eq({ l.single_value({ 1, 1, 1 }, id) }, { true, 1 })
+	assert_eq({ l.single_value({ 1, 2, 1 }, id) }, { false, nil })
+	local all_nil = { { v = nil }, { v = nil } }
+	assert_true((l.single_value(all_nil, function(r) return r.v end)), "all nil is uniform")
+	local mixed = { { v = nil }, { v = 3 } }
+	assert_false((l.single_value(mixed, function(r) return r.v end)), "nil and a value differ")
+	assert_true((l.single_value({}, id)), "an empty page hides nothing visible")
+end)
+
+test("allocate: the flexible column takes the rest, hidden columns take nothing", function()
+	local l = logic()
+	local cols = { { "id", 60 }, { "status", 0 }, { "net", 100 }, { "ship", 200, min = 96 } }
+	local w = l.allocate(cols, nil, 800, "status", 200)
+	assert_eq(w, { id = 60, net = 100, ship = 200, status = 440 })
+	w = l.allocate(cols, { net = true }, 800, "status", 200)
+	assert_eq(w, { id = 60, ship = 200, status = 540 })
+end)
+
+test("allocate: shrinkable columns give width to the flexible one down to their minimum", function()
+	local l = logic()
+	local cols = { { "id", 60 }, { "status", 0 }, { "ship", 200, min = 96 } }
+	assert_eq(l.allocate(cols, nil, 400, "status", 200), { id = 60, ship = 140, status = 200 })
+	assert_eq(l.allocate(cols, nil, 300, "status", 200), { id = 60, ship = 96, status = 144 })
+end)
+
+test("fit_slots: one line, the last slot turns into the overflow count", function()
+	local l = logic()
+	assert_eq({ l.fit_slots(5, 12) }, { 5, 0 })
+	assert_eq({ l.fit_slots(12, 12) }, { 12, 0 })
+	assert_eq({ l.fit_slots(13, 12) }, { 11, 2 })
+	assert_eq({ l.fit_slots(40, 6) }, { 5, 35 })
+	assert_eq({ l.fit_slots(3, 0) }, { 0, 3 })
+end)
+
+test("state_chip: quiet states show none, trouble states are coloured, residue wins", function()
+	local l = logic()
+	assert_eq({ l.state_chip("on_the_path", 9999, false) }, { nil, nil })
+	assert_eq({ l.state_chip("wait_station", 0, false) }, { nil, nil })
+	assert_eq({ l.state_chip("arrive_station", 0, false) }, { nil, nil })
+	assert_eq({ l.state_chip("no_path", 0, false) }, { "no_path", "red" })
+	assert_eq({ l.state_chip("destination_full", 0, false) }, { "destination_full", "orange" })
+	assert_eq({ l.state_chip("manual_control", 0, false) }, { "manual_control", "orange" })
+	assert_eq({ l.state_chip("wait_signal", 599, false) }, { "wait_signal", "grey" })
+	assert_eq({ l.state_chip("wait_signal", 600, false) }, { "wait_signal", "orange" })
+	assert_eq({ l.state_chip("wait_station", 0, true) }, { "residue", "orange" })
+	assert_eq({ l.state_chip(nil, 0, false) }, { nil, nil })
+end)
+
+test("in_trouble: no path, destination full, manual control, signal wait from 10 s", function()
+	local l = logic()
+	assert_true(l.in_trouble("no_path", 0))
+	assert_true(l.in_trouble("destination_full", 0))
+	assert_true(l.in_trouble("manual_control", 0))
+	assert_true(l.in_trouble("manual_control_stop", 0))
+	assert_false(l.in_trouble("wait_signal", 599))
+	assert_true(l.in_trouble("wait_signal", 600))
+	assert_false(l.in_trouble("on_the_path", 1e6))
+	assert_false(l.in_trouble("arrive_signal", 1e6))
+end)
+
+test("composition: locomotives as L, wagon runs in angle brackets", function()
+	local l = logic()
+	assert_eq(l.composition({ 0, 1, 1, 0 }), "L<CC>L")
+	assert_eq(l.composition({ 0, 0, 1, 1, 1, 1 }), "LL<CCCC>")
+	assert_eq(l.composition({ 0, 2, 1, 0, 1 }), "L<FC>L<C>")
+	assert_eq(l.composition({ 0 }), "L")
+	assert_eq(l.composition({}), "")
+end)
+
+test("age, not_refuelled and age_caption", function()
+	local l = logic()
+	assert_eq(l.age(1000, nil), nil)
+	assert_eq(l.age(1000, 400), 600)
+	assert_eq(l.age(1000, 1200), 0)
+	assert_true(l.not_refuelled(1000, nil, 1))
+	assert_false(l.not_refuelled(216000, 1, 1))
+	assert_true(l.not_refuelled(216002, 1, 1))
+	assert_false(l.not_refuelled(216002, 1, 2))
+	assert_true(l.not_refuelled(54001, 0, 0.25))
+	local fmt = function(t) return t .. "t" end
+	assert_eq({ l.age_caption(1000, nil, fmt) }, { nil, nil })
+	assert_eq({ l.age_caption(1000, 100, fmt) }, { "900t", 900 })
+end)
+
+test("fuel_percent: averaged over burner locomotives, nil when electric", function()
+	local l = logic()
+	assert_eq(l.fuel_percent({}), nil)
+	assert_eq(l.fuel_percent({ { energy = 50, capacity = 100 } }), 50)
+	assert_eq(l.fuel_percent({ { energy = 100, capacity = 100 }, { energy = 0, capacity = 100 } }), 50)
+	assert_eq(l.fuel_percent({ { energy = 0, capacity = 0 } }), 0)
+	assert_eq(l.fuel_percent({ { energy = 150, capacity = 100 } }), 100)
+end)
+
+test("group_rows: a group row per name, members only under expanded groups", function()
+	local l = logic()
+	local rows = l.group_rows({ "A", "B" }, { A = { 1, 2 }, B = { 3 } }, { B = true })
+	assert_eq(rows, { { group = "A" }, { group = "B" }, { group = "B", train = 3 } })
+	assert_eq(#l.group_rows({ "A" }, { A = { 1, 2 } }, { A = true }), 3)
+end)
+
+test("station_flags: chips a station belongs to; failing = no power + disabled + throttling + setup", function()
+	local l = logic()
+	assert_eq(l.station_flags({ status = "ok" }), 0)
+	assert_eq(l.station_flags({ status = "ok", unserved = { count = 2 } }), l.FLAG_UNSERVED)
+	assert_eq(l.station_flags({ status = "ok", unserved = { count = 0 } }), 0)
+	assert_eq(l.station_flags({ status = "no_power", lint = 4 }), l.FLAG_NO_POWER + l.FLAG_SETUP)
+	assert_eq(l.station_flags({ status = "disabled", throttling = true }), l.FLAG_DISABLED + l.FLAG_THROTTLING)
+	for _, f in ipairs({ l.FLAG_NO_POWER, l.FLAG_DISABLED, l.FLAG_THROTTLING, l.FLAG_SETUP }) do
+		assert_true(bit32.btest(l.FAILING, f))
+	end
+	assert_false(bit32.btest(l.FAILING, l.FLAG_UNSERVED))
+	assert_false(bit32.btest(l.FAILING, l.FLAG_STUCK))
+end)
+
+test("stuck_stations: provider and requester of trains with a stuck alert", function()
+	local l = logic()
+	local trains = { [1] = { p_station_id = 10, r_station_id = 11 }, [2] = { p_station_id = 12 }, [3] = {} }
+	local alerts = { { train_id = 1, kind = 1 }, { train_id = 2, kind = 2 }, { train_id = 3, kind = 1 }, { train_id = 9, kind = 1 } }
+	assert_eq(l.stuck_stations(alerts, trains, 1), { [10] = true, [11] = true })
+end)
+
+test("chip_mode: names when they fit, else compact", function()
+	local l = logic()
+	assert_eq(l.chip_mode(1000, 900), "full")
+	assert_eq(l.chip_mode(800, 900), "compact")
+end)
+
+test("deficit: requested minus provided minus in transit, as magnitudes", function()
+	local l = logic()
+	assert_eq(l.deficit(-1000, 200, 300), 500)
+	assert_eq(l.deficit(-100, 200, nil), -100)
+	assert_eq(l.deficit(nil, 50, 0), -50)
+	assert_eq(l.deficit(-10, nil, nil), 10)
+end)
+
+test("unrequested: provide keys without a request key on the same network", function()
+	local l = logic()
+	local p = { ["A:iron"] = 1, ["B:iron"] = 1, ["A:coal"] = 1, ["B:copper|rare"] = 1 }
+	local r = { ["A:iron"] = true, ["B:coal"] = true }
+	assert_eq(l.unrequested(p, r), { coal = true, ["copper|rare"] = true })
+	assert_eq(l.unrequested(p, r, "B"), { iron = true, ["copper|rare"] = true })
+	assert_eq(l.unrequested(p, r, "A"), { coal = true })
+	assert_eq(l.unrequested({}, r), {})
+end)
