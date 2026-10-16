@@ -1440,6 +1440,9 @@ end
 --- @field filter DiagEventFilter?
 --- @field rows int written so far
 --- @field started boolean the header is out
+--- @field chunks int? chunks written so far
+--- @field first_tick uint? tick of the first chunk
+--- @field last_tick uint? tick of the latest chunk
 
 local HEADER = "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
 
@@ -1512,10 +1515,14 @@ end
 function diag.export(player_index, filter)
 	local d = storage.diag
 	if not d then return nil end
-	local path = "cybersyn/diag-" .. game.tick .. ".csv"
-	for _, job in ipairs(d.export_jobs) do
-		if job.path == path and job.player_index == (player_index or 0) then return path end
+	-- Two exports in one tick get two files (the first may already be written and gone from the queue).
+	local tick = game.tick
+	if d.export_name_tick == tick then
+		d.export_name_n = (d.export_name_n or 1) + 1
+	else
+		d.export_name_tick, d.export_name_n = tick, 1
 	end
+	local path = "cybersyn/diag-" .. tick .. (d.export_name_n > 1 and ("-" .. d.export_name_n) or "") .. ".csv"
 	local oldest = d.seq
 	for _, r in ipairs({ d.ring_basic, d.ring_full }) do
 		if r.count > 0 then oldest = math.min(oldest, r.seq[at(r, 0)] - 1) end
@@ -1603,6 +1610,9 @@ function diag.export_step()
 	helpers.write_file(job.path, table.concat(parts), job.started, job.player_index)
 	job.started = true
 	job.rows = job.rows + rows
+	job.chunks = (job.chunks or 0) + 1
+	job.first_tick = job.first_tick or game.tick
+	job.last_tick = game.tick
 	if exhausted then
 		job.next_seq = end_seq
 		table.remove(d.export_jobs, 1)

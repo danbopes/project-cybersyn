@@ -873,29 +873,43 @@ local function grab_all_settings()
 end
 local function register_tick()
 	script.on_nth_tick(nil)
-	--edge case catch to register both main and manager tick if they're scheduled to run on the same ticks
-	if mod_settings.manager_ups == mod_settings.tps and mod_settings.tps > DELTA then
-		local nth_tick = ceil(60 / mod_settings.tps) --[[@as uint]]
-		script.on_nth_tick(nth_tick, function()
-			fork_migrations.run_once()
+	-- One handler per nth: a second on_nth_tick for the same nth replaces the first.
+	local by_nth, order = {}, {}
+	local function add(nth, fn)
+		local list = by_nth[nth]
+		if not list then
+			list = {}
+			by_nth[nth] = list
+			order[#order + 1] = nth
+		end
+		list[#list + 1] = fn
+	end
+	if mod_settings.tps > DELTA then
+		add(ceil(60 / mod_settings.tps) --[[@as uint]], function()
 			tick(storage, mod_settings)
 			analytics.tick(storage)
+		end)
+	end
+	if mod_settings.manager_ups > DELTA then
+		add(ceil(60 / mod_settings.manager_ups) --[[@as uint]], function()
 			manager.tick(storage)
 		end)
-	else
-		if mod_settings.tps > DELTA then
-			local nth_tick_main = ceil(60 / mod_settings.tps) --[[@as uint]]
-			script.on_nth_tick(nth_tick_main, function()
+	end
+	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
+	-- a queued job.
+	add(diag.EXPORT_NTH, manager.export_tick)
+	for _, nth in ipairs(order) do
+		local list = by_nth[nth]
+		if #list == 1 then
+			local fn = list[1]
+			script.on_nth_tick(nth, function()
 				fork_migrations.run_once()
-				tick(storage, mod_settings)
-				analytics.tick(storage)
+				fn()
 			end)
-		end
-		if mod_settings.manager_ups > DELTA then
-			local nth_tick_manager = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
-			script.on_nth_tick(nth_tick_manager, function()
+		else
+			script.on_nth_tick(nth, function()
 				fork_migrations.run_once()
-				manager.tick(storage)
+				for _, fn in ipairs(list) do fn() end
 			end)
 		end
 	end

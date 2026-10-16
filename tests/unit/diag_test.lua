@@ -507,6 +507,9 @@ test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk
 	local path = diag.export(1, nil)
 	assert_eq(path, "cybersyn/diag-50.csv")
 	local job = d.export_jobs[1]
+	-- A second export in the same tick gets a file of its own.
+	assert_eq(diag.export(2, nil), "cybersyn/diag-50-2.csv")
+	table.remove(d.export_jobs, 2)
 	assert_eq(diag.export_progress(job), 0)
 	assert_same(diag.export_job(1), job)
 	assert_nil(diag.export_job(2))

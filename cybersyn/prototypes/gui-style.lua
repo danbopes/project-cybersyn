@@ -848,3 +848,144 @@ styles.cybersyn_overview_empty_label = {
 	vertical_align = "center",
 	maximal_width = 600,
 }
+
+-- LOG TAB STYLES (PLAN3 §4.7 Log: 28 px rows, alternate-row tint)
+
+styles.cybersyn_log_row = {
+	type = "frame_style",
+	padding = 0,
+	left_padding = 4,
+	right_padding = 8,
+	height = 28,
+	horizontally_stretchable = "on",
+	graphical_set = {},
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		vertical_align = "center",
+		horizontal_spacing = 8,
+	},
+}
+
+styles.cybersyn_log_row_odd = {
+	type = "frame_style",
+	parent = "cybersyn_log_row",
+	graphical_set = {
+		base = { position = { 472, 25 }, size = 1 },
+	},
+}
+
+styles.cybersyn_log_age = {
+	type = "label_style",
+	font_color = { 0.6, 0.6, 0.6 },
+	horizontal_align = "right",
+	height = 28,
+	vertical_align = "center",
+}
+
+styles.cybersyn_log_dot = {
+	type = "image_style",
+	size = 16,
+	stretch_image_to_widget_size = true,
+}
+
+styles.cybersyn_log_kind = {
+	type = "image_style",
+	size = 20,
+	stretch_image_to_widget_size = true,
+}
+
+styles.cybersyn_log_link = {
+	type = "button_style",
+	parent = "cybersyn_link_button",
+	height = 28,
+}
+
+styles.cybersyn_log_link_gone = {
+	type = "button_style",
+	parent = "cybersyn_log_link",
+	default_font_color = { 0.5, 0.5, 0.5 },
+}
+
+styles.cybersyn_log_cell_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 4,
+	height = 28,
+}
+
+styles.cybersyn_log_icon_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 0,
+}
+
+styles.cybersyn_log_item = {
+	type = "button_style",
+	parent = "transparent_slot",
+	size = 28,
+}
+
+styles.cybersyn_log_message = {
+	type = "label_style",
+	height = 28,
+	vertical_align = "center",
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_log_count = {
+	type = "label_style",
+	font = "default-semibold",
+	horizontal_align = "right",
+	height = 28,
+	vertical_align = "center",
+}
+
+styles.cybersyn_log_print = {
+	type = "button_style",
+	parent = "tool_button",
+	size = 24,
+	padding = 2,
+}
+
+styles.cybersyn_log_sev_button = {
+	type = "button_style",
+	parent = "button",
+	height = 28,
+	minimal_width = 0,
+	left_padding = 6,
+	right_padding = 8,
+}
+
+styles.cybersyn_log_kind_dropdown = {
+	type = "dropdown_style",
+	parent = "dropdown",
+	width = 190,
+}
+
+styles.cybersyn_log_window_dropdown = {
+	type = "dropdown_style",
+	parent = "dropdown",
+	width = 160,
+}
+
+styles.cybersyn_log_train_field = {
+	type = "textbox_style",
+	width = 72,
+}
+
+styles.cybersyn_log_summary_frame = {
+	type = "frame_style",
+	parent = "deep_frame_in_shallow_frame",
+	vertical_flow_style = {
+		type = "vertical_flow_style",
+		vertical_spacing = 0,
+	},
+}
+
+styles.cybersyn_log_summary_table = {
+	type = "table_style",
+	parent = "cybersyn_unserved_table",
+	column_alignments = {
+		{ column = 3, alignment = "right" },
+	},
+}

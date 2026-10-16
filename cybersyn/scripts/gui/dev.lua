@@ -703,6 +703,21 @@ function interface.diag_state()
 	return out
 end
 
+--- Writes one ring event as a hook would (tests of the Log): kind and sev by name, the other columns from `f`.
+--- @return uint? seq
+function interface.diag_event(kind_name, sev_name, f)
+	local d = storage.diag
+	if not d then return nil end
+	local kind, sev
+	for k, name in ipairs(DIAG_KIND_NAMES) do if name == kind_name then kind = k end end
+	for k, name in ipairs(DIAG_SEV_NAMES) do if name == sev_name then sev = k end end
+	if not (kind and sev) then error("unknown kind or severity " .. tostring(kind_name) .. " " .. tostring(sev_name)) end
+	f = f or {}
+	local item = f.item and diag.intern(d, f.item) or 0
+	return diag.event(d, kind, sev, f.code or 0, f.delivery or 0, f.train or 0, f.station or 0, f.station2 or 0, item,
+		f.a or 0, f.b or 0)
+end
+
 function interface.diag_reset()
 	diag.reset()
 	return interface.diag_state()
@@ -1046,6 +1061,19 @@ function interface.diag_coverage(min_wait, top)
 	table.sort(examples, function(a, b) return a.wait > b.wait end)
 	for i = 1, math.min(top or 10, #examples) do out.examples[i] = examples[i] end
 	return out
+end
+
+--- Tab modules add their own functions to the interface while they load (before dev.register runs).
+--- @param name string
+--- @param fn function
+function dev.register_function(name, fn)
+	interface[name] = fn
+end
+
+--- Calls an interface function from Lua (a tab module's dev function reusing another).
+--- @param name string
+function dev.call(name, ...)
+	return interface[name](...)
 end
 
 --- @return boolean

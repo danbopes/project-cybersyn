@@ -8,6 +8,7 @@ local overview_tab = require("scripts.gui.overview")
 local stations_tab = require("scripts.gui.stations")
 local trains_tab = require("scripts.gui.trains")
 local inventory_tab = require("scripts.gui.inventory")
+local log_tab = require("scripts.gui.log")
 local utilization_tab = require("scripts.gui.utilization")
 local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
 local util = require("scripts.gui.util")
@@ -19,7 +20,7 @@ local manager = {}
 
 local DEFAULT_TAB = "overview_tab"
 -- Tabs whose content gets the banner and subheader, in pane order.
-local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "utilization_tab", "delivery_breakdown_tab" }
+local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab", "utilization_tab", "delivery_breakdown_tab" }
 -- Tabs the station-name search applies to.
 local SEARCH_TABS = { inventory_tab = true, stations_tab = true, trains_tab = true }
 -- The last render must be this old before the title bar says how old it is.
@@ -66,6 +67,7 @@ function manager.create(player)
 		add_header(inventory_tab.create(), "inventory_tab", header),
 		add_header(stations_tab.create(widths), "stations_tab", header),
 		add_header(trains_tab.create(widths), "trains_tab", header),
+		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
 	}
 	if analytics.is_enabled() then
 		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
@@ -237,6 +239,7 @@ local CONTENT_FRAMES = {
 	inventory_tab = "manager_inventory_content_frame",
 	stations_tab = "manager_stations_content_frame",
 	trains_tab = "manager_trains_tab_content_frame",
+	log_tab = "manager_log_content_frame",
 }
 
 --- Writes the layout into the window: its width, every tab's height and the per-tab row areas.
@@ -259,6 +262,7 @@ function manager.apply_layout(player, player_data)
 	end
 	overview_tab.apply_layout(player_data, layout)
 	inventory_tab.apply_layout(player_data, layout)
+	log_tab.apply_layout(player_data, layout)
 	return layout
 end
 
@@ -547,6 +551,7 @@ local tab_builders = {
 	inventory_tab = inventory_tab,
 	stations_tab = stations_tab,
 	trains_tab = trains_tab,
+	log_tab = log_tab,
 	utilization_tab = utilization_tab,
 	delivery_breakdown_tab = delivery_breakdown_tab,
 }
@@ -592,15 +597,18 @@ end
 --- @param player_data PlayerData
 function manager.render(player, player_data)
 	if not player_data.is_manager_open then return end
+	log_tab.refresh_visibility(player_data)
 	manager.update(storage, player_data)
 	player_data.last_update_tick = game.tick
 	player_data.rendered_snapshot_tick = collector.get().tick
 	manager.update_status(player_data)
 	manager.refresh_chips(player_data)
 	refresh_badges(player_data)
+	log_tab.refresh_badge(player_data)
 end
 
 util.set_rerender(manager.render)
+manager.log_tab = log_tab
 overview_tab.manager = manager
 
 manager.handle = {}
@@ -648,6 +656,8 @@ function manager.handle.manager_open(player, player_data, refs)
 	manager.restore_filter_widgets(player_data)
 	manager.refresh_toggles(player_data)
 	manager.refresh_sort_headers(player_data)
+	log_tab.restore_widgets(player_data)
+	log_tab.refresh_visibility(player_data)
 	if not util.select_tab(player_data, player_data.selected_tab or DEFAULT_TAB) then
 		util.select_tab(player_data, DEFAULT_TAB)
 	end

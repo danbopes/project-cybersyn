@@ -4,7 +4,6 @@ local mod_gui = require("__core__.lualib.mod-gui")
 local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
 local util = require("scripts.gui.util")
-local diag = require("scripts.diag")
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
@@ -200,6 +199,15 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 			player_data.page_size = nil
 			util.reset_pages(player_data)
 		end
+	elseif e.setting == "cybersyn-diagnostics" then
+		-- The Log tab shows only while diagnostics are on; with manager updates off nothing else would hide it.
+		local manager_data = storage.manager
+		if not manager_data then return end
+		for _, v in pairs(manager_data.players) do
+			if v.refs and v.refs.manager_window and v.refs.manager_window.valid then
+				manager.log_tab.refresh_visibility(v)
+			end
+		end
 	elseif e.setting == "cybersyn-manager-unserved-minutes" then
 		local player_data = e.player_index and storage.manager.players[e.player_index]
 		if player_data then player_data.unserved_minutes = nil end
@@ -332,7 +340,7 @@ end
 
 ---@param global cybersyn.global
 function manager_gui.tick(storage)
-	diag.export_tick()
+	manager.log_tab.export_tick()
 	local manager_data = storage.manager
 	if not manager_data then return end
 	collector.tick()
@@ -360,6 +368,11 @@ function manager_gui.tick(storage)
 			end
 		end
 	end
+end
+
+--- Export jobs drain here too (a fixed nth tick, whatever the manager's update rate).
+function manager_gui.export_tick()
+	manager.log_tab.export_tick()
 end
 
 --- on_player_display_resolution_changed / on_player_display_scale_changed.

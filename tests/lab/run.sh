@@ -10,6 +10,10 @@ MOD=${MOD:-$ROOT/cybersyn}
 BASE="$ROOT/tests/baseline"
 TRACE_LENGTH=${TRACE_LENGTH:-10800}
 TRACE_SPEED=${TRACE_SPEED:-20}
+# ONLY=<extended regex>: run only the *_test.lua files whose name matches; KEEP_LAB=1: leave the lab running at the end
+# (for screenshots of the state the suites leave behind; stop it with lab.sh <scratch> stop).
+ONLY=${ONLY:-}
+KEEP_LAB=${KEEP_LAB:-0}
 
 RECORD=0
 ARGS=()
@@ -147,6 +151,7 @@ collect cases "$(lab file "$HERE/cases.lua" 2>&1)"
 
 for f in "$HERE"/*_test.lua; do
 	name=$(basename "$f" .lua)
+	if [ -n "$ONLY" ] && ! grep -qE "$ONLY" <<< "$name"; then continue; fi
 	run_suite_output "$name" "$(lab file "$f" 2>&1)"
 done
 
@@ -166,7 +171,7 @@ fi
 check_budgets
 python3 -I "$HERE/compare.py" "$BASE" "$OUTPUT" | while IFS= read -r line; do emit "$line"; done
 
-stop_lab
+[ "$KEEP_LAB" = 1 ] || stop_lab
 trap - EXIT
 pass=$(grep -c '^PASS ' "$RESULTS")
 fail=$(grep -c '^FAIL ' "$RESULTS")

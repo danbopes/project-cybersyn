@@ -1186,8 +1186,16 @@ local function link_target(e)
 	return nil, nil
 end
 
+local log_subject_fn
+
+--- Lets log.lua take right-clicks on train and station links without a require cycle.
+--- @param fn fun(player: LuaPlayer, player_data: PlayerData, kind: string, id: uint)
+function util.set_log_subject(fn)
+	log_subject_fn = fn
+end
+
 --- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
---- right on an item = clear the item filter. Tags {kind = "station"|"depot"|"refueler"|"train"|"item", id}; the
+--- right on an item = clear the item filter, right on a train or a stop = the Log's "this train/stop" chip. Tags {kind = "station"|"depot"|"refueler"|"train"|"item", id}; the
 --- older tag shapes of the Stations and Trains rows are read too.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
@@ -1197,6 +1205,13 @@ function util.handle_link_click(player, player_data, e)
 	if not kind then return end
 	if kind == "item" then
 		util.item_button_click(player, player_data, e, id)
+		return
+	end
+	if e.button == defines.mouse_button_type.right then
+		if log_subject_fn then
+			log_subject_fn(player, player_data, kind, id)
+			util.rerender(player, player_data)
+		end
 		return
 	end
 	if e.button and e.button ~= defines.mouse_button_type.left then return end
