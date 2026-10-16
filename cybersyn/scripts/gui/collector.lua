@@ -77,6 +77,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field read_tick uint game tick this record was last refreshed
 --- @field lint int bitmask of setup findings (PLAN3 §4.12), written by the lint job from phase 2b; 0 until then
 --- @field unserved {count: int, worst_reason: int, oldest_first_tick: uint}? copy of the station's diagnostics
+--- @field throttling boolean an unacknowledged unserved request names this station at its train limit (R_AT_LIMIT as
+---   the requester, P_AT_LIMIT as the best provider), as of the start of the pass that read it
 ---   entries as of read_tick; nil when it has none or diagnostics are off
 
 --- @class SnapshotTrain
@@ -133,6 +135,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field fleet SnapshotFleet
 --- @field depots {total: int, parked: int}
 --- @field depots_by_name {[string]: SnapshotDepotGroup} built in the chunked pass (depot stops) and the fleet summary (trains)
+--- @field request_keys {[string]: true} "network:hash" keys of the active requests, as of the pass (Inventory's
+---   Dim unrequested reads them against provider_masks)
 --- @field provider_masks {[string]: int} "network:hash" -> OR of the network masks of the stations providing it, as of
 ---   the last complete pass (the lint engine's requester-vs-provider mask check)
 --- @field provider_overrides {[string]: number} "network:hash" -> the lowest item threshold (in items or fluid units) a
@@ -182,6 +186,7 @@ function collector.empty()
 		depots_by_name = {},
 		provider_masks = {},
 		provider_overrides = {},
+		request_keys = {},
 		alerts = {},
 	}
 end
@@ -655,6 +660,7 @@ local function summarize_trains(b)
 	live.depots = { total = depot_total, parked = parked }
 	live.depots_by_name = live.depots_by_name or {}
 	live.provider_masks = live.provider_masks or {}
+	live.request_keys = live.request_keys or {}
 	live.provider_overrides = live.provider_overrides or {}
 	live.alerts = alerts
 	b.trains = nil
@@ -671,6 +677,30 @@ local function spare(manager, name)
 	spares[name] = nil
 	for k in pairs(t) do t[k] = nil end
 	return t
+end
+
+--- Stations a live, unacknowledged unserved request names at a train limit: the requester for R_AT_LIMIT, the
+--- best provider for P_AT_LIMIT. One walk over the diagnostics state per pass (~135 entries on pY 123).
+--- @return {[uint]: true}
+local function throttled_stations()
+	local out = {}
+	local d = storage.diag
+	if not d then return out end
+	local acks = storage.acks
+	local ack_requests = acks and acks.request
+	local hashes = d.item_hash
+	for r_id, by_item in pairs(d.unserved) do
+		local by_ack = ack_requests and ack_requests[r_id]
+		for ix, e in pairs(by_item) do
+			local reason = e.reason
+			local target = reason == REASON_R_AT_LIMIT and r_id or reason == REASON_P_AT_LIMIT and e.p_station_id or nil
+			if target and not out[target] then
+				local hash = by_ack and hashes[ix]
+				if not (hash and by_ack[hash] and diag.is_acked("request", r_id, hash)) then out[target] = true end
+			end
+		end
+	end
+	return out
 end
 
 local function start_pass(manager)
@@ -703,6 +733,7 @@ local function start_pass(manager)
 	b.depot_ids = depot_ids
 	b.di = 0
 	b.trains_pending = true
+	b.throttled = throttled_stations()
 	manager.snapshot_build = b
 	return b
 end
@@ -900,6 +931,8 @@ local function collect_station(b, id, station)
 	st.read_tick = game.tick
 	-- The lint job's last result for this stop, which outlives the snapshot (a reopened window shows it at once).
 	st.lint = lint.bits_of(id)
+	local throttled = b.throttled
+	st.throttling = throttled ~= nil and throttled[id] == true
 	local n_unserved, worst, oldest = diag.unserved_summary(id)
 	if n_unserved > 0 then
 		local u = st.unserved
@@ -1170,8 +1203,9 @@ local function finish_pass(manager, b)
 	end
 	if changed then reclassify_starved(stations, live.starved, b.starved) end
 	-- This pass's provider keys become the live provider masks; the previous live set is cleared for the next pass.
-	manager.collect_spare = { seen = seen, r_keys = b.r_keys, p_keys = live.provider_masks,
+	manager.collect_spare = { seen = seen, r_keys = live.request_keys, p_keys = live.provider_masks,
 		p_over = live.provider_overrides }
+	b.request_keys = b.r_keys
 	b.provider_masks = b.p_keys
 	b.provider_overrides = b.p_over
 	b.stations = stations
@@ -1191,6 +1225,7 @@ local function finish_pass(manager, b)
 	b.r_keys = nil
 	b.p_keys = nil
 	b.p_over = nil
+	b.throttled = nil
 	b.tick = game.tick
 	manager.snapshot = b
 	manager.snapshot_build = nil
