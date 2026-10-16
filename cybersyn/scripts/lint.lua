@@ -151,7 +151,8 @@ end
 lint.each_network = each_network
 
 --- What the fleet offers a stop on one network: trains whose mask shares a bit with the stop's, the layouts among
---- them the stop accepts, and the largest capacities of those.
+--- them the stop accepts, and the largest capacities of those and of all of them. The dispatcher tests capacity
+--- before layout, so a train the stop rejects still decides whether the failure is capacity or layout.
 --- @param capability {[uint]: {count: int, item_capacity: int, fluid_capacity: int, mask_or: int}}?
 --- @param mask int
 --- @param allows_all boolean
@@ -160,20 +161,33 @@ lint.each_network = each_network
 --- @return int accepted_trains of those, trains with a layout the stop accepts
 --- @return int item_capacity largest among the accepted ones
 --- @return int fluid_capacity
+--- @return int all_items largest among all mask-eligible ones
+--- @return int all_fluid
 function lint.eligible(capability, mask, allows_all, accepted)
-	local trains, ok, items, fluid = 0, 0, 0, 0
-	if not capability then return 0, 0, 0, 0 end
+	local trains, ok, items, fluid, all_items, all_fluid = 0, 0, 0, 0, 0, 0
+	if not capability then return 0, 0, 0, 0, 0, 0 end
 	for layout_id, c in pairs(capability) do
 		if band(c.mask_or, mask) ~= 0 then
 			trains = trains + c.count
+			local ci, cf = c.item_capacity, c.fluid_capacity
+			if ci > all_items then all_items = ci end
+			if cf > all_fluid then all_fluid = cf end
 			if allows_all or accepted[layout_id] then
 				ok = ok + c.count
-				if c.item_capacity > items then items = c.item_capacity end
-				if c.fluid_capacity > fluid then fluid = c.fluid_capacity end
+				if ci > items then items = ci end
+				if cf > fluid then fluid = cf end
 			end
 		end
 	end
-	return trains, ok, items, fluid
+	return trains, ok, items, fluid, all_items, all_fluid
+end
+
+--- The reason code a check predicts for a station in `role`, nil when the dispatcher has none for it.
+--- @param check int LINT_*
+--- @param role "r"|"p"
+--- @return int? REASON_*
+function lint.predicts(check, role)
+	return role == "p" and LINT_PREDICTS_P[check] or LINT_PREDICTS[check]
 end
 
 --- @param t table?
@@ -186,21 +200,27 @@ local function count_keys(t)
 end
 
 --- The checks of one network of a station; returns the station's mask with this network's findings added.
-local function check_network(out, mask, id, st, accepted, allows_all, fleet, provider_masks, starved, net, net_mask)
+--- @param keys {masks: {[string]: int}, overrides: {[string]: number}?, starved: {[string]: true}}
+local function check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, net_mask)
 	local S = LINT_SUBJECT_STATION
-	local mask_or = fleet.mask_or[net] or 0
-	if band(net_mask, mask_or) == 0 then
-		if band(mask, LINT_BIT[LINT_MASK]) == 0 then mask = find(out, mask, S, id, LINT_MASK, net_mask, mask_or, net) end
+	local mask_or = fleet.mask_or[net]
+	if not mask_or then
+		if band(mask, LINT_BIT[LINT_NO_TRAIN]) == 0 then mask = find(out, mask, S, id, LINT_NO_TRAIN, net_mask, 0, net) end
 		return mask
 	end
-	local trains, ok, items, fluid = lint.eligible(fleet.capability[net], net_mask, allows_all, accepted)
-	if trains > 0 and ok == 0 then
-		if band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
-			mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net)
+	if band(net_mask, mask_or) == 0 then
+		if band(mask, LINT_BIT[LINT_TRAIN_MASK]) == 0 then
+			mask = find(out, mask, S, id, LINT_TRAIN_MASK, net_mask, mask_or, net)
 		end
 		return mask
 	end
+	local trains, ok, items, fluid, all_items, all_fluid = lint.eligible(fleet.capability[net], net_mask, allows_all,
+		accepted)
+	if trains > 0 and ok == 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
+		mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net)
+	end
 	if not st.is_r then return mask end
+	local provider_masks, overrides, starved = keys.masks, keys.overrides, keys.starved
 	local prefix
 	for hash, req in pairs(st.requested) do
 		prefix = prefix or (net .. ":")
@@ -213,20 +233,27 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, pro
 				mask = find(out, mask, S, id, LINT_NO_PROVIDER, 0, 0, net, hash)
 			end
 		end
-		if ok > 0 and band(mask, LINT_BIT[LINT_CAPACITY]) == 0 then
+		if trains > 0 and band(mask, LINT_BIT[LINT_CAPACITY]) == 0 then
+			-- The dispatcher takes a provider's own item threshold when it is the lower one.
+			local threshold = req.threshold
+			local override = overrides and overrides[key]
+			if override and override < threshold then threshold = override end
 			local stack = stack_size(hash)
-			local need, have
+			local need, have, have_any
 			if stack then
-				need, have = math.ceil(req.threshold / stack), items
+				need, have, have_any = math.ceil(threshold / stack), items, all_items
 			else
-				need, have = req.threshold, fluid
+				need, have, have_any = threshold, fluid, all_fluid
 			end
-			if need > have then mask = find(out, mask, S, id, LINT_CAPACITY, need, have, net, hash) end
+			if need > have_any then
+				mask = find(out, mask, S, id, LINT_CAPACITY, need, have_any, net, hash)
+			elseif need > have and ok > 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
+				mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net, hash)
+			end
 		end
 	end
 	return mask
 end
-
 
 --- The station checks of §4.12 against one snapshot record.
 --- @param out LintFinding[] findings are appended
@@ -234,11 +261,11 @@ end
 --- @param st SnapshotStation
 --- @param station Station
 --- @param fleet SnapshotFleet
---- @param provider_masks {[string]: int}
---- @param starved {[string]: true}
+--- @param keys {masks: {[string]: int}, overrides: {[string]: number}?, starved: {[string]: true}} the snapshot's
+---   per network:item facts: providers' masks OR-ed, their lowest item threshold, the keys nobody provides
 --- @param live {limit: int, occupancy_gap: boolean, occupancy: int, count: int, phantom: boolean, deliveries: int, bound: int}
 --- @return int mask
-function lint.check_station(out, id, st, station, fleet, provider_masks, starved, live)
+function lint.check_station(out, id, st, station, fleet, keys, live)
 	local mask = 0
 	local S = LINT_SUBJECT_STATION
 	if live.limit == 0 then mask = find(out, mask, S, id, LINT_LIMIT_ZERO, 0, 0) end
@@ -271,11 +298,11 @@ function lint.check_station(out, id, st, station, fleet, provider_masks, starved
 	if name == NETWORK_EACH then
 		if type(net_mask) == "table" then
 			for net, m in pairs(net_mask) do
-				mask = check_network(out, mask, id, st, accepted, allows_all, fleet, provider_masks, starved, net, m)
+				mask = check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, m)
 			end
 		end
 	elseif name then
-		mask = check_network(out, mask, id, st, accepted, allows_all, fleet, provider_masks, starved, name,
+		mask = check_network(out, mask, id, st, accepted, allows_all, fleet, keys, name,
 			type(net_mask) == "number" and net_mask or 0)
 	end
 	return mask
@@ -449,6 +476,7 @@ end
 
 -- Reused for every station of a pass (the values are copied into findings, never kept).
 local live = {}
+local station_keys = {}
 
 --- @param s LintState
 --- @param job LintJob
@@ -476,12 +504,17 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		live.limit = stop.trains_limit
 		live.count = count
 		live.occupancy = occupancy
-		live.occupancy_gap = persisted(s.occupancy_since, id, occupancy ~= count, job, cycle_ticks)
+		-- Only more trains than Cybersyn sent count: one it sent is routed through a rail record first and is not
+		-- in the stop's count until it heads for the stop itself, and a delivery Cybersyn counts but no train serves
+		-- is the phantom check's.
+		live.occupancy_gap = persisted(s.occupancy_since, id, count > occupancy, job, cycle_ticks)
 		live.deliveries = deliveries
 		live.bound = bound
 		live.phantom = persisted(s.phantom_since, id, deliveries ~= bound, job, cycle_ticks)
-		mask = lint.check_station(out, id, st, station, snap.fleet, snap.provider_masks or NO_LAYOUTS,
-			snap.starved or NO_LAYOUTS, live)
+		local keys = station_keys
+		keys.masks, keys.overrides, keys.starved = snap.provider_masks or NO_LAYOUTS, snap.provider_overrides,
+			snap.starved or NO_LAYOUTS
+		mask = lint.check_station(out, id, st, station, snap.fleet, keys, live)
 		if st.lint ~= mask then st.lint = mask end
 	elseif subject == LINT_SUBJECT_DEPOT then
 		local depot = storage.depots[id]
@@ -842,7 +875,7 @@ function lint.world_tick()
 		job.k = last
 		if last >= #combs then
 			s.world = { tick = game.tick, findings = job.findings, player_index = job.player_index,
-				stops = #job.stops }
+				stops = #job.stops, quiet = job.quiet }
 			s.world_job = nil
 			lint.report_world(s.world)
 			return true

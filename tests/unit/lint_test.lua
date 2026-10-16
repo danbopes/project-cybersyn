@@ -27,10 +27,10 @@ end
 
 local CLEAN = { limit = 2, count = 0, occupancy = 0, occupancy_gap = false, deliveries = 0, bound = 0, phantom = false }
 
-local function run(st, rec, fl, pm, starved, live)
+local function run(st, rec, fl, pm, starved, live, overrides)
 	local out = {}
 	local mask = lint.check_station(out, 7, st, rec or { allows_all_trains = true, accepted_layouts = {} }, fl,
-		pm or {}, starved or {}, live or CLEAN)
+		{ masks = pm or {}, overrides = overrides, starved = starved or {} }, live or CLEAN)
 	return mask, out
 end
 
@@ -48,17 +48,32 @@ test("constants: one bit, key, name and severity per check", function()
 	assert_eq(LINT_PREDICTS[LINT_CAPACITY], REASON_CAPACITY)
 end)
 
+test("predicts: the dispatcher's code for the station's role", function()
+	assert_eq(lint.predicts(LINT_LAYOUT, "r"), REASON_R_LAYOUT)
+	assert_eq(lint.predicts(LINT_LAYOUT, "p"), REASON_P_LAYOUT)
+	assert_eq(lint.predicts(LINT_SAME_ITEM, "r"), REASON_R_IS_PROVIDING)
+	assert_eq(lint.predicts(LINT_SAME_ITEM, "p"), REASON_P_IS_REQUESTING)
+	assert_eq(lint.predicts(LINT_LIMIT_ZERO, "r"), REASON_R_DISABLED)
+	assert_eq(lint.predicts(LINT_LIMIT_ZERO, "p"), REASON_P_AT_LIMIT)
+	assert_eq(lint.predicts(LINT_MASK, "r"), REASON_MASK_MISMATCH)
+	assert_eq(lint.predicts(LINT_TRAIN_MASK, "p"), REASON_TRAIN_FILTERED)
+	assert_eq(lint.predicts(LINT_NO_TRAIN, "r"), REASON_NO_TRAINS_ON_NETWORK)
+	-- A stop holding more trains than Cybersyn sent shows as destination_full on the train, not as a reason.
+	assert_eq(lint.predicts(LINT_OCCUPANCY, "r"), nil)
+	assert_eq(lint.predicts(LINT_DEPOT_LIMIT, "r"), nil)
+end)
+
 test("eligible: mask-matching trains, the ones the stop accepts and their largest capacities", function()
 	local cap = {
 		[1] = { count = 2, item_capacity = 40, fluid_capacity = 0, mask_or = 1 },
 		[2] = { count = 3, item_capacity = 80, fluid_capacity = 50000, mask_or = 2 },
 		[3] = { count = 1, item_capacity = 120, fluid_capacity = 0, mask_or = 1 },
 	}
-	assert_eq({ lint.eligible(cap, 1, true, {}) }, { 3, 3, 120, 0 })
-	assert_eq({ lint.eligible(cap, 1, false, { [1] = true }) }, { 3, 2, 40, 0 })
-	assert_eq({ lint.eligible(cap, 3, false, { [2] = true }) }, { 6, 3, 80, 50000 })
-	assert_eq({ lint.eligible(cap, 4, true, {}) }, { 0, 0, 0, 0 })
-	assert_eq({ lint.eligible(nil, 1, true, {}) }, { 0, 0, 0, 0 })
+	assert_eq({ lint.eligible(cap, 1, true, {}) }, { 3, 3, 120, 0, 120, 0 })
+	assert_eq({ lint.eligible(cap, 1, false, { [1] = true }) }, { 3, 2, 40, 0, 120, 0 })
+	assert_eq({ lint.eligible(cap, 3, false, { [2] = true }) }, { 6, 3, 80, 50000, 120, 50000 })
+	assert_eq({ lint.eligible(cap, 4, true, {}) }, { 0, 0, 0, 0, 0, 0 })
+	assert_eq({ lint.eligible(nil, 1, true, {}) }, { 0, 0, 0, 0, 0, 0 })
 end)
 
 test("capacity: a threshold above the largest eligible train, in stacks for items and units for fluids", function()
@@ -75,14 +90,31 @@ test("capacity: a threshold above the largest eligible train, in stacks for item
 	assert_eq(checks(select(2, run(station(1, { ["iron-plate|rare"] = { 4100 } }), nil, fl))), { "capacity" })
 	assert_eq(checks(select(2, run(station(1, { water = { 25000 } }), nil, fl))), {})
 	assert_eq(checks(select(2, run(station(1, { water = { 25001 } }), nil, fl))), { "capacity" })
-	-- Only trains whose layout the stop accepts count: a 400-slot train it rejects does not help.
+	-- The dispatcher tests capacity before layout: a 400-slot train the stop rejects makes it R_LAYOUT, not CAPACITY.
 	local fl2 = fleet({
 		[1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 1 },
 		[2] = { count = 1, item_capacity = 400, fluid_capacity = 0, mask_or = 1 },
 	}, 1)
-	assert_eq(checks(select(2, run(station(1, { ["iron-plate"] = { 5000 } }), { accepted_layouts = { [1] = true } }, fl2))),
-		{ "capacity" })
+	local _, lo = run(station(1, { ["iron-plate"] = { 5000 } }), { accepted_layouts = { [1] = true } }, fl2)
+	assert_eq(checks(lo), { "layout" })
+	assert_eq({ lo[1].a, lo[1].b, lo[1].item }, { 1, 2, "iron-plate" })
 	assert_eq(checks(select(2, run(station(1, { ["iron-plate"] = { 5000 } }), { allows_all_trains = true }, fl2))), {})
+	-- Above every train of any layout it is capacity, whatever the stop accepts.
+	local _, big = run(station(1, { ["iron-plate"] = { 50000 } }), { accepted_layouts = { [1] = true } }, fl2)
+	assert_eq(checks(big), { "capacity" })
+	assert_eq({ big[1].a, big[1].b }, { 500, 400 })
+end)
+
+test("capacity: a provider's own item threshold below the requester's is what the train must carry", function()
+	local fl = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 25000, mask_or = 1 } }, 1)
+	local st = station(1, { ["iron-plate"] = { 5000 } })
+	assert_eq(checks(select(2, run(st, nil, fl, nil, nil, nil, { ["signal-A:iron-plate"] = 2000 }))), {})
+	assert_eq(checks(select(2, run(st, nil, fl, nil, nil, nil, { ["signal-A:iron-plate"] = 4100 }))), { "capacity" })
+	-- An override above the requester's threshold is not used, and one on another network does not count.
+	assert_eq(checks(select(2, run(st, nil, fl, nil, nil, nil, { ["signal-A:iron-plate"] = 9000 }))), { "capacity" })
+	assert_eq(checks(select(2, run(st, nil, fl, nil, nil, nil, { ["signal-B:iron-plate"] = 2000 }))), { "capacity" })
+	assert_eq(checks(select(2, run(station(1, { water = { 30000 } }), nil, fl, nil, nil, nil,
+		{ ["signal-A:water"] = 20000 }))), {})
 end)
 
 test("layout: trains on the network but none with a layout the stop accepts", function()
@@ -96,14 +128,15 @@ test("layout: trains on the network but none with a layout the stop accepts", fu
 	assert_eq(checks(select(2, run(p, { accepted_layouts = { [1] = true } }, fl))), {})
 end)
 
-test("mask: no train shares a bit, or the item's providers share none with the requester", function()
+test("mask: no train shares a bit, the network has no train, or the item's providers share none", function()
 	local fl = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 2 } }, 2)
 	local _, out = run(station(1, { ["iron-plate"] = { 1000 } }), nil, fl)
-	assert_eq(checks(out), { "mask" })
+	assert_eq(checks(out), { "train_mask" })
 	assert_eq({ out[1].a, out[1].b }, { 1, 2 })
-	-- No train at all on the network: mask_or 0 (NO_TRAINS_ON_NETWORK's setup case).
+	-- No train at all on the network (NO_TRAINS_ON_NETWORK's setup case).
 	local _, none = run(station(1, {}), nil, { capability = {}, mask_or = {} })
-	assert_eq(checks(none), { "mask" })
+	assert_eq(checks(none), { "no_train" })
+	assert_eq(none[1].network, "signal-A")
 	-- Trains fine, but every provider of the item is on mask 2.
 	local fl3 = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 3 } }, 3)
 	local _, prov = run(station(1, { ["iron-plate"] = { 1000 } }), nil, fl3, { ["signal-A:iron-plate"] = 2 })
@@ -148,7 +181,7 @@ test("each network of a NETWORK_EACH stop is checked with its own mask", functio
 		["signal-B"] = { [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 1 } },
 	}, mask_or = { ["signal-A"] = 1, ["signal-B"] = 1 } }
 	local _, out = run(st, nil, fl)
-	assert_eq(checks(out), { "mask" })
+	assert_eq(checks(out), { "train_mask" })
 	assert_eq(out[1].network, "signal-B")
 end)
 

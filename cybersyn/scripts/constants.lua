@@ -270,11 +270,14 @@ LINT_WRONG_SIDE = 19
 LINT_DOUBLE_COMB = 20
 LINT_PRIORITY = 21
 LINT_NAME_OVERLAP = 22
-LINT_COUNT = 22
+LINT_TRAIN_MASK = 23
+LINT_NO_TRAIN = 24
+LINT_COUNT = 24
 LINT_NAMES = {
 	"capacity", "layout", "mask", "no_provider", "limit_zero", "same_item", "occupancy", "phantom", "depot_limit",
 	"depot_shared_name", "refueler_mask", "never_refuelled", "in_group", "missing_stop", "capacity_drift",
-	"derelict_comb", "ghost_comb", "no_comb", "wrong_side", "double_comb", "priority", "name_overlap",
+	"derelict_comb", "ghost_comb", "no_comb", "wrong_side", "double_comb", "priority", "name_overlap", "train_mask",
+	"no_train",
 }
 LINT_BY_NAME = {}
 --- Locale key suffix per check: [cybersyn-diag] lint-<key> (caption) and lint-fix-<key> (fix line).
@@ -285,17 +288,25 @@ for check, name in ipairs(LINT_NAMES) do
 	LINT_KEYS[check] = string.gsub(name, "_", "-")
 	LINT_BIT[check] = 2 ^ (check - 1)
 end
---- The reason code a check predicts (PLAN3 §4.12); nil for checks about setups the dispatcher has no reason for.
+--- The reason code a check predicts on a requester (PLAN3 §4.12); nil for checks about setups the dispatcher has no
+--- reason for. LINT_PREDICTS_P holds the provider's where it differs (lint.predicts).
 LINT_PREDICTS = {
 	[LINT_CAPACITY] = REASON_CAPACITY,
 	[LINT_LAYOUT] = REASON_R_LAYOUT,
 	[LINT_MASK] = REASON_MASK_MISMATCH,
+	[LINT_TRAIN_MASK] = REASON_TRAIN_FILTERED,
+	[LINT_NO_TRAIN] = REASON_NO_TRAINS_ON_NETWORK,
 	[LINT_NO_PROVIDER] = REASON_NO_PROVIDER,
 	[LINT_LIMIT_ZERO] = REASON_R_DISABLED,
 	[LINT_SAME_ITEM] = REASON_R_IS_PROVIDING,
-	[LINT_OCCUPANCY] = REASON_R_AT_LIMIT,
 	[LINT_PHANTOM] = REASON_R_AT_LIMIT,
 	[LINT_CAPACITY_DRIFT] = REASON_CAPACITY,
+}
+LINT_PREDICTS_P = {
+	[LINT_LAYOUT] = REASON_P_LAYOUT,
+	[LINT_LIMIT_ZERO] = REASON_P_AT_LIMIT,
+	[LINT_SAME_ITEM] = REASON_P_IS_REQUESTING,
+	[LINT_PHANTOM] = REASON_P_AT_LIMIT,
 }
 --- DIAG_SEV_* per check: the ones that guarantee a request is never served are errors.
 LINT_SEVERITY = {}
@@ -303,6 +314,8 @@ for check = 1, LINT_COUNT do LINT_SEVERITY[check] = DIAG_SEV_WARNING end
 LINT_SEVERITY[LINT_CAPACITY] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_LAYOUT] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_MASK] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_TRAIN_MASK] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_NO_TRAIN] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_NO_PROVIDER] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_PHANTOM] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_NEVER_REFUELLED] = DIAG_SEV_INFO

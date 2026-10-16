@@ -32,7 +32,8 @@ end
 --- @return boolean
 function actions.refuse(player, what)
 	local text = { "cybersyn-messages.action-refused", what, { "string-mod-setting.cybersyn-manager-actions-" .. actions.setting() } }
-	if player and player.valid then player.print(text) else game.print(text) end
+	-- A refusal is for the caller only; without a player that is the RCON client (the log keeps it either way).
+	if player and player.valid then player.print(text) else rcon.print(text) end
 	log({ "", "Cybersyn: refused ", what, " for ", player and player.name or "the server console" })
 	return false
 end

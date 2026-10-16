@@ -32,6 +32,7 @@ local function check_cargo(map_data, train_id, train, station, at_r)
 	local d = map_data.diag
 	local alert = not at_r and mod_settings.alert_unexpected_cargo
 	if not (d or alert) then return end
+	if not at_r and not station.entity_stop.valid then return end
 	if not at_r and is_fuel_manifest(manifest) then return end
 	local entity = train.entity
 	local has_fluid = (train.fluid_capacity or 0) > 0
@@ -64,16 +65,11 @@ local function check_cargo(map_data, train_id, train, station, at_r)
 	end
 	local contents = entity.get_contents()
 	local fluids = has_fluid and entity.get_fluid_contents() or NO_FLUIDS
-	local findings = diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
+	local findings, item_extra = diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
 	if not findings[1] then return end
-	if alert and station then
-		for _, f in ipairs(findings) do
-			if f.kind == diag.CARGO_EXTRA and f.type == "item" then
-				local stop = station.entity_stop
-				send_alert_unexpected_cargo(map_data, entity, stop.backer_name, stop.position, stop.surface)
-				break
-			end
-		end
+	if alert and station and item_extra then
+		local stop = station.entity_stop
+		send_alert_unexpected_cargo(map_data, entity, stop.backer_name, stop.position, stop.surface)
 	end
 	if d then
 		if at_r then
@@ -359,7 +355,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 			set_comb1(map_data, p_station, nil)
 			unset_wagon_combs(map_data, p_station)
 
-			if p_station.entity_stop.valid then check_cargo(map_data, train_id, train, p_station, false) end
+			check_cargo(map_data, train_id, train, p_station, false)
 		end
 		if train.has_filtered_wagon then
 			train.has_filtered_wagon = nil

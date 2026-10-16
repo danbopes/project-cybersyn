@@ -40,11 +40,8 @@ local function dev(fn, ...)
 end
 
 -- The lint checks that predict a reason code (PLAN3 §4.12); a case asserts exactly its expected ones among these.
-local PREDICTING = { "capacity", "layout", "mask", "no_provider", "limit_zero", "same_item" }
-local LINT_PREDICTS = {
-	capacity = "CAPACITY", layout = "R_LAYOUT / P_LAYOUT", mask = "MASK_MISMATCH / NO_TRAINS_ON_NETWORK",
-	no_provider = "NO_PROVIDER", limit_zero = "R_DISABLED", same_item = "R_IS_PROVIDING / P_IS_REQUESTING",
-}
+local PREDICTING = { "capacity", "layout", "mask", "train_mask", "no_train", "no_provider", "limit_zero", "same_item",
+	"occupancy", "phantom" }
 
 local function has_lint_api()
 	local i = remote.interfaces[DEV]
@@ -76,8 +73,14 @@ local function lint_checks(n, case, res)
 		for _, check in ipairs(got and got.checks or {}) do set[check] = true end
 		for _, check in ipairs(PREDICTING) do
 			if want[check] then
-				lab.check(n .. ": lint " .. check .. " on " .. role .. " (predicts " .. LINT_PREDICTS[check] .. ")",
+				local predicts = dev("lint_predicts", check, role)
+				lab.check(n .. ": lint " .. check .. " on " .. role .. " (predicts " .. tostring(predicts) .. ")",
 					set[check] == true and got.asserted[check] == true, got)
+				local recorded = res.settled and res.settled.reason
+				if recorded then
+					lab.check(n .. ": lint " .. check .. " on " .. role .. " predicts the recorded " .. recorded,
+						predicts == recorded, { predicts = predicts, recorded = recorded })
+				end
 			end
 		end
 		local extra = {}

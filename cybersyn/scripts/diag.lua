@@ -1207,6 +1207,8 @@ end
 --- @param tolerance number percent
 --- @param at_r boolean
 --- @return {kind: int, name: string, quality: string?, type: string, planned: int, actual: int}[]
+--- @return boolean? item_extra at the provider: some item aboard is unplanned (the unexpected-cargo alert), even when
+---   a larger unplanned fluid is the finding
 function diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
 	local out = {}
 	local frac = tolerance / 100
@@ -1246,10 +1248,14 @@ function diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
 		end
 	end
 	if short then out[#out + 1] = short end
-	local extra
+	local extra, item_extra
 	for _, c in pairs(contents) do
-		if c.count > 0 and not planned(manifest, c.name, c.quality, false) and (not extra or c.count > extra.actual) then
-			extra = { kind = CARGO_EXTRA, name = c.name, quality = c.quality, type = "item", planned = 0, actual = c.count }
+		if c.count > 0 and not planned(manifest, c.name, c.quality, false) then
+			item_extra = true
+			if not extra or c.count > extra.actual then
+				extra = { kind = CARGO_EXTRA, name = c.name, quality = c.quality, type = "item", planned = 0,
+					actual = c.count }
+			end
 		end
 	end
 	for name, amount in pairs(fluids) do
@@ -1258,7 +1264,7 @@ function diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
 		end
 	end
 	if extra then out[#out + 1] = extra end
-	return out
+	return out, item_extra
 end
 
 local CARGO_KIND = {

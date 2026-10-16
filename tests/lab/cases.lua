@@ -220,16 +220,20 @@ end
 --- Locomotive, cargo wagon (or `wagon`), locomotive (40 slots), built east of `x` with the depot `depot` as its
 --- schedule.
 --- @param wagon string? "fluid-wagon" for a fluid train
+--- @param count integer? wagons (default 1; a second cargo wagon makes another layout with 80 slots)
 --- @return LuaTrain
-function cases.train(case, x, depot, wagon)
+function cases.train(case, x, depot, wagon, count)
 	local s = case.surface
 	local y = case.y + 1
 	local force = game.forces.player
 	local l1 = add(case, s.create_entity({ name = "locomotive", position = { x + 4, y },
 		direction = defines.direction.east, force = force }))
-	add(case, s.create_entity({ name = wagon or "cargo-wagon", position = { x + 11, y },
-		direction = defines.direction.east, force = force }))
-	local l2 = add(case, s.create_entity({ name = "locomotive", position = { x + 18, y },
+	count = count or 1
+	for i = 1, count do
+		add(case, s.create_entity({ name = wagon or "cargo-wagon", position = { x + 4 + 7 * i, y },
+			direction = defines.direction.east, force = force }))
+	end
+	local l2 = add(case, s.create_entity({ name = "locomotive", position = { x + 11 + 7 * count, y },
 		direction = defines.direction.west, force = force }))
 	l1.insert({ name = "coal", count = 50 })
 	l2.insert({ name = "coal", count = 50 })
@@ -660,7 +664,7 @@ function cases.LOST_PRIORITY_BELOW(ctx) return lost_priority("LOST_PRIORITY_BELO
 function cases.LOST_PRIORITY_NO_TRAIN(ctx)
 	local case = base("LOST_PRIORITY_NO_TRAIN", ctx, { no_train = true })
 	-- No train on the network at all (NO_TRAINS_ON_NETWORK's setup case; a busy fleet is not a setup finding).
-	case.lint_expect = { r = { "mask" }, p = { "mask" } }
+	case.lint_expect = { r = { "no_train" }, p = { "no_train" } }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 2000) })
 	case.hi = cases.station(case, { name = sname(case, "hi"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
@@ -935,7 +939,7 @@ end
 --- The network's only train has a mask that shares no bit with the stations'.
 function cases.TRAIN_FILTERED_MASK(ctx)
 	local case = filtered_base("TRAIN_FILTERED_MASK", ctx, { depot_mask = 2 })
-	case.lint_expect = { r = { "mask" }, p = { "mask" } }
+	case.lint_expect = { r = { "train_mask" }, p = { "train_mask" } }
 	case.expect_rej = "TRAIN_MASK"
 	cases.set_signals(case.p, { { case.item, 5000 }, { case.network, 1 } })
 	case.stages = { arm_when_ready(case, request(case, -2000, 1000, { { case.network, 1 } })) }
@@ -959,8 +963,8 @@ end
 --- NO_TRAINS_ON_NETWORK.
 function cases.TRAIN_FILTERED_SCHEDULE(ctx)
 	local case = filtered_base("TRAIN_FILTERED_SCHEDULE", ctx)
-	-- The planner drops the train, so the network has none: the mask check predicts the settled NO_TRAINS_ON_NETWORK.
-	case.lint_expect = { r = { "mask" }, p = { "mask" } }
+	-- The planner drops the train, so the network has none: the check predicts the settled NO_TRAINS_ON_NETWORK.
+	case.lint_expect = { r = { "no_train" }, p = { "no_train" } }
 	case.expect_settled = "NO_TRAINS_ON_NETWORK"
 	-- The train is in the table when the first evaluation starts and is dropped during it, so only `usable` is fixed.
 	case.expect_ab = { nil, 0, at = "first" }

@@ -519,24 +519,24 @@ local function flush_no_train_alerts(map_data, d)
 	if not ad then return end
 	local cycle = ad.cycle
 	local stations = map_data.stations
+	-- Every removal comes before any send: an alert is matched by stop and text, and two keys can show the same
+	-- text on the same stop, so a later removal would take down an alert just sent for another key.
 	for key, e in pairs(ad.keys) do
 		local shown = e.shown and stations[e.shown]
 		local shown_stop = shown and shown.entity_stop
-		if shown_stop and not shown_stop.valid then shown_stop = nil end
-		if shown_stop then remove_alert_about_missing_train(shown_stop, e.shown_text) end
+		if shown_stop and shown_stop.valid then remove_alert_about_missing_train(shown_stop, e.shown_text) end
 		e.shown, e.shown_text = nil, nil
-		if e.cycle == cycle then
-			local r, p = stations[e.r_id], stations[e.p_id]
-			local r_stop, p_stop = r and r.entity_stop, p and p.entity_stop
-			if r_stop and p_stop and r_stop.valid and p_stop.valid then
-				e.shown_text = send_alert_about_missing_train(r_stop, p_stop, DEDUPED_ALERT_MESSAGE[e.code])
-				e.shown = e.r_id
-				e.sent = (e.sent or 0) + 1
-				ad.sent = ad.sent + 1
-				if d then diag.alert_ids(d, e.code, e.r_id, e.p_id) end
-			end
-		else
-			ad.keys[key] = nil
+		if e.cycle ~= cycle then ad.keys[key] = nil end
+	end
+	for _, e in pairs(ad.keys) do
+		local r, p = stations[e.r_id], stations[e.p_id]
+		local r_stop, p_stop = r and r.entity_stop, p and p.entity_stop
+		if r_stop and p_stop and r_stop.valid and p_stop.valid then
+			e.shown_text = send_alert_about_missing_train(r_stop, p_stop, DEDUPED_ALERT_MESSAGE[e.code])
+			e.shown = e.r_id
+			e.sent = (e.sent or 0) + 1
+			ad.sent = ad.sent + 1
+			if d then diag.alert_ids(d, e.code, e.r_id, e.p_id) end
 		end
 	end
 	ad.cycle = cycle + 1
@@ -560,7 +560,6 @@ local function tick_dispatch(map_data, mod_settings)
 	local all_names = map_data.economy.all_names
 	local stations = map_data.stations
 	local d = map_data.diag
-	local alerts = alert_dedupe(map_data)
 	local verify_interrupt = map_data.diag_verify_interrupt
 	-- The latest provider a requester's evaluation locked in this call (the P_BELOW_THRESHOLD table_remove), its stock
 	-- and override threshold: a later requester that finds no provider left is tested against it (diagnostics on only).
@@ -1003,11 +1002,12 @@ local function tick_dispatch(map_data, mod_settings)
 			if r_station.request_start_ticks and r_station.request_start_ticks[item_hash] then
 				wait_so_far = (game.tick - r_station.request_start_ticks[item_hash]) / 60
 			end
+			local closest_p_id = closest_to_correct_p_station and closest_to_correct_p_station.entity_stop.unit_number
 			if closest_to_correct_p_station then
-				local closest_id = closest_to_correct_p_station.entity_stop.unit_number
+				local closest_id = closest_p_id
 				if correctness == 1 then
 					-- B3: "missing train" only when the network has none available; otherwise they were filtered.
-					note_no_train_alert(alerts, item_network_name,
+					note_no_train_alert(alert_dedupe(map_data), item_network_name,
 						trains and DIAG_ALERT_TRAINS_FILTERED or DIAG_ALERT_MISSING_TRAIN, r_station_id, closest_id,
 						wait_so_far)
 				elseif correctness == 2 then
@@ -1025,7 +1025,6 @@ local function tick_dispatch(map_data, mod_settings)
 			-- far as the train checks, and only the diagnostics' site counters know which provider check stopped it.
 			local failure_reason, reason
 			local a, b, lost_to = 0, 0, nil
-			local closest_p_id = closest_to_correct_p_station and closest_to_correct_p_station.entity_stop.unit_number
 			local p_station_id = closest_p_id
 			if correctness == 0 then
 				failure_reason = FAILURE_REASON_NO_PROVIDER_STOCK

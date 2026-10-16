@@ -135,6 +135,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field depots_by_name {[string]: SnapshotDepotGroup} built in the chunked pass (depot stops) and the fleet summary (trains)
 --- @field provider_masks {[string]: int} "network:hash" -> OR of the network masks of the stations providing it, as of
 ---   the last complete pass (the lint engine's requester-vs-provider mask check)
+--- @field provider_overrides {[string]: number} "network:hash" -> the lowest item threshold (in items or fluid units) a
+---   provider of it sets; the dispatcher uses it instead of the requester's when it is lower (the lint's capacity check)
 --- @field alerts {train_id: uint, kind: int, since_tick: int}[]
 
 --- @class SnapshotFleet
@@ -177,6 +179,7 @@ function collector.empty()
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
 		provider_masks = {},
+		provider_overrides = {},
 		alerts = {},
 	}
 end
@@ -244,6 +247,15 @@ function collector.release_if_unused()
 		if player_data.is_manager_open then return end
 	end
 	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then return end
+	-- A half-done lint pass holds an occupancy index of this moment and gap timestamps nobody refreshes while the
+	-- window is closed; resumed hours later they would turn stale counts into findings. The masks of the last
+	-- complete pass stay, so a reopened window shows them until the next pass ends.
+	local s = manager.lint
+	if s then
+		s.job = nil
+		s.occupancy_since = {}
+		s.phantom_since = {}
+	end
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
@@ -571,8 +583,8 @@ local function summarize_trains(b)
 					group_names[group] = names
 					fleet.group_depots[group] = 0
 				end
-				local home = depot_name or ""
-				if not names[home] then
+				local home = depot_name
+				if home ~= "" and not names[home] then
 					names[home] = true
 					fleet.group_depots[group] = fleet.group_depots[group] + 1
 				end
@@ -641,6 +653,7 @@ local function summarize_trains(b)
 	live.depots = { total = depot_total, parked = parked }
 	live.depots_by_name = live.depots_by_name or {}
 	live.provider_masks = live.provider_masks or {}
+	live.provider_overrides = live.provider_overrides or {}
 	live.alerts = alerts
 	b.trains = nil
 end
@@ -673,6 +686,7 @@ local function start_pass(manager)
 	b.seen = spare(manager, "seen")
 	b.r_keys = spare(manager, "r_keys")
 	b.p_keys = spare(manager, "p_keys")
+	b.p_over = spare(manager, "p_over")
 	-- Every reader is at most one update behind, so entries from the previous pass are no longer needed.
 	local log = manager.collect_log
 	if log then
@@ -769,7 +783,8 @@ local SECONDARY_SETTINGS = {
 --- planner registers each combinator under its own networks, for the starved derivation.
 local function classify(station, signals, st, base_item, base_fluid, control, b)
 	local network_name = station.network_name
-	local r_keys, p_keys = b and b.r_keys, b and b.p_keys
+	local r_keys, p_keys, p_over = b and b.r_keys, b and b.p_keys, b and b.p_over
+	local overrides = station.item_thresholds
 	local provided, requested = st.provided, st.requested
 	for _, v in pairs(signals) do
 		local signal = v.signal
@@ -797,6 +812,15 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 						for i = 1, nets_n do
 							local key = nets[i] .. ":" .. hash
 							p_keys[key] = bor(p_keys[key] or 0, net_masks[i])
+						end
+						local over = overrides and overrides[hash]
+						if over then
+							if station.is_stack and item_type == "item" then over = over * (get_stack_size(nil, name) or 1) end
+							for i = 1, nets_n do
+								local key = nets[i] .. ":" .. hash
+								local prev = p_over[key]
+								if not prev or over < prev then p_over[key] = over end
+							end
 						end
 					end
 				end
@@ -1136,8 +1160,10 @@ local function finish_pass(manager, b)
 	end
 	if changed then reclassify_starved(stations, live.starved, b.starved) end
 	-- This pass's provider keys become the live provider masks; the previous live set is cleared for the next pass.
-	manager.collect_spare = { seen = seen, r_keys = b.r_keys, p_keys = live.provider_masks }
+	manager.collect_spare = { seen = seen, r_keys = b.r_keys, p_keys = live.provider_masks,
+		p_over = live.provider_overrides }
 	b.provider_masks = b.p_keys
+	b.provider_overrides = b.p_over
 	b.stations = stations
 	b.trains = live.trains
 	b.trains_version = live.trains_version
@@ -1152,6 +1178,7 @@ local function finish_pass(manager, b)
 	b.seen = nil
 	b.r_keys = nil
 	b.p_keys = nil
+	b.p_over = nil
 	b.tick = game.tick
 	manager.snapshot = b
 	manager.snapshot_build = nil

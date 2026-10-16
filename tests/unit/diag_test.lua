@@ -806,6 +806,12 @@ test("cargo_check at the provider: items short by any amount, fluids beyond the 
 	local two = { { type = "item", name = "iron-plate", count = 1000 }, { type = "item", name = "coal", count = 100 } }
 	assert_eq(cargo(two, { { name = "iron-plate", quality = "normal", count = 900 }, { name = "coal", quality = "normal",
 		count = 50 } }), { { S, "coal", 100, 50 } })
+	-- A larger unplanned fluid is the finding, but the unplanned item still raises the unexpected-cargo alert.
+	local mixed = { { type = "fluid", name = "water", count = 10000 } }
+	local found, item_extra = diag.cargo_check(mixed, { { name = "coal", quality = "normal", count = 5 } },
+		{ water = 10000, ["crude-oil"] = 25000 }, 2, false)
+	assert_eq({ found[1].kind, found[1].name, item_extra }, { X, "crude-oil", true })
+	assert_eq(select(2, diag.cargo_check(mixed, {}, { water = 10000, ["crude-oil"] = 25000 }, 2, false)), nil)
 end)
 
 test("cargo_check at the requester: any item left, fluid above the tolerance, the largest one", function()

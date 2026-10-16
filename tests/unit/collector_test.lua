@@ -164,6 +164,7 @@ test("empty: the snapshot shape", function()
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
 		provider_masks = {},
+		provider_overrides = {},
 		alerts = {},
 	})
 	assert_true(collector.empty() ~= collector.empty())
@@ -1185,4 +1186,31 @@ test("fleet: train groups count the depot names of their Cybersyn trains", funct
 	storage.trains[13].entity.group = "G"
 	collector.run_to_completion()
 	assert_eq(collector.get().fleet.group_depots, { G = 2 })
+end)
+
+test("fleet: a Cybersyn train whose depot has no name does not count as another depot name", function()
+	scenario()
+	storage.trains[10].entity.group = "G"
+	storage.trains[12].entity.group = "G"
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.trains[12].depot_name, "")
+	assert_eq(snap.fleet.group_depots, { G = 1 })
+end)
+
+test("provider keys: the providers' masks OR-ed and their lowest item threshold per network:item", function()
+	scenario()
+	storage.stations[1].item_thresholds = { ["iron-ore"] = 300, water = 1500 }
+	storage.stations[5].entity_comb1 = comb(WORKING, { sig("iron-ore", 900) })
+	storage.stations[5].network_mask = 2
+	storage.stations[5].item_thresholds = { ["iron-ore"] = 200 }
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.provider_masks["signal-A:iron-ore"], 3)
+	assert_eq(snap.provider_overrides, { ["signal-A:iron-ore"] = 200, ["signal-A:water"] = 1500 })
+	-- In stack mode an item threshold counts stacks; fluids keep their units.
+	storage.stations[5].is_stack = true
+	storage.stations[5].item_thresholds = { ["iron-ore"] = 2 }
+	collector.run_to_completion()
+	assert_eq(collector.get().provider_overrides["signal-A:iron-ore"], 2 * get_stack_size(nil, "iron-ore"))
 end)

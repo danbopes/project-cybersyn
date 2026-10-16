@@ -156,7 +156,44 @@ lab.suite("39_lint", {
 		lab.check("world rows: none of the four stops is registered with Cybersyn",
 			read("stations", ghost_stop.unit_number) == nil and read("stations", wrong_stop.unit_number) == nil and
 			read("stations", nocomb_stop.unit_number) == nil)
-		lab.wait_until(function() return cases.trains_ready(a) end, 3600, SPEED)
+		-- Row 3: a 40-slot train the requester accepts and an 80-slot one it rejects, for a 50-stack request. The
+		-- dispatcher tests capacity before layout, so it records R_LAYOUT and the lint must say layout, not capacity.
+		local l = cases.base("LINT_L", { k = K0 + 2 }, { network = "signal-6" })
+		l.d2 = cases.depot(l, cases.X_D2, cases.sname(l, "depot2"))
+		l.t2 = cases.train(l, cases.X_D2 + 6, l.d2, nil, 2)
+		l.p = cases.station(l, { name = cases.sname(l, "p"), x = cases.X_P[1], bits = 1 + 4,
+			signals = cases.provide(l, 20000) })
+		l.r = cases.station(l, { name = cases.sname(l, "r"), x = cases.X_R[1], bits = 2 })
+		cases.finish(l)
+		lx.rows[#lx.rows + 1] = l
+		lx.l = l
+		-- Row 4: a requester threshold of 50 stacks that only the provider's own item threshold (2,000) brings within
+		-- the 40-slot train; the train is dispatched without fuel, so it stays on its way to the provider.
+		local o = cases.base("LINT_O", { k = K0 + 3 }, { network = "signal-5" })
+		o.p = cases.station(o, { name = cases.sname(o, "p"), x = cases.X_P[1], bits = 1 + 4,
+			signals = cases.provide(o, 20000) })
+		local pos = o.p.stop.position
+		local force = game.forces.player
+		o.comb2 = o.surface.create_entity({ name = "cybersyn-combinator", position = { pos.x - 0.5, pos.y - 2.5 },
+			direction = defines.direction.north, force = force })
+		local ctl = o.comb2.get_or_create_control_behavior()
+		local params = ctl.parameters
+		params.operation = "%"
+		ctl.parameters = params
+		o.entities[#o.entities + 1] = o.comb2
+		script.raise_script_built({ entity = o.comb2 })
+		o.cc2 = o.surface.create_entity({ name = "constant-combinator", position = { pos.x - 0.5, pos.y - 4.5 },
+			force = force })
+		o.entities[#o.entities + 1] = o.cc2
+		o.cc2.get_wire_connector(defines.wire_connector_id.circuit_red, true).connect_to(
+			o.comb2.get_wire_connector(defines.wire_connector_id.combinator_input_red, true), false)
+		cases.set_signals({ cc = o.cc2 }, { { cases.ITEM, 2000 } })
+		o.r = cases.station(o, { name = cases.sname(o, "r"), x = cases.X_R[1], bits = 2 + 4 })
+		cases.finish(o)
+		lx.rows[#lx.rows + 1] = o
+		lx.o = o
+		lab.wait_until(function() return cases.trains_ready(a) and cases.trains_ready(l) and cases.trains_ready(o) end,
+			3600, SPEED)
 	end,
 
 	function()
@@ -185,6 +222,14 @@ lab.suite("39_lint", {
 		write(7, "trains", a.t1.id, "item_slot_capacity")
 		write(1, "stations", a.r.id, "deliveries_total")
 		lx.vanilla = vanilla_train(lx.w, cases.X_D1 + 6, lx.w.r2.name)
+		local l = lx.l
+		lx.small_layout = read("trains", l.t1.id, "layout_id")
+		lx.big_layout = read("trains", l.t2.id, "layout_id")
+		write({ [lx.small_layout] = true }, "stations", l.r.id, "accepted_layouts")
+		cases.set_signals(l.r, cases.request(l, -10000, 5000))
+		local o = lx.o
+		cases.unfuel(o.t1)
+		cases.set_signals(o.r, cases.request(o, -10000, 5000))
 		lab.wait(300, SPEED)
 	end,
 
@@ -230,6 +275,31 @@ lab.suite("39_lint", {
 			not has(r2.id, "phantom") and not has(a.r.id, "occupancy"))
 		lab.check("st.lint of the phantom stop is its lint mask", dev("lint_bits", a.r.id).st_lint ==
 			dev("lint_bits", a.r.id).mask)
+
+		local l = lx.l
+		local e = dev("diag_unserved", l.r.id)[cases.ITEM] or {}
+		lab.check("capacity vs layout: two layouts with 40 and 80 slots", lx.small_layout ~= lx.big_layout and
+			read("trains", l.t2.id, "item_slot_capacity") == 80, { lx.small_layout, lx.big_layout })
+		lab.check("capacity vs layout: the dispatcher records R_LAYOUT", e.reason == "R_LAYOUT" or e.pending == "R_LAYOUT", e)
+		local lf = dev("lint_findings", l.r.id, "layout")[1]
+		lab.check("capacity vs layout: the lint says layout (1 layout accepted, 2 trains), not capacity",
+			lf ~= nil and lf.a == 1 and lf.b == 2 and lf.predicts == "R_LAYOUT" and not has(l.r.id, "capacity"),
+			dev("lint_bits", l.r.id))
+
+		local o = lx.o
+		local ot = read("trains", o.t1.id) or {}
+		lab.check("provider item threshold: the 50-stack request is dispatched to the 40-slot train",
+			ot.status == 1 and ot.r_station_id == o.r.id and ot.p_station_id == o.p.id,
+			{ status = ot.status, r = ot.r_station_id, p = ot.p_station_id })
+		lab.check("provider item threshold: the snapshot keeps the provider's 2,000",
+			(dev("provider_overrides")["signal-5:" .. cases.ITEM]) == 2000, dev("provider_overrides"))
+		lab.check("provider item threshold: no capacity finding on the requester", not has(o.r.id, "capacity"),
+			dev("lint_bits", o.r.id))
+		local count = o.p.stop.trains_count
+		lab.info("a dispatched train routed through its rail record: provider trains_count " .. tostring(count))
+		lab.check("delivery in flight across two passes: no occupancy or phantom finding on either end",
+			not has(o.p.id, "occupancy") and not has(o.r.id, "occupancy") and not has(o.p.id, "phantom") and
+			not has(o.r.id, "phantom"), { p = dev("lint_bits", o.p.id), r = dev("lint_bits", o.r.id), count = count })
 		local appeared = transition(events, d1, "depot_limit", true)
 		lab.check("lint event when a finding appears (a = check, b = subject)", appeared ~= nil and appeared.station == d1,
 			appeared)
@@ -265,15 +335,22 @@ lab.suite("39_lint", {
 		lab.check("lint event of a train carries the train", drift ~= nil and drift.train == t1, drift)
 
 		-- The job runs on the manager tick only while a window is open.
-		local before = dev("lint_state").pass
+		dev("open", 1)
+		lab.wait_until(function() return dev("lint_state").running ~= nil end, 1200, 1)
+	end,
+
+	function()
+		lx.closing = dev("lint_state")
 		dev("close", 1)
-		lx.closed_pass = before
+		lx.closed_pass = dev("lint_state").pass
 		lab.wait(600, 1)
 	end,
 
 	function()
 		lab.check("lint job: no pass while every window is closed", dev("lint_state").pass == lx.closed_pass,
 			dev("lint_state"))
+		lab.check("lint job: a pass in progress is dropped when the last window closes", lx.closing.running ~= nil and
+			dev("lint_state").running == nil, { closing = lx.closing, now = dev("lint_state") })
 		dev("open", 1)
 		lx.open_pass = dev("lint_state").pass
 		lab.wait_until(function() return dev("lint_state").pass > lx.open_pass end, 3600, 20)

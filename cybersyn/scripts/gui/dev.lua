@@ -701,6 +701,7 @@ local function finding_view(f)
 		id = f.id,
 		check = LINT_NAMES[f.check],
 		predicts = LINT_PREDICTS[f.check] and REASON_NAMES[LINT_PREDICTS[f.check]] or nil,
+		predicts_p = lint.predicts(f.check, "p") and REASON_NAMES[lint.predicts(f.check, "p")] or nil,
 		a = f.a,
 		b = f.b,
 		network = f.network,
@@ -749,6 +750,14 @@ function interface.assert_lint(id, check_name, is_train)
 	return lint.has(mask, check)
 end
 
+--- The reason code name a check predicts on a station in `role` ("r" or "p"), nil when it predicts none.
+function interface.lint_predicts(check_name, role)
+	local check = LINT_BY_NAME[check_name]
+	if not check then error("unknown lint check " .. tostring(check_name)) end
+	local code = lint.predicts(check, role)
+	return code and REASON_NAMES[code] or nil
+end
+
 function interface.lint_state()
 	local s = lint.state()
 	local job = s.job
@@ -777,6 +786,11 @@ function interface.fleet_capability()
 	local fleet = collector.get().fleet
 	return { capability = fleet.capability, mask_or = fleet.mask_or, in_interrupt_count = fleet.in_interrupt_count,
 		not_refuelled_count = fleet.not_refuelled_count, group_depots = fleet.group_depots }
+end
+
+--- "network:hash" -> the lowest provider item threshold the last snapshot holds.
+function interface.provider_overrides()
+	return collector.get().provider_overrides or {}
 end
 
 function interface.depots_by_name()
