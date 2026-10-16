@@ -138,6 +138,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field provider_overrides {[string]: number} "network:hash" -> the lowest item threshold (in items or fluid units) a
 ---   provider of it sets; the dispatcher uses it instead of the requester's when it is lower (the lint's capacity check)
 --- @field alerts {train_id: uint, kind: int, since_tick: int}[]
+--- @field station_ids uint[]? the station ids this snapshot's pass walked, sorted (a complete pass only)
+--- @field depot_ids uint[]? the depot ids, sorted
 
 --- @class SnapshotFleet
 --- @field total int
@@ -742,18 +744,20 @@ local function read_signals(entity)
 end
 
 --- Adds one source's request into a record whose old requests are marked with count 0 (see mark_requests).
+--- @param mask int? the requesting combinator's network mask (one network; nil on a NETWORK_EACH station)
 --- @return boolean active
-local function add_request(requested, hash, count, threshold)
+local function add_request(requested, hash, count, threshold, mask)
 	local active = -count >= threshold
 	local req = requested[hash]
 	if req and req.count ~= 0 then
 		req.count = req.count + count
 		if threshold < req.threshold then req.threshold = threshold end
 		req.active = req.active or active
+		if mask then req.mask = bor(req.mask or 0, mask) end
 	elseif req then
-		req.count, req.threshold, req.active = count, threshold, active
+		req.count, req.threshold, req.active, req.mask = count, threshold, active, mask
 	else
-		requested[hash] = { count = count, threshold = threshold, active = active }
+		requested[hash] = { count = count, threshold = threshold, active = active, mask = mask }
 	end
 	return active
 end
@@ -798,7 +802,9 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 				local hash = hash_signal(signal)
 				if count < 0 then
 					if station.is_r then
-						local active = add_request(requested, hash, count, item_threshold(station, hash, name, item_type, base_item, base_fluid))
+						local active = add_request(requested, hash, count,
+							item_threshold(station, hash, name, item_type, base_item, base_fluid),
+							network_name ~= NETWORK_EACH and nets_n == 1 and net_masks[1] or nil)
 						if active and r_keys then
 							for i = 1, nets_n do
 								r_keys[nets[i] .. ":" .. hash] = true
@@ -954,6 +960,8 @@ local function collect_station(b, id, station)
 			local signals = read_signals(sec)
 			if signals then
 				local sec_item, sec_fluid = default_item, default_fluid
+				-- A secondary on one network may carry that network's signal: its own mask, as the planner reads it.
+				local sec_mask
 				if is_each then nets_n = 0 end
 				for _, v in pairs(signals) do
 					local signal = v.signal
@@ -966,10 +974,12 @@ local function collect_station(b, id, station)
 							nets_n = nets_n + 1
 							nets[nets_n] = signal.name
 							net_masks[nets_n] = v.count
+						elseif not is_each and signal.name == st.network_name then
+							sec_mask = v.count
 						end
 					end
 				end
-				if not is_each then set_networks(st.network_name, st.network_mask) end
+				if not is_each then set_networks(st.network_name, sec_mask or st.network_mask) end
 				classify(station, signals, st, sec_item, sec_fluid, nil, keyed)
 				st.secondary_count = st.secondary_count + 1
 				st.secondary = true
@@ -1171,9 +1181,11 @@ local function finish_pass(manager, b)
 	b.fleet = live.fleet
 	b.depots = live.depots
 	b.alerts = live.alerts
+	-- The sorted id lists of this pass stay with the snapshot: the lint job walks them instead of listing storage
+	-- again. Never changed after this point, so a job may hold them past the next pass.
+	b.station_ids = b.ids
 	b.ids = nil
 	b.i = nil
-	b.depot_ids = nil
 	b.di = nil
 	b.seen = nil
 	b.r_keys = nil

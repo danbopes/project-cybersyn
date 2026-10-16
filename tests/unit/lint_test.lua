@@ -246,3 +246,24 @@ test("actions: single player always; admins, everyone and nobody against player.
 	settings.global["cybersyn-manager-actions"] = nil
 	assert_eq(actions.setting(), "admins")
 end)
+
+test("mask: a request carries its combinator's mask; mask 0 is a mask finding, not a train one", function()
+	local fl = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 3 } }, 3)
+	-- The primary is on mask 2 but a secondary on mask 1 requests the item, which mask-1 providers offer.
+	local st = station(2, { ["iron-plate"] = { 1000 } })
+	st.requested["iron-plate"].mask = 1
+	assert_eq(checks(select(2, run(st, nil, fl, { ["signal-A:iron-plate"] = 1 }))), {})
+	st.requested["iron-plate"].mask = 2
+	local _, out = run(st, nil, fl, { ["signal-A:iron-plate"] = 1 })
+	assert_eq(checks(out), { "mask" })
+	assert_eq({ out[1].a, out[1].b }, { 2, 1 })
+	-- A NETWORK_EACH stop uses its per-network mask whatever the request says.
+	local each = station({ ["signal-A"] = 1 }, { ["iron-plate"] = { 1000 } }, { network_name = NETWORK_EACH })
+	each.requested["iron-plate"].mask = 2
+	assert_eq(checks(select(2, run(each, nil, fl, { ["signal-A:iron-plate"] = 1 }))), {})
+	-- Mask 0 matches nothing; the dispatcher stops at the provider mask check, so it is MASK_MISMATCH's finding.
+	local zero = station(0, {})
+	local _, z = run(zero, nil, fl)
+	assert_eq(checks(z), { "mask" })
+	assert_eq({ z[1].a, z[1].b }, { 0, 3 })
+end)

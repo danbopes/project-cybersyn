@@ -21,11 +21,14 @@ local bor = bit32.bor
 
 local lint = {}
 
--- PLAN3 §4.12 estimated 100 records and 25 trains per update; measured on a 2,030-station, 553-train base that was
--- 0.8-0.95 ms per update (about 4.2 µs per station record and 10 µs per train, two thirds of it get_records and
--- the wagon inventories), so these are sized to stay under its 0.5 ms.
+-- PLAN3 §4.12 estimated 100 records and 25 trains per update; measured on a 2,030-station, 551-train base a station
+-- record costs 3-8 µs (up to 47 µs with 80 requested items), so 50 records stay well under its 0.5 ms. A train's
+-- schedule and wagons are read only between deliveries (see check_train), a few µs each.
 local RECORDS_PER_UPDATE = 50
 local TRAINS_PER_UPDATE = 12
+-- A stop name outside the seeded set costs a get_train_stops lookup of tens of µs; the train loop stops for this
+-- update once this many were made and resumes at the same train.
+local LOOKUPS_PER_UPDATE = 2
 -- Station names for the schedule check, read from the snapshot before the train checks start: looking a name up
 -- (get_train_stops by name) costs tens of µs on a big base, reading it from a record a fraction of one.
 local SEED_PER_UPDATE = 300
@@ -67,11 +70,14 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field dest {[uint]: int} stop id -> Cybersyn trains heading to or standing at it
 --- @field bound {[uint]: int} station id -> trains its deliveries_total should count
 --- @field findings LintFinding[]
+--- @field lookups int stop-name lookups made in the current update
 
 --- @class LintState
 --- @field bits {[uint]: int} stop unit number -> mask of the last completed check
 --- @field train_bits {[uint]: int}
 --- @field findings LintFinding[] the last complete pass
+--- @field train_live {[uint]: {missing: int?, items: int, fluid: int?}} per train, what its schedule and wagons said
+---   when last read between deliveries
 --- @field pass int completed passes
 --- @field tick uint? when the last pass completed
 --- @field updates int updates the last pass took
@@ -89,6 +95,7 @@ function lint.state()
 		s = { bits = {}, train_bits = {}, findings = {}, pass = 0, updates = 0, occupancy_since = {}, phantom_since = {} }
 		manager.lint = s
 	end
+	if not s.train_live then s.train_live = {} end
 	return s
 end
 
@@ -201,23 +208,26 @@ end
 
 --- The checks of one network of a station; returns the station's mask with this network's findings added.
 --- @param keys {masks: {[string]: int}, overrides: {[string]: number}?, starved: {[string]: true}}
-local function check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, net_mask)
+--- @param each boolean? a NETWORK_EACH station (its requests carry no mask of their own)
+local function check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, net_mask, each)
 	local S = LINT_SUBJECT_STATION
 	local mask_or = fleet.mask_or[net]
+	local trains, ok, items, fluid, all_items, all_fluid = 0, 0, 0, 0, 0, 0
 	if not mask_or then
 		if band(mask, LINT_BIT[LINT_NO_TRAIN]) == 0 then mask = find(out, mask, S, id, LINT_NO_TRAIN, net_mask, 0, net) end
-		return mask
-	end
-	if band(net_mask, mask_or) == 0 then
+	elseif net_mask == 0 then
+		-- Mask 0 shares no bit with any provider or requester either, and the dispatcher's provider check comes first.
+		if band(mask, LINT_BIT[LINT_MASK]) == 0 then mask = find(out, mask, S, id, LINT_MASK, 0, mask_or, net) end
+	elseif band(net_mask, mask_or) == 0 then
 		if band(mask, LINT_BIT[LINT_TRAIN_MASK]) == 0 then
 			mask = find(out, mask, S, id, LINT_TRAIN_MASK, net_mask, mask_or, net)
 		end
-		return mask
-	end
-	local trains, ok, items, fluid, all_items, all_fluid = lint.eligible(fleet.capability[net], net_mask, allows_all,
-		accepted)
-	if trains > 0 and ok == 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
-		mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net)
+	else
+		trains, ok, items, fluid, all_items, all_fluid = lint.eligible(fleet.capability[net], net_mask, allows_all,
+			accepted)
+		if trains > 0 and ok == 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
+			mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net)
+		end
 	end
 	if not st.is_r then return mask end
 	local provider_masks, overrides, starved = keys.masks, keys.overrides, keys.starved
@@ -226,8 +236,10 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, key
 		prefix = prefix or (net .. ":")
 		local key = prefix .. hash
 		local pm = provider_masks[key]
-		if pm and band(pm, net_mask) == 0 then
-			if band(mask, LINT_BIT[LINT_MASK]) == 0 then mask = find(out, mask, S, id, LINT_MASK, net_mask, pm, net, hash) end
+		-- A request from a secondary combinator goes out under that combinator's own mask.
+		local rm = not each and req.mask or net_mask
+		if pm and band(pm, rm) == 0 then
+			if band(mask, LINT_BIT[LINT_MASK]) == 0 then mask = find(out, mask, S, id, LINT_MASK, rm, pm, net, hash) end
 		elseif req.active and starved[key] then
 			if band(mask, LINT_BIT[LINT_NO_PROVIDER]) == 0 then
 				mask = find(out, mask, S, id, LINT_NO_PROVIDER, 0, 0, net, hash)
@@ -298,7 +310,7 @@ function lint.check_station(out, id, st, station, fleet, keys, live)
 	if name == NETWORK_EACH then
 		if type(net_mask) == "table" then
 			for net, m in pairs(net_mask) do
-				mask = check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, m)
+				mask = check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, m, true)
 			end
 		end
 	elseif name then
@@ -392,14 +404,16 @@ local function occupancy_index()
 end
 
 --- A pass is set up over three updates, so no update lists thousands of ids and indexes them as well: the station
---- ids, then the depot, refueler and train ids, then the occupancy index and the names every depot is known by.
+--- and depot ids (the snapshot's own sorted lists), then the refueler and train ids, then the occupancy index and
+--- the names every depot and refueler is known by.
 --- @param s LintState
+--- @param snap Snapshot
 --- @return LintJob
-local function start_job(s)
+local function start_job(s, snap)
 	local job = {
 		started_tick = game.tick,
 		setup = 1,
-		sids = keys_into(storage.stations, {}),
+		sids = snap.station_ids or keys_into(storage.stations, {}),
 		i = 0,
 		ti = 0,
 		findings = {},
@@ -413,16 +427,20 @@ end
 --- @param snap Snapshot
 local function setup_job(job, snap)
 	if job.setup == 1 then
-		job.dids = keys_into(storage.depots, {})
+		job.dids = snap.depot_ids or keys_into(storage.depots, {})
 		job.fids = keys_into(storage.refuelers, {})
 		job.tids = keys_into(storage.trains, {})
 		job.setup = 2
 	else
 		job.dest, job.bound = occupancy_index()
-		-- The names schedules use are the depots' and the stations' (seeded from the station list in later updates,
-		-- before the train checks start); any other name is looked up once per pass (stop_exists).
+		-- The names schedules use are the depots', the refuelers' and the stations' (seeded from the station list in
+		-- later updates, before the train checks start); any other name is looked up once per pass (stop_exists).
 		local names = {}
 		for name in pairs(snap.depots_by_name or NO_LAYOUTS) do names[name] = true end
+		for _, refueler in pairs(storage.refuelers) do
+			local stop = refueler.entity_stop
+			if stop and stop.valid then names[stop.backer_name] = true end
+		end
 		job.names = names
 		job.seeded = 0
 		job.setup = nil
@@ -566,9 +584,23 @@ local function stop_exists(job, name)
 	if known == nil then
 		known = #game.train_manager.get_train_stops({ station_name = name }) > 0
 		job.names[name] = known
+		job.lookups = job.lookups + 1
 	end
 	return known
 end
+
+-- On a delivery or refuel trip a train's schedule is the one Cybersyn just built from live stops, and its wagons
+-- cannot change without the train becoming a new one; reading them costs up to 120 µs per train (get_records
+-- builds every record, rail targets included), so they are read between trips and carried while the train is out.
+-- A train first seen on a trip has nothing to carry and is read once it is back.
+local ON_TRIP = {
+	[STATUS_TO_P] = true,
+	[STATUS_P] = true,
+	[STATUS_TO_R] = true,
+	[STATUS_R] = true,
+	[STATUS_TO_F] = true,
+	[STATUS_F] = true,
+}
 
 --- @param s LintState
 --- @param job LintJob
@@ -576,14 +608,23 @@ local function check_train(s, job, snap, id)
 	local train = storage.trains[id]
 	local entity = train and train.entity
 	if not (entity and entity.valid) then return end
-	local missing
-	local records = entity.get_schedule().get_records()
-	for k, record in ipairs(records or NO_LAYOUTS) do
-		local name = record.station
-		if name and not stop_exists(job, name) then
-			missing = k
-			break
+	local seen = s.train_live[id]
+	if not ON_TRIP[train.status] then
+		local missing
+		local records = entity.get_schedule().get_records()
+		for k, record in ipairs(records or NO_LAYOUTS) do
+			local name = record.station
+			if name and not stop_exists(job, name) then
+				missing = k
+				break
+			end
 		end
+		local items, fluid = live_capacity(entity)
+		if not seen then
+			seen = {}
+			s.train_live[id] = seen
+		end
+		seen.missing, seen.items, seen.fluid = missing, items, fluid
 	end
 	local never
 	if not train.refuel_tick then
@@ -598,14 +639,15 @@ local function check_train(s, job, snap, id)
 	local group = tr and tr.group
 	local spans = group and group ~= "" and snap.fleet.group_depots and snap.fleet.group_depots[group] or 0
 	local mixed = spans > 1
-	local items, fluid = live_capacity(entity)
 	local t = train_live
 	t.in_group = mixed
 	t.group_depots = mixed and spans or nil
-	t.missing_record = missing
 	t.never_refuelled = never
-	t.items = items
-	t.fluid = fluid
+	if seen then
+		t.missing_record, t.items, t.fluid = seen.missing, seen.items, seen.fluid
+	else
+		t.missing_record, t.items, t.fluid = nil, train.item_slot_capacity or 0, nil
+	end
 	local mask = lint.check_train(job.findings, id, train, t)
 	local old = s.train_bits[id] or 0
 	if old ~= mask then
@@ -631,6 +673,9 @@ local function prune(s)
 	for id in pairs(s.train_bits) do
 		if not storage.trains[id] then s.train_bits[id] = nil end
 	end
+	for id in pairs(s.train_live) do
+		if not storage.trains[id] then s.train_live[id] = nil end
+	end
 end
 
 --- Advances the setup job by one update's worth: the cursor lists in the first update of a pass, the per-pass
@@ -645,7 +690,7 @@ function lint.step(records, trains)
 	local s = lint.state()
 	local job = s.job
 	if not job then
-		job = start_job(s)
+		job = start_job(s, snap)
 		job.updates = 1
 		if not records then return false end
 	end
@@ -657,6 +702,7 @@ function lint.step(records, trains)
 		end
 	end
 	job.updates = job.updates + 1
+	job.lookups = 0
 	local cycle = storage.stats and storage.stats.cycle
 	local cycle_ticks = math.max(cycle and cycle.ticks_last or 0, 1)
 	local n = #job.sids + #job.dids + #job.fids
@@ -677,7 +723,8 @@ function lint.step(records, trains)
 		job.seeded = last
 	else
 		local last = math.min(nt, job.ti + (trains or TRAINS_PER_UPDATE))
-		while job.ti < last do
+		local lookups = trains and math.huge or LOOKUPS_PER_UPDATE
+		while job.ti < last and job.lookups < lookups do
 			job.ti = job.ti + 1
 			check_train(s, job, snap, job.tids[job.ti])
 		end

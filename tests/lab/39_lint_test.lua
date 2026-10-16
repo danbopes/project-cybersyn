@@ -234,6 +234,10 @@ lab.suite("39_lint", {
 	end,
 
 	function()
+		-- A train out on a delivery is not read (its schedule is Cybersyn's own); what it had between trips is carried.
+		local ot = lx.o.t1
+		lx.trip_status = read("trains", ot.id, "status")
+		ot.get_schedule().add_record({ station = "rc-no-such-stop-2", wait_conditions = { { type = "time", ticks = 60 } } })
 		lx.first = pass()
 		lab.wait(1200, SPEED)
 	end,
@@ -295,6 +299,9 @@ lab.suite("39_lint", {
 			(dev("provider_overrides")["signal-5:" .. cases.ITEM]) == 2000, dev("provider_overrides"))
 		lab.check("provider item threshold: no capacity finding on the requester", not has(o.r.id, "capacity"),
 			dev("lint_bits", o.r.id))
+		lab.check("a train on a delivery: a record added on the way is not read until it is back",
+			lx.trip_status == 1 and not has(o.t1.id, "missing_stop", true), { status = lx.trip_status,
+			bits = dev("lint_bits", o.t1.id, true) })
 		local count = o.p.stop.trains_count
 		lab.info("a dispatched train routed through its rail record: provider trains_count " .. tostring(count))
 		lab.check("delivery in flight across two passes: no occupancy or phantom finding on either end",

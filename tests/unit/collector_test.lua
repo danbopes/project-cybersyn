@@ -300,11 +300,11 @@ test("full pass: requester record with thresholds, control combinator and waits"
 	collector.run_to_completion()
 	local st = collector.get().stations[2]
 	assert_eq(st.requested, {
-		["iron-ore"] = { count = -1000, threshold = 500, active = true },
-		["copper-ore"] = { count = -100, threshold = 50, active = true },
-		coal = { count = -800, threshold = 500, active = true },
+		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 1 },
+		["copper-ore"] = { count = -100, threshold = 50, active = true, mask = 1 },
+		coal = { count = -800, threshold = 500, active = true, mask = 1 },
 		-- No fluid threshold anywhere: the item threshold applies to fluids.
-		water = { count = -50, threshold = 500, active = false },
+		water = { count = -50, threshold = 500, active = false, mask = 1 },
 	})
 	assert_eq(st.provided, {})
 	assert_eq(st.control, {})
@@ -325,7 +325,7 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	local warm = snap.stations[3]
 	assert_true(warm.warming_up)
 	assert_true(warm.comb_ok)
-	assert_eq(warm.requested, { stone = { count = -5000, threshold = 2000, active = true } })
+	assert_eq(warm.requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
 	local each = snap.stations[4]
 	assert_eq(each.surface_index, 2)
 	assert_eq(each.requested, {
@@ -341,7 +341,7 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	assert_true(sec.secondary)
 	assert_eq(sec.secondary_count, 1)
 	assert_eq(sec.provided, { ["iron-plate"] = 100 })
-	assert_eq(sec.requested, { ["copper-plate"] = { count = -30, threshold = 20, active = true } })
+	assert_eq(sec.requested, { ["copper-plate"] = { count = -30, threshold = 20, active = true, mask = 1 } })
 	assert_eq(sec.control, {})
 	assert_eq(snap.station_count, 5)
 	assert_eq(snap.secondary_count, 1)
@@ -690,9 +690,9 @@ test("thresholds: a request exactly at its threshold is active", function()
 	}
 	collector.run_to_completion()
 	assert_eq(collector.get().stations[1].requested, {
-		coal = { count = -500, threshold = 500, active = true },
-		stone = { count = -499, threshold = 500, active = false },
-		water = { count = -40, threshold = 40, active = true },
+		coal = { count = -500, threshold = 500, active = true, mask = 1 },
+		stone = { count = -499, threshold = 500, active = false, mask = 1 },
+		water = { count = -40, threshold = 40, active = true, mask = 1 },
 	})
 end)
 
@@ -776,10 +776,10 @@ test("second pass: changed inputs replace every field of the previous record", f
 		deliveries_total = 0,
 		provided = {},
 		requested = {
-			["iron-ore"] = { count = -1000, threshold = 500, active = true },
-			["copper-ore"] = { count = -100, threshold = 500, active = false },
-			stone = { count = -700, threshold = 300, active = true },
-			water = { count = -50, threshold = 500, active = false },
+			["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
+			["copper-ore"] = { count = -100, threshold = 500, active = false, mask = 3 },
+			stone = { count = -700, threshold = 300, active = true, mask = 3 },
+			water = { count = -50, threshold = 500, active = false, mask = 3 },
 		},
 		deliveries = { stone = 200 },
 		control = {},
@@ -794,7 +794,7 @@ test("second pass: changed inputs replace every field of the previous record", f
 		lint = 0,
 	})
 	assert_eq(snap.stations[3].warming_up, false)
-	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true } })
+	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
 
 	-- The refilled record still owns its tables: later planner writes must not show through.
 	local rec = snap.stations[2]
@@ -938,12 +938,12 @@ test("control combinator: stack stations multiply item thresholds, an unpowered 
 	assert_true(stack.comb2_ok)
 	assert_eq(stack.thresholds, { stone = 150, ["iron-plate"] = 200, water = 7 })
 	assert_eq(stack.control2, { [REQUEST_THRESHOLD] = 4 })
-	assert_eq(stack.requested, { stone = { count = -150, threshold = 100, active = true } })
+	assert_eq(stack.requested, { stone = { count = -150, threshold = 100, active = true, mask = 1 } })
 	local unpowered = snap.stations[3]
 	assert_false(unpowered.comb2_ok)
 	assert_eq(unpowered.thresholds, {})
 	assert_eq(unpowered.control2, {})
-	assert_eq(unpowered.requested, { coal = { count = -10, threshold = 5, active = true } })
+	assert_eq(unpowered.requested, { coal = { count = -10, threshold = 5, active = true, mask = 1 } })
 end)
 
 test("merge: inventory_all keeps the earliest wait start across requesters", function()
@@ -1044,8 +1044,8 @@ test("refill: removed entries go, new ones arrive, and a changed manifest or mas
 	assert_same(snap.stations[2], smelter)
 	assert_same(smelter.requested, requested)
 	assert_eq(smelter.requested, {
-		["iron-ore"] = { count = -1000, threshold = 500, active = true },
-		gravel = { count = -900, threshold = 500, active = true },
+		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 1 },
+		gravel = { count = -900, threshold = 500, active = true, mask = 1 },
 	})
 	assert_eq(smelter.deliveries, { gravel = 50 })
 	assert_eq(smelter.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20 })
@@ -1213,4 +1213,19 @@ test("provider keys: the providers' masks OR-ed and their lowest item threshold 
 	storage.stations[5].item_thresholds = { ["iron-ore"] = 2 }
 	collector.run_to_completion()
 	assert_eq(collector.get().provider_overrides["signal-A:iron-ore"], 2 * get_stack_size(nil, "iron-ore"))
+end)
+
+test("secondary combinator on one network: its own mask for what it provides and requests", function()
+	scenario()
+	-- Station 6 (signal-B, mask 1): its secondary carries signal-B = 2, as the planner reads it for that combinator.
+	storage.stations[6].entity_comb1 = comb(WORKING, { sig("iron-plate", 999) })
+	storage.stations[6].secondary_inv_combs = {
+		comb(WORKING, { sig("coal", 100), sig("copper-plate", -30), sig("signal-B", 2, "virtual"),
+			sig(REQUEST_THRESHOLD, 20, "virtual") }),
+	}
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.provider_masks["signal-B:coal"], 2)
+	assert_eq(snap.provider_masks["signal-B:iron-plate"], 1)
+	assert_eq(snap.stations[6].requested["copper-plate"].mask, 2)
 end)
