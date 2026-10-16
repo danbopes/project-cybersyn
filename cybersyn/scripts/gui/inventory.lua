@@ -14,7 +14,6 @@ local inventory_tab = {}
 --- @field inventory_sorts {[string]: string}? per grid the column its sort buttons chose; a grid without one follows
 ---   the tab's sort (util.get_sort), which the Overview's Throughput tile and the dev interface set
 --- @field inventory_dim true? Provided dims the items nobody on the same network requests
---- @field inventory_delivered {minute: int, items: {[string]: int}}? items delivered in the last hour, per game minute
 
 local TAB = "inventory_tab"
 local GRIDS = { "provided", "in_transit", "requested" }
@@ -571,8 +570,9 @@ local function entry_build(ctx, entry)
 		quality = quality,
 		style = entry.style,
 		elem_tooltip = util.elem_tooltip(hash),
-		tags = { item_hash = hash },
-		handler = { [defines.events.on_gui_click] = inventory_tab.handle.on_inventory_item_click },
+		tags = { kind = "item", id = hash },
+		mouse_button_filter = { "left", "right" },
+		handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		tooltip = entry_tooltip(ctx, entry),
 		{
 			type = "label",
@@ -989,12 +989,7 @@ function inventory_tab.build(map_data, player_data)
 			if state.render_sig ~= render_sig or state.dirty or not state.keys then
 				if not delivered then
 					-- Once a minute, not on each of the renders a refresh is spread over.
-					local d = player_data.inventory_delivered
-					if not (d and d.minute == minute) then
-						d = { minute = minute, items = stats.aggregate(60).items }
-						player_data.inventory_delivered = d
-					end
-					delivered = d.items
+					delivered = util.delivered_items(player_data, 60)
 				end
 				local ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
 					delivered, dim)
@@ -1023,7 +1018,7 @@ dev.register_dump(TAB, function(player_data)
 		local used, fn = key_fn(grid_column, grid, bucket, cache and cache.has_wait, cache and cache.inv)
 		local stale = 0
 		for i, button in ipairs(refs[grid_table_name(grid)].children) do
-			local hash = button.tags.item_hash
+			local hash = button.tags.id
 			hashes[i] = hash
 			captions[i] = button.children[1].caption
 			styles[i] = button.style.name
@@ -1100,18 +1095,6 @@ end
 function inventory_tab.handle.on_dim_click(player, player_data, refs, e)
 	player_data.inventory_dim = not player_data.inventory_dim or nil
 	util.rerender(player, player_data)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
----@param refs table<string, LuaGuiElement>
----@param e EventData.on_gui_click
-function inventory_tab.handle.on_inventory_item_click(player, player_data, refs, e)
-	local element = e.element
-	local hash = element and element.tags.item_hash
-	if not hash then return end
-	util.touch_hover(e)
-	util.item_button_click(player, player_data, e, hash)
 end
 
 gui.add_handlers(inventory_tab.handle, inventory_tab.wrapper)

@@ -1934,7 +1934,8 @@ end
 --- @return uint? train the train that was selected, nil when no pane showed
 function trains_tab.close_pane(player_data)
 	local id = player_data.selected_train
-	if not (id and player_data.selected_tab == TAB) then return nil end
+	-- Under the item drill-down the pane is hidden; Escape belongs to the drill-down then.
+	if not (id and player_data.selected_tab == TAB) or player_data.item_view then return nil end
 	local pane = player_data.refs and player_data.refs[PANE]
 	if not (pane and pane.valid and pane.visible) then return nil end
 	trains_tab.select(player_data, nil)

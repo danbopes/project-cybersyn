@@ -1,6 +1,7 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
+local stats = require("scripts.stats")
 local lint = require("scripts.lint")
 local rich_name = require("scripts.gui.rich-name")
 
@@ -13,6 +14,9 @@ util.parse_rich_name = rich_name.parse
 --- Whether a player may run a state-changing action (PLAN3 §4.14); handlers call it, buttons only mirror it.
 --- @type fun(player: LuaPlayer?): boolean
 util.may_act = require("scripts.actions").may_act
+
+-- The item drill-down's open/close (scripts/gui/item.lua registers them through util.set_item_view).
+local item_view
 
 --- Create a flying text at the player's cursor with an error sound.
 --- @param player LuaPlayer
@@ -585,6 +589,10 @@ end
 --- @param text string?
 function util.set_search_query(player_data, text)
 	if text == "" then text = nil end
+	-- A new station search comes from outside the drill-down (its subheader has no search field): show the lists.
+	if text ~= player_data.search_query and player_data.item_view and item_view then
+		item_view.close(nil, player_data)
+	end
 	player_data.search_query = text
 	player_data.search_terms = util.search_terms(text)
 end
@@ -837,6 +845,26 @@ end
 --- Re-renders the selected tab now instead of waiting for the next manager update.
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
+--- Items delivered in the last `minutes`, from stats.aggregate, cached per game minute for this player and shared by
+--- every view (the Inventory tooltips, the item drill-down), so they never show two figures in the same minute.
+--- @param player_data PlayerData
+--- @param minutes int
+--- @return {[string]: int}
+function util.delivered_items(player_data, minutes)
+	local minute = math.floor(game.tick / 3600)
+	local cache = player_data.delivered_items
+	if not (cache and cache.minute == minute) then
+		cache = { minute = minute, by_period = {} }
+		player_data.delivered_items = cache
+	end
+	local items = cache.by_period[minutes]
+	if not items then
+		items = stats.aggregate(minutes).items
+		cache.by_period[minutes] = items
+	end
+	return items
+end
+
 function util.rerender(player, player_data)
 	if rerender_fn then rerender_fn(player, player_data) end
 end
@@ -871,8 +899,14 @@ function util.set_item_filter(player_data, hash)
 	util.reset_pages(player_data)
 end
 
---- Standard click semantics for item buttons. Left: filter and go to Stations; shift+left: filter and stay;
---- right: clear the item filter.
+--- Lets item.lua (the drill-down) take item clicks without a require cycle.
+--- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData, hash: string), close: fun(player: LuaPlayer, player_data: PlayerData)}
+function util.set_item_view(fns)
+	item_view = fns
+end
+
+--- Every item cell's click, in any tab (PLAN3 §4.7, §4.10): left opens the item's drill-down, shift+left shows the
+--- Stations tab filtered to the item, right clears the item filter.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
@@ -881,13 +915,16 @@ function util.item_button_click(player, player_data, e, hash)
 	if e.button == defines.mouse_button_type.right then
 		util.set_item_filter(player_data, nil)
 	elseif e.button == defines.mouse_button_type.left then
-		util.set_item_filter(player_data, hash)
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
 		interop_add_recent_item(player.index, name, "cybersyn")
 		player_data.recent_panel_dirty = true
-		if not e.shift then
+		if e.shift or not item_view then
+			if item_view then item_view.close(player, player_data) end
+			util.set_item_filter(player_data, hash)
 			util.select_tab(player_data, "stations_tab")
+		else
+			item_view.open(player, player_data, hash)
 		end
 	else
 		return
@@ -1340,7 +1377,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.handed_back_tick = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
-	player_data.inventory_delivered = nil
+	player_data.delivered_items = nil
 	player_data.stations_query = nil
 	player_data.trains_query = nil
 	player_data.overview_cache = nil

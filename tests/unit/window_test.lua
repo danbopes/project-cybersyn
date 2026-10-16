@@ -63,12 +63,31 @@ test("compute: the filter row and the banner take rows away, never push past 85 
 	assert_eq(both.window_height, s.OUTER_HEIGHT + s.FILTER_ROW_HEIGHT + s.BANNER_HEIGHT + both.content_height)
 end)
 
-test("compute: a tiny screen still gets the minimum rows, and a zero scale reads as 1", function()
+test("compute: a tiny screen still gets the minimum rows on every tab, and a zero scale reads as 1", function()
 	local s = sizing()
 	local l = s.compute(800, 400, 1)
-	assert_eq(l.rows_by_tab.overview_tab, s.MIN_ROWS)
+	assert_true(l.rows_by_tab.overview_tab >= s.MIN_ROWS)
+	assert_eq(l.content_height, s.TAB_CHROME.overview_tab + l.rows_by_tab.overview_tab * s.ROW_HEIGHT.overview_tab)
 	assert_eq(l.width, s.MIN_WIDTH)
 	assert_eq(s.compute(1920, 1080, 0).width, 1440)
+end)
+
+test("compute: small screens fit every tab's chrome plus its minimum whole rows (the drill-down is the tallest)", function()
+	local s = sizing()
+	local small = {
+		{ 1920, 1080, 2.0 }, { 1366, 768, 1.5 }, { 1280, 720, 1.25 }, { 1280, 800, 1.5 }, { 2560, 1440, 2.5 }, { 800, 400, 1 },
+	}
+	for _, screen in ipairs(small) do
+		for _, filter_row in ipairs({ false, true }) do
+			local l = s.compute(screen[1], screen[2], screen[3], filter_row)
+			local label = screen[1] .. "x" .. screen[2] .. "@" .. screen[3] .. (filter_row and " +filter" or "")
+			for tab, h in pairs(s.ROW_HEIGHT) do
+				local rows = l.rows_by_tab[tab]
+				assert_true(rows >= s.MIN_ROWS, label .. " " .. tab .. " minimum rows")
+				assert_true(s.TAB_CHROME[tab] + rows * h <= l.content_height, label .. " " .. tab .. " fits")
+			end
+		end
+	end
 end)
 
 test("location_visible: off-screen positions are refused, in physical pixels", function()
