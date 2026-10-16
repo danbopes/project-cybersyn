@@ -9,6 +9,7 @@ local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local diag = require("scripts.diag")
 local stats = require("scripts.stats")
+local lint = require("scripts.lint")
 
 local dev = {}
 
@@ -660,12 +661,15 @@ end
 --- The phase-2 snapshot fields: how many station and train records carry each, plus the declared fleet tables.
 function interface.snapshot_fields()
 	local snap = collector.get()
-	local out = { stations = 0, read_tick = 0, lint_zero = 0, unserved = 0, unserved_count = 0, trains = 0, state = 0,
+	local out = { stations = 0, read_tick = 0, lint_zero = 0, lint_number = 0, lint_matches = 0, unserved = 0,
+		unserved_count = 0, trains = 0, state = 0,
 		state_since = 0, in_interrupt_bool = 0, has_path_bool = 0, waiting_at_signal = 0, signal_unit_number = 0 }
 	for _, st in pairs(snap.stations) do
 		out.stations = out.stations + 1
 		if st.read_tick then out.read_tick = out.read_tick + 1 end
 		if st.lint == 0 then out.lint_zero = out.lint_zero + 1 end
+		if type(st.lint) == "number" then out.lint_number = out.lint_number + 1 end
+		if st.lint == lint.bits_of(st.id) then out.lint_matches = out.lint_matches + 1 end
 		if st.unserved then
 			out.unserved = out.unserved + 1
 			out.unserved_count = out.unserved_count + st.unserved.count
@@ -688,7 +692,102 @@ function interface.snapshot_fields()
 	return out
 end
 
--- ---- cycle figures, B6 alerts, schedule edits (PLAN3 §4.4, §4.5)
+-- ---- setup lint, fleet facts, cycle figures, the actions gate (PLAN3 §4.12, §4.2, §4.4, §4.14)
+
+--- @param f LintFinding
+local function finding_view(f)
+	return {
+		subject = LINT_SUBJECT_NAMES[f.subject],
+		id = f.id,
+		check = LINT_NAMES[f.check],
+		predicts = LINT_PREDICTS[f.check] and REASON_NAMES[LINT_PREDICTS[f.check]] or nil,
+		a = f.a,
+		b = f.b,
+		network = f.network,
+		item = f.item,
+		message = f.message,
+	}
+end
+
+--- Runs the station and train jobs of a fresh lint pass to completion (collecting a snapshot first when there is
+--- none) and returns the pass summary.
+function interface.lint_run()
+	if not collector.get().tick then collector.run_to_completion() end
+	local s = lint.run_to_completion()
+	return { pass = s.pass, tick = s.tick, findings = #s.findings }
+end
+
+--- Findings of the last complete pass, optionally only those of one subject id or check name.
+function interface.lint_findings(id, check_name)
+	local out = {}
+	local check = check_name and LINT_BY_NAME[check_name]
+	for _, f in ipairs(lint.findings()) do
+		if (not id or f.id == id) and (not check or f.check == check) then out[#out + 1] = finding_view(f) end
+	end
+	return out
+end
+
+--- Check names set in a station's, depot's or refueler's mask (or a train's, with is_train), and the snapshot record's
+--- st.lint for a station.
+function interface.lint_bits(id, is_train)
+	local s = lint.state()
+	local mask = (is_train and s.train_bits[id] or s.bits[id]) or 0
+	local names = {}
+	for check = 1, LINT_COUNT do
+		if lint.has(mask, check) then names[#names + 1] = LINT_NAMES[check] end
+	end
+	local st = not is_train and collector.get().stations[id]
+	return { mask = mask, checks = names, st_lint = st and st.lint or nil }
+end
+
+--- True exactly when the subject's last mask has the check (PLAN3 §6.2, phase 2b).
+function interface.assert_lint(id, check_name, is_train)
+	local check = LINT_BY_NAME[check_name]
+	if not check then error("unknown lint check " .. tostring(check_name)) end
+	local s = lint.state()
+	local mask = (is_train and s.train_bits[id] or s.bits[id]) or 0
+	return lint.has(mask, check)
+end
+
+function interface.lint_state()
+	local s = lint.state()
+	local job = s.job
+	return { pass = s.pass, tick = s.tick, updates = s.updates, findings = #s.findings,
+		running = job and { i = job.i, n = #job.sids + #(job.dids or {}) + #(job.fids or {}), ti = job.ti,
+			nt = job.tids and #job.tids or 0, updates = job.updates } or nil,
+		world_running = s.world_job ~= nil, world_tick = s.world and s.world.tick or nil,
+		world_findings = s.world and #s.world.findings or nil }
+end
+
+--- One lint update as the manager tick runs it, timed (the gate's per-update figure); `records`/`trains` override the
+--- batch sizes.
+function interface.lint_step(n, records, trains)
+	return profile(n or 1, function() lint.step(records, trains) end)
+end
+
+--- The world scan run to completion now; returns its findings (printed only when `print` is true).
+function interface.lint_scan_world(player_index, print)
+	local world = lint.scan_world_now(player_index, not print)
+	local out = {}
+	for i, f in ipairs(world.findings) do out[i] = finding_view(f) end
+	return out
+end
+
+function interface.fleet_capability()
+	local fleet = collector.get().fleet
+	return { capability = fleet.capability, mask_or = fleet.mask_or, in_interrupt_count = fleet.in_interrupt_count,
+		not_refuelled_count = fleet.not_refuelled_count, group_depots = fleet.group_depots }
+end
+
+function interface.depots_by_name()
+	return collector.get().depots_by_name
+end
+
+--- Train fields the fleet summary copies for the Trains tab (in_group, refuel_tick).
+function interface.snapshot_train(id)
+	local tr = collector.get().trains[id]
+	return tr and { in_group = tr.in_group, refuel_tick = tr.refuel_tick, state = tr.state } or nil
+end
 
 --- storage.stats.cycle: the last planner cycle's ticks, dispatches and tick_dispatch calls.
 function interface.cycle()
@@ -705,6 +804,15 @@ function interface.alert_dedupe()
 			shown = e.shown, sent = e.sent }
 	end
 	return { cycle = ad.cycle, sent = ad.sent, keys = keys }
+end
+
+--- Dispatches a console command's handler with a synthetic event, as the engine would for `player_index`
+--- (nil = the server console). The gate test: the engine's own command path cannot be driven from RCON as a player.
+function interface.run_command(name, player_index, parameter)
+	local handler = cybersyn_command_handlers[name]
+	if not handler then error("no such command " .. tostring(name)) end
+	handler({ name = name, player_index = player_index, tick = game.tick, parameter = parameter })
+	return true
 end
 
 --- Raises Cybersyn's on_train_schedule_changed handler for a train as a player's edit would (the engine raises it

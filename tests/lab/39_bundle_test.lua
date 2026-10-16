@@ -387,6 +387,14 @@ lab.suite("39_bundle", {
 		lab.check("REFUEL: refuel_tick written at the refueler arrival",
 			res.refuel_tick ~= nil and res.refuel_tick <= res.refuel_at and res.refuel_at - res.refuel_tick <= 1 and
 			res.refuel_status == STATUS_F, { tick = res.refuel_tick, at = res.refuel_at, status = res.refuel_status })
+		dev("collect")
+		local snap_train = dev("snapshot_train", rf.trains[1])
+		lab.check("REFUEL: the snapshot train carries refuel_tick and in_group",
+			snap_train ~= nil and snap_train.refuel_tick == res.refuel_tick and snap_train.in_group == false, snap_train)
+		local fleet = dev("fleet_capability")
+		lab.check("REFUEL: the fleet facts count the row's trains on their network",
+			fleet.capability["signal-5"] ~= nil and fleet.mask_or["signal-5"] ~= nil, fleet.capability["signal-5"])
+
 		-- schedule_edited (A2): a player's edit of a Cybersyn train's schedule, one row per train per 10 s.
 		local seq = dev("diag_state").seq
 		dev("train_schedule_changed", rf.trains[1], 1)

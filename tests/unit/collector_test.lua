@@ -132,7 +132,7 @@ local function scenario()
 		},
 	}
 	storage.depots = {
-		[100] = { entity_stop = { valid = true, backer_name = "Depot 1" } },
+		[100] = { entity_stop = { valid = true, backer_name = "Depot 1", trains_limit = 1, trains_count = 0 } },
 		[101] = { entity_stop = { valid = false }, available_train_id = 12 },
 	}
 	storage.available_trains = { ["signal-A"] = { [12] = true } }
@@ -157,11 +157,13 @@ test("empty: the snapshot shape", function()
 		starved_count = 0,
 		starved_source = "snapshot",
 		starved_version = 0,
-		-- PLAN3 §4.2 (phase 2): the hour's minimum from stats; capability, mask_or and depots_by_name declared empty.
+		-- PLAN3 §4.2: the hour's minimum from stats (phase 2); the fleet facts, depot groups and provider masks the lint
+		-- engine reads (phase 2b).
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
-			capability = {}, mask_or = {} },
+			capability = {}, mask_or = {}, in_interrupt_count = {}, not_refuelled_count = {}, group_depots = {} },
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
+		provider_masks = {},
 		alerts = {},
 	})
 	assert_true(collector.empty() ~= collector.empty())
@@ -406,6 +408,7 @@ test("full pass: trains, fleet, depots and alerts", function()
 		is_available = false,
 		-- PLAN3 §4.2 (phase 2); the stub entity has no state, signal or path, so only the cached flag shows.
 		in_interrupt = false,
+		in_group = false,
 	})
 	local t12 = snap.trains[12]
 	assert_eq(t12.depot_name, "")
@@ -420,10 +423,20 @@ test("full pass: trains, fleet, depots and alerts", function()
 		available_by_network = { ["signal-A"] = 1 },
 		by_layout = { [1] = 1 },
 		min_available_by_network = {},
-		capability = {},
-		mask_or = {},
+		-- Phase 2b: per network and layout (train 12 has no layout yet: 0), and the OR of the masks.
+		capability = { ["signal-A"] = {
+			[1] = { count = 1, item_capacity = 0, fluid_capacity = 0, mask_or = 1 },
+			[0] = { count = 1, item_capacity = 0, fluid_capacity = 0, mask_or = 1 },
+		} },
+		mask_or = { ["signal-A"] = 1 },
+		in_interrupt_count = {},
+		not_refuelled_count = {},
+		group_depots = {},
 	})
 	assert_eq(snap.depots, { total = 2, parked = 1 })
+	-- Depot 101's stop is invalid; train 12's depot has no name, so only Depot 1 forms a group.
+	assert_eq(snap.depots_by_name, { ["Depot 1"] = { ids = { 100 }, limit = 1, count = 0, parked = 0, inbound = 0,
+		trains_bound = 1, compositions = { [1] = 1 }, same_depot_bypass = 1 } })
 	-- tps 30 = 2 ticks per main tick: alert raised 10 main ticks ago.
 	assert_eq(snap.alerts, { { train_id = 10, kind = 2, since_tick = 980 }, { train_id = 12, kind = 3, since_tick = 1000 } })
 end)
@@ -1154,4 +1167,22 @@ test("status: set once per pass, and a changed starved set reclassifies and logs
 	assert_eq(snap.stations[4].status, "starved")
 	local log = storage.manager.collect_log.ids
 	assert_eq(log[#log], 2)
+end)
+
+test("fleet: train groups count the depot names of their Cybersyn trains", function()
+	scenario()
+	storage.trains[10].entity.group = "G"
+	storage.trains[12].entity.group = "G"
+	storage.trains[12].depot_id = 100
+	storage.trains[13] = { entity = { valid = true, group = "H", front_stock = { surface_index = 1 } }, depot_id = 100,
+		network_name = "signal-A", network_mask = 1, status = STATUS_D }
+	storage.depots[101].entity_stop = { valid = true, backer_name = "Depot 2", trains_limit = 1, trains_count = 0 }
+	storage.trains[13].depot_id = 101
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.fleet.group_depots, { G = 1, H = 1 })
+	assert_eq({ snap.trains[10].in_group, snap.trains[10].group, snap.trains[13].group }, { true, "G", "H" })
+	storage.trains[13].entity.group = "G"
+	collector.run_to_completion()
+	assert_eq(collector.get().fleet.group_depots, { G = 2 })
 end)

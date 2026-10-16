@@ -39,6 +39,9 @@
 --               TRAIN_SURFACE), checked where expect_ab is.
 --   flap        {from, to}: the dispatcher's own transition the flap rule must hold back (TRAIN_FILTERED_SCHEDULE).
 --   no_offer    the scenario's provider does not offer the item at its threshold (common_pre skips that check).
+--   lint_expect {r = {check...}, p = {check...}}: the setup-lint checks (PLAN3 §4.12) that must be set on the
+--               requester (r_station) and the provider (p_station) once the case has settled, among the checks
+--               that predict a reason code; every other predicting check must be clear. Default: none on either.
 
 cases = {
 	SURFACE = "cyb-bench",
@@ -339,6 +342,7 @@ local function base(name, ctx, opt)
 		train_entities = {},
 		kind = "reason",
 		expect = name,
+		lint_expect = { r = {}, p = {} },
 	}
 	generate(surface, case.y)
 	surface.force_generate_chunk_requests()
@@ -436,6 +440,7 @@ end
 --- The network has a provider, but not of the requested item.
 function cases.NO_PROVIDER(ctx)
 	local case = base("NO_PROVIDER", ctx)
+	case.lint_expect.r = { "no_provider" }
 	case.no_offer = true
 	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
@@ -510,6 +515,7 @@ end
 --- Train limit 0 with an active request.
 function cases.R_DISABLED(ctx)
 	local case = base("R_DISABLED", ctx)
+	case.lint_expect.r = { "limit_zero" }
 	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000) })
@@ -532,6 +538,7 @@ end
 --- A stop that provides the item (one pickup in progress) and then requests it while another provider has it.
 function cases.R_IS_PROVIDING(ctx)
 	local case = base("R_IS_PROVIDING", ctx)
+	case.lint_expect.r = { "same_item" }
 	-- a: provides, then requests. b: the first requester. c: the second provider, switched on later.
 	case.a = cases.station(case, { name = sname(case, "a"), x = cases.X_P[1], bits = PR_BOTH + ALLOW_ALL,
 		signals = provide(case, 5000) })
@@ -652,6 +659,8 @@ function cases.LOST_PRIORITY_BELOW(ctx) return lost_priority("LOST_PRIORITY_BELO
 --- served.
 function cases.LOST_PRIORITY_NO_TRAIN(ctx)
 	local case = base("LOST_PRIORITY_NO_TRAIN", ctx, { no_train = true })
+	-- No train on the network at all (NO_TRAINS_ON_NETWORK's setup case; a busy fleet is not a setup finding).
+	case.lint_expect = { r = { "mask" }, p = { "mask" } }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 2000) })
 	case.hi = cases.station(case, { name = sname(case, "hi"), x = cases.X_R[1], bits = PR_REQUEST + ALLOW_ALL })
@@ -734,6 +743,7 @@ end
 --- The only provider has a delivery of the item inbound (it requested it first).
 function cases.P_IS_REQUESTING(ctx)
 	local case = base("P_IS_REQUESTING", ctx)
+	case.lint_expect.p = { "same_item" }
 	-- p0 serves q first and then stops providing; q then provides and is the network's only provider.
 	case.p0 = cases.station(case, { name = sname(case, "p0"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 5000) })
@@ -780,6 +790,7 @@ end
 --- Requester mask 1, provider mask 2, trains on both.
 function cases.MASK_MISMATCH(ctx)
 	local case = base("MASK_MISMATCH", ctx, { depot_mask = 3 })
+	case.lint_expect.r = { "mask" }
 	case.expect_ab = { 1, 2 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = { { case.item, 5000 }, { case.network, 2 } } })
@@ -924,6 +935,7 @@ end
 --- The network's only train has a mask that shares no bit with the stations'.
 function cases.TRAIN_FILTERED_MASK(ctx)
 	local case = filtered_base("TRAIN_FILTERED_MASK", ctx, { depot_mask = 2 })
+	case.lint_expect = { r = { "mask" }, p = { "mask" } }
 	case.expect_rej = "TRAIN_MASK"
 	cases.set_signals(case.p, { { case.item, 5000 }, { case.network, 1 } })
 	case.stages = { arm_when_ready(case, request(case, -2000, 1000, { { case.network, 1 } })) }
@@ -947,6 +959,8 @@ end
 --- NO_TRAINS_ON_NETWORK.
 function cases.TRAIN_FILTERED_SCHEDULE(ctx)
 	local case = filtered_base("TRAIN_FILTERED_SCHEDULE", ctx)
+	-- The planner drops the train, so the network has none: the mask check predicts the settled NO_TRAINS_ON_NETWORK.
+	case.lint_expect = { r = { "mask" }, p = { "mask" } }
 	case.expect_settled = "NO_TRAINS_ON_NETWORK"
 	-- The train is in the table when the first evaluation starts and is dropped during it, so only `usable` is fixed.
 	case.expect_ab = { nil, 0, at = "first" }
@@ -981,6 +995,7 @@ end
 --- Request threshold 5000 iron plates (50 stacks); the only train carries 40 stacks.
 function cases.CAPACITY(ctx)
 	local case = base("CAPACITY", ctx)
+	case.lint_expect.r = { "capacity" }
 	case.expect_ab = { 50, 40 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = provide(case, 20000) })
@@ -1002,6 +1017,7 @@ end
 --- A stop with "disable allow list" off and no inserters accepts no layout with a cargo wagon.
 local function layout_case(name, ctx, r_open, p_open)
 	local case = base(name, ctx)
+	case.lint_expect = { r = r_open and {} or { "layout" }, p = p_open and {} or { "layout" } }
 	case.expect_ab = { 0, 0 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1],
 		bits = PR_PROVIDE + (p_open and ALLOW_ALL or 0), signals = provide(case, 5000) })

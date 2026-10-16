@@ -39,6 +39,56 @@ local function dev(fn, ...)
 	return remote.call(DEV, fn, ...)
 end
 
+-- The lint checks that predict a reason code (PLAN3 §4.12); a case asserts exactly its expected ones among these.
+local PREDICTING = { "capacity", "layout", "mask", "no_provider", "limit_zero", "same_item" }
+local LINT_PREDICTS = {
+	capacity = "CAPACITY", layout = "R_LAYOUT / P_LAYOUT", mask = "MASK_MISMATCH / NO_TRAINS_ON_NETWORK",
+	no_provider = "NO_PROVIDER", limit_zero = "R_DISABLED", same_item = "R_IS_PROVIDING / P_IS_REQUESTING",
+}
+
+local function has_lint_api()
+	local i = remote.interfaces[DEV]
+	return i ~= nil and i.lint_run ~= nil
+end
+
+--- The lint masks of the case's requester and provider from a fresh snapshot and lint pass, with assert_lint for
+--- every expected check.
+local function lint_sample(case)
+	dev("collect")
+	dev("lint_run")
+	local out = {}
+	for role, id in pairs({ r = case.r_station, p = case.p_station }) do
+		local bits = dev("lint_bits", id)
+		local asserted = {}
+		for _, check in ipairs(case.lint_expect[role] or {}) do asserted[check] = dev("assert_lint", id, check) end
+		out[role] = { checks = bits.checks, st_lint = bits.st_lint, mask = bits.mask, asserted = asserted }
+	end
+	return out
+end
+
+--- Phase 2b (§6.2): the lint bits that predict the case's reason are set, and no other predicting bit is.
+local function lint_checks(n, case, res)
+	for _, role in ipairs({ "r", "p" }) do
+		local got = res.lint and res.lint[role]
+		local want = {}
+		for _, check in ipairs(case.lint_expect[role] or {}) do want[check] = true end
+		local set = {}
+		for _, check in ipairs(got and got.checks or {}) do set[check] = true end
+		for _, check in ipairs(PREDICTING) do
+			if want[check] then
+				lab.check(n .. ": lint " .. check .. " on " .. role .. " (predicts " .. LINT_PREDICTS[check] .. ")",
+					set[check] == true and got.asserted[check] == true, got)
+			end
+		end
+		local extra = {}
+		for _, check in ipairs(PREDICTING) do
+			if set[check] and not want[check] then extra[#extra + 1] = check end
+		end
+		lab.check(n .. ": no other predicting lint finding on " .. role, #extra == 0, { extra = extra, got = got })
+		lab.check(n .. ": st.lint of " .. role .. " equals the lint mask", got ~= nil and got.st_lint == got.mask, got)
+	end
+end
+
 local rc = {
 	cycle = 0,
 	seen = 0,
@@ -198,6 +248,7 @@ local function boundary()
 						if case.lift_station then res.target_settled = copy(diag_entry(case, case.lift_station)) end
 						if B3[case.name] then res.alerts = alerts_for(case.r_station) end
 					end
+					if rc.lint then res.lint = lint_sample(case) end
 					res.pre = case.pre(case)
 					res.display_failed = display_failed(case)
 					res.delivered = deliveries_to(case, case.armed_tick)
@@ -289,6 +340,7 @@ local function ab_matches(e, want)
 end
 
 local TRAIN_CAUSES = { "TRAIN_MASK", "TRAIN_MANUAL", "TRAIN_SURFACE" }
+
 
 
 --- The rejection is counted under the expected TRAIN_FILTERED cause and under no other.
@@ -403,6 +455,7 @@ lab.suite("40_reason_codes", {
 			lab.check("diagnostics set to basic and reset", ok, err)
 		end
 		lab.info("diagnostics api " .. (rc.diag and "present" or "absent"))
+		rc.lint = has_lint_api()
 
 		script.on_event(remote.call("cybersyn", "get_on_tick_init"), function() rc.cycle = rc.cycle + 1 end)
 		script.on_event(remote.call("cybersyn", "get_on_train_status_changed"), function(e)
@@ -461,6 +514,7 @@ lab.suite("40_reason_codes", {
 					lab.check(n .. ": train back at its depot and available", res.back == true)
 					lab.check(n .. ": no second delivery by the end of the trip", res.delivered_end == 1,
 						res.delivered_end)
+					if rc.lint then lint_checks(n, case, res) end
 				else
 					lab.check(n .. ": requester shows a failed request", res.display_failed)
 					lab.check(n .. ": no delivery to the requester while the cause is in place", res.delivered == 0,
@@ -477,6 +531,7 @@ lab.suite("40_reason_codes", {
 					else
 						lab.skip(n, "no diag api")
 					end
+					if rc.lint then lint_checks(n, case, res) else lab.skip(n, "no lint api") end
 				end
 			end
 		end

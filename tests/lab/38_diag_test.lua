@@ -136,8 +136,9 @@ lab.suite("38_diag", {
 
 		dev("collect")
 		local f = dev("snapshot_fields")
-		lab.check("snapshot: read_tick and lint 0 on every station record",
-			f.stations == 30 and f.read_tick == 30 and f.lint_zero == 30, f)
+		-- Phase 2b: st.lint is the lint job's last mask for the stop (the manager ran it in 20_manager).
+		lab.check("snapshot: read_tick and lint on every station record, equal to the lint job's mask",
+			f.stations == 30 and f.read_tick == 30 and f.lint_number == 30 and f.lint_matches == 30, f)
 		lab.check("snapshot: st.unserved copies the station's entries", f.unserved > 0 and f.unserved_count ==
 			dev("diag_state").unserved_entries, f)
 		lab.check("snapshot: train state, state_since, in_interrupt and has_path",
