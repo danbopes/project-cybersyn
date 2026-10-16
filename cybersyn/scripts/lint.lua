@@ -10,7 +10,8 @@
 --   2,578-stop base, more than a whole update may).
 --   the world scan (lint.scan_world, the /cybersyn-find-problems command and the Problems tab's button) searches the
 --   map around every train stop for combinators that keep a station from registering: one get_train_stops call,
---   then chunks of stops and combinators per update, whether or not a window is open.
+--   then chunks of stops and combinators per manager update whether or not a window is open (or per update of its
+--   own nth-tick handler while manager updates are off, scripts/main.lua), one scan at a time.
 -- Nothing here reads storage.diag except through diag.lint, and nothing runs find_entities_filtered except the
 -- world scan.
 
@@ -35,11 +36,24 @@ local SEED_PER_UPDATE = 300
 local WORLD_NAMES_PER_UPDATE = 400
 local WORLD_STOPS_PER_UPDATE = 100
 local WORLD_COMBS_PER_UPDATE = 200
--- "Never refuelled" needs this much tracked time: refuel_tick did not exist before, so a train in an older save has
--- none yet.
+-- "Never refuelled" needs this much tracked time per train: from its first sighting (Train.seen_tick), and never from
+-- before refuel_tick existed (storage.stats.refuel_since), so neither a new train nor one from an older save is
+-- flagged before it had the chance to visit a refueler.
 local REFUEL_GRACE = 216000
 -- Unset train limits read back as uint max.
 local UNLIMITED = 2100000000
+
+-- Checks only the world scan finds; their acknowledgements end when a scan no longer finds them.
+local WORLD_CHECKS = {
+	[LINT_DERELICT_COMB] = true,
+	[LINT_GHOST_COMB] = true,
+	[LINT_NO_COMB] = true,
+	[LINT_WRONG_SIDE] = true,
+	[LINT_DOUBLE_COMB] = true,
+	[LINT_PRIORITY] = true,
+	[LINT_NAME_OVERLAP] = true,
+}
+lint.WORLD_CHECKS = WORLD_CHECKS
 
 lint.RECORDS_PER_UPDATE = RECORDS_PER_UPDATE
 lint.TRAINS_PER_UPDATE = TRAINS_PER_UPDATE
@@ -70,6 +84,8 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field dest {[uint]: int} stop id -> Cybersyn trains heading to or standing at it
 --- @field bound {[uint]: int} station id -> trains its deliveries_total should count
 --- @field findings LintFinding[]
+--- @field bits {[uint]: int} this pass's masks, committed with the findings when the pass completes
+--- @field train_bits {[uint]: int}
 --- @field lookups int stop-name lookups made in the current update
 
 --- @class LintState
@@ -106,6 +122,27 @@ function lint.bits_of(id)
 	local manager = storage.manager
 	local s = manager and manager.lint
 	return s and s.bits[id] or 0
+end
+
+--- The key a lint acknowledgement is stored under (storage.acks.lint): stops and combinators by unit number, trains by
+--- their negated id, so a train id never collides with a unit number.
+--- @param subject int LINT_SUBJECT_*
+--- @param id uint
+--- @return int
+function lint.subject_key(subject, id)
+	if subject == LINT_SUBJECT_TRAIN then return -id end
+	return id
+end
+
+--- The tick from which a train's refuelling is tracked: when Cybersyn first saw it, but not before refuel_tick was
+--- recorded at all.
+--- @param train Train
+--- @return uint
+function lint.refuel_from(train)
+	local since = storage.stats and storage.stats.refuel_since or 0
+	local seen = train.seen_tick
+	if seen and seen > since then return seen end
+	return since
 end
 
 --- @param mask int
@@ -189,6 +226,27 @@ function lint.eligible(capability, mask, allows_all, accepted)
 	return trains, ok, items, fluid, all_items, all_fluid
 end
 
+--- Mask-eligible layouts the stop's allow list keeps out, counting only those that carry `need` slots (or fluid units
+--- with `fluid`) when `need` is given: the trains that would serve the stop if the list accepted them.
+--- @param capability {[uint]: {count: int, item_capacity: int, fluid_capacity: int, mask_or: int}}?
+--- @param mask int
+--- @param allows_all boolean
+--- @param accepted {[uint]: true?}
+--- @param need number?
+--- @param fluid boolean?
+--- @return int
+function lint.rejected_layouts(capability, mask, allows_all, accepted, need, fluid)
+	if not capability or allows_all then return 0 end
+	local n = 0
+	for layout_id, c in pairs(capability) do
+		if band(c.mask_or, mask) ~= 0 and not accepted[layout_id] then
+			local have = fluid and c.fluid_capacity or c.item_capacity
+			if not need or have >= need then n = n + 1 end
+		end
+	end
+	return n
+end
+
 --- The reason code a check predicts for a station in `role`, nil when the dispatcher has none for it.
 --- @param check int LINT_*
 --- @param role "r"|"p"
@@ -226,7 +284,8 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, key
 		trains, ok, items, fluid, all_items, all_fluid = lint.eligible(fleet.capability[net], net_mask, allows_all,
 			accepted)
 		if trains > 0 and ok == 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
-			mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net)
+			mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted),
+				lint.rejected_layouts(fleet.capability[net], net_mask, allows_all, accepted), net)
 		end
 	end
 	if not st.is_r then return mask end
@@ -260,7 +319,8 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, key
 			if need > have_any then
 				mask = find(out, mask, S, id, LINT_CAPACITY, need, have_any, net, hash)
 			elseif need > have and ok > 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
-				mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted), trains, net, hash)
+				mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted),
+					lint.rejected_layouts(fleet.capability[net], net_mask, allows_all, accepted, need, not stack), net, hash)
 			end
 		end
 	end
@@ -284,20 +344,22 @@ function lint.check_station(out, id, st, station, fleet, keys, live)
 	if live.occupancy_gap then mask = find(out, mask, S, id, LINT_OCCUPANCY, live.occupancy, live.count) end
 	if live.phantom then mask = find(out, mask, S, id, LINT_PHANTOM, live.deliveries, live.bound) end
 
-	-- A stop that provides and requests: an item it has on its way out cannot be requested, one on its way in
-	-- cannot be provided, unless the item has its own threshold.
+	-- A stop that provides and requests: an item it has on its way out is not requested (R_IS_PROVIDING), one on its
+	-- way in is not provided (P_IS_REQUESTING). The dispatcher skips both whatever the item's own threshold, so an item
+	-- threshold is no way out of it; splitting the stop is.
 	if st.is_r and st.is_p then
-		local requested, provided, deliveries, thresholds = st.requested, st.provided, st.deliveries, st.thresholds
+		local requested, provided, deliveries = st.requested, st.provided, st.deliveries
 		for hash in pairs(requested) do
-			if not thresholds[hash] and ((deliveries[hash] or 0) < 0 or provided[hash]) then
+			if (deliveries[hash] or 0) < 0 or provided[hash] then
 				mask = find(out, mask, S, id, LINT_SAME_ITEM, -(deliveries[hash] or 0), 0, nil, hash)
 				break
 			end
 		end
 		if band(mask, LINT_BIT[LINT_SAME_ITEM]) == 0 then
 			for hash in pairs(provided) do
-				if not thresholds[hash] and (deliveries[hash] or 0) > 0 then
-					mask = find(out, mask, S, id, LINT_SAME_ITEM, deliveries[hash], 0, nil, hash)
+				if (deliveries[hash] or 0) > 0 then
+					-- b = 1: on its way in (P_IS_REQUESTING), where the requested side above is on its way out.
+					mask = find(out, mask, S, id, LINT_SAME_ITEM, deliveries[hash], 1, nil, hash)
 					break
 				end
 			end
@@ -348,7 +410,7 @@ function lint.check_refueler(out, id, refueler, fleet)
 end
 
 --- @param out LintFinding[]
---- @param live {in_group: boolean, group_depots: int?, missing_record: int?, never_refuelled: string?, items: int, fluid: int?}
+--- @param live {in_group: boolean, group_depots: int?, missing_record: int?, never_refuelled: string?, tracked: int?, items: int, fluid: int?}
 ---   in_group: the train's vanilla group holds Cybersyn trains of more than one depot name (group_depots of them)
 --- @param train Train
 --- @return int mask
@@ -357,7 +419,9 @@ function lint.check_train(out, id, train, live)
 	local T = LINT_SUBJECT_TRAIN
 	if live.in_group then mask = find(out, mask, T, id, LINT_IN_GROUP, live.group_depots or 0, 0) end
 	if live.missing_record then mask = find(out, mask, T, id, LINT_MISSING_STOP, live.missing_record, 0) end
-	if live.never_refuelled then mask = find(out, mask, T, id, LINT_NEVER_REFUELLED, 0, 0, live.never_refuelled) end
+	if live.never_refuelled then
+		mask = find(out, mask, T, id, LINT_NEVER_REFUELLED, live.tracked or 0, 0, live.never_refuelled)
+	end
 	if live.items ~= (train.item_slot_capacity or 0) then
 		mask = find(out, mask, T, id, LINT_CAPACITY_DRIFT, train.item_slot_capacity or 0, live.items)
 	elseif live.fluid and live.fluid ~= (train.fluid_capacity or 0) then
@@ -417,6 +481,8 @@ local function start_job(s, snap)
 		i = 0,
 		ti = 0,
 		findings = {},
+		bits = {},
+		train_bits = {},
 		updates = 0,
 	}
 	s.job = job
@@ -533,7 +599,6 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		keys.masks, keys.overrides, keys.starved = snap.provider_masks or NO_LAYOUTS, snap.provider_overrides,
 			snap.starved or NO_LAYOUTS
 		mask = lint.check_station(out, id, st, station, snap.fleet, keys, live)
-		if st.lint ~= mask then st.lint = mask end
 	elseif subject == LINT_SUBJECT_DEPOT then
 		local depot = storage.depots[id]
 		local stop = depot and depot.entity_stop
@@ -546,10 +611,8 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet)
 	end
 	local old = s.bits[id] or 0
-	if old ~= mask then
-		transitions(subject, id, old, mask)
-		s.bits[id] = mask ~= 0 and mask or nil
-	end
+	if old ~= mask then transitions(subject, id, old, mask) end
+	if mask ~= 0 then job.bits[id] = mask end
 end
 
 --- Live capacity of a train's wagons, as set_train_layout computes it (fluid only for normal-quality wagons, whose
@@ -626,10 +689,10 @@ local function check_train(s, job, snap, id)
 		end
 		seen.missing, seen.items, seen.fluid = missing, items, fluid
 	end
-	local never
+	local never, tracked
 	if not train.refuel_tick then
-		local since = storage.stats and storage.stats.refuel_since or game.tick
-		if game.tick - since >= REFUEL_GRACE then
+		tracked = game.tick - lint.refuel_from(train)
+		if tracked >= REFUEL_GRACE then
 			each_network(train.network_name, train.network_mask, function(net)
 				if not never and storage.to_refuelers[net] then never = net end
 			end)
@@ -643,6 +706,7 @@ local function check_train(s, job, snap, id)
 	t.in_group = mixed
 	t.group_depots = mixed and spans or nil
 	t.never_refuelled = never
+	t.tracked = tracked
 	if seen then
 		t.missing_record, t.items, t.fluid = seen.missing, seen.items, seen.fluid
 	else
@@ -650,10 +714,8 @@ local function check_train(s, job, snap, id)
 	end
 	local mask = lint.check_train(job.findings, id, train, t)
 	local old = s.train_bits[id] or 0
-	if old ~= mask then
-		transitions(LINT_SUBJECT_TRAIN, id, old, mask)
-		s.train_bits[id] = mask ~= 0 and mask or nil
-	end
+	if old ~= mask then transitions(LINT_SUBJECT_TRAIN, id, old, mask) end
+	if mask ~= 0 then job.train_bits[id] = mask end
 end
 
 --- Drops the masks of subjects that left Cybersyn (no event: the subject is gone, not fixed).
@@ -676,6 +738,51 @@ local function prune(s)
 	for id in pairs(s.train_live) do
 		if not storage.trains[id] then s.train_live[id] = nil end
 	end
+end
+
+--- Writes a station's committed mask into the snapshot records the views read (the one being collected too, whose
+--- records copied the old mask).
+local function set_station_lint(id, mask)
+	local manager = storage.manager
+	for _, snap in pairs({ manager.snapshot, manager.snapshot_build }) do
+		local st = snap.stations and snap.stations[id]
+		if st and st.lint ~= mask then st.lint = mask end
+	end
+end
+
+--- Ends the acknowledgements of setup findings that cleared with this pass (the world-scan checks are the world
+--- scan's to end).
+--- @param s LintState
+local function resolve_acks(s)
+	local acks = storage.acks
+	if not (acks and acks.lint and next(acks.lint)) then return end
+	local ended = {}
+	for key, by in pairs(acks.lint) do
+		local mask = key < 0 and s.train_bits[-key] or s.bits[key] or 0
+		for check in pairs(by) do
+			if not WORLD_CHECKS[check] and band(mask, LINT_BIT[check] or 0) == 0 then
+				ended[#ended + 1] = { key, check }
+			end
+		end
+	end
+	for _, e in ipairs(ended) do diag.resolve_lint_ack(e[1], e[2]) end
+end
+
+--- A pass's masks become the current ones together with its findings, so st.lint, the Stations Setup chip, the
+--- Overview's misconfigured line and the Problems tab always count the same pass.
+--- @param s LintState
+--- @param job LintJob
+local function commit(s, job)
+	local old, new = s.bits, job.bits
+	for id, m in pairs(new) do
+		if old[id] ~= m and storage.stations[id] then set_station_lint(id, m) end
+	end
+	for id in pairs(old) do
+		if not new[id] and storage.stations[id] then set_station_lint(id, 0) end
+	end
+	s.bits = new
+	s.train_bits = job.train_bits
+	resolve_acks(s)
 end
 
 --- Advances the setup job by one update's worth: the cursor lists in the first update of a pass, the per-pass
@@ -730,6 +837,7 @@ function lint.step(records, trains)
 		end
 	end
 	if job.i >= n and job.ti >= nt and job.seeded >= #sids then
+		commit(s, job)
 		s.findings = job.findings
 		s.pass = s.pass + 1
 		s.tick = game.tick
@@ -781,11 +889,14 @@ local function world_find(out, check, entity, message)
 	out[#out + 1] = { subject = subject, id = entity.unit_number, check = check, entity = entity, message = message }
 end
 
---- Starts the chunked world scan for `player_index` (nil = the server). A scan already running is restarted.
+--- Starts the chunked world scan for `player_index` (nil = the server). Refused while a scan runs: a restart would
+--- throw away the work done and let anyone keep the scan going forever.
 --- @param player_index uint?
---- @return int stops to check
-function lint.scan_world(player_index)
+--- @param quiet boolean? no chat report when it completes (the Problems tab shows the result)
+--- @return int? stops to check, nil when a scan is already running
+function lint.scan_world(player_index, quiet)
 	local s = lint.state()
+	if s.world_job then return nil end
 	local stops = game.train_manager.get_train_stops({})
 	s.world_job = {
 		player_index = player_index,
@@ -798,8 +909,40 @@ function lint.scan_world(player_index)
 		combs = keys_into(storage.to_comb, {}),
 		reported = {},
 		findings = {},
+		quiet = quiet,
 	}
 	return #stops
+end
+
+--- How far the running world scan is, 0..1, or nil when none runs. The stops are most of the work.
+--- @return number?
+function lint.world_progress()
+	local manager = storage.manager
+	local job = manager and manager.lint and manager.lint.world_job
+	if not job then return nil end
+	if job.phase == 1 then return 0 end
+	if job.phase == 2 then return 0.9 * job.k / math.max(#job.stops, 1) end
+	return 0.9 + 0.1 * job.k / math.max(#job.combs, 1)
+end
+
+--- Ends the acknowledgements of world-scan findings the latest scan no longer has.
+--- @param findings LintFinding[]
+local function resolve_world_acks(findings)
+	local acks = storage.acks
+	if not (acks and acks.lint and next(acks.lint)) then return end
+	local found = {}
+	for _, f in ipairs(findings) do
+		local key = lint.subject_key(f.subject, f.id)
+		found[key] = found[key] or {}
+		found[key][f.check] = true
+	end
+	local ended = {}
+	for key, by in pairs(acks.lint) do
+		for check in pairs(by) do
+			if WORLD_CHECKS[check] and not (found[key] and found[key][check]) then ended[#ended + 1] = { key, check } end
+		end
+	end
+	for _, e in ipairs(ended) do diag.resolve_lint_ack(e[1], e[2]) end
 end
 
 --- @param job table
@@ -924,6 +1067,7 @@ function lint.world_tick()
 			s.world = { tick = game.tick, findings = job.findings, player_index = job.player_index,
 				stops = #job.stops, quiet = job.quiet }
 			s.world_job = nil
+			resolve_world_acks(job.findings)
 			lint.report_world(s.world)
 			return true
 		end
@@ -931,14 +1075,30 @@ function lint.world_tick()
 	return false
 end
 
---- Runs the world scan to completion now (dev and tests; the command uses the chunked job).
+--- Runs the world scan to completion now (dev and tests; the command and the Problems tab use the chunked job). A
+--- scan already running is finished instead.
 --- @return {tick: uint, findings: LintFinding[]}
 function lint.scan_world_now(player_index, quiet)
-	lint.scan_world(player_index)
+	lint.scan_world(player_index, quiet)
 	local s = lint.state()
 	s.world_job.quiet = quiet
 	while not lint.world_tick() do end
 	return s.world
+end
+
+--- The stop or combinator of the last world scan with this unit number (most entities cannot be looked up by unit
+--- number, so links to unregistered ones go through the scan that found them).
+--- @param unit uint
+--- @return LuaEntity?
+function lint.world_entity(unit)
+	local manager = storage.manager
+	local world = manager and manager.lint and manager.lint.world
+	if not world then return nil end
+	for _, f in ipairs(world.findings) do
+		local e = f.entity
+		if f.id == unit and e and e.valid then return e end
+	end
+	return nil
 end
 
 --- @param entity LuaEntity
