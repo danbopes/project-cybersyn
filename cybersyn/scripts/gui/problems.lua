@@ -69,7 +69,10 @@ end
 function problems_tab.model(player_data)
 	local s = lint.state()
 	local world = s.world
-	local sig = s.pass .. ":" .. tostring(world and world.tick) .. ":" .. (s.ack_version or 0)
+	-- diag counts every change to the lint acknowledgements, whoever or whatever made it (a click in any window, the
+	-- cap, an expiry, a removed station).
+	local acks = storage.acks
+	local sig = s.pass .. ":" .. tostring(world and world.tick) .. ":" .. (acks and acks.lint_version or 0)
 	local cache = player_data.problems_model
 	local now = game.tick
 	if cache and cache.sig == sig and not (cache.m.next_expiry and cache.m.next_expiry <= now) then
@@ -104,7 +107,7 @@ function problems_tab.subheader_right()
 			type = "sprite-button",
 			name = "problems_scan_button",
 			style = "tool_button",
-			sprite = "utility/search",
+			sprite = "utility/refresh",
 			tooltip = { "cybersyn-gui.problems-scan-tooltip" },
 			handler = { [defines.events.on_gui_click] = problems_tab.handle.problems_scan_click },
 		},
@@ -213,13 +216,8 @@ function problems_tab.apply_layout(player_data, layout)
 	if body and body.valid then body.style.height = rows * 32 end
 	local empty = refs.problems_empty_flow
 	if empty and empty.valid then empty.style.height = rows * 32 end
-	local old = player_data.problems_widths
+	-- The render sig holds the widths: the next render writes them into the bound slots.
 	player_data.problems_widths = widths
-	if not old or old.subject ~= widths.subject or old.fix ~= widths.fix then
-		if body and body.valid then body.clear() end
-		local state = util.gui_state(player_data, ROWS)
-		state.keys, state.sigs, state.render_sig, state.contents = nil, nil, nil, nil
-	end
 end
 
 -- ---------------------------------------------------------------- cells
@@ -243,6 +241,7 @@ end
 --- @field kind string? link kind for util.handle_link_click; nil when the subject is gone
 --- @field id uint?
 --- @field text LocalisedString
+--- @field tip LocalisedString the full name (rich text) for the tooltip
 --- @field name string plain text for the sig
 --- @field icons {sprite: string, quality: string?}[]
 
@@ -277,15 +276,17 @@ local function subject_of(f, snapshot)
 	local subject, id = f.subject, f.id
 	if subject == LINT_SUBJECT_TRAIN then
 		local train = storage.trains[id]
-		return { kind = train and "train" or nil, id = id, text = { "cybersyn-gui.problems-train", tostring(id) },
-			name = "t" .. id, icons = { { sprite = "item/locomotive" } } }
+		local text = { "cybersyn-gui.problems-train", tostring(id) }
+		return { kind = train and "train" or nil, id = id, text = text, tip = text, name = "t" .. id,
+			icons = { { sprite = "item/locomotive" } } }
 	end
 	if subject == LINT_SUBJECT_COMBINATOR then
 		local e = f.entity
 		if e and e.valid then
 			local pos = e.position
+			local text = { "cybersyn-gui.problems-combinator", tostring(math.floor(pos.x)), tostring(math.floor(pos.y)) }
 			return { kind = "entity", id = id, name = "c" .. id, icons = { { sprite = "item/" .. COMBINATOR_NAME } },
-				text = { "cybersyn-gui.problems-combinator", tostring(math.floor(pos.x)), tostring(math.floor(pos.y)) } }
+				text = text, tip = text }
 		end
 		return { id = id, name = "c" .. id, icons = {}, text = { "cybersyn-gui.problems-gone" } }
 	end
@@ -297,7 +298,7 @@ local function subject_of(f, snapshot)
 	local st = kind == "station" and snapshot.stations[id] or nil
 	if st then
 		local icons, text = name_icons(st.name, st.name_parts)
-		return { kind = kind, id = id, text = text, name = st.name, icons = icons }
+		return { kind = kind, id = id, text = text, tip = st.name, name = st.name, icons = icons }
 	end
 	local stop
 	if kind == "entity" then
@@ -307,11 +308,12 @@ local function subject_of(f, snapshot)
 		stop = record and record.entity_stop
 	end
 	if not (stop and stop.valid) then
-		return { id = id, name = "-" .. id, icons = {}, text = { "cybersyn-gui.problems-gone" } }
+		local gone = { "cybersyn-gui.problems-gone" }
+		return { id = id, name = "-" .. id, icons = {}, text = gone, tip = gone }
 	end
 	local name = stop.backer_name
 	local icons, text = name_icons(name, parse_name(name))
-	return { kind = kind, id = id, text = text, name = name, icons = icons }
+	return { kind = kind, id = id, text = text, tip = name, name = name, icons = icons }
 end
 
 --- @param hash string?
@@ -344,26 +346,28 @@ local function is_fluid(hash)
 	return prototypes.fluid[name] ~= nil
 end
 
-local ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.format_duration }
+local ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.short_duration }
 problems_tab.ENV = ENV
 
--- Captions and tooltips that depend only on the check (and whether the subject is a station): built once per Lua
--- state. A pure function of its key, so a cache that differs between states cannot desync anything.
+-- Captions and tooltips that depend only on the check, the side of the station it predicts for and whether the
+-- subject links anywhere: built once per Lua state. A pure function of its key, so a cache that differs between
+-- states cannot desync anything.
 local check_text = {}
 
 --- @param check int
---- @param station boolean
---- @return {caption: LocalisedString, chip: LocalisedString, fix: LocalisedString, tooltip: LocalisedString, linked: LocalisedString}
-local function texts(check, station)
-	local key = station and check or -check
+--- @param role "r"|"p"|nil nil when the subject is not a station
+--- @return {key: string, caption: LocalisedString, chip: LocalisedString, fix: LocalisedString, tooltip: LocalisedString, linked: LocalisedString}
+local function texts(check, role)
+	local key = check .. (role or "-")
 	local t = check_text[key]
 	if t then return t end
-	local code = station and lint.predicts(check, "r") or nil
+	local code = role and lint.predicts(check, role) or nil
 	local predicts = code and { "cybersyn-gui.problems-predicts", { "cybersyn-diag.chip-" .. REASON_KEYS[code] } }
 		or { "cybersyn-gui.problems-predicts-none" }
 	local tooltip = { "cybersyn-gui.problems-chip-tooltip", pm.caption(check), predicts, pm.fix(check),
 		{ "cybersyn-diag.sev-" .. DIAG_SEV_NAMES[LINT_SEVERITY[check] or DIAG_SEV_WARNING] } }
 	t = {
+		key = key,
 		caption = pm.caption(check),
 		chip = pm.chip(check),
 		fix = pm.fix(check),
@@ -372,6 +376,19 @@ local function texts(check, station)
 	}
 	check_text[key] = t
 	return t
+end
+
+--- The side of a station a finding predicts the dispatcher's reason for: the provider's when the finding is about
+--- what the stop provides (an item on its way in) or the stop only provides.
+--- @param f LintFinding
+--- @param snapshot Snapshot
+--- @return "r"|"p"|nil
+local function role_of(f, snapshot)
+	if f.subject ~= LINT_SUBJECT_STATION then return nil end
+	if f.check == LINT_SAME_ITEM then return f.b == 1 and "p" or "r" end
+	local st = snapshot.stations[f.id]
+	if st and st.is_p and not st.is_r then return "p" end
+	return "r"
 end
 
 --- @param row ProblemRow
@@ -384,25 +401,6 @@ local function ack_tooltip(row, now)
 	local until_text = a.until_tick and util.format_duration(a.until_tick - now) or nil
 	return { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
 		until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.problems-ack-until-clear" } }
-end
-
--- Row cells carry their handlers in the tags they are created with (flib's format, built once): flib's handler
--- field would read and rewrite every element's tags once more, which was most of the cost of building a page.
-local HANDLER_TAG, LINK_HANDLERS, ACK_HANDLERS
-
---- Tags of an interactive cell: a link to `kind`/`id` (or the acknowledge button with `ack`), in the rows' hover hold.
---- @return Tags
-local function cell_tags(kind, id, ack)
-	if not HANDLER_TAG then
-		local link = gui.format_handlers(util.with_hover({ [defines.events.on_gui_click] = util.handle.link_click }))
-		HANDLER_TAG, LINK_HANDLERS = next(link)
-		ACK_HANDLERS = gui.format_handlers(util.with_hover({
-			[defines.events.on_gui_click] = problems_tab.handle.problems_ack_click }))[HANDLER_TAG]
-	end
-	local tags = ack or { kind = kind, id = id }
-	tags.hover_scope = ROWS
-	tags[HANDLER_TAG] = ack and ACK_HANDLERS or LINK_HANDLERS
-	return tags
 end
 
 local valid_sprite = {}
@@ -418,93 +416,138 @@ local function sprite_or_unknown(sprite)
 	return ok and sprite or "utility/questionmark"
 end
 
---- The six cells of a finding row.
---- @param line ProblemsLine
---- @param ctx {snapshot: Snapshot, widths: {subject: int, fix: int}, now: uint}
---- @param subject ProblemsSubject
---- @return flib.GuiElemDef[]
-local function finding_cells(line, ctx, subject)
-	local row = line.row
-	local f = row.f
-	local acked = line.acked
-	local kind, id = subject.kind, subject.id
-	local t = texts(f.check, f.subject == LINT_SUBJECT_STATION)
-	local detail = pm.detail(f, ENV)
-	local subject_tip = kind and { "", "[font=default-semibold]", subject.text, "[/font]\n", util.LINK_FOOTER }
-		or subject.text
-	local icons = {
-		type = "flow",
-		direction = "horizontal",
-		style = "cybersyn_unserved_icon_flow",
-	}
-	for i, icon in ipairs(subject.icons) do
-		icons[i] = {
-			type = "sprite-button",
-			style = "cybersyn_name_icon",
-			sprite = sprite_or_unknown(icon.sprite),
-			quality = icon.quality,
-			tooltip = subject_tip,
-			raise_hover_events = true,
-			tags = cell_tags(kind, id),
-		}
+-- ---------------------------------------------------------------- slots
+--
+-- The rows area is a pool of slot frames that are never destroyed: each holds the cells of a finding row and of a
+-- group row and shows one set. A render binds the page's lines to slots by key (a line that moved swaps its slot into
+-- place, a new line takes a slot whose line left the page) and writes only the cells whose content changed, so a page
+-- flip or a filter change rewrites captions instead of creating elements. Slots beyond the page are hidden. While
+-- another tab shows, the pool fills a few slots per render and then binds the page a few lines per render
+-- (problems_tab.prewarm, problems_tab.prebind), so the tab's first show neither creates nor writes anything. What each
+-- slot's cells show is cached in its storage record (the writes must be the same on every peer) and the slot's link
+-- and acknowledge targets live there too: the cells' tags never change.
+
+-- Child indices of a slot frame.
+local C_DOT, C_CHIP, C_SUBJECT, C_DETAIL, C_FIX, C_ACK, C_GROUP, C_NOTE = 1, 2, 3, 4, 5, 6, 7, 8
+local ROW_STYLE = { [true] = "cybersyn_problems_row_odd", [false] = "cybersyn_problems_row" }
+local GROUP_STYLE = "cybersyn_problems_group_row"
+-- Slots created per update while the pool is short of the page, then lines bound per update until the page is.
+local PREWARM = 6
+local PREBIND = 6
+
+--- @class ProblemsSlot
+--- @field key string? the line bound to it; nil while hidden
+--- @field kind "r"|"g" which cell set shows
+--- @field vis boolean
+--- @field sig string? everything the bound line shows; equal = no writes
+--- @field style string? frame style
+--- @field dot string?
+--- @field chip_style string?
+--- @field chip string?
+--- @field w string? the widths written
+--- @field icons string?
+--- @field n_icons int
+--- @field link_style string?
+--- @field subject string?
+--- @field detail_style string?
+--- @field detail string?
+--- @field fix string?
+--- @field ack string?
+--- @field group string?
+--- @field lk string? link kind of the bound finding
+--- @field lid (uint|string)? link id
+--- @field ak int? acknowledgement subject key
+--- @field ck int? check
+
+-- Static cell tags in flib's handler format, built once (handlers are registered at load).
+local LINK_TAGS, ACK_TAGS
+
+local function cell_tags()
+	if not LINK_TAGS then
+		local link = gui.format_handlers(util.with_hover({
+			[defines.events.on_gui_click] = problems_tab.handle.problems_link_click }))
+		local tag, handlers = next(link)
+		LINK_TAGS = { hover_scope = ROWS, [tag] = handlers }
+		ACK_TAGS = { hover_scope = ROWS, [tag] = gui.format_handlers(util.with_hover({
+			[defines.events.on_gui_click] = problems_tab.handle.problems_ack_click }))[tag] }
 	end
-	return {
-		{ type = "sprite", style = "cybersyn_problems_dot", sprite = acked and pm.ACKED_DOT or pm.DOT[row.sev] },
-		{
-			type = "button",
-			style = acked and "cybersyn_chip_grey" or pm.CHIP_STYLE[row.sev],
-			style_mods = { width = W.chip },
-			caption = t.chip,
-			tooltip = kind and t.linked or t.tooltip,
-			raise_hover_events = true,
-			tags = cell_tags(kind, id),
-			mouse_button_filter = { "left" },
-		},
-		{
-			type = "flow",
-			direction = "horizontal",
-			style = "cybersyn_unserved_cell_flow",
-			style_mods = { width = ctx.widths.subject },
-			icons,
-			{
-				type = "button",
-				style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button",
-				style_mods = { maximal_width = ctx.widths.subject - ICON_ROW - 4 },
-				caption = subject.text,
-				enabled = kind ~= nil,
-				tooltip = subject_tip,
-				raise_hover_events = true,
-				tags = cell_tags(kind, id),
-				mouse_button_filter = { "left" },
-			},
-		},
-		{
-			type = "label",
-			style = acked and "cybersyn_problems_detail_acked" or "cybersyn_problems_detail",
-			style_mods = { width = W.detail },
-			caption = detail,
-			tooltip = detail,
-			raise_hover_events = true,
-			tags = cell_tags(kind, id),
-		},
-		{
-			type = "label",
-			style = "cybersyn_problems_fix",
-			style_mods = { width = ctx.widths.fix },
-			caption = t.fix,
-			raise_hover_events = true,
-			tags = cell_tags(kind, id),
-		},
-		{
-			type = "sprite-button",
-			style = "cybersyn_unserved_ack",
-			sprite = "utility/check_mark",
-			toggled = acked == true,
-			tooltip = ack_tooltip(row, ctx.now),
-			raise_hover_events = true,
-			tags = cell_tags(nil, nil, { ack_key = row.ack_key, check = f.check }),
-		},
-	}
+	return LINK_TAGS, ACK_TAGS
+end
+
+--- @param widths {subject: int, fix: int}
+--- @return string
+local function widths_sig(widths)
+	return widths.subject .. ":" .. widths.fix
+end
+
+--- A hidden slot frame with both cell sets, at `index` (appended when nil), striped and sized for that position and
+--- the current widths so that binding a line to it in place writes only the line's own content.
+--- @param body LuaGuiElement
+--- @param index int? nil appends
+--- @param pos int the position it will have
+--- @param widths {subject: int, fix: int}?
+--- @return LuaGuiElement
+--- @return ProblemsSlot
+local function create_slot(body, index, pos, widths)
+	local link, ack = cell_tags()
+	local odd = pos % 2 == 1
+	local frame = body.add({ type = "frame", style = ROW_STYLE[odd], direction = "horizontal", visible = false,
+		index = index })
+	frame.add({ type = "sprite", style = "cybersyn_problems_dot" })
+	local chip = frame.add({ type = "button", style = "cybersyn_chip_grey", raise_hover_events = true, tags = link,
+		mouse_button_filter = { "left" } })
+	chip.style.width = W.chip
+	local subject = frame.add({ type = "flow", direction = "horizontal", style = "cybersyn_unserved_cell_flow" })
+	if widths then subject.style.width = widths.subject end
+	local icons = subject.add({ type = "flow", direction = "horizontal", style = "cybersyn_unserved_icon_flow" })
+	for _ = 1, NAME_ICONS do
+		icons.add({ type = "sprite-button", style = "cybersyn_name_icon", visible = false, raise_hover_events = true,
+			tags = link })
+	end
+	local button = subject.add({ type = "button", style = "cybersyn_link_button", raise_hover_events = true, tags = link,
+		mouse_button_filter = { "left" } })
+	frame.add({ type = "label", style = "cybersyn_problems_detail", raise_hover_events = true, tags = link })
+	local fix = frame.add({ type = "label", style = "cybersyn_problems_fix", raise_hover_events = true, tags = link })
+	if widths then
+		button.style.maximal_width = widths.subject - ICON_ROW - 4
+		fix.style.width = widths.fix
+	end
+	frame.add({ type = "sprite-button", style = "cybersyn_unserved_ack", sprite = "utility/check_mark",
+		raise_hover_events = true, tags = ack })
+	frame.add({ type = "label", style = "cybersyn_problems_group_caption", visible = false })
+	frame.add({ type = "label", style = "cybersyn_subheader_note", visible = false })
+	return frame, { kind = "r", vis = false, style = ROW_STYLE[odd], chip_style = "cybersyn_chip_grey",
+		w = widths and widths_sig(widths),
+		link_style = "cybersyn_link_button", detail_style = "cybersyn_problems_detail", n_icons = 0, iq = "" }
+end
+
+--- The slot pool of the rows area, reset when the area was rebuilt (a new window).
+--- @param player_data PlayerData
+--- @param body LuaGuiElement
+--- @return {slots: ProblemsSlot[], n: int, body: uint?, render_sig: string?, dirty: true?}
+local function pool_of(player_data, body)
+	local state = util.gui_state(player_data, ROWS)
+	if state.body ~= body.index or not state.slots then
+		body.clear()
+		state.body = body.index
+		state.slots = {}
+		state.n = 0
+		state.render_sig = nil
+		state.dirty = nil
+	end
+	return state
+end
+
+--- @param elem LuaGuiElement
+--- @param c ProblemsSlot
+--- @param kind "r"|"g"
+local function show_set(elem, c, kind, ch)
+	if c.kind == kind then return end
+	local row = kind == "r"
+	for i = C_CHIP, C_ACK do ch[i].visible = row end
+	ch[C_GROUP].visible = not row
+	ch[C_NOTE].visible = not row
+	c.kind = kind
 end
 
 --- @param line ProblemsLine
@@ -524,73 +567,271 @@ local function group_note(line)
 	return ""
 end
 
---- One sync_children entry per line of the page. A finding row's sig holds everything its cells show, so an
---- unchanged row costs nothing and a changed one is rebuilt in place.
+--- @param elem LuaGuiElement
+--- @param c ProblemsSlot
+--- @param line ProblemsLine
+--- @param key string
+local function bind_group(elem, c, line, key)
+	local g = line.group
+	local sig = key .. "|" .. line.shown .. "|" .. (line.hidden_acked or 0)
+	if c.sig == sig then return end
+	c.sig = sig
+	local ch = elem.children
+	show_set(elem, c, "g", ch)
+	if c.style ~= GROUP_STYLE then
+		elem.style = GROUP_STYLE
+		c.style = GROUP_STYLE
+	end
+	local dot = pm.DOT[g.sev]
+	if c.dot ~= dot then
+		ch[C_DOT].sprite = dot
+		c.dot = dot
+	end
+	ch[C_GROUP].caption = group_caption(line)
+	ch[C_NOTE].caption = group_note(line)
+	c.lk, c.lid, c.ak, c.ck = nil, nil, nil, nil
+end
+
+--- @param elem LuaGuiElement
+--- @param c ProblemsSlot
+--- @param line ProblemsLine
+--- @param key string
+--- @param odd boolean
+--- @param ctx {snapshot: Snapshot, widths: {subject: int, fix: int}, now: uint, wsig: string}
+local function bind_row(elem, c, line, key, odd, ctx)
+	local row = line.row
+	local f = row.f
+	local acked = line.acked == true
+	local subject = subject_of(f, ctx.snapshot)
+	local kind, id = subject.kind, subject.id
+	local a = row.ack
+	local ack_sig = a and (tostring(a.until_tick) .. ":" .. tostring(a.player_index) .. ":" ..
+		(a.until_tick and math.floor((a.until_tick - ctx.now) / 3600) or "")) or ""
+	local role = role_of(f, ctx.snapshot)
+	local detail_sig = pm.detail_sig(f)
+	local sig = table.concat({ key, odd and "o" or "e", acked and "a" or "", subject.name, tostring(kind), tostring(id),
+		tostring(role), detail_sig, ack_sig, ctx.wsig }, "|")
+	if c.sig == sig then return end
+	c.sig = sig
+	c.lk, c.lid, c.ak, c.ck = kind, id, row.ack_key, f.check
+
+	local ch = elem.children
+	show_set(elem, c, "r", ch)
+	local style = ROW_STYLE[odd]
+	if c.style ~= style then
+		elem.style = style
+		c.style = style
+	end
+	local dot = acked and pm.ACKED_DOT or pm.DOT[row.sev]
+	if c.dot ~= dot then
+		ch[C_DOT].sprite = dot
+		c.dot = dot
+	end
+
+	local t = texts(f.check, role)
+	local chip = ch[C_CHIP]
+	local chip_style = acked and "cybersyn_chip_grey" or pm.CHIP_STYLE[row.sev]
+	if c.chip_style ~= chip_style then
+		chip.style = chip_style
+		-- A style write drops the element's own width.
+		chip.style.width = W.chip
+		c.chip_style = chip_style
+	end
+	local chip_sig = t.key .. (kind and "l" or "")
+	if c.chip ~= chip_sig then
+		chip.caption = t.chip
+		chip.tooltip = kind and t.linked or t.tooltip
+		c.chip = chip_sig
+	end
+
+	local cell = ch[C_SUBJECT]
+	local sub = cell.children
+	local link = sub[2]
+	local widths = ctx.widths
+	local link_style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button"
+	local relayout = c.w ~= ctx.wsig
+	if c.link_style ~= link_style then
+		link.style = link_style
+		c.link_style = link_style
+		relayout = true
+	end
+	if relayout then
+		link.style.maximal_width = widths.subject - ICON_ROW - 4
+	end
+	if c.w ~= ctx.wsig then
+		cell.style.width = widths.subject
+		ch[C_FIX].style.width = widths.fix
+		c.w = ctx.wsig
+	end
+	local subject_sig = subject.name .. "|" .. tostring(kind)
+	if c.subject ~= subject_sig then
+		local tip = kind and { "", "[font=default-semibold]", subject.tip, "[/font]\n", util.LINK_FOOTER } or subject.text
+		link.caption = subject.text
+		link.tooltip = tip
+		if link.enabled ~= (kind ~= nil) then link.enabled = kind ~= nil end
+		local icons = subject.icons
+		local buttons = sub[1].children
+		local n = math.min(#icons, NAME_ICONS)
+		local iq = ""
+		for i = 1, n do
+			local icon = icons[i]
+			local b = buttons[i]
+			b.sprite = sprite_or_unknown(icon.sprite)
+			b.tooltip = tip
+			iq = iq .. (icon.quality or "") .. ","
+		end
+		if iq ~= c.iq then
+			for i = 1, n do buttons[i].quality = icons[i].quality end
+			c.iq = iq
+		end
+		for i = math.min(n, c.n_icons) + 1, math.max(n, c.n_icons) do buttons[i].visible = i <= n end
+		c.n_icons = n
+		c.subject = subject_sig
+	end
+
+	local detail = ch[C_DETAIL]
+	local detail_style = acked and "cybersyn_problems_detail_acked" or "cybersyn_problems_detail"
+	if c.detail_style ~= detail_style then
+		detail.style = detail_style
+		c.detail_style = detail_style
+	end
+	if c.detail ~= detail_sig then
+		local text = pm.detail(f, ENV)
+		detail.caption = text
+		detail.tooltip = text
+		c.detail = detail_sig
+	end
+	if c.fix ~= t.key then
+		local fix = ch[C_FIX]
+		fix.caption = t.fix
+		fix.tooltip = t.fix
+		c.fix = t.key
+	end
+	local ack_full = (acked and "1" or "0") .. ack_sig
+	if c.ack ~= ack_full then
+		local button = ch[C_ACK]
+		if button.toggled ~= acked then button.toggled = acked end
+		button.tooltip = ack_tooltip(row, ctx.now)
+		c.ack = ack_full
+	end
+end
+
+--- @param line ProblemsLine
+--- @return string
+local function line_key(line)
+	if line.kind == "group" then return "g" .. line.group.check .. (line.cont and "c" or "") end
+	return line.row.key
+end
+
+--- @param elems LuaGuiElement[]
+--- @param slots ProblemsSlot[]
+--- @param line ProblemsLine
+--- @param key string
+--- @param i int
+--- @param ctx table
+local function bind(elems, slots, line, key, i, ctx)
+	local elem, c = elems[i], slots[i]
+	if line.kind == "group" then
+		bind_group(elem, c, line, key)
+	else
+		bind_row(elem, c, line, key, i % 2 == 1, ctx)
+	end
+	if not c.vis then
+		elem.visible = true
+		c.vis = true
+	end
+end
+
+--- Binds the page's lines to the pool's slots (see the section comment). While the hover hold is active, slots keep
+--- their lines: only a line still on the page at its own slot is rewritten, and the caller retries.
+--- @param body LuaGuiElement
 --- @param lines ProblemsLine[]
 --- @param ctx table
---- @return table[]
-local function entries_of(lines, ctx)
-	local entries = {}
-	for i, line in ipairs(lines) do
-		if line.kind == "group" then
-			local g = line.group
-			entries[i] = {
-				key = "g" .. g.check .. (line.cont and "c" or ""),
-				sig = line.shown .. ":" .. line.hidden_acked,
-				build = function()
-					return {
-						type = "frame",
-						style = "cybersyn_problems_group_row",
-						direction = "horizontal",
-						tags = { k = "g" .. g.check },
-						{ type = "sprite", style = "cybersyn_problems_dot", sprite = pm.DOT[g.sev] },
-						{ type = "label", style = "cybersyn_problems_group_caption", caption = group_caption(line) },
-						{ type = "label", style = "cybersyn_subheader_note", caption = group_note(line) },
-					}
-				end,
-				update = function(elem)
-					local c = elem.children
-					c[2].caption = group_caption(line)
-					c[3].caption = group_note(line)
-				end,
-			}
-		else
-			local row = line.row
-			local f = row.f
-			local subject = subject_of(f, ctx.snapshot)
-			local odd = i % 2 == 1
-			local a = row.ack
-			local style = odd and "cybersyn_problems_row_odd" or "cybersyn_problems_row"
-			local content = table.concat({ line.acked and "a" or "", subject.name, tostring(subject.kind),
-				pm.detail_sig(f), a and tostring(a.until_tick) or "", a and tostring(a.player_index) or "",
-				a and a.until_tick and math.floor((a.until_tick - ctx.now) / 3600) or "" }, "|")
-			local contents = ctx.contents
-			entries[i] = {
-				key = row.key,
-				sig = (odd and "o" or "e") .. content,
-				build = function()
-					contents[row.key] = content
-					local def = {
-						type = "frame",
-						style = style,
-						direction = "horizontal",
-						tags = { k = row.key },
-					}
-					for c, cell in ipairs(finding_cells(line, ctx, subject)) do def[c] = cell end
-					return def
-				end,
-				-- A row that only moved needs its stripe; one whose content changed gets new cells.
-				update = function(elem)
-					if elem.style.name ~= style then elem.style = style end
-					if contents[row.key] == content then return end
-					contents[row.key] = content
-					elem.clear()
-					for _, cell in ipairs(finding_cells(line, ctx, subject)) do gui.add(elem, cell) end
-				end,
-			}
+--- @param state table pool_of
+--- @param hold boolean
+--- @return "synced"|"held"
+local function sync_slots(body, lines, ctx, state, hold)
+	local slots = state.slots
+	local elems = body.children
+	local n = #lines
+	local keys = {}
+	for i = 1, n do keys[i] = line_key(lines[i]) end
+	local cur_n = state.n
+	if hold then
+		local same = cur_n == n
+		for i = 1, same and n or 0 do
+			if slots[i].key ~= keys[i] then
+				same = false
+				break
+			end
+		end
+		if not same then
+			local index_of = {}
+			for i = 1, n do index_of[keys[i]] = i end
+			for j = 1, cur_n do
+				local i = index_of[slots[j].key]
+				if i then bind(elems, slots, lines[i], keys[i], j, ctx) end
+			end
+			return "held"
 		end
 	end
-	return entries
+
+	local wanted, pos_of = {}, {}
+	for i = 1, n do wanted[keys[i]] = true end
+	for j = 1, cur_n do pos_of[slots[j].key] = j end
+	for i = 1, n do
+		local key = keys[i]
+		if slots[i] == nil or slots[i].key ~= key then
+			local j = pos_of[key]
+			if not j then
+				-- A slot at i or later whose line left the page (or none), the same kind first; slots before i are final.
+				local kind = lines[i].kind == "group" and "g" or "r"
+				local any
+				for k = i, #slots do
+					local s = slots[k]
+					if not (s.key and wanted[s.key]) then
+						if s.kind == kind then
+							j = k
+							break
+						end
+						any = any or k
+					end
+				end
+				j = j or any
+				if j and slots[j].key then pos_of[slots[j].key] = nil end
+			end
+			if j then
+				if j ~= i then
+					body.swap_children(i, j)
+					slots[i], slots[j] = slots[j], slots[i]
+					elems[i], elems[j] = elems[j], elems[i]
+					local moved = slots[j].key
+					if moved then pos_of[moved] = j end
+				end
+			else
+				local elem, c = create_slot(body, i <= #elems and i or nil, i, ctx.widths)
+				table.insert(elems, i, elem)
+				table.insert(slots, i, c)
+				for k = i + 1, #slots do
+					local moved = slots[k].key
+					if moved then pos_of[moved] = k end
+				end
+			end
+			slots[i].key = key
+			pos_of[key] = i
+		end
+		bind(elems, slots, lines[i], key, i, ctx)
+	end
+	for j = n + 1, #slots do
+		local c = slots[j]
+		if c.vis then
+			elems[j].visible = false
+			c.vis = false
+		end
+		c.key = nil
+	end
+	state.n = n
+	return "synced"
 end
 
 -- ---------------------------------------------------------------- render
@@ -669,9 +910,10 @@ local function current_page(player_data, m)
 	return pg, rows
 end
 
---- @param map_data MapData
+--- @param map_data MapData?
 --- @param player_data PlayerData
-function problems_tab.build(map_data, player_data)
+--- @param limit int? bind only the page's first `limit` lines (problems_tab.prebind); the render stays pending
+function problems_tab.build(map_data, player_data, limit)
 	local refs = player_data.refs
 	local body = refs[ROWS]
 	if not (body and body.valid) then return end
@@ -690,22 +932,24 @@ function problems_tab.build(map_data, player_data)
 	local pass_age = s.tick and util.format_duration(now - s.tick) or "-"
 	set_caption(refs.problems_footer, { "cybersyn-gui.problems-footer", format.number(m.total), format.number(m.acked),
 		pass_age })
-	local state = util.gui_state(player_data, ROWS)
+	local state = pool_of(player_data, body)
 	if state.render_sig == render_sig and not state.dirty then return end
 
 	render_toggles(refs, m, filter)
 	render_pager(refs, pg)
-	local snapshot = collector.get()
-	if not (state.keys and state.contents) then state.contents = {} end
-	local ctx = { snapshot = snapshot, widths = widths, now = now, contents = state.contents }
-	-- Movable: a finding that appears or clears moves the rows after it instead of rebuilding them.
-	local result = util.sync_children(body, entries_of(pg.lines, ctx), state, util.hold_active(player_data, ROWS), true)
-	if result == "rebuilt" then
-		local keep = {}
-		for _, key in ipairs(state.keys) do keep[key] = state.contents[key] end
-		state.contents = keep
+	local ctx = { snapshot = collector.get(), widths = widths, now = now, wsig = widths_sig(widths) }
+	local lines = pg.lines
+	if limit and limit < #lines then
+		local part = {}
+		for i = 1, limit do part[i] = lines[i] end
+		lines = part
 	end
-	if result ~= "held" then state.render_sig = render_sig end
+	if sync_slots(body, lines, ctx, state, util.hold_active(player_data, ROWS)) == "held" or lines ~= pg.lines then
+		state.dirty = true
+	else
+		state.dirty = nil
+		state.render_sig = render_sig
+	end
 
 	local empty_flow = refs.problems_empty_flow
 	local show_empty = #pg.lines == 0
@@ -722,6 +966,7 @@ end
 function problems_tab.refresh_tab(player_data)
 	local tab = player_data.refs.manager_problems_tab
 	if not (tab and tab.valid) then return end
+	local created = problems_tab.prewarm(player_data)
 	local has = problems_tab.has_result()
 	if tab.visible ~= has then tab.visible = has end
 	if not has then
@@ -729,6 +974,7 @@ function problems_tab.refresh_tab(player_data)
 		player_data.problems_badge = nil
 		return
 	end
+	if created == 0 and player_data.selected_tab ~= TAB then problems_tab.prebind(player_data) end
 	local m = problems_tab.model(player_data)
 	local n = m.badge
 	if player_data.problems_badge ~= n then
@@ -736,6 +982,42 @@ function problems_tab.refresh_tab(player_data)
 		tab.badge_text = n > 0 and tostring(n) or ""
 		tab.tooltip = n > 0 and { "cybersyn-gui.problems-badge-tooltip", tostring(n) } or ""
 	end
+end
+
+--- Fills the slot pool toward the page size, PREWARM slots per render whichever tab shows, so the tab's first render
+--- binds slots instead of creating them.
+--- @param player_data PlayerData
+--- @return int created
+function problems_tab.prewarm(player_data)
+	local body = player_data.refs[ROWS]
+	local layout = player_data.layout
+	-- Not before the first snapshot: the boosted collection after an open has the updates to itself, and the lint
+	-- job that gives this tab a result needs the snapshot anyway.
+	if not (body and body.valid and layout and collector.get().tick) then return 0 end
+	local rows = math.min(layout.rows_by_tab[TAB] or 3, util.page_size(player_data))
+	local state = pool_of(player_data, body)
+	local slots = state.slots
+	local widths = player_data.problems_widths
+	local n = math.max(math.min(rows - #slots, PREWARM), 0)
+	for _ = 1, n do
+		local _, c = create_slot(body, nil, #slots + 1, widths)
+		slots[#slots + 1] = c
+	end
+	return n
+end
+
+--- Binds the current page to the pool PREBIND lines per render while another tab shows, once per pool: the tab's
+--- first show then finds its page bound and writes nothing.
+--- @param player_data PlayerData
+function problems_tab.prebind(player_data)
+	local body = player_data.refs[ROWS]
+	local layout = player_data.layout
+	if not (body and body.valid and layout) then return end
+	local state = pool_of(player_data, body)
+	if state.render_sig then return end
+	local rows = math.min(layout.rows_by_tab[TAB] or 3, util.page_size(player_data))
+	if #state.slots < rows then return end
+	problems_tab.build(nil, player_data, state.n + PREBIND)
 end
 
 -- ---------------------------------------------------------------- handlers
@@ -751,18 +1033,40 @@ function problems_tab.wrapper(e, handler)
 	handler(player, player_data, player_data.refs, e)
 end
 
---- Display state only, so any player may acknowledge (PLAN3 §4.13). Bumping the version makes every open window
---- rebuild its model, not only this player's.
-local function acks_changed()
-	local s = lint.state()
-	s.ack_version = (s.ack_version or 0) + 1
+--- The slot record of the row a cell belongs to.
+--- @param player_data PlayerData
+--- @param elem LuaGuiElement
+--- @return ProblemsSlot?
+local function slot_of(player_data, elem)
+	local body = player_data.refs[ROWS]
+	if not (body and body.valid) then return nil end
+	local target = body.index
+	while elem do
+		local parent = elem.parent
+		if not parent then return nil end
+		if parent.index == target then
+			local slots = util.gui_state(player_data, ROWS).slots
+			return slots and slots[elem.get_index_in_parent()]
+		end
+		elem = parent
+	end
+	return nil
+end
+
+--- A link cell: the finding's subject (util.handle_link_click).
+--- @param e EventData.on_gui_click
+function problems_tab.handle.problems_link_click(player, player_data, refs, e)
+	local c = slot_of(player_data, e.element)
+	if not (c and c.key and c.lk) then return end
+	util.handle_link_click(player, player_data, e, c.lk, c.lid)
 end
 
 --- Acknowledge a finding: click = 24 h, shift = 1 h, control = until it clears; a click on an acknowledged one ends it.
+--- Display state only, so any player may acknowledge (PLAN3 §4.13).
 --- @param e EventData.on_gui_click
 function problems_tab.handle.problems_ack_click(player, player_data, refs, e)
-	local tags = e.element.tags
-	local key, check = tags.ack_key, tags.check
+	local c = slot_of(player_data, e.element)
+	local key, check = c and c.ak, c and c.ck
 	if not (key and check) then return end
 	if diag.is_acked("lint", key, check) then
 		diag.unack("lint", key, check, player.index)
@@ -777,7 +1081,8 @@ function problems_tab.handle.problems_ack_click(player, player_data, refs, e)
 		end
 		diag.ack("lint", key, check, player.index, until_tick)
 	end
-	acks_changed()
+	-- The click is the change the player asked for: the row leaves (or moves) now, not once the cursor leaves.
+	player_data.hover = nil
 	util.rerender(player, player_data)
 end
 
@@ -815,7 +1120,11 @@ gui.add_handlers(problems_tab.handle, problems_tab.wrapper)
 function problems_tab.rendered_rows(player_data)
 	local body = player_data.refs[ROWS]
 	if not (body and body.valid and body.visible) then return 0 end
-	return #body.children
+	local n = 0
+	for _, child in ipairs(body.children) do
+		if child.visible then n = n + 1 end
+	end
+	return n
 end
 
 dev.register_rows(TAB, problems_tab.rendered_rows)
@@ -871,25 +1180,30 @@ local function dump(player_data, all)
 	end
 	local rendered = {}
 	local body = refs[ROWS]
+	local state = util.gui_state(player_data, ROWS)
+	local slots = state.slots or {}
 	if body and body.valid and body.visible then
 		for i, child in ipairs(body.children) do
+			local slot = slots[i]
 			local c = child.children
-			if child.style.name == "cybersyn_problems_group_row" then
-				rendered[i] = { kind = "group", key = child.tags.k, caption = c[2].caption, note = c[3].caption }
+			if not child.visible then
+				break
+			elseif slot.kind == "g" then
+				rendered[i] = { kind = "group", key = slot.key, caption = c[C_GROUP].caption, note = c[C_NOTE].caption }
 			else
 				local subject = c[3].children[2]
 				rendered[i] = {
 					kind = "row",
-					key = child.tags.k,
+					key = slot.key,
 					style = child.style.name,
 					dot = c[1].sprite,
 					chip = c[2].caption,
 					chip_style = c[2].style.name,
 					chip_tooltip = c[2].tooltip,
 					subject = subject.caption,
-					subject_kind = subject.tags.kind,
-					subject_id = subject.tags.id,
-					icons = #c[3].children[1].children,
+					subject_kind = slot.lk,
+					subject_id = slot.lid,
+					icons = slot.n_icons,
 					detail = c[4].caption,
 					fix = c[5].caption,
 					fix_style = c[5].style.name,
@@ -944,6 +1258,16 @@ local function context(pi)
 	return player, player_data
 end
 
+--- One render's pool work for player `pi` while another tab shows (prewarm, then prebind), for timing it alone.
+dev.add("problems_pool_step", function(pi)
+	local _, player_data = context(pi)
+	if problems_tab.prewarm(player_data) == 0 and player_data.selected_tab ~= TAB and problems_tab.has_result() then
+		problems_tab.prebind(player_data)
+	end
+	local state = util.gui_state(player_data, ROWS)
+	return { slots = state.slots and #state.slots or 0, bound = state.n or 0, done = state.render_sig ~= nil }
+end)
+
 dev.add("problems_dump", function(pi, all)
 	local _, player_data = context(pi)
 	return dump(player_data, all)
@@ -984,7 +1308,6 @@ dev.add("problems_ack", function(pi, key, check, until_ticks)
 	else
 		ack = diag.ack("lint", key, check, pi, until_ticks and game.tick + until_ticks or nil)
 	end
-	acks_changed()
 	util.rerender(player, player_data)
 	return ack
 end)

@@ -912,9 +912,11 @@ styles.cybersyn_problems_group_caption = {
 	horizontally_squashable = "on",
 }
 
+-- The width lives in the style: the acknowledged variant swaps styles in place, which drops an element's own width.
 styles.cybersyn_problems_detail = {
 	type = "label_style",
 	parent = "cybersyn_unserved_cell",
+	width = 300,
 	horizontally_squashable = "on",
 }
 

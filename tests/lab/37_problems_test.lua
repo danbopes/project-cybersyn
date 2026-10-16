@@ -278,6 +278,141 @@ lab.suite("37_problems", {
 		lab.info({ "", "problems update x5 on layout-dev: ", t0 })
 	end,
 
+	-- Rows are a pool of slots: a page flip rebinds them instead of creating elements, a link cell resolves its target
+	-- through its slot, and a never-refuelled row does not change while its tracked time grows within the hour.
+	function()
+		remote.call(D, "set_layout", pi, 3840, 2160, 1.5)
+		local function pool()
+			return lab.read("manager", "players", pi, "gui_state", "problems_rows")
+		end
+		-- From an empty pool while another tab shows: slots are created, then the page bound, a few per render.
+		remote.call(D, "select_tab", pi, "overview")
+		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "gui_state", "problems_rows")
+		local steps, r = 0, nil
+		repeat
+			steps = steps + 1
+			r = dev("problems_pool_step", pi)
+		until r.done or steps >= 20
+		local bound = serpent.line(pool().slots, { comment = false })
+		local d = problems()
+		lab.check("while another tab shows, the pool fills and binds the page a few slots per render; the first show writes nothing",
+			r.done == true and steps > 2 and r.bound == #d.lines and serpent.line(pool().slots, { comment = false }) == bound,
+			{ steps = steps, r = r, lines = #d.lines })
+		local p0 = pool()
+		lab.check("the slot pool covers the page before the tab is first shown", #p0.slots >= d.rows,
+			{ slots = #p0.slots, rows = d.rows })
+		local n0 = #p0.slots
+		local flips_ok = d.page.pages > 1
+		for _, page in ipairs({ 2, 1, 2, 1 }) do
+			remote.call(D, "set_page", pi, "problems", page)
+			local p = dev("problems_dump", pi)
+			local same = #p.rendered == #p.lines
+			for i, line in ipairs(p.lines) do
+				local r = p.rendered[i]
+				if not r or r.kind ~= line.kind or (line.kind == "row" and r.key ~= line.key) then same = false end
+			end
+			if not same or #pool().slots ~= n0 then flips_ok = false end
+		end
+		lab.check("page flips rebind the pooled slots: no slot created, rendered rows == the page", flips_ok,
+			{ slots = #pool().slots, before = n0 })
+		-- While the cursor rests on a row the slots keep their lines; the page follows once the hold ends.
+		local keys1 = {}
+		for i, r in ipairs(dev("problems_dump", pi).rendered) do keys1[i] = r.key end
+		remote.call("cybersyn", "write_global", { tick = game.tick, scope = "problems_rows", index = 0 }, "manager",
+			"players", pi, "hover")
+		remote.call(D, "set_page", pi, "problems", 2)
+		local held = dev("problems_dump", pi)
+		local kept = #held.rendered == #keys1
+		for i, r in ipairs(held.rendered) do
+			if r.key ~= keys1[i] then kept = false end
+		end
+		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "hover")
+		remote.call(D, "update", pi, 1)
+		local released = dev("problems_dump", pi)
+		local follows = #released.rendered == #released.lines
+		for i, line in ipairs(released.lines) do
+			if not released.rendered[i] or released.rendered[i].key ~= (line.key or released.rendered[i].key) then
+				follows = false
+			end
+		end
+		lab.check("hover hold: the rows stay while held, then show the new page", kept and follows
+			and released.page.page == 2 and released.rendered[1].key ~= keys1[1],
+			{ kept = kept, follows = follows, page = released.page.page })
+		remote.call(D, "set_page", pi, "problems", 1)
+
+		d = dev("problems_dump", pi)
+		local row, index = first_row(d)
+		local station = row and lab.read("stations", row.id)
+		local res = dev("click", pi, "problems_rows", { index, 3, 2 }, { shift = true })
+		local p = game.get_player(pi)
+		local via_row = p.controller_type == defines.controllers.remote and p.position or nil
+		if via_row then p.exit_remote_view() end
+		-- The same station's link through its tags: the view lands on the same spot (offset clear of the window).
+		dev("link_click", pi, "station", row and row.id or 0, { shift = true })
+		local via_tags = p.controller_type == defines.controllers.remote and p.position or nil
+		if via_tags then p.exit_remote_view() end
+		lab.check("shift-click on a row's subject shows that row's station on the map", res == true and via_row ~= nil
+			and via_tags ~= nil and via_row.x == via_tags.x and via_row.y == via_tags.y and station ~= nil,
+			{ res = res, id = row and row.id, row = via_row, tags = via_tags })
+
+		-- A never-refuelled finding on the page whose tracked time grows by half an hour between passes.
+		lab.big_screen(pi)
+		local s = lab.read("manager", "lint")
+		local train_id = next(lab.read("trains"))
+		-- LINT_NEVER_REFUELLED and LINT_SUBJECT_TRAIN (constants.lua; level scope cannot see them).
+		local NEVER = 12
+		local function inject(a, pass)
+			local list = { { check = NEVER, subject = 4, id = train_id, a = a, b = 0, network = "signal-A" } }
+			for k, f in ipairs(s.findings) do list[k + 1] = f end
+			remote.call("cybersyn", "write_global", list, "manager", "lint", "findings")
+			remote.call("cybersyn", "write_global", pass, "manager", "lint", "pass")
+			remote.call(D, "update", pi, 1)
+		end
+		local function slot_of(key)
+			for i, slot in ipairs(pool().slots) do
+				if slot.key == key then return slot, i end
+			end
+		end
+		inject(3 * HOUR + 60, s.pass + 1000)
+		local key = NEVER .. ":4:" .. train_id .. ":"
+		local before, i1 = slot_of(key)
+		inject(3 * HOUR + HOUR / 2, s.pass + 1001)
+		local after, i2 = slot_of(key)
+		local shown = dev("problems_dump", pi).rendered[i2 or 0]
+		lab.check("a never-refuelled row keeps its slot and content while the tracked time grows within the hour",
+			before ~= nil and after ~= nil and i1 == i2 and before.sig == after.sig and shown
+			and serpent.line(shown.detail):find("3h 00m", 1, true) ~= nil,
+			{ before = before and before.sig, after = after and after.sig, detail = shown and shown.detail })
+
+		-- A train's lint acknowledgement is written to the train column of its events (keyed by the negated id).
+		local seq = dev("diag_state").seq
+		dev("diag_ack", "lint", -train_id, NEVER, 600, pi)
+		local ev
+		for _, e in ipairs(dev("diag_events", seq, 1000)) do
+			if e.seq > seq and e.kind == "acknowledged" then ev = e end
+		end
+		lab.check("a train's lint acknowledgement event names the train, not a station", ev ~= nil
+			and ev.train == train_id and ev.station == 0, ev)
+		dev("diag_unack", "lint", -train_id, NEVER, pi)
+		dev("lint_run")
+
+		-- Acknowledgements made or ended outside the tab (diag's own calls) reach the badge without a new pass.
+		local d1 = problems()
+		local r1 = first_row(d1)
+		local badge = d1.counts.badge
+		-- LINT_CAPACITY
+		dev("diag_ack", "lint", r1.ack_key, 1, 600, pi)
+		remote.call(D, "update", pi, 1)
+		local d2 = dev("problems_dump", pi)
+		dev("diag_unack", "lint", r1.ack_key, 1, pi)
+		remote.call(D, "update", pi, 1)
+		local d3 = dev("problems_dump", pi)
+		lab.check("an acknowledgement made and ended outside the tab moves its badge without a new pass",
+			r1.check == "capacity" and d2.pass == d1.pass and d2.counts.badge == badge - 1 and d3.counts.badge == badge,
+			{ check = r1.check, badge = badge, acked = d2.counts.badge, ended = d3.counts.badge })
+		remote.call(D, "update", pi, 1)
+	end,
+
 	-- Rows computed == rows rendered on the four screens of 36_window; pages split into whole rows.
 	function()
 		for _, screen in ipairs({ { "4K at 1.5", 3840, 2160, 1.5 }, { "1080p at 1.0", 1920, 1080, 1.0 },

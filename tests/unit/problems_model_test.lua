@@ -132,6 +132,15 @@ local ENV = {
 	duration = function(ticks) return tostring(math.floor(ticks / 60)) .. "s" end,
 }
 
+test("detail sig: a never-refuelled row keeps its sig while the tracked time grows within the hour", function()
+	local model = pm()
+	local function sig(a) return model.detail_sig(finding(LINT_NEVER_REFUELLED, T, 7, a, 0, { network = "signal-A" })) end
+	assert_eq(sig(216000 * 3 + 60), sig(216000 * 3 + 200000))
+	assert_eq(sig(216000 * 3) ~= sig(216000 * 4), true)
+	local function cap(a) return model.detail_sig(finding(LINT_CAPACITY, S, 1, a, 40, { item = "coal" })) end
+	assert_eq(cap(50) ~= cap(51), true)
+end)
+
 test("detail: the numbers behind each check", function()
 	local model = pm()
 	local function d(check, a, b, extra) return model.detail(finding(check, S, 1, a, b, extra), ENV) end
@@ -156,7 +165,7 @@ test("detail: the numbers behind each check", function()
 	assert_eq(d(LINT_REFUELER_MASK, 4, 1, { network = "signal-7" }),
 		{ K .. "refueler-mask", "4", "1", "[virtual-signal=signal-7]" })
 	assert_eq(d(LINT_NEVER_REFUELLED, 216060, 0, { network = "signal-7" }),
-		{ K .. "never-refuelled", "[virtual-signal=signal-7]", "3601s" })
+		{ K .. "never-refuelled", "[virtual-signal=signal-7]", "3600s" })
 	assert_eq(d(LINT_IN_GROUP, 2, 0), { K .. "in-group", "2", "0" })
 	assert_eq(d(LINT_MISSING_STOP, 2, 0), { K .. "missing-stop", "2", "0" })
 	assert_eq(d(LINT_CAPACITY_DRIFT, 7, 40), { K .. "capacity-drift", "7", "40" })

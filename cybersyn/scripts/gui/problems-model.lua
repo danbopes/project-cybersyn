@@ -246,6 +246,8 @@ end
 --- @field is_fluid fun(hash: string?): boolean
 --- @field duration fun(ticks: number): string
 
+local HOUR_TICKS = 216000
+
 local function n(v)
 	return format.number(v or 0)
 end
@@ -278,7 +280,8 @@ function model.detail(f, env)
 	elseif check == LINT_REFUELER_MASK or check == LINT_TRAIN_MASK then
 		return { key, tostring(a), tostring(b), env.network(f.network) }
 	elseif check == LINT_NEVER_REFUELLED then
-		return { key, env.network(f.network), env.duration(a) }
+		-- Whole hours: the tracked time grows on every pass, and the row must not change with it.
+		return { key, env.network(f.network), env.duration(a - a % HOUR_TICKS) }
 	elseif check == LINT_NO_TRAIN then
 		return { key, env.network(f.network) }
 	elseif f.message then
@@ -292,7 +295,9 @@ end
 --- @param f LintFinding
 --- @return string
 function model.detail_sig(f)
-	return tostring(f.a) .. ":" .. tostring(f.b) .. ":" .. tostring(f.network) .. ":" .. tostring(f.item)
+	local a = f.a
+	if f.check == LINT_NEVER_REFUELLED and a then a = math.floor(a / HOUR_TICKS) end
+	return tostring(a) .. ":" .. tostring(f.b) .. ":" .. tostring(f.network) .. ":" .. tostring(f.item)
 end
 
 return model

@@ -1194,8 +1194,10 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
-function util.handle_link_click(player, player_data, e)
-	local kind, id = link_target(e)
+--- @param kind string? the target when the cell's tags do not carry it (the Problems tab's pooled rows)
+--- @param id (uint|string)?
+function util.handle_link_click(player, player_data, e, kind, id)
+	if not kind then kind, id = link_target(e) end
 	if not kind then return end
 	if kind == "item" then
 		util.item_button_click(player, player_data, e, id)
