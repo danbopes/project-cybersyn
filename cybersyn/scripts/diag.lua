@@ -505,6 +505,7 @@ function diag.last_for_step(cursor, budget)
 		cursor.rows, cursor.done, cursor.loaded_tick = {}, true, -1
 		return cursor.rows
 	end
+	if cursor.done and cursor.top == d.seq and cursor.loaded_tick == d.loaded_tick then return cursor.rows end
 	budget = budget or diag.SCAN_ROWS
 	local n = cursor.n
 	local f = { [cursor.kind] = cursor.id }

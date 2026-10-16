@@ -35,7 +35,7 @@ local UNSERVED_ROWS = 3
 local EFFECTIVE_ITEMS = 6
 -- Trains of storage.trains the Effective config walk counts per refresh, and how long a finished count is used.
 local FLEET_CHUNK = 150
-local FLEET_TTL = 600
+local FLEET_TTL = 1800
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
 relative.WIDTH = WIDTH
@@ -282,6 +282,7 @@ end
 --- @field id uint
 --- @field sigs {[string]: string}
 --- @field rebuilds int sections rebuilt since the panel opened
+--- @field rebuilt {[string]: int}? the same per section
 --- @field refreshes int
 --- @field st SnapshotStation? the live record while no snapshot holds this station (never a snapshot record)
 --- @field starved {[string]: true} this station's request keys nobody provides, from the planner's economy
@@ -293,7 +294,10 @@ local function new_state(kind, id)
 	return { kind = kind, id = id, sigs = {}, rebuilds = 0, refreshes = 0, starved = {} }
 end
 
---- Rebuilds one section when its signature changed; `build` returns its children (nil or empty = hidden).
+local function hidden() return nil end
+
+--- Rebuilds one section when its signature changed; `build` returns its children (nil or empty = hidden). Callers
+--- compare the signature first, so a section that did not change allocates no builder closure.
 local function section(state, body, name, sig, build)
 	if state.sigs[name] == sig then return end
 	local flow = body[name]
@@ -309,6 +313,12 @@ local function section(state, body, name, sig, build)
 	end
 	if flow.visible ~= shown then flow.visible = shown end
 	state.rebuilds = state.rebuilds + 1
+	local by = state.rebuilt
+	if not by then
+		by = {}
+		state.rebuilt = by
+	end
+	by[name] = (by[name] or 0) + 1
 end
 
 -- ---------------------------------------------------------------- stop model
@@ -347,11 +357,15 @@ local function station_record(state, id)
 	return state.st, "live"
 end
 
-local function lint_findings_of(id)
+--- The stop's findings of the last lint pass, looked up again only when a pass completed.
+local function lint_findings_of(state, id, pass)
+	local cached = state.findings
+	if cached and cached.pass == pass and cached.id == id then return cached.list end
 	local out = {}
 	for _, f in ipairs(lint.findings()) do
 		if f.id == id and f.subject ~= LINT_SUBJECT_TRAIN then out[#out + 1] = f end
 	end
+	state.findings = { pass = pass, id = id, list = out }
 	return out
 end
 
@@ -371,14 +385,73 @@ local function unserved_rows(id)
 	return rows
 end
 
+--- Item maps fold into weighted sums for their signatures: each item weighs its crafting-order rank (distinct per
+--- item and quality), so a change of any count or of the item set changes the sums; building a string per item cost
+--- a live read's refresh 20-40 µs on a 10-item requester.
+--- @return string
+local function content_sig(n, a, b, c)
+	return string.format("%d:%.17g:%.17g:%.17g", n, a, b, c)
+end
+
+--- A signature over a station record's contents, computed again only when the record was refilled (a snapshot
+--- record changes once per collector pass; walking a big requester's items every refresh cost more than the rest).
+--- @param fn fun(st: SnapshotStation, arg: any): string
+--- @return string
+local function record_sig(state, name, st, fn, arg)
+	local cache = state.rsig
+	if not cache then
+		cache = {}
+		state.rsig = cache
+	end
+	local e = cache[name]
+	if e and e.tick == st.read_tick and e.id == st.id then return e.sig end
+	local sig = fn(st, arg)
+	cache[name] = { tick = st.read_tick, id = st.id, sig = sig }
+	return sig
+end
+
+local function slots_content(st)
+	local n, a, b, c = 0, 0, 0, 0
+	for hash, count in pairs(st.provided) do
+		local r = util.item_rank(hash)
+		n, a, b = n + 1, a + r, b + count * r
+	end
+	for hash, req in pairs(st.requested) do
+		local r = util.item_rank(hash)
+		n, a, b, c = n + 1, a - r, b + req.count * r, c + req.threshold * r + (req.active and r or 0)
+	end
+	return content_sig(n, a, b, c)
+end
+
+local function deliveries_content(st, total)
+	local n, a, b = 0, 0, 0
+	for hash, count in pairs(st.deliveries) do
+		local r = util.item_rank(hash)
+		n, a, b = n + 1, a + r, b + count * r
+	end
+	return content_sig(n, a, b, total)
+end
+
+local function control_content(st)
+	local parts = {}
+	for name, count in pairs(st.control) do parts[#parts + 1] = name .. "=" .. count end
+	parts[#parts + 1] = "|"
+	for hash, v in pairs(st.thresholds) do parts[#parts + 1] = hash .. "=" .. v end
+	return table.concat(parts, ",")
+end
+
+local function eff_inputs_content(st)
+	local parts = { st.trains_limit, st.control[REQUEST_THRESHOLD] or "", st.control[REQUEST_FLUID_THRESHOLD] or "",
+		st.control[SIGNAL_PRIORITY] or "" }
+	for hash, req in pairs(st.requested) do parts[#parts + 1] = hash .. "=" .. req.threshold end
+	return table.concat(parts, ",")
+end
+
 --- The fleet counts for this stop's networks: a walk over storage.trains, FLEET_CHUNK trains per refresh, restarted
 --- once a finished count is FLEET_TTL old or the stop's networks changed.
 --- @return {[string]: RelativeFleetCount}? counts nil while the first walk runs
 --- @return number progress 0..1
-local function fleet_counts(state, nets)
-	local parts = {}
-	for i, n in ipairs(nets) do parts[i] = n.name .. "=" .. n.mask end
-	local key = table.concat(parts, ",")
+local function fleet_counts(state, nets, key)
 	local now = game.tick
 	local f = state.fleet
 	if not f or f.key ~= key or (f.done_tick and now - f.done_tick >= FLEET_TTL) then
@@ -409,10 +482,9 @@ local function fleet_counts(state, nets)
 end
 
 --- The Effective config numbers (PLAN3 §4.9, A8 + B15).
-local function effective_model(state, st, station, nets)
+local function build_effective(state, st, station, nets, counts, progress)
 	local snap = collector.get()
 	local live = snap.tick ~= nil
-	local counts, progress = fleet_counts(state, nets)
 	local control = st.control
 	local m = {
 		base_item = control[REQUEST_THRESHOLD] and math.abs(control[REQUEST_THRESHOLD]) or (mod_settings.r_threshold or 1),
@@ -495,6 +567,36 @@ local function effective_model(state, st, station, nets)
 	return m
 end
 
+--- build_effective, rebuilt only when its inputs moved: the record was refilled, a new snapshot or fleet count, the
+--- combinator display; the unserved entries' p_count / p_threshold are read again on every refresh.
+local function effective_model(state, st, station, nets, nets_key)
+	local counts, progress = fleet_counts(state, nets, nets_key)
+	local c = state.eff
+	local snap_tick = collector.get().tick
+	local done = state.fleet and state.fleet.done_tick
+	-- What the section reads from the record: a live record is refilled every refresh, mostly with the same values.
+	local inputs = record_sig(state, "eff_inputs", st, eff_inputs_content)
+	local m
+	if c and c.id == st.id and c.inputs == inputs and c.snap == snap_tick and c.done == done and
+		c.display == station.display_state and c.all == station.allows_all_trains then
+		m = c.model
+	else
+		m = build_effective(state, st, station, nets, counts, progress)
+		state.eff = { id = st.id, inputs = inputs, snap = snap_tick, done = done, display = station.display_state,
+			all = station.allows_all_trains, model = m }
+	end
+	m.counting = counts == nil and progress or nil
+	local entries = diag.unserved_for(st.id)
+	local d = storage.diag
+	for _, it in ipairs(m.items) do
+		local ix = entries and d and d.item_ix[it.hash]
+		local e = ix and entries[ix]
+		it.p_count = e and e.p_count or nil
+		it.p_threshold = e and e.p_threshold or nil
+	end
+	return m
+end
+
 --- Everything the stop panel shows, as plain values.
 --- @return table?
 local function stop_model(pd, state)
@@ -524,14 +626,25 @@ local function stop_model(pd, state)
 		m.read_tick = st.read_tick or now
 		m.is_p, m.is_r, m.is_stack = st.is_p, st.is_r, st.is_stack
 		m.network_name = st.network_name
-		m.nets = networks_of(st.network_name, st.network_mask)
+		local nc = state.nets
+		local mask = st.network_mask
+		if not (nc and nc.id == st.id and nc.name == st.network_name and type(mask) == "number" and nc.mask == mask) then
+			local nets = networks_of(st.network_name, st.network_mask)
+			local parts = {}
+			for i, n in ipairs(nets) do parts[i] = n.name .. "=" .. n.mask end
+			nc = { id = st.id, name = st.network_name, mask = type(mask) == "number" and mask or nil, nets = nets,
+				key = table.concat(parts, ",") }
+			state.nets = nc
+		end
+		m.nets = nc.nets
+		m.nets_key = nc.key
 		m.status = st.status
 		m.deliveries = st.deliveries_total
 		m.limit = st.trains_limit
 		m.unserved = unserved_rows(id)
 		m.st = st
 		m.display_state = station.display_state
-		if pd.relative_effective_open then m.effective = effective_model(state, st, station, m.nets) end
+		if pd.relative_effective_open then m.effective = effective_model(state, st, station, m.nets, m.nets_key) end
 	elseif depot then
 		m.limit = stop.trains_limit
 		m.parked = depot.available_train_id
@@ -543,7 +656,7 @@ local function stop_model(pd, state)
 		m.deliveries = refueler.trains_total or 0
 	end
 	m.occupancy_lint = lint.has(m.lint_bits, LINT_OCCUPANCY) or lint.has(m.lint_bits, LINT_PHANTOM)
-	m.findings = lint_findings_of(id)
+	m.findings = lint_findings_of(state, id, m.lint_pass)
 	return m
 end
 
@@ -574,43 +687,45 @@ local function render_stop_head(state, body, m)
 	local sig = table.concat({ m.sub, tostring(m.is_p), tostring(m.is_r), tostring(m.is_stack), tostring(m.status),
 		table.concat(nets_sig, ","), m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
 		tostring(m.parked) }, "|")
-	section(state, body, "head", sig, function()
-		local out = {}
-		if m.sub == "station" then
-			out[#out + 1] = line({ "cybersyn-gui.relative-role", rtext.role(m.is_p, m.is_r, m.is_stack) })
-		else
-			out[#out + 1] = line({ "cybersyn-gui.relative-role", { "cybersyn-gui.relative-role-" .. m.sub } })
-		end
-		if m.nets then
-			if #m.nets == 0 then
-				out[#out + 1] = line({ "cybersyn-gui.relative-network", { "cybersyn-gui.station-no-network" } })
+	if state.sigs["head"] ~= sig then
+		section(state, body, "head", sig, function()
+			local out = {}
+			if m.sub == "station" then
+				out[#out + 1] = line({ "cybersyn-gui.relative-role", rtext.role(m.is_p, m.is_r, m.is_stack) })
+			else
+				out[#out + 1] = line({ "cybersyn-gui.relative-role", { "cybersyn-gui.relative-role-" .. m.sub } })
 			end
-			for _, n in ipairs(m.nets) do
-				out[#out + 1] = line({ "cybersyn-gui.relative-network-mask", network_rich(n.name), rtext.mask_text(n.mask) })
+			if m.nets then
+				if #m.nets == 0 then
+					out[#out + 1] = line({ "cybersyn-gui.relative-network", { "cybersyn-gui.station-no-network" } })
+				end
+				for _, n in ipairs(m.nets) do
+					out[#out + 1] = line({ "cybersyn-gui.relative-network-mask", network_rich(n.name), rtext.mask_text(n.mask) })
+				end
 			end
-		end
-		if m.status then
-			out[#out + 1] = line({ "cybersyn-gui.relative-status", status_caption(m.status) },
-				{ "cybersyn-gui.station-status-" .. string.gsub(m.status, "_", "-") .. "-tooltip" })
-		end
-		local pair = {
-			type = "flow",
-			direction = "horizontal",
-			style_mods = { vertical_align = "center", horizontal_spacing = 8 },
-			label({ "cybersyn-gui.relative-trains", rtext.trains_pair(m.deliveries, m.limit), tostring(m.trains_count) },
-				{ tooltip = { "cybersyn-gui.relative-trains-tooltip" } }),
-		}
-		if m.occupancy_lint then
-			local check = lint.has(m.lint_bits, LINT_PHANTOM) and LINT_PHANTOM or LINT_OCCUPANCY
-			local f
-			for _, x in ipairs(m.findings) do
-				if x.check == check then f = x end
+			if m.status then
+				out[#out + 1] = line({ "cybersyn-gui.relative-status", status_caption(m.status) },
+					{ "cybersyn-gui.station-status-" .. string.gsub(m.status, "_", "-") .. "-tooltip" })
 			end
-			pair[#pair + 1] = lint_chip(check, f and finding_fix(f) or nil)
-		end
-		out[#out + 1] = pair
-		return out
-	end)
+			local pair = {
+				type = "flow",
+				direction = "horizontal",
+				style_mods = { vertical_align = "center", horizontal_spacing = 8 },
+				label({ "cybersyn-gui.relative-trains", rtext.trains_pair(m.deliveries, m.limit), tostring(m.trains_count) },
+					{ tooltip = { "cybersyn-gui.relative-trains-tooltip" } }),
+			}
+			if m.occupancy_lint then
+				local check = lint.has(m.lint_bits, LINT_PHANTOM) and LINT_PHANTOM or LINT_OCCUPANCY
+				local f
+				for _, x in ipairs(m.findings) do
+					if x.check == check then f = x end
+				end
+				pair[#pair + 1] = lint_chip(check, f and finding_fix(f) or nil)
+			end
+			out[#out + 1] = pair
+			return out
+		end)
+	end
 end
 
 local function render_slots(state, body, m)
@@ -618,37 +733,34 @@ local function render_slots(state, body, m)
 	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
 	-- still fits a 1080p screen at scale 1.
 	if not st or m.effective then
-		section(state, body, "slots", "", function() return nil end)
+		if state.sigs["slots"] ~= "" then section(state, body, "slots", "", hidden) end
 		return
 	end
-	local parts = {}
-	for hash, count in pairs(st.provided) do parts[#parts + 1] = hash .. "=" .. count end
-	parts[#parts + 1] = "|"
-	for hash, req in pairs(st.requested) do
-		parts[#parts + 1] = hash .. "=" .. req.count .. ":" .. req.threshold .. (req.active and "a" or "")
+	local sig = record_sig(state, "slots", st, slots_content)
+	if state.sigs["slots"] ~= sig then
+		section(state, body, "slots", sig, function()
+			local slots = {}
+			local total = 0
+			for _, hash in ipairs(util.hashes_in_item_order(st.provided)) do
+				total = total + 1
+				slots[#slots + 1] = slot(hash, st.provided[hash], "green",
+					{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(st.provided[hash]) } })
+			end
+			for _, hash in ipairs(util.hashes_in_item_order(st.requested)) do
+				local req = st.requested[hash]
+				total = total + 1
+				slots[#slots + 1] = slot(hash, req.count, req.active and "red" or "orange", {
+					"", " ", req.active and { "cybersyn-gui.requested" } or { "cybersyn-gui.requested-below-threshold" },
+					"\n", { "cybersyn-gui.amount", format.number(req.count) },
+					"\n", { "cybersyn-gui.request-threshold", format.number(req.threshold) },
+				})
+			end
+			if total == 0 then return { note({ "cybersyn-gui.relative-no-items" }) } end
+			local out = { heading({ "cybersyn-gui.provided-requested" }) }
+			for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
+			return out
+		end)
 	end
-	section(state, body, "slots", table.concat(parts, ","), function()
-		local slots = {}
-		local total = 0
-		for _, hash in ipairs(util.hashes_in_item_order(st.provided)) do
-			total = total + 1
-			slots[#slots + 1] = slot(hash, st.provided[hash], "green",
-				{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(st.provided[hash]) } })
-		end
-		for _, hash in ipairs(util.hashes_in_item_order(st.requested)) do
-			local req = st.requested[hash]
-			total = total + 1
-			slots[#slots + 1] = slot(hash, req.count, req.active and "red" or "orange", {
-				"", " ", req.active and { "cybersyn-gui.requested" } or { "cybersyn-gui.requested-below-threshold" },
-				"\n", { "cybersyn-gui.amount", format.number(req.count) },
-				"\n", { "cybersyn-gui.request-threshold", format.number(req.threshold) },
-			})
-		end
-		if total == 0 then return { note({ "cybersyn-gui.relative-no-items" }) } end
-		local out = { heading({ "cybersyn-gui.provided-requested" }) }
-		for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
-		return out
-	end)
 end
 
 local function surface_name(index)
@@ -659,78 +771,83 @@ end
 local function render_unserved(state, body, m, compact)
 	local rows = m.unserved
 	if not rows or #rows == 0 or not storage.diag then
-		section(state, body, "unserved", "", function() return nil end)
+		if state.sigs["unserved"] ~= "" then section(state, body, "unserved", "", hidden) end
 		return
 	end
 	local now = game.tick
 	local d = storage.diag
 	local inherit_before = diag.inherit_threshold(d)
-	local parts = { #rows }
+	-- The payload, the evaluation count and the losses move with every planner cycle on a busy base; they are refreshed
+	-- with the 10 s age step, the reason and the provider at once.
+	local a, b, c = 0, 0, 0
 	for i = 1, math.min(#rows, UNSERVED_ROWS) do
 		local r, e = rows[i], rows[i].e
-		parts[#parts + 1] = table.concat({ r.hash, e.reason, e.a, e.b, e.first_tick, e.n, tostring(e.p_station_id),
-			e.lost_n, tostring(diag.is_acked("request", state.id, r.hash) ~= nil) }, ":")
+		local w = util.item_rank(r.hash) * i
+		a = a + w * e.reason + (diag.is_acked("request", state.id, r.hash) and w or 0)
+		b = b + w * e.first_tick
+		c = c + w * (e.p_station_id or 0)
 	end
-	parts[#parts + 1] = math.floor(now / rtext.AGE_STEP)
-	parts[#parts + 1] = tostring(compact)
-	section(state, body, "unserved", table.concat(parts, ","), function()
-		local st = m.st
-		local out = { heading({ "cybersyn-gui.relative-unserved", tostring(#rows) }) }
-		for i = 1, math.min(#rows, UNSERVED_ROWS) do
-			local r, e = rows[i], rows[i].e
-			local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(r.hash)
-			local req = st and st.requested[r.hash]
-			local wait = now - e.first_tick
-			local inherited = e.first_tick < inherit_before
-			local tip = utext.chip_tooltip({
-				item = item_tooltip or r.hash,
-				requested = req and -req.count or nil,
-				requester = m.name,
-				reason = e.reason,
-				a = e.a,
-				b = e.b,
-				network = m.network_name and network_rich(m.network_name) or nil,
-				rej = e.rej,
-				wait = wait,
-				inherited = inherited,
-				n = e.n,
-				surface_name = surface_name,
-			}, util.format_duration)
-			local acked = diag.is_acked("request", state.id, r.hash) ~= nil
-			local stock = utext.stock_caption(e.reason, e.a, e.b)
-			local row = {
-				type = "flow",
-				direction = "horizontal",
-				style_mods = { vertical_align = "center", horizontal_spacing = 6 },
-				sprite and {
-					type = "sprite-button",
-					style = "cybersyn_unserved_item",
-					sprite = sprite,
-					quality = quality,
-					elem_tooltip = util.elem_tooltip(r.hash),
-					tags = { kind = "item", id = r.hash },
-					mouse_button_filter = { "left", "right" },
-					handler = { [defines.events.on_gui_click] = util.handle.link_click },
-				} or label(r.hash),
-				{
-					type = "button",
-					style = acked and "cybersyn_chip_grey" or utext.chip_style(e.reason),
-					caption = utext.chip_caption(e.reason),
-					tooltip = tip,
-				},
-				label(stock ~= utext.NO_VALUE and stock or ""),
-				label(utext.wait_caption(rtext.age_step(wait), inherited, util.short_duration),
-					{ style_mods = { font_color = { 0.7, 0.7, 0.7 } } }),
-			}
-			out[#out + 1] = row
-			-- The expanded Effective config needs the room; the four lines stay in the chip's tooltip.
-			if i == 1 and not compact then out[#out + 1] = line(tip) end
-		end
-		if #rows > UNSERVED_ROWS then
-			out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(#rows - UNSERVED_ROWS) })
-		end
-		return out
-	end)
+	local unserved_sig = content_sig(#rows, a, b, c) .. ":" .. math.floor(now / rtext.AGE_STEP) .. (compact and "c" or "")
+	if state.sigs["unserved"] ~= unserved_sig then
+		section(state, body, "unserved", unserved_sig, function()
+			local st = m.st
+			local out = { heading({ "cybersyn-gui.relative-unserved", tostring(#rows) }) }
+			for i = 1, math.min(#rows, UNSERVED_ROWS) do
+				local r, e = rows[i], rows[i].e
+				local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(r.hash)
+				local req = st and st.requested[r.hash]
+				local wait = now - e.first_tick
+				local inherited = e.first_tick < inherit_before
+				local tip = utext.chip_tooltip({
+					item = item_tooltip or r.hash,
+					requested = req and -req.count or nil,
+					requester = m.name,
+					reason = e.reason,
+					a = e.a,
+					b = e.b,
+					network = m.network_name and network_rich(m.network_name) or nil,
+					rej = e.rej,
+					wait = wait,
+					inherited = inherited,
+					n = e.n,
+					surface_name = surface_name,
+				}, util.format_duration)
+				local acked = diag.is_acked("request", state.id, r.hash) ~= nil
+				local stock = utext.stock_caption(e.reason, e.a, e.b)
+				local row = {
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { vertical_align = "center", horizontal_spacing = 6 },
+					sprite and {
+						type = "sprite-button",
+						style = "cybersyn_unserved_item",
+						sprite = sprite,
+						quality = quality,
+						elem_tooltip = util.elem_tooltip(r.hash),
+						tags = { kind = "item", id = r.hash },
+						mouse_button_filter = { "left", "right" },
+						handler = { [defines.events.on_gui_click] = util.handle.link_click },
+					} or label(r.hash),
+					{
+						type = "button",
+						style = acked and "cybersyn_chip_grey" or utext.chip_style(e.reason),
+						caption = utext.chip_caption(e.reason),
+						tooltip = tip,
+					},
+					label(stock ~= utext.NO_VALUE and stock or ""),
+					label(utext.wait_caption(rtext.age_step(wait), inherited, util.short_duration),
+						{ style_mods = { font_color = { 0.7, 0.7, 0.7 } } }),
+				}
+				out[#out + 1] = row
+				-- The expanded Effective config needs the room; the four lines stay in the chip's tooltip.
+				if i == 1 and not compact then out[#out + 1] = line(tip) end
+			end
+			if #rows > UNSERVED_ROWS then
+				out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(#rows - UNSERVED_ROWS) })
+			end
+			return out
+		end)
+	end
 end
 
 local function render_deliveries(state, body, m)
@@ -738,26 +855,27 @@ local function render_deliveries(state, body, m)
 	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
 	-- still fits a 1080p screen at scale 1.
 	if not st or m.effective then
-		section(state, body, "deliveries", "", function() return nil end)
+		if state.sigs["deliveries"] ~= "" then section(state, body, "deliveries", "", hidden) end
 		return
 	end
-	local parts = { m.deliveries }
-	for hash, count in pairs(st.deliveries) do parts[#parts + 1] = hash .. "=" .. count end
-	section(state, body, "deliveries", table.concat(parts, ","), function()
-		local out = { heading({ "cybersyn-gui.relative-in-flight", tostring(m.deliveries or 0) }) }
-		local slots, total = {}, 0
-		for _, hash in ipairs(util.hashes_in_item_order(st.deliveries)) do
-			local count = st.deliveries[hash]
-			total = total + 1
-			slots[#slots + 1] = slot(hash, count, count > 0 and "green" or "blue", {
-				"", " ", count > 0 and { "cybersyn-gui.incoming" } or { "cybersyn-gui.outgoing" },
-				"\n", { "cybersyn-gui.amount", format.number(count) },
-			})
-		end
-		if total == 0 then return nil end
-		for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
-		return out
-	end)
+	local sig = record_sig(state, "deliveries", st, deliveries_content, m.deliveries or 0)
+	if state.sigs["deliveries"] ~= sig then
+		section(state, body, "deliveries", sig, function()
+			local out = { heading({ "cybersyn-gui.relative-in-flight", tostring(m.deliveries or 0) }) }
+			local slots, total = {}, 0
+			for _, hash in ipairs(util.hashes_in_item_order(st.deliveries)) do
+				local count = st.deliveries[hash]
+				total = total + 1
+				slots[#slots + 1] = slot(hash, count, count > 0 and "green" or "blue", {
+					"", " ", count > 0 and { "cybersyn-gui.incoming" } or { "cybersyn-gui.outgoing" },
+					"\n", { "cybersyn-gui.amount", format.number(count) },
+				})
+			end
+			if total == 0 then return nil end
+			for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
+			return out
+		end)
+	end
 end
 
 local function render_control(state, body, m)
@@ -765,150 +883,160 @@ local function render_control(state, body, m)
 	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
 	-- still fits a 1080p screen at scale 1.
 	if not st or m.effective then
-		section(state, body, "control", "", function() return nil end)
+		if state.sigs["control"] ~= "" then section(state, body, "control", "", hidden) end
 		return
 	end
-	local parts = {}
-	for name, count in pairs(st.control) do parts[#parts + 1] = name .. "=" .. count end
-	parts[#parts + 1] = "|"
-	for hash, v in pairs(st.thresholds) do parts[#parts + 1] = hash .. "=" .. v end
-	section(state, body, "control", table.concat(parts, ","), function()
-		local slots = util.slot_table_build_from_control_signals(st)
-		if #slots == 0 then return nil end
-		local out = { heading({ "cybersyn-gui.control-signals" }) }
-		for _, def in ipairs(slot_table(slots, #slots)) do out[#out + 1] = def end
-		return out
-	end)
+	local sig = record_sig(state, "control", st, control_content)
+	if state.sigs["control"] ~= sig then
+		section(state, body, "control", sig, function()
+			local slots = util.slot_table_build_from_control_signals(st)
+			if #slots == 0 then return nil end
+			local out = { heading({ "cybersyn-gui.control-signals" }) }
+			for _, def in ipairs(slot_table(slots, #slots)) do out[#out + 1] = def end
+			return out
+		end)
+	end
 end
 
 local function render_setup(state, body, m)
 	local sig = m.lint_bits .. ":" .. m.lint_pass
-	section(state, body, "setup", sig, function()
-		local out = { heading({ "cybersyn-gui.relative-setup" }) }
-		if #m.findings == 0 then
-			if m.lint_pass == 0 then
-				out[#out + 1] = note({ "cybersyn-gui.relative-setup-not-run" })
-			else
-				out[#out + 1] = note({ "cybersyn-gui.relative-setup-none" })
+	if state.sigs["setup"] ~= sig then
+		section(state, body, "setup", sig, function()
+			local out = { heading({ "cybersyn-gui.relative-setup" }) }
+			if #m.findings == 0 then
+				if m.lint_pass == 0 then
+					out[#out + 1] = note({ "cybersyn-gui.relative-setup-not-run" })
+				else
+					out[#out + 1] = note({ "cybersyn-gui.relative-setup-none" })
+				end
+				return out
+			end
+			for _, f in ipairs(m.findings) do
+				out[#out + 1] = line({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } }, nil, sev_color(LINT_SEVERITY[f.check]))
+				out[#out + 1] = note(finding_fix(f))
 			end
 			return out
-		end
-		for _, f in ipairs(m.findings) do
-			out[#out + 1] = line({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } }, nil, sev_color(LINT_SEVERITY[f.check]))
-			out[#out + 1] = note(finding_fix(f))
-		end
-		return out
-	end)
+		end)
+	end
 end
 
 local function render_effective(state, body, m)
 	local e = m.effective
 	if not e then
-		section(state, body, "effective", "", function() return nil end)
+		if state.sigs["effective"] ~= "" then section(state, body, "effective", "", hidden) end
 		return
 	end
-	local parts = { e.base_item, tostring(e.base_item_signal), e.base_fluid, e.limit, e.priority, e.s_colour,
-		tostring(e.counting and math.floor(e.counting * 10)), e.item_capacity, e.fluid_capacity, e.more_items }
-	for _, n in ipairs(e.nets) do
-		parts[#parts + 1] = table.concat({ n.name, n.mask, tostring(n.trains), tostring(n.depots), n.item_capacity,
-			n.fluid_capacity, tostring(n.accepted), n.allow_trains, table.concat(n.missing, "/"), tostring(n.known) }, ":")
-	end
-	for _, it in ipairs(e.items) do
-		parts[#parts + 1] = table.concat({ it.hash, it.threshold, tostring(it.override), it.need, it.capacity,
-			tostring(it.p_count), tostring(it.p_threshold) }, ":")
-	end
-	section(state, body, "effective", table.concat(parts, "|"), function()
-		local out = { heading({ "cybersyn-gui.relative-effective" }) }
-		out[#out + 1] = line({ "cybersyn-gui.relative-eff-threshold", format.number(e.base_item),
-			e.base_item_signal and { "cybersyn-gui.relative-from-signal" } or { "cybersyn-gui.relative-from-default" },
-			m.is_stack and { "cybersyn-gui.relative-unit-stacks" } or { "cybersyn-gui.relative-unit-items" } })
-		out[#out + 1] = line({ "cybersyn-gui.relative-eff-fluid", format.number(e.base_fluid) })
-		if #e.items > 0 then
-			local RED = { 1, 0.45, 0.4 }
-			local function cell(caption, tooltip, color)
-				return { type = "label", caption = caption, tooltip = tooltip,
-					style_mods = { horizontal_align = "right", minimal_width = 56, font_color = color } }
-			end
-			local tbl = {
-				type = "table",
-				column_count = 4,
-				style_mods = { horizontal_spacing = 12, vertical_spacing = 2 },
-				label({ "cybersyn-gui.relative-eff-col-item" }, { style = "bold_label" }),
-				cell({ "cybersyn-gui.relative-eff-col-threshold" }, { "cybersyn-gui.relative-eff-col-threshold-tooltip" }),
-				cell({ "cybersyn-gui.relative-eff-col-need" }, { "cybersyn-gui.relative-eff-col-need-tooltip" }),
-				cell({ "cybersyn-gui.relative-eff-col-gap" }, { "cybersyn-gui.relative-eff-col-gap-tooltip" }),
-			}
-			for i = 2, 4 do tbl[i].style_mods.font = "default-semibold" end
-			local warned = 0
-			for _, it in ipairs(e.items) do
-				local sprite, quality = util.item_sprite_and_tooltip(it.hash)
-				local tip = { "", { "cybersyn-gui.relative-eff-item-tooltip", format.number(it.threshold),
-					it.stack and tostring(it.stack) or utext.NO_VALUE } }
-				if it.override then
-					tip[#tip + 1] = "\n"
-					tip[#tip + 1] = { "cybersyn-gui.relative-eff-override", format.number(it.override) }
-				end
-				if it.p_count then
-					tip[#tip + 1] = "\n"
-					tip[#tip + 1] = { "cybersyn-gui.relative-eff-provider", format.number(it.p_count),
-						format.number(it.p_threshold or 0) }
-				end
-				if it.warn then warned = warned + 1 end
-				local color = it.warn and RED or nil
-				tbl[#tbl + 1] = sprite and {
-					type = "sprite-button",
-					style = "cybersyn_name_icon",
-					sprite = sprite,
-					quality = quality,
-					elem_tooltip = util.elem_tooltip(it.hash),
-					tooltip = tip,
-				} or label(it.hash)
-				tbl[#tbl + 1] = cell(format.number(it.effective) .. (it.override and "*" or ""), tip)
-				tbl[#tbl + 1] = cell(it.is_fluid and format.number(it.need) or { "cybersyn-gui.relative-eff-stacks", tostring(it.need) }, nil, color)
-				tbl[#tbl + 1] = cell(it.capacity > 0 and ((it.gap >= 0 and "+" or "−") .. format.number(math.abs(it.gap))) or utext.NO_VALUE,
-					nil, color)
-			end
-			out[#out + 1] = tbl
-			if warned > 0 then
-				out[#out + 1] = line({ "cybersyn-gui.relative-eff-warn", tostring(warned), tostring(e.item_capacity),
-					format.number(e.fluid_capacity) }, nil, RED)
-			end
-		end
-		if e.more_items > 0 then out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(e.more_items) }) end
-		out[#out + 1] = line({ "cybersyn-gui.relative-eff-limit", e.limit >= rtext.UNLIMITED and "∞" or tostring(e.limit),
-			tostring(e.priority) })
-		if e.counting then
-			out[#out + 1] = note({ "cybersyn-gui.relative-eff-counting", tostring(math.floor(e.counting * 100)) })
-		end
+	if not e.sig then
+		local parts = { e.base_item, tostring(e.base_item_signal), e.base_fluid, e.limit, e.priority, e.s_colour,
+			e.item_capacity, e.fluid_capacity, e.more_items }
 		for _, n in ipairs(e.nets) do
-			out[#out + 1] = line({ "cybersyn-gui.relative-eff-mask", network_rich(n.name), rtext.mask_text(n.mask),
-				n.trains and tostring(n.trains) or "…", n.depots and tostring(n.depots) or "…" })
-			if n.known then
-				out[#out + 1] = line({ "cybersyn-gui.relative-eff-capacity", tostring(n.item_capacity),
-					format.number(n.fluid_capacity), tostring(n.eligible) })
-				local layouts = {}
-				for i, layout_id in ipairs(n.missing) do
-					if i > 4 then
-						layouts[#layouts + 1] = "…"
-						break
-					end
-					layouts[#layouts + 1] = rtext.layout_text(storage.layouts[layout_id])
-				end
-				local allow
-				if n.accepted == false then
-					allow = { "cybersyn-gui.relative-eff-allow-all", tostring(n.allow_trains) }
-				else
-					allow = { "cybersyn-gui.relative-eff-allow", tostring(n.accepted), tostring(n.allow_trains),
-						#layouts > 0 and table.concat(layouts, ", ") or utext.NO_VALUE }
-				end
-				out[#out + 1] = line(allow, { "cybersyn-gui.relative-eff-allow-tooltip" },
-					n.allow_trains == 0 and { 1, 0.45, 0.4 } or nil)
-			end
+			parts[#parts + 1] = table.concat({ n.name, n.mask, tostring(n.trains), tostring(n.depots), n.item_capacity,
+				n.fluid_capacity, tostring(n.accepted), n.allow_trains, table.concat(n.missing, "/"), tostring(n.known) }, ":")
 		end
-		out[#out + 1] = line({ "cybersyn-gui.relative-eff-s", "[color=" .. S_COLOUR[e.s_colour] .. "]S[/color]",
-			{ "cybersyn-gui.relative-s-" .. e.s_colour } }, { "cybersyn-gui.relative-s-legend" })
-		return out
-	end)
+		for _, it in ipairs(e.items) do
+			parts[#parts + 1] = table.concat({ it.hash, it.threshold, tostring(it.override), it.need, it.capacity }, ":")
+		end
+		e.sig = table.concat(parts, "|")
+	end
+	local sig = e.sig
+	if e.counting then sig = sig .. "|c" .. math.floor(e.counting * 10) end
+	for i, it in ipairs(e.items) do
+		if it.p_count then sig = sig .. "|" .. i .. "=" .. it.p_count .. "/" .. tostring(it.p_threshold) end
+	end
+	if state.sigs["effective"] ~= sig then
+		section(state, body, "effective", sig, function()
+			local out = { heading({ "cybersyn-gui.relative-effective" }) }
+			out[#out + 1] = line({ "cybersyn-gui.relative-eff-threshold", format.number(e.base_item),
+				e.base_item_signal and { "cybersyn-gui.relative-from-signal" } or { "cybersyn-gui.relative-from-default" },
+				m.is_stack and { "cybersyn-gui.relative-unit-stacks" } or { "cybersyn-gui.relative-unit-items" } })
+			out[#out + 1] = line({ "cybersyn-gui.relative-eff-fluid", format.number(e.base_fluid) })
+			if #e.items > 0 then
+				local RED = { 1, 0.45, 0.4 }
+				local function cell(caption, tooltip, color)
+					return { type = "label", caption = caption, tooltip = tooltip,
+						style_mods = { horizontal_align = "right", minimal_width = 56, font_color = color } }
+				end
+				local tbl = {
+					type = "table",
+					column_count = 4,
+					style_mods = { horizontal_spacing = 12, vertical_spacing = 2 },
+					label({ "cybersyn-gui.relative-eff-col-item" }, { style = "bold_label" }),
+					cell({ "cybersyn-gui.relative-eff-col-threshold" }, { "cybersyn-gui.relative-eff-col-threshold-tooltip" }),
+					cell({ "cybersyn-gui.relative-eff-col-need" }, { "cybersyn-gui.relative-eff-col-need-tooltip" }),
+					cell({ "cybersyn-gui.relative-eff-col-gap" }, { "cybersyn-gui.relative-eff-col-gap-tooltip" }),
+				}
+				for i = 2, 4 do tbl[i].style_mods.font = "default-semibold" end
+				local warned = 0
+				for _, it in ipairs(e.items) do
+					local sprite, quality = util.item_sprite_and_tooltip(it.hash)
+					local tip = { "", { "cybersyn-gui.relative-eff-item-tooltip", format.number(it.threshold),
+						it.stack and tostring(it.stack) or utext.NO_VALUE } }
+					if it.override then
+						tip[#tip + 1] = "\n"
+						tip[#tip + 1] = { "cybersyn-gui.relative-eff-override", format.number(it.override) }
+					end
+					if it.p_count then
+						tip[#tip + 1] = "\n"
+						tip[#tip + 1] = { "cybersyn-gui.relative-eff-provider", format.number(it.p_count),
+							format.number(it.p_threshold or 0) }
+					end
+					if it.warn then warned = warned + 1 end
+					local color = it.warn and RED or nil
+					tbl[#tbl + 1] = sprite and {
+						type = "sprite-button",
+						style = "cybersyn_name_icon",
+						sprite = sprite,
+						quality = quality,
+						elem_tooltip = util.elem_tooltip(it.hash),
+						tooltip = tip,
+					} or label(it.hash)
+					tbl[#tbl + 1] = cell(format.number(it.effective) .. (it.override and "*" or ""), tip)
+					tbl[#tbl + 1] = cell(it.is_fluid and format.number(it.need) or { "cybersyn-gui.relative-eff-stacks", tostring(it.need) }, nil, color)
+					tbl[#tbl + 1] = cell(it.capacity > 0 and ((it.gap >= 0 and "+" or "−") .. format.number(math.abs(it.gap))) or utext.NO_VALUE,
+						nil, color)
+				end
+				out[#out + 1] = tbl
+				if warned > 0 then
+					out[#out + 1] = line({ "cybersyn-gui.relative-eff-warn", tostring(warned), tostring(e.item_capacity),
+						format.number(e.fluid_capacity) }, nil, RED)
+				end
+			end
+			if e.more_items > 0 then out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(e.more_items) }) end
+			out[#out + 1] = line({ "cybersyn-gui.relative-eff-limit", e.limit >= rtext.UNLIMITED and "∞" or tostring(e.limit),
+				tostring(e.priority) })
+			if e.counting then
+				out[#out + 1] = note({ "cybersyn-gui.relative-eff-counting", tostring(math.floor(e.counting * 100)) })
+			end
+			for _, n in ipairs(e.nets) do
+				out[#out + 1] = line({ "cybersyn-gui.relative-eff-mask", network_rich(n.name), rtext.mask_text(n.mask),
+					n.trains and tostring(n.trains) or "…", n.depots and tostring(n.depots) or "…" })
+				if n.known then
+					out[#out + 1] = line({ "cybersyn-gui.relative-eff-capacity", tostring(n.item_capacity),
+						format.number(n.fluid_capacity), tostring(n.eligible) })
+					local layouts = {}
+					for i, layout_id in ipairs(n.missing) do
+						if i > 4 then
+							layouts[#layouts + 1] = "…"
+							break
+						end
+						layouts[#layouts + 1] = rtext.layout_text(storage.layouts[layout_id])
+					end
+					local allow
+					if n.accepted == false then
+						allow = { "cybersyn-gui.relative-eff-allow-all", tostring(n.allow_trains) }
+					else
+						allow = { "cybersyn-gui.relative-eff-allow", tostring(n.accepted), tostring(n.allow_trains),
+							#layouts > 0 and table.concat(layouts, ", ") or utext.NO_VALUE }
+					end
+					out[#out + 1] = line(allow, { "cybersyn-gui.relative-eff-allow-tooltip" },
+						n.allow_trains == 0 and { 1, 0.45, 0.4 } or nil)
+				end
+			end
+			out[#out + 1] = line({ "cybersyn-gui.relative-eff-s", "[color=" .. S_COLOUR[e.s_colour] .. "]S[/color]",
+				{ "cybersyn-gui.relative-s-" .. e.s_colour } }, { "cybersyn-gui.relative-s-legend" })
+			return out
+		end)
+	end
 end
 
 local function event_rows_sig(rows, now)
@@ -920,7 +1048,7 @@ end
 local function render_events(state, body, kind, id, shown)
 	if not storage.diag then
 		state.cursor = nil
-		section(state, body, "events", "", function() return nil end)
+		if state.sigs["events"] ~= "" then section(state, body, "events", "", hidden) end
 		return
 	end
 	local cursor = state.cursor
@@ -931,25 +1059,38 @@ local function render_events(state, body, kind, id, shown)
 	local rows = diag.last_for_step(cursor)
 	local now = game.tick
 	shown = shown or EVENTS
-	section(state, body, "events", event_rows_sig(rows, now) .. (cursor.done and "" or "+") .. shown, function()
-		local out = { heading({ "cybersyn-gui.relative-events" }) }
-		if #rows == 0 then
-			out[#out + 1] = note(cursor.done and { kind == "train" and "cybersyn-gui.relative-events-none-train"
-				or "cybersyn-gui.relative-events-none" } or { "cybersyn-gui.relative-events-scanning" })
+	-- The rows change only when the cursor's newest row or its first row does; the ages only every AGE_STEP.
+	local step = math.floor(now / rtext.AGE_STEP)
+	local first = rows[1] and rows[1].seq or 0
+	local ec = state.events_sig
+	local events_sig
+	if ec and ec.first == first and ec.n == #rows and ec.step == step and ec.done == cursor.done and ec.shown == shown then
+		events_sig = ec.sig
+	else
+		events_sig = event_rows_sig(rows, now) .. (cursor.done and "" or "+") .. shown
+		state.events_sig = { first = first, n = #rows, step = step, done = cursor.done, shown = shown, sig = events_sig }
+	end
+	if state.sigs["events"] ~= events_sig then
+		section(state, body, "events", events_sig, function()
+			local out = { heading({ "cybersyn-gui.relative-events" }) }
+			if #rows == 0 then
+				out[#out + 1] = note(cursor.done and { kind == "train" and "cybersyn-gui.relative-events-none-train"
+					or "cybersyn-gui.relative-events-none" } or { "cybersyn-gui.relative-events-scanning" })
+				return out
+			end
+			local d = storage.diag
+			for i, ev in ipairs(rows) do
+				if i > shown then break end
+				local caption = rtext.event_row(ev, now, util.short_duration)
+				local hash = ev.item ~= 0 and d and d.item_hash[ev.item] or nil
+				local _, _, item_tooltip = hash and util.item_sprite_and_tooltip(hash)
+				if item_tooltip then caption = { "", caption, "  ", item_tooltip } end
+				out[#out + 1] = line(caption, { "cybersyn-gui.relative-event-tooltip", util.format_duration(now - ev.tick),
+					tostring(ev.seq) }, sev_color(ev.sev))
+			end
 			return out
-		end
-		local d = storage.diag
-		for i, ev in ipairs(rows) do
-			if i > shown then break end
-			local caption = rtext.event_row(ev, now, util.short_duration)
-			local hash = ev.item ~= 0 and d and d.item_hash[ev.item] or nil
-			local _, _, item_tooltip = hash and util.item_sprite_and_tooltip(hash)
-			if item_tooltip then caption = { "", caption, "  ", item_tooltip } end
-			out[#out + 1] = line(caption, { "cybersyn-gui.relative-event-tooltip", util.format_duration(now - ev.tick),
-				tostring(ev.seq) }, sev_color(ev.sev))
-		end
-		return out
-	end)
+		end)
+	end
 end
 
 local function tool(name, sprite, tooltip, handler, enabled, tags)
@@ -968,30 +1109,33 @@ end
 local function render_stop_buttons(state, body, m)
 	local station = storage.stations[state.id]
 	local has2 = station and station.entity_comb2 and station.entity_comb2.valid or false
-	section(state, body, "buttons", m.sub .. tostring(has2), function()
-		local row = {
-			type = "flow",
-			direction = "horizontal",
-			style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-			{
-				type = "button",
-				name = "open_manager",
-				caption = { "cybersyn-gui.relative-open-manager" },
-				tooltip = { m.sub == "station" and "cybersyn-gui.relative-open-manager-tooltip"
-					or "cybersyn-gui.relative-open-manager-depot-tooltip" },
-				handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
-			},
-			tool("comb1", "item/cybersyn-combinator", { "cybersyn-gui.relative-comb1" }, relative.handle.relative_comb),
-		}
-		if m.sub == "station" then
-			row[#row + 1] = tool("comb2", "item/cybersyn-combinator", { "cybersyn-gui.relative-comb2" },
-				relative.handle.relative_comb, has2)
-		end
-		row[#row + 1] = { type = "empty-widget", style = "flib_horizontal_pusher" }
-		row[#row + 1] = tool("rescan", "utility/refresh", { "cybersyn-gui.relative-rescan-later" }, nil, false)
-		row[#row + 1] = tool("test_path", "utility/rail_path_not_possible", { "cybersyn-gui.relative-test-path-later" }, nil, false)
-		return { row }
-	end)
+	local buttons_sig = m.sub .. tostring(has2)
+	if state.sigs["buttons"] ~= buttons_sig then
+		section(state, body, "buttons", buttons_sig, function()
+			local row = {
+				type = "flow",
+				direction = "horizontal",
+				style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+				{
+					type = "button",
+					name = "open_manager",
+					caption = { "cybersyn-gui.relative-open-manager" },
+					tooltip = { m.sub == "station" and "cybersyn-gui.relative-open-manager-tooltip"
+						or "cybersyn-gui.relative-open-manager-depot-tooltip" },
+					handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
+				},
+				tool("comb1", "item/cybersyn-combinator", { "cybersyn-gui.relative-comb1" }, relative.handle.relative_comb),
+			}
+			if m.sub == "station" then
+				row[#row + 1] = tool("comb2", "item/cybersyn-combinator", { "cybersyn-gui.relative-comb2" },
+					relative.handle.relative_comb, has2)
+			end
+			row[#row + 1] = { type = "empty-widget", style = "flib_horizontal_pusher" }
+			row[#row + 1] = tool("rescan", "utility/refresh", { "cybersyn-gui.relative-rescan-later" }, nil, false)
+			row[#row + 1] = tool("test_path", "utility/rail_path_not_possible", { "cybersyn-gui.relative-test-path-later" }, nil, false)
+			return { row }
+		end)
+	end
 end
 
 -- ---------------------------------------------------------------- train model and sections
@@ -1060,50 +1204,55 @@ local function render_train_head(state, body, m)
 	local kind, target = status_target(m)
 	local sig = table.concat({ m.status or -1, tostring(m.state), since, kind, tostring(target),
 		tostring(target and stop_name(kind, target)) }, "|")
-	section(state, body, "head", sig, function()
-		local key = TRAIN_STATUS_KEY[m.status]
-		local status = key and { key } or { "cybersyn-gui.trains-custom-status", tostring(m.status) }
-		local out = {
-			{
+	if state.sigs["head"] ~= sig then
+		section(state, body, "head", sig, function()
+			local key = TRAIN_STATUS_KEY[m.status]
+			local status = key and { key } or { "cybersyn-gui.trains-custom-status", tostring(m.status) }
+			local out = {
+				{
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+					label(status, { style = "bold_label" }),
+					stop_link(kind, target, INNER - 120),
+				},
+			}
+			out[#out + 1] = {
 				type = "flow",
 				direction = "horizontal",
-				style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-				label(status, { style = "bold_label" }),
-				stop_link(kind, target, INNER - 120),
-			},
-		}
-		out[#out + 1] = {
-			type = "flow",
-			direction = "horizontal",
-			style_mods = { vertical_align = "center", horizontal_spacing = 8 },
-			{
-				type = "button",
-				style = STATE_CHIP[m.state] or "cybersyn_chip_grey",
-				caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") },
-				tooltip = { "cybersyn-gui.relative-state-tooltip" },
-			},
-			label(since >= 0 and { "cybersyn-gui.relative-in-state", util.short_duration(since) } or "",
-				{ tooltip = m.state_since and util.format_duration(now - m.state_since) or nil }),
-		}
-		return out
-	end)
+				style_mods = { vertical_align = "center", horizontal_spacing = 8 },
+				{
+					type = "button",
+					style = STATE_CHIP[m.state] or "cybersyn_chip_grey",
+					caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") },
+					tooltip = { "cybersyn-gui.relative-state-tooltip" },
+				},
+				label(since >= 0 and { "cybersyn-gui.relative-in-state", util.short_duration(since) } or "",
+					{ tooltip = m.state_since and util.format_duration(now - m.state_since) or nil }),
+			}
+			return out
+		end)
+	end
 end
 
 local function render_manifest(state, body, m)
 	local parts = {}
 	for i, it in ipairs(m.manifest) do parts[i] = (it.name or "?") .. ":" .. tostring(it.quality) .. "=" .. (it.count or 0) end
-	section(state, body, "manifest", table.concat(parts, ","), function()
-		if #m.manifest == 0 then return nil end
-		local slots = {}
-		for _, it in ipairs(m.manifest) do
-			local hash = hash_item(it.name, it.quality)
-			slots[#slots + 1] = slot(hash, it.count, "default",
-				{ "", "\n", { "cybersyn-gui.amount", format.number(it.count) } })
-		end
-		local out = { heading({ "cybersyn-gui.shipment" }) }
-		for _, def in ipairs(slot_table(slots, #slots)) do out[#out + 1] = def end
-		return out
-	end)
+	local manifest_sig = table.concat(parts, ",")
+	if state.sigs["manifest"] ~= manifest_sig then
+		section(state, body, "manifest", manifest_sig, function()
+			if #m.manifest == 0 then return nil end
+			local slots = {}
+			for _, it in ipairs(m.manifest) do
+				local hash = hash_item(it.name, it.quality)
+				slots[#slots + 1] = slot(hash, it.count, "default",
+					{ "", "\n", { "cybersyn-gui.amount", format.number(it.count) } })
+			end
+			local out = { heading({ "cybersyn-gui.shipment" }) }
+			for _, def in ipairs(slot_table(slots, #slots)) do out[#out + 1] = def end
+			return out
+		end)
+	end
 end
 
 local function render_route(state, body, m)
@@ -1114,103 +1263,113 @@ local function render_route(state, body, m)
 		tostring(m.p_station_id and stop_name("station", m.p_station_id)),
 		tostring(m.r_station_id and stop_name("station", m.r_station_id)),
 		tostring(m.depot_id and stop_name("depot", m.depot_id)), dispatched, refuel }, "|")
-	section(state, body, "route", sig, function()
-		local out = {}
-		local s = m.status
-		if (m.p_station_id or m.r_station_id) and s and s >= STATUS_TO_P and s <= STATUS_R then
+	if state.sigs["route"] ~= sig then
+		section(state, body, "route", sig, function()
+			local out = {}
+			local s = m.status
+			if (m.p_station_id or m.r_station_id) and s and s >= STATUS_TO_P and s <= STATUS_R then
+				out[#out + 1] = {
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+					stop_link("station", m.p_station_id, math.floor((INNER - 24) / 2)),
+					label("→"),
+					stop_link("station", m.r_station_id, math.floor((INNER - 24) / 2)),
+				}
+			end
 			out[#out + 1] = {
 				type = "flow",
 				direction = "horizontal",
 				style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-				stop_link("station", m.p_station_id, math.floor((INNER - 24) / 2)),
-				label("→"),
-				stop_link("station", m.r_station_id, math.floor((INNER - 24) / 2)),
+				label({ "cybersyn-gui.relative-depot" }),
+				stop_link("depot", m.depot_id, INNER - 80),
 			}
-		end
-		out[#out + 1] = {
-			type = "flow",
-			direction = "horizontal",
-			style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-			label({ "cybersyn-gui.relative-depot" }),
-			stop_link("depot", m.depot_id, INNER - 80),
-		}
-		if dispatched >= 0 then
-			out[#out + 1] = line({ "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) })
-		end
-		out[#out + 1] = line({ "cybersyn-gui.relative-refuel",
-			refuel >= 0 and { "cybersyn-gui.time-ago", util.short_duration(refuel) } or { "cybersyn-gui.never" } })
-		return out
-	end)
+			if dispatched >= 0 then
+				out[#out + 1] = line({ "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) })
+			end
+			out[#out + 1] = line({ "cybersyn-gui.relative-refuel",
+				refuel >= 0 and { "cybersyn-gui.time-ago", util.short_duration(refuel) } or { "cybersyn-gui.never" } })
+			return out
+		end)
+	end
 end
 
 local function render_schedule(state, body, m)
 	local sig = tostring(state.schedule and state.schedule.tick) .. ":" .. tostring(m.current)
-	section(state, body, "schedule", sig, function()
-		local records = m.schedule
-		if #records == 0 then return nil end
-		local out = { heading({ "cybersyn-gui.relative-schedule" }) }
-		for i, r in ipairs(records) do
-			local row = rtext.schedule_row(i, r, m.current)
-			out[#out + 1] = line(row.caption, nil, row.active and { 1, 0.74, 0.4 } or nil)
-		end
-		return out
-	end)
+	if state.sigs["schedule"] ~= sig then
+		section(state, body, "schedule", sig, function()
+			local records = m.schedule
+			if #records == 0 then return nil end
+			local out = { heading({ "cybersyn-gui.relative-schedule" }) }
+			for i, r in ipairs(records) do
+				local row = rtext.schedule_row(i, r, m.current)
+				out[#out + 1] = line(row.caption, nil, row.active and { 1, 0.74, 0.4 } or nil)
+			end
+			return out
+		end)
+	end
 end
 
 local function render_signal(state, body, m)
 	local sig = m.signal and tostring(m.signal.unit_number) or ""
-	section(state, body, "signal", sig, function()
-		if not m.signal then return nil end
-		return {
-			{
-				type = "flow",
-				direction = "horizontal",
-				style_mods = { vertical_align = "center", horizontal_spacing = 8 },
-				label({ "cybersyn-gui.relative-waiting-signal" }),
+	if state.sigs["signal"] ~= sig then
+		section(state, body, "signal", sig, function()
+			if not m.signal then return nil end
+			return {
 				{
-					type = "button",
-					name = "locate_signal",
-					caption = { "cybersyn-gui.relative-locate" },
-					tooltip = { "cybersyn-gui.relative-locate-signal-tooltip" },
-					handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_signal },
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { vertical_align = "center", horizontal_spacing = 8 },
+					label({ "cybersyn-gui.relative-waiting-signal" }),
+					{
+						type = "button",
+						name = "locate_signal",
+						caption = { "cybersyn-gui.relative-locate" },
+						tooltip = { "cybersyn-gui.relative-locate-signal-tooltip" },
+						handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_signal },
+					},
 				},
-			},
-		}
-	end)
+			}
+		end)
+	end
 end
 
 local function render_train_buttons(state, body, m)
-	section(state, body, "buttons", "train", function()
-		return {
-			{
-				type = "flow",
-				direction = "horizontal",
-				style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+	local buttons_sig = "train"
+	if state.sigs["buttons"] ~= buttons_sig then
+		section(state, body, "buttons", buttons_sig, function()
+			return {
 				{
-					type = "button",
-					name = "open_manager",
-					caption = { "cybersyn-gui.relative-open-manager" },
-					tooltip = { "cybersyn-gui.relative-open-manager-train-tooltip" },
-					handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+					{
+						type = "button",
+						name = "open_manager",
+						caption = { "cybersyn-gui.relative-open-manager" },
+						tooltip = { "cybersyn-gui.relative-open-manager-train-tooltip" },
+						handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
+					},
+					{
+						type = "button",
+						name = "locate",
+						caption = { "cybersyn-gui.relative-locate" },
+						tooltip = { "cybersyn-gui.relative-locate-train-tooltip" },
+						handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
+					},
+					{ type = "empty-widget", style = "flib_horizontal_pusher" },
+					tool("path_trace", "utility/rail_path_not_possible", { "cybersyn-gui.relative-path-trace-later" }, nil, false),
 				},
-				{
-					type = "button",
-					name = "locate",
-					caption = { "cybersyn-gui.relative-locate" },
-					tooltip = { "cybersyn-gui.relative-locate-train-tooltip" },
-					handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
-				},
-				{ type = "empty-widget", style = "flib_horizontal_pusher" },
-				tool("path_trace", "utility/rail_path_not_possible", { "cybersyn-gui.relative-path-trace-later" }, nil, false),
-			},
-		}
-	end)
+			}
+		end)
+	end
 end
 
 -- ---------------------------------------------------------------- refresh
 
 local function render_banner(state, panel)
-	local paused = manager.dispatch_paused()
+	-- mod_settings mirrors the setting (scripts/main.lua grab_all_settings), without a settings.global read per refresh.
+	local paused = mod_settings.enable_planner == false
 	local by = paused and storage.manager.paused_by or nil
 	local sig = paused and ("p" .. tostring(by)) or ""
 	if state.sigs.banner == sig then return end
@@ -1233,13 +1392,16 @@ local function render_caption(state, panel, m, pd)
 		panel.subheader.caption_label.tooltip = { "", utext.read_ago(age, util.format_duration),
 			m.source == "live" and { "cybersyn-gui.relative-source-live" } or "" }
 	end
-	local button = panel.subheader.effective_button
 	local open = pd.relative_effective_open == true
-	if button.toggled ~= open then button.toggled = open end
-	local sprite = open and "utility/collapse" or "utility/expand"
-	if button.sprite ~= sprite then button.sprite = sprite end
 	local shown = m.sub == "station"
-	if button.visible ~= shown then button.visible = shown end
+	local bsig = (open and "o" or "c") .. (shown and "s" or "h")
+	if state.sigs.effective_button ~= bsig then
+		state.sigs.effective_button = bsig
+		local button = panel.subheader.effective_button
+		button.toggled = open
+		button.sprite = open and "utility/collapse" or "utility/expand"
+		button.visible = shown
+	end
 end
 
 --- Refreshes `panel` (a relative.build result) for state.kind/state.id; returns the model, nil when the subject is gone.
@@ -1266,7 +1428,7 @@ function relative.render(pd, state, panel)
 		if m.sub == "station" then
 			render_events(state, body, "station", state.id, compact and EVENTS_COMPACT or EVENTS)
 		else
-			section(state, body, "events", "", function() return nil end)
+			if state.sigs["events"] ~= "" then section(state, body, "events", "", hidden) end
 		end
 		render_stop_buttons(state, body, m)
 		return m
@@ -1491,6 +1653,7 @@ function relative.handle.relative_toggle_effective(player, pd)
 	if state then
 		state.sigs.effective = nil
 		state.fleet = nil
+		state.eff = nil
 	end
 	rerender(player, pd)
 end
@@ -1682,6 +1845,7 @@ function dev_fns.relative_dump(pi)
 	out.caption_tooltip = panel.subheader.caption_label.tooltip
 	out.banner = panel.banner.visible and panel.banner.banner_label.caption or nil
 	out.rebuilds = state.rebuilds
+	out.rebuilt = state.rebuilt
 	out.refreshes = state.refreshes
 	out.sections = {}
 	for _, s in ipairs(panel.scroll.body.children) do
@@ -1698,8 +1862,9 @@ function dev_fns.relative_dump(pi)
 	return out
 end
 
---- `n` refreshes of the open panel, profiled (the PLAN3 §5 row 5 gate: ≤ 0.2 ms per refresh).
-function dev_fns.relative_refresh_ms(pi, n)
+--- `n` refreshes of the open panel, profiled (the PLAN3 §5 row 5 gate: ≤ 0.2 ms per refresh). With `rebuild`, every
+--- section is rebuilt each time (the signatures are dropped first): the cost of a refresh in which everything changed.
+function dev_fns.relative_refresh_ms(pi, n, rebuild)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
@@ -1707,13 +1872,50 @@ function dev_fns.relative_refresh_ms(pi, n)
 	local panel = frame[PANEL]
 	n = n or 1
 	local total = game.create_profiler()
-	for _ = 1, n do relative.render(pd, pd.relative, panel) end
+	for _ = 1, n do
+		if rebuild then pd.relative.sigs = {} end
+		relative.render(pd, pd.relative, panel)
+	end
 	total.stop()
 	local avg = game.create_profiler()
 	avg.stop()
 	avg.add(total)
 	avg.divide(n)
 	return { "", "n=", n, " total ", total, " avg ", avg }
+end
+
+--- One refresh of the open stop panel split into its steps, each timed (where a refresh spends its time).
+function dev_fns.relative_profile(pi)
+	local player, pd = dev_context(pi)
+	local open = pd.relative_open
+	if not open or open.kind ~= "stop" then return "no stop panel open" end
+	local panel = mount_of(player, "stop")[PANEL]
+	local state = pd.relative
+	local body = panel.scroll.body
+	local out = { "" }
+	local function step(name, fn)
+		local p = game.create_profiler()
+		local r = fn()
+		p.stop()
+		out[#out + 1] = { "", name, " ", p, "  " }
+		return r
+	end
+	state.refreshes = state.refreshes + 1
+	step("banner", function() render_banner(state, panel) end)
+	local m = step("model", function() return stop_model(pd, state) end)
+	if not m then return "gone" end
+	local compact = pd.relative_effective_open == true
+	step("caption", function() render_caption(state, panel, m, pd) end)
+	step("head", function() render_stop_head(state, body, m) end)
+	step("slots", function() render_slots(state, body, m) end)
+	step("unserved", function() render_unserved(state, body, m, compact) end)
+	step("deliveries", function() render_deliveries(state, body, m) end)
+	step("control", function() render_control(state, body, m) end)
+	step("setup", function() render_setup(state, body, m) end)
+	step("effective", function() render_effective(state, body, m) end)
+	step("events", function() render_events(state, body, "station", state.id, compact and EVENTS_COMPACT or EVENTS) end)
+	step("buttons", function() render_stop_buttons(state, body, m) end)
+	return out
 end
 
 function dev_fns.relative_toggle_effective(pi)
