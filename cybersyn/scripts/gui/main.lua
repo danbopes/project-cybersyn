@@ -13,6 +13,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
+--- @field pane_escapes {[uint]: {tick: uint, train: uint, controller: defines.controllers}}? Escapes that closed a Trains detail pane and wait to hand player.opened back to the window (manager.settle_pane_escapes)
 --- @field item_order table<string, int>
 --- @field snapshot Snapshot last complete snapshot (scripts/gui/collector.lua)
 --- @field snapshot_build Snapshot? pass in progress, with transient ids/i/r_keys/p_keys
@@ -136,7 +137,11 @@ end
 manager_gui.on_unhandled_click = trains_tab.on_row_click
 
 --- Registered for every on_gui_opened (scripts/main.lua), after the entity GUI handlers of scripts/gui.lua.
-manager_gui.on_gui_opened = relative.on_gui_opened
+--- @param e EventData.on_gui_opened
+function manager_gui.on_gui_opened(e)
+	manager.on_other_gui_opened(e)
+	relative.on_gui_opened(e)
+end
 
 --- Registered for every on_train_schedule_changed (scripts/main.lua), after Cybersyn's own handler.
 manager_gui.on_train_schedule_changed = relative.on_train_schedule_changed
@@ -363,6 +368,7 @@ end
 function manager_gui.tick(storage)
 	local manager_data = storage.manager
 	if not manager_data then return end
+	manager.settle_pane_escapes()
 	collector.tick()
 	local surface_count
 	for i, v in pairs(manager_data.players) do
@@ -393,6 +399,7 @@ end
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
+	manager.settle_pane_escapes()
 	manager.log_tab.export_tick()
 end
 

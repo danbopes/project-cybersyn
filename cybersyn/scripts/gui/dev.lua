@@ -279,6 +279,39 @@ function interface.escape(pi)
 	return state(pi)
 end
 
+--- A train stop's entity GUI opening for `pi` (station id), as on_gui_opened reaches the manager; the stop's
+--- relative panel it also opens is closed again by relative.tick (player.opened is not the stop).
+function interface.stop_gui_opened(pi, station_id)
+	local station = storage.stations[station_id]
+	local entity = station and station.entity_stop
+	if not (entity and entity.valid) then return "no stop for station " .. tostring(station_id) end
+	manager_gui.on_gui_opened({ name = defines.events.on_gui_opened, player_index = pi, gui_type = defines.gui_type.entity,
+		entity = entity, tick = game.tick })
+	return state(pi)
+end
+
+--- on_player_controller_changed for `pi`.
+function interface.controller_changed(pi)
+	manager_gui.on_controller_changed({ name = defines.events.on_player_controller_changed, player_index = pi, tick = game.tick })
+	return state(pi)
+end
+
+--- The Escape of the Trains pane that waits for its hand-back (manager.settle_pane_escapes); with `settle`, settles
+--- it now as on a later tick and for the unpinned player (the lab player is pinned), and returns what still waits.
+function interface.pane_escapes(pi, settle)
+	local pending = storage.manager.pane_escapes
+	if settle and pending and pending[pi] then
+		pending[pi].tick = game.tick - 1
+		local _, pd = context(pi)
+		local pinning = pd.pinning
+		pd.pinning = false
+		manager.settle_pane_escapes()
+		pd.pinning = pinning
+	end
+	pending = storage.manager.pane_escapes
+	return pending and pending[pi] or nil
+end
+
 --- /cybersyn-reset-gui for player `pi`.
 function interface.reset_gui(pi)
 	local player = context(pi)

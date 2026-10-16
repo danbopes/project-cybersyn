@@ -1,8 +1,10 @@
 -- PLAN3 phase 9 (§4.11): the Trains detail pane. A row click selects the train and opens a 320 px pane 12 px right of
--- the table, which gives up Shipment width first; the pane holds one camera per player on the front stock and the
--- train panel of relative.lua, whose sections equal the vanilla-window panel's for the same train. The selection
--- survives renders, filters that hide the row and a closed window; Esc, the pane's × and a second click close it; a
--- train that loses its entity clears it. The manager tick refreshes the mounted panel.
+-- the table, which loses its Shipment column (and on narrow windows more columns, so the status keeps its minimum);
+-- the pane holds one camera per player on the front stock and the train panel of relative.lua, whose sections equal
+-- the vanilla-window panel's for the same train. On short windows the camera shrinks or goes so the panel body stays
+-- readable. The selection survives renders, filters that hide the row and a closed window; Esc, the pane's × and a
+-- second click close it, but a GUI or a controller change that replaces the window closes the window instead; a train
+-- that loses its entity clears it. The manager tick refreshes the mounted panel.
 
 local D, pi = lab.D, lab.pi
 local CLOSE = "manager_trains_pane_close"
@@ -67,22 +69,23 @@ lab.suite("37_trains_pane", {
 		lab.check("select: the columns fill the narrower table", p.columns_total <= p.table_width and
 			p.columns_total >= p.table_width - 8, { p.columns_total, p.table_width })
 		local w0, w1 = widths(p0), widths(p)
-		lab.check("select: Shipment gives up width, whole slots, at least 3", w1.shipment < w0.shipment and
-			w1.shipment % 32 == 0 and w1.shipment >= 96, { w0.shipment, w1.shipment })
+		lab.check("select: the Shipment column goes (the pane shows the cargo), nothing else", w0.shipment and
+			w1.shipment == nil and line(p.dropped) == line({ "shipment" }), { w0.shipment, p.dropped })
 		local others = true
 		for col, w in pairs(w1) do
-			if col ~= "shipment" and col ~= "train_status" and w1.shipment > 96 and w ~= w0[col] then others = false end
+			if col ~= "train_status" and w ~= w0[col] then others = false end
 		end
-		lab.check("select: the other fixed columns keep their width while Shipment has slots to give", others, { w0, w1 })
+		lab.check("select: the other fixed columns keep their width, the status takes the rest", others and
+			w1.train_status >= 260, { w0, w1 })
 		local rows_ok, styles_ok = #p.rows == #d.ids, true
 		for i, r in ipairs(p.rows) do
 			if r.height ~= 36 or r.id ~= d.ids[i] then rows_ok = false end
 			local want = r.id == id and "cybersyn_train_row_selected" or
 				(i % 2 == 0 and "cybersyn_train_row_dark" or "cybersyn_train_row_light")
 			if r.style ~= want then styles_ok = false end
-			if r.shipment_width ~= w1.shipment or r.slots ~= w1.shipment / 32 then rows_ok = false end
+			if r.shipment_visible ~= false or r.cells ~= p0.rows[i].cells:gsub(",shipment$", "") then rows_ok = false end
 		end
-		lab.check("select: rows stay whole, same order, slot tables at the new capacity", rows_ok, p.rows)
+		lab.check("select: rows stay whole, same order, their Shipment cells hidden in place", rows_ok, p.rows)
 		lab.check("select: only the selected row has the selected style", styles_ok, p.rows)
 		local rows = remote.call(D, "rows", pi, "trains")
 		lab.check("select: rows measured with the pane (no -1) == rows listed", rows.rendered == #d.ids, rows)
@@ -90,8 +93,11 @@ lab.suite("37_trains_pane", {
 			{ p.height, rows.computed })
 		lab.check("select: camera 300x180 at zoom 0.5 on the front stock", p.camera and p.camera.width == 300 and
 			p.camera.height == 180 and p.camera.zoom == 0.5 and p.camera.entity == front_unit(id), p.camera)
-		lab.check("select: the panel body is capped inside the pane", p.body_max and p.body_max > 0 and
-			p.body_max < p.height, { p.body_max, p.height })
+		lab.check("select: camera, panel chrome and body fit the pane", p.body_max and p.body_max >= 120 and
+			p.fixed + p.camera_gap + p.camera.height + p.body_max <= p.height, { p.body_max, p.height })
+		lab.check("select: the panel's own subheader, banner and Open in manager are hidden in the pane",
+			p.panel_subheader == false and p.panel_banner == false and p.open_manager == false,
+			{ p.panel_subheader, p.panel_banner, p.open_manager })
 		lab.check("select: no full rebuild of the rows", trains_dump().last_result ~= "rebuilt", trains_dump().last_result)
 	end,
 
@@ -152,9 +158,10 @@ lab.suite("37_trains_pane", {
 		local styles = true
 		for i, r in ipairs(p.rows) do
 			if r.style ~= (i % 2 == 0 and "cybersyn_train_row_dark" or "cybersyn_train_row_light") or
-				r.shipment_width ~= ctx.p0.rows[i].shipment_width then styles = false end
+				r.shipment_width ~= ctx.p0.rows[i].shipment_width or r.slots ~= ctx.p0.rows[i].slots or
+				r.cells ~= ctx.p0.rows[i].cells then styles = false end
 		end
-		lab.check("deselect: the rows' stripes and slot widths come back", styles, p.rows)
+		lab.check("deselect: the rows' stripes, cells and slot tables come back", styles, p.rows)
 
 		-- The pane's ×, and Esc: the pane closes, the window stays.
 		remote.call(D, "select_train", pi, ctx.id)
@@ -165,10 +172,35 @@ lab.suite("37_trains_pane", {
 		local s = remote.call(D, "escape", pi)
 		p = pane()
 		lab.check("Esc closes the pane, the window stays open", s.is_open and p.selected == nil and not p.visible, { s.is_open, p.selected })
+		lab.check("Esc: the window's player.opened waits for a later tick", p.escape_pending == true)
+		local left = remote.call(D, "pane_escapes", pi, true)
+		s = remote.call(D, "state", pi)
+		lab.check("Esc: settled on a later tick with no other GUI, the window stays open", left == nil and s.is_open, { left, s.is_open })
 		s = remote.call(D, "escape", pi)
 		lab.check("a second Esc closes the window", s.is_open == false, s.is_open)
 		remote.call(D, "open", pi)
 		remote.call(D, "select_tab", pi, "trains")
+
+		-- on_gui_closed also comes when another GUI replaces the window: then the window closes, as before the pane.
+		remote.call(D, "select_train", pi, ctx.id)
+		remote.call(D, "escape", pi)
+		local station = next(lab.read("stations"))
+		s = remote.call(D, "stop_gui_opened", pi, station)
+		lab.check("a stop GUI opened in the same tick closes the window, the train stays selected", s.is_open == false and
+			pane().selected == ctx.id and pane().escape_pending == false, { s.is_open, pane().selected })
+		remote.call(D, "relative_close", pi)
+		remote.call(D, "open", pi)
+		remote.call(D, "select_tab", pi, "trains")
+		remote.call(D, "update", pi, 1)
+		p = pane()
+		lab.check("reopened after that: the pane is back", p.selected == ctx.id and p.visible and p.open ~= nil, p.selected)
+		remote.call(D, "escape", pi)
+		s = remote.call(D, "controller_changed", pi)
+		lab.check("a controller change after Esc closes the window too", s.is_open == false and pane().selected == ctx.id,
+			{ s.is_open, pane().selected })
+		remote.call(D, "open", pi)
+		remote.call(D, "select_tab", pi, "trains")
+		remote.call(D, "deselect_train", pi)
 
 		-- Closed and reopened with a train selected: the pane comes back with its panel.
 		remote.call(D, "select_train", pi, ctx.id)
@@ -201,6 +233,56 @@ lab.suite("37_trains_pane", {
 		remote.call(D, "update", pi, 1)
 		lab.check("deselected: header and rows at full width again", pane().table_width == ctx.p0.table_width)
 
+		remote.call(D, "close", pi)
+	end,
+
+	-- Narrow and short windows, which the 4K shots do not cover: the columns fit the narrower table with the status at
+	-- its minimum, camera, panel chrome and body fit the pane, rows stay whole; the same with the filter row shown
+	-- (the dispatcher is paused throughout, so the tab's banner shows too); grouped rows keep their depot name.
+	function(ctx)
+		remote.call(D, "open", pi)
+		remote.call(D, "select_tab", pi, "trains")
+		remote.call(D, "clear_filters", pi)
+		local screens = {
+			{ "1080p/2.0", 1920, 1080, 2.0 }, { "1080p/1.75", 1920, 1080, 1.75 }, { "1080p/1.5", 1920, 1080, 1.5 },
+			{ "1080p/1.25", 1920, 1080, 1.25 }, { "1440p/2.0", 2560, 1440, 2.0 }, { "1440p/1.5", 2560, 1440, 1.5 },
+			{ "768p/1.0", 1366, 768, 1.0 },
+		}
+		local short = {}
+		for _, strips in ipairs({ false, true }) do
+			if strips then remote.call(D, "set_filter", pi, { network = "signal-A" }) end
+			for _, sc in ipairs(screens) do
+				remote.call(D, "set_layout", pi, sc[2], sc[3], sc[4])
+				remote.call(D, "select_train", pi, ctx.id)
+				remote.call(D, "update", pi, 1)
+				local p = pane()
+				local w = widths(p)
+				local name = sc[1] .. (strips and " with the filter row" or "")
+				lab.check(name .. ": the columns fit the table and the status keeps 260 px", p.columns_total <= p.table_width and
+					(w.train_status or 0) >= 260, { p.columns_total, p.table_width, p.columns, p.dropped })
+				local cam = p.camera and p.camera.visible and (p.camera.height + p.camera_gap) or 0
+				lab.check(name .. ": camera, panel chrome and body fit the pane", p.visible and p.body_max and p.body_max >= 0 and
+					p.fixed + cam + p.body_max <= p.height and (cam == 0 or p.body_max >= 120),
+					{ height = p.height, camera = p.camera, body = p.body_max })
+				local rows = remote.call(D, "rows", pi, "trains")
+				local listed = #trains_dump().ids
+				lab.check(name .. ": rows measured with the pane == rows listed", rows.rendered == math.min(rows.computed, listed),
+					{ rows, listed })
+				short[#short + 1] = name .. " " .. p.height .. "=" .. (cam > 0 and p.camera.height or 0) .. "+" .. p.body_max
+			end
+		end
+		lab.info("pane height = camera + body: " .. table.concat(short, ", "))
+		remote.call(D, "clear_filters", pi)
+		remote.call(D, "set_layout", pi, 1920, 1080, 1.5)
+		remote.call("cybersyn-manager-dev-trains", "set_grouped", pi, true)
+		remote.call(D, "select_train", pi, ctx.id)
+		remote.call(D, "update", pi, 2)
+		local p = pane()
+		lab.check("1080p/1.5 grouped: the depot name keeps 120 px, compositions note dropped", p.group and
+			p.group.name >= 120 and p.group.comps == false, p.group)
+		remote.call("cybersyn-manager-dev-trains", "set_grouped", pi, false)
+		remote.call(D, "deselect_train", pi)
+		lab.big_screen(pi)
 		lab.dev("set_setting", "cybersyn-enable-planner", ctx.planner)
 		remote.call(D, "close", pi)
 	end,

@@ -42,17 +42,78 @@ test("table_width: the detail pane and its gap come off the content width", func
 	assert_eq(l.PANE_WIDTH + l.PANE_GAP, 332)
 end)
 
-test("shrink_first: the moved column gives up its width before the others", function()
+test("train_widths: closed, the table takes the content width and keeps every column", function()
 	local l = logic()
-	local cols = { { "id", 60 }, { "status", 0 }, { "net", 100, min = 60 }, { "ship", 192, min = 96 } }
-	local moved = l.shrink_first(cols, "ship")
-	assert_eq(moved[1][1], "ship")
-	assert_eq(#moved, 4)
-	assert_eq(cols[1][1], "id", "the input keeps its order")
-	-- 100 px short: list order takes 40 from net first; shrink_first takes 96 from ship and only the last 4 from net.
-	assert_eq(l.allocate(cols, nil, 552, "status", 300), { id = 60, net = 60, ship = 132, status = 300 })
-	assert_eq(l.allocate(moved, nil, 552, "status", 300), { id = 60, net = 96, ship = 96, status = 300 })
-	assert_eq(l.allocate(moved, nil, 652, "status", 300), { id = 60, net = 100, ship = 192, status = 300 })
+	for _, cw in ipairs({ 912, 1392, 2000 }) do
+		local w = l.train_widths(cw, {}, false)
+		assert_eq(w.cw, cw)
+		assert_eq(next(w.dropped), nil, "nothing dropped at " .. cw)
+		assert_true(w.shipment ~= nil and w.shipment % 32 == 0, "shipment in whole slots at " .. cw)
+		assert_true(l.train_columns_total(w) <= cw, "columns fit at " .. cw)
+		-- Under 1,100 px the closed table squeezes the status below its minimum (the phase 7 window floors).
+		assert_true(cw < 1100 or w.train_status >= l.TRAIN_STATUS_MIN, "status keeps its minimum at " .. cw)
+		assert_true(w.group_comps and w.group_bypass and w.group_name >= 120, "group row whole at " .. cw)
+	end
+	-- Unchanged from before the pane: 1392 gives Shipment its six slots.
+	assert_eq(l.train_widths(1392, {}, false).shipment, 192)
+end)
+
+test("train_widths: with the pane, Shipment goes and the columns fit down to the narrowest window", function()
+	local l = logic()
+	-- Content widths: 912 = the 960 px window floor (table 580), 1104 = 1080p/1.25 (772), 1231 = 1440p/1.5 (899),
+	-- 1392 = 4K/1.5 and 1080p/1.0 (1060).
+	for _, cw in ipairs({ 912, 1000, 1104, 1231, 1300, 1392, 2000 }) do
+		for _, hidden in ipairs({ {}, { network = true, layout = true, depot = true }, { fuel = true, last_refuel = true } }) do
+			local w = l.train_widths(cw, hidden, true)
+			local at = cw .. " " .. tostring(next(hidden))
+			assert_eq(w.cw, cw - 332, at)
+			assert_eq(w.shipment, nil, "Shipment dropped at " .. at)
+			assert_true(w.dropped.shipment, at)
+			assert_true(l.train_columns_total(w) <= w.cw, "columns fit at " .. at .. ": " .. l.train_columns_total(w))
+			assert_true(w.train_status >= l.TRAIN_STATUS_MIN, "status " .. w.train_status .. " at " .. at)
+			assert_true(w.train_id ~= nil and w.state ~= nil, "id and state stay at " .. at)
+			assert_true(w.group_name >= 120, "group name " .. w.group_name .. " at " .. at)
+			for k in pairs(hidden) do assert_eq(w[k], nil, k .. " stays hidden at " .. at) end
+		end
+	end
+	-- 4K/1.5: only Shipment goes; Network gives up a little width.
+	local w = l.train_widths(1392, {}, true)
+	assert_eq(w.network ~= nil and w.layout ~= nil and w.depot ~= nil and w.last_refuel ~= nil and w.fuel ~= nil, true)
+	assert_eq(w.train_status, 260)
+	-- The 960 px floor: refuel, fuel, layout, network and depot go too; id, status, state and time in state stay.
+	w = l.train_widths(912, {}, true)
+	local dropped = {}
+	for k in pairs(w.dropped) do dropped[#dropped + 1] = k end
+	table.sort(dropped)
+	assert_eq(dropped, { "depot", "fuel", "last_refuel", "layout", "network", "shipment" })
+	assert_eq(w.time_in_state, 72)
+	-- 1080p/1.25 (table 772): Shipment, refuel, fuel and layout.
+	dropped = {}
+	for k in pairs(l.train_widths(1104, {}, true).dropped) do dropped[#dropped + 1] = k end
+	table.sort(dropped)
+	assert_eq(dropped, { "fuel", "last_refuel", "layout", "shipment" })
+	-- The group row drops its compositions note, then the Bypassed chip, before its name gets under 120.
+	assert_true(not w.group_comps and not w.group_bypass, "group at 912")
+	w = l.train_widths(1104, {}, true)
+	assert_true(not w.group_comps and w.group_bypass, "group at 1104")
+end)
+
+test("pane_split: the body keeps its minimum, the camera shrinks and then goes", function()
+	local l = logic()
+	-- 4K/1.5: 27 rows.
+	assert_eq({ l.pane_split(36 + 27 * 36) }, { 180, 1008 - 104 - 190 })
+	-- 1080p/1.5 without strips: 10 rows.
+	assert_eq({ l.pane_split(36 + 10 * 36) }, { 162, 120 })
+	-- 1080p/2.0: 5 rows, and the 3-row floor.
+	assert_eq({ l.pane_split(216) }, { 0, 112 })
+	assert_eq({ l.pane_split(144) }, { 0, 40 })
+	for h = 144, 1100, 4 do
+		local camera, body = l.pane_split(h)
+		local used = l.PANE_FIXED + (camera > 0 and camera + l.PANE_CAMERA_GAP or 0) + body
+		assert_true(used <= h and body >= 0, "height " .. h)
+		assert_true(camera == 0 or (camera >= l.PANE_CAMERA_MIN and camera <= 180), "camera at " .. h)
+		assert_true(camera == 0 or body >= l.PANE_BODY_MIN, "body at " .. h)
+	end
 end)
 
 test("fit_slots: one line, the last slot turns into the overflow count", function()

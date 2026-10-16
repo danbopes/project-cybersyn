@@ -1544,7 +1544,8 @@ local function render_signal(state, body, m)
 end
 
 local function render_train_buttons(state, body, m)
-	local buttons_sig = "train"
+	-- In the manager's Trains pane the train is already the selected row: no Open in manager.
+	local buttons_sig = state.pane and "pane" or "train"
 	if state.sigs["buttons"] ~= buttons_sig then
 		section(state, body, "buttons", buttons_sig, function()
 			return {
@@ -1557,6 +1558,7 @@ local function render_train_buttons(state, body, m)
 						name = "open_manager",
 						caption = { "cybersyn-gui.relative-open-manager" },
 						tooltip = { "cybersyn-gui.relative-open-manager-train-tooltip" },
+						visible = not state.pane,
 						handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
 					},
 					{
@@ -1578,7 +1580,7 @@ end
 
 local function render_banner(state, panel)
 	-- mod_settings mirrors the setting (scripts/main.lua grab_all_settings), without a settings.global read per refresh.
-	local paused = mod_settings.enable_planner == false
+	local paused = mod_settings.enable_planner == false and not state.pane
 	local by = paused and storage.manager.paused_by or nil
 	local sig = paused and ("p" .. tostring(by)) or ""
 	if state.sigs.banner == sig then return end
@@ -1787,10 +1789,15 @@ function relative.mount(pd, parent, kind, id, body_height)
 	local state = pd.relative_pane
 	if not panel then
 		panel = relative.build(parent, kind, id)
+		-- The pane's own subheader names the train and the tab shows the paused banner.
+		panel.subheader.visible = false
+		-- The scrollbar then sits inside the panel instead of widening it.
+		panel.scroll.style.horizontally_stretchable = true
 		state = nil
 	end
 	if not (state and state.kind == kind and state.id == id) then
 		state = new_state(kind, id)
+		state.pane = true
 		pd.relative_pane = state
 	end
 	panel.tags = { kind = kind, id = id, pane = true }
@@ -1982,11 +1989,13 @@ end
 function relative.on_train_schedule_changed(e)
 	local manager_data = storage.manager
 	if not manager_data then return end
-	-- Cybersyn changes a schedule on every dispatch: read the train only when some train panel is open.
+	-- Cybersyn changes a schedule on every dispatch: read the train only when some train panel is open, and allocate
+	-- nothing.
 	local id
 	for _, pd in pairs(manager_data.players) do
-		for _, state in pairs({ pd.relative, pd.relative_pane }) do
-			if state.kind == "train" then
+		for k = 1, 2 do
+			local state = k == 1 and pd.relative or pd.relative_pane
+			if state and state.kind == "train" then
 				if not id then
 					local train = e.train
 					if not (train and train.valid) then return end

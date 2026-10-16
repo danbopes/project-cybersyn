@@ -62,6 +62,28 @@ end
 logic.PANE_WIDTH = 320
 logic.PANE_GAP = 12
 
+-- The pane's fixed parts around its camera and the train panel's scroll body: the pane's subheader 36, the mount's
+-- paddings 20, the panel's footer 40 and the frames' borders 8 (the panel's own subheader and paused banner are
+-- hidden in the pane: the pane's subheader and the tab's banner say the same).
+logic.PANE_FIXED = 36 + 20 + 40 + 8
+logic.PANE_CAMERA_GAP = 10
+logic.PANE_CAMERA_HEIGHT = 180
+logic.PANE_CAMERA_MIN = 90
+logic.PANE_BODY_MIN = 120
+
+--- How the pane's height splits between the camera and the train panel's scroll body: the body keeps
+--- PANE_BODY_MIN first, the camera shrinks to make room and is dropped below PANE_CAMERA_MIN.
+--- @param height int the pane's height in logical px
+--- @return int camera the camera's height, 0 = no camera
+--- @return int body the scroll body's height cap, never negative
+function logic.pane_split(height)
+	local camera = math.min(logic.PANE_CAMERA_HEIGHT,
+		height - logic.PANE_FIXED - logic.PANE_CAMERA_GAP - logic.PANE_BODY_MIN)
+	if camera < logic.PANE_CAMERA_MIN then camera = 0 end
+	local body = height - logic.PANE_FIXED - (camera > 0 and camera + logic.PANE_CAMERA_GAP or 0)
+	return camera, math.max(body, 0)
+end
+
 --- The width the Trains table's columns share: the tab's content width, less the detail pane while it shows.
 --- @param content_width int
 --- @param pane boolean
@@ -71,17 +93,100 @@ function logic.table_width(content_width, pane)
 	return content_width
 end
 
---- A copy of `columns` with `key` moved to the front, so allocate takes the width a narrower table lacks from that
---- column before any other (the Trains table gives up Shipment slots for the detail pane first).
---- @param columns {[1]: string, [2]: int, min: int?}[]
---- @param key string
---- @return {[1]: string, [2]: int, min: int?}[]
-function logic.shrink_first(columns, key)
-	local out = {}
-	for _, c in ipairs(columns) do
-		if c[1] == key then table.insert(out, 1, c) else out[#out + 1] = c end
+-- ---------------------------------------------------------------- Trains table widths
+
+local TRAIN_SLOT = 32
+-- Row padding and frame borders, and the gap between two shown columns.
+local ROW_PADDING, COLUMN_GAP = 20, 8
+
+--- The Trains table's columns in display order: {key, width, min = shrinkable down to}; the status takes the rest.
+logic.TRAIN_WIDTHS = {
+	{ "train_id", 52 },
+	{ "train_status", 0 },
+	{ "network", 96, min = 64 },
+	{ "layout", 112, min = 80 },
+	{ "depot", 150, min = 100 },
+	{ "state", 128, min = 100 },
+	{ "time_in_state", 72 },
+	{ "last_refuel", 80 },
+	{ "fuel", 52 },
+	{ "shipment", 6 * TRAIN_SLOT, min = 3 * TRAIN_SLOT },
+}
+logic.TRAIN_STATUS_MIN = 260
+--- While the detail pane shows, Shipment is dropped (the pane shows the cargo), then these one at a time, as long as
+--- the status would stay under its minimum. Id, status and state always stay.
+logic.TRAIN_PANE_DROP = { "last_refuel", "fuel", "layout", "network", "depot", "time_in_state" }
+
+--- Column widths of the Trains table. The table is narrower by the detail pane while it shows; columns the pane
+--- pushed out are reported in `dropped` and have no width, like the `hidden` ones. Shipment is cut to whole slots,
+--- what that leaves goes to the status. The depot group rows keep their name at 120 px or more by dropping the
+--- compositions note, then the Bypassed chip.
+--- @param content_width int
+--- @param hidden {[string]: true} columns hidden because every listed train shares their value
+--- @param pane boolean
+--- @return {[string]: int|boolean|table} w width per shown column, cw (table width), dropped, group_name, group_comps, group_bypass
+function logic.train_widths(content_width, hidden, pane)
+	local cw = logic.table_width(content_width, pane)
+	local h, dropped = {}, {}
+	for k in pairs(hidden) do h[k] = true end
+	if pane then
+		h.shipment = true
+		dropped.shipment = true
 	end
-	return out
+	local next_drop = 0
+	local w
+	while true do
+		local shown = 0
+		for _, c in ipairs(logic.TRAIN_WIDTHS) do
+			if not h[c[1]] then shown = shown + 1 end
+		end
+		w = logic.allocate(logic.TRAIN_WIDTHS, h, cw - ROW_PADDING - (shown - 1) * COLUMN_GAP, "train_status",
+			logic.TRAIN_STATUS_MIN)
+		if not pane or w.train_status >= logic.TRAIN_STATUS_MIN then break end
+		local key
+		repeat
+			next_drop = next_drop + 1
+			key = logic.TRAIN_PANE_DROP[next_drop]
+		until key == nil or not h[key]
+		if not key then break end
+		h[key] = true
+		dropped[key] = true
+	end
+	local shipment = w.shipment
+	if shipment then
+		w.shipment = math.max(TRAIN_SLOT, math.floor(shipment / TRAIN_SLOT) * TRAIN_SLOT)
+		w.train_status = w.train_status + math.max(shipment - w.shipment, 0)
+	end
+	w.cw = cw
+	w.dropped = dropped
+	-- Group row: toggle 28, Parked 110, Inbound 100, Trains 100, Bypassed chip 90, compositions 220, the name the rest.
+	local name = cw - ROW_PADDING - 7 * COLUMN_GAP - 28 - 110 - 100 - 100 - 90 - 220
+	w.group_comps, w.group_bypass = true, true
+	if name < 120 then
+		w.group_comps = false
+		name = name + 220
+	end
+	if name < 120 then
+		w.group_bypass = false
+		name = name + 90
+	end
+	w.group_name = math.min(360, name)
+	return w
+end
+
+--- The px the shown Trains columns take with their gaps and the row padding (logic.train_widths).
+--- @param w table
+--- @return int
+function logic.train_columns_total(w)
+	local total, shown = 0, 0
+	for _, c in ipairs(logic.TRAIN_WIDTHS) do
+		local v = w[c[1]]
+		if v then
+			total = total + v
+			shown = shown + 1
+		end
+	end
+	return total + math.max(shown - 1, 0) * COLUMN_GAP + ROW_PADDING
 end
 
 --- How many slots of a one-line slot strip show items when `n` items share `capacity` slots: when they do not all

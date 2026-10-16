@@ -46,11 +46,8 @@ local PANE_CAPTION = "manager_trains_pane_caption"
 local PANE_CAMERA_FLOW = "manager_trains_pane_camera_flow"
 local PANE_MOUNT = "manager_trains_pane_mount"
 local CAMERA = "manager_trains_pane_camera"
-local CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_ZOOM = 300, 180, 0.5
-local PANE_PADDING = 10
--- The pane's fixed parts around the train panel's scroll body: pane subheader 36, camera with its top padding 190,
--- the mount's paddings 20, the panel's subheader 36, footer 40 and borders 8.
-local PANE_CHROME = 36 + PANE_PADDING + CAMERA_HEIGHT + 2 * PANE_PADDING + 36 + 40 + 8
+local CAMERA_WIDTH, CAMERA_ZOOM = 300, 0.5
+local PANE_PADDING = logic.PANE_CAMERA_GAP
 local CHIPS = "manager_trains_chip_flow"
 local DEFAULT_COLUMN = "train_id"
 local ROW_HEIGHT = sizing.ROW_HEIGHT[TAB]
@@ -72,22 +69,6 @@ local COLUMNS = { "train_id", "train_status", "network", "layout", "depot", "sta
 local SORTABLE = { train_id = true, train_status = true, network = true, layout = true, depot = true, state = true,
 	time_in_state = true, last_refuel = true, shipment = true }
 local RIGHT = { train_id = true, time_in_state = true, last_refuel = true, fuel = true }
--- {key, width, min = shrinkable down to}; the status takes the rest (logic.allocate).
-local WIDTHS = {
-	{ "train_id", 52 },
-	{ "train_status", 0 },
-	{ "network", 96, min = 64 },
-	{ "layout", 112, min = 80 },
-	{ "depot", 150, min = 100 },
-	{ "state", 128, min = 100 },
-	{ "time_in_state", 72 },
-	{ "last_refuel", 80 },
-	{ "fuel", 52 },
-	{ "shipment", 6 * SLOT, min = 3 * SLOT },
-}
-local STATUS_MIN = 260
--- With the detail pane open the table is 332 px narrower, and Shipment gives up its slots first.
-local PANE_WIDTHS = logic.shrink_first(WIDTHS, "shipment")
 local HEADER_HEIGHT = 36
 local NETWORK_COLUMNS = 3
 
@@ -824,7 +805,7 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 		target_name, _, target_parts = ctx.names(tr, kind, id)
 	end
 	local net, net_sig = network_entries(tr, ctx.sprite_of)
-	local capacity = math.floor(w.shipment / SLOT)
+	local capacity = w.shipment and math.floor(w.shipment / SLOT) or 0
 	local now = ctx.now
 	local state = tr.state and STATE_NAME[tr.state]
 	local in_state = now - (tr.state_since or now)
@@ -932,21 +913,22 @@ local function row_memo(view, color, w)
 	}
 end
 
---- The shipment cell's slot table for the row's capacity.
+--- The shipment cell's slot table for the row's capacity; empty while the column is not shown (capacity 0).
 --- @param view table
 --- @return flib.GuiElemDef
 local function shipment_table(view)
+	if view.capacity == 0 then return { type = "table", style = "slot_table", column_count = 1 } end
 	return { type = "table", style = "slot_table", column_count = view.capacity, children = shipment_children(view.tr, view.filter_item, view.capacity) }
 end
 
 --- @param view table
 --- @param color "light"|"dark"
 --- @param w table
---- @param hidden {[string]: true}
 --- @return flib.GuiElemDef
-local function build_row(view, color, w, hidden)
+local function build_row(view, color, w)
+	-- A column without a width is hidden (every train shares its value) or dropped for the detail pane.
 	local function cell(column, def)
-		def.visible = not hidden[column]
+		def.visible = w[column] ~= nil
 		return def
 	end
 	return util.hoverable({
@@ -1007,16 +989,16 @@ local function build_row(view, color, w, hidden)
 				visible = view.chip ~= nil,
 			}, SCROLL),
 		},
-		{ type = "label", style = "cybersyn_cell_value", style_mods = { width = w.time_in_state }, caption = view.in_state },
+		cell("time_in_state", { type = "label", style = "cybersyn_cell_value", style_mods = { width = w.time_in_state }, caption = view.in_state }),
 		cell("last_refuel", { type = "label", style = refuel_style(view), style_mods = { width = w.last_refuel }, caption = refuel_label(view) }),
 		cell("fuel", { type = "label", style = "cybersyn_cell_value", style_mods = { width = w.fuel },
 			caption = view.fuel and (view.fuel .. "%") or "" }),
-		{
+		cell("shipment", {
 			type = "flow",
 			style = "cybersyn_cell_flow",
 			style_mods = { width = w.shipment },
 			shipment_table(view),
-		},
+		}),
 	}, SCROLL)
 end
 
@@ -1028,22 +1010,18 @@ end
 --- @param w table
 local function resize_row(row, view, m, w)
 	local c = row.children
-	c[1].style.width = w.train_id
-	local status = c[2]
-	status.style.width = w.train_status
-	local target = status.children[2]
+	for i, column in ipairs(COLUMNS) do
+		local cell = c[i]
+		local width = w[column]
+		if cell.visible ~= (width ~= nil) then cell.visible = width ~= nil end
+		if width and column ~= "depot" then cell.style.width = width end
+	end
+	local target = c[2].children[2]
 	if target.visible then
 		name_cell.resize(target, view.target_parts or parts_of(view.target_name), math.max(w.train_status - 160, 80), true)
 	end
-	if w.network then c[3].style.width = w.network end
-	if w.layout then c[4].style.width = w.layout end
 	if w.depot then name_cell.resize(c[5], parts_of(view.depot_name), w.depot) end
-	c[6].style.width = w.state
-	c[7].style.width = w.time_in_state
-	if w.last_refuel then c[8].style.width = w.last_refuel end
-	if w.fuel then c[9].style.width = w.fuel end
 	local ship = c[10]
-	ship.style.width = w.shipment
 	if m.cap ~= view.capacity then
 		ship.clear()
 		gui.add(ship, shipment_table(view))
@@ -1134,7 +1112,7 @@ local function update_row(row, view, m, color, w, budget)
 		local style = refuel_style(view)
 		if cell.style.name ~= style then
 			cell.style = style
-			cell.style.width = w.last_refuel
+			if w.last_refuel then cell.style.width = w.last_refuel end
 		end
 		cell.caption = refuel_label(view)
 		m.refuel = rsig
@@ -1313,9 +1291,10 @@ local function group_children(view, w)
 			style = "cybersyn_small_chip_grey",
 			caption = { "cybersyn-gui.trains-group-bypassed" },
 			tooltip = { "cybersyn-gui.trains-group-bypassed-tooltip", tostring(view.bypass) },
-			visible = view.bypass > 0,
+			visible = view.bypass > 0 and w.group_bypass,
 		},
-		{ type = "label", style = "cybersyn_subheader_note", caption = view.comps, tooltip = { "cybersyn-gui.trains-group-compositions" } },
+		{ type = "label", style = "cybersyn_subheader_note", caption = view.comps, tooltip = { "cybersyn-gui.trains-group-compositions" },
+			visible = w.group_comps },
 	}
 end
 
@@ -1451,30 +1430,31 @@ local function status_header_tooltip(hidden, values, ctx)
 	return out
 end
 
---- Column widths for the content width and the hidden set.
+--- Column widths for the content width, the hidden set and the detail pane (logic.train_widths), kept while those
+--- three stay the same.
 --- @param player_data PlayerData
 --- @param hidden {[string]: true}
 --- @return table
 local function widths_for(player_data, hidden)
 	local layout = player_data.layout
+	local content_width = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
 	local pane = player_data.selected_train ~= nil
-	local cw = logic.table_width(layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH), pane)
-	local shown = 0
-	for _, c in ipairs(COLUMNS) do
-		if not hidden[c] then shown = shown + 1 end
+	local mask = 0
+	for i, c in ipairs(COLUMNS) do
+		if hidden[c] then mask = mask + 2 ^ i end
 	end
-	-- Row padding, frame borders and the gaps between the shown columns.
-	local avail = cw - 20 - (shown - 1) * 8
-	local w = logic.allocate(pane and PANE_WIDTHS or WIDTHS, hidden, avail, "train_status", STATUS_MIN)
-	local shipment = w.shipment or SLOT
-	w.shipment = math.max(SLOT, math.floor(shipment / SLOT) * SLOT)
-	-- What whole slots leave over goes to the status.
-	w.train_status = w.train_status + math.max(shipment - w.shipment, 0)
-	w.cw = cw
-	w.group_name = math.min(360, cw - 20 - 8 * 7 - 28 - 110 - 100 - 100 - 90 - 220)
-	local parts = { cw }
+	local key = mask * 2 ^ 20 + content_width * 2 + (pane and 1 or 0)
+	local state = util.gui_state(player_data, HEADER)
+	local cached = state.widths
+	if cached and cached.key == key then return cached end
+	local w = logic.train_widths(content_width, hidden, pane)
+	local parts = { w.cw }
 	for i, c in ipairs(COLUMNS) do parts[i + 1] = w[c] or 0 end
+	parts[#parts + 1] = tostring(w.group_comps) .. tostring(w.group_bypass)
 	w.sig = table.concat(parts, "|")
+	w.key = key
+	w.hidden_mask = mask
+	state.widths = w
 	return w
 end
 
@@ -1495,17 +1475,15 @@ local function sync_header(player_data, w, hidden, values, ctx, tip_sig, column,
 	if state.index ~= header.index then
 		state.hidden, state.wsig, state.sort, state.tip, state.index = nil, nil, nil, nil, header.index
 	end
-	local hidden_sig = ""
-	for _, c in ipairs(COLUMNS) do hidden_sig = hidden_sig .. (hidden[c] and "h" or "-") end
-	local changed = state.hidden ~= hidden_sig
+	local changed = state.hidden ~= w.hidden_mask
 	local resized = state.wsig ~= w.sig
 	if changed or resized then
 		for _, cell in ipairs(header.children) do
 			local c = cell.tags.column
-			cell.visible = not hidden[c]
+			cell.visible = w[c] ~= nil
 			if w[c] then cell.style.width = w[c] end
 		end
-		state.hidden, state.wsig = hidden_sig, w.sig
+		state.hidden, state.wsig = w.hidden_mask, w.sig
 	end
 	local sig = column .. (ascending and "+" or "-")
 	if changed or resized or state.sort ~= sig then
@@ -1568,7 +1546,7 @@ local function sync_pane(player_data, selected, front)
 		return
 	end
 	if state.index ~= pane.index then
-		state.height, state.caption, state.camera, state.body, state.index = nil, nil, nil, nil, pane.index
+		state.height, state.caption, state.camera, state.camera_height, state.body, state.index = nil, nil, nil, nil, nil, pane.index
 	end
 	local height = pane_height(player_data)
 	if state.height ~= height then
@@ -1580,25 +1558,32 @@ local function sync_pane(player_data, selected, front)
 		refs[PANE_CAPTION].caption = { "cybersyn-gui.trains-pane-caption", tostring(selected) }
 		state.caption = selected
 	end
+	-- A short window keeps the panel's body readable and shrinks, then drops, the camera.
+	local camera_height, body = logic.pane_split(height)
 	local flow = refs[PANE_CAMERA_FLOW]
-	local camera = flow[CAMERA]
-	if not camera then
-		camera = flow.add({ type = "camera", name = CAMERA, position = front.position, surface_index = front.surface_index,
-			zoom = CAMERA_ZOOM })
-		camera.style.width = CAMERA_WIDTH
-		camera.style.height = CAMERA_HEIGHT
-		state.camera = nil
+	if flow.visible ~= (camera_height > 0) then flow.visible = camera_height > 0 end
+	if camera_height > 0 then
+		local camera = flow[CAMERA]
+		if not camera then
+			camera = flow.add({ type = "camera", name = CAMERA, position = front.position, surface_index = front.surface_index,
+				zoom = CAMERA_ZOOM })
+			camera.style.width = CAMERA_WIDTH
+			state.camera, state.camera_height = nil, nil
+		end
+		if state.camera_height ~= camera_height then
+			camera.style.height = camera_height
+			state.camera_height = camera_height
+		end
+		-- Keyed on the train too: a train split off another keeps its front stock under a new id.
+		local unit = front.unit_number
+		if state.camera ~= unit or state.camera_train ~= selected then
+			camera.surface_index = front.surface_index
+			camera.position = front.position
+			camera.entity = front
+			camera.tooltip = { "cybersyn-gui.trains-pane-camera-tooltip", tostring(selected) }
+			state.camera, state.camera_train = unit, selected
+		end
 	end
-	local unit = front.unit_number
-	if state.camera ~= unit then
-		camera.surface_index = front.surface_index
-		camera.position = front.position
-		camera.entity = front
-		camera.tooltip = { "cybersyn-gui.trains-pane-camera-tooltip", tostring(selected) }
-		state.camera = unit
-	end
-	-- mod_settings mirrors cybersyn-enable-planner: the panel's paused banner takes height from its body.
-	local body = height - PANE_CHROME - (mod_settings.enable_planner == false and sizing.BANNER_HEIGHT or 0)
 	local open = player_data.relative_pane_open
 	if not (open and open.id == selected and open.panel and open.panel.valid and state.body == body) then
 		state.body = body
@@ -1737,7 +1722,7 @@ function trains_tab.build(map_data, player_data)
 					key = view.id,
 					build = function()
 						cells[view.id] = row_memo(view, color, w)
-						return build_row(view, color, w, hidden)
+						return build_row(view, color, w)
 					end,
 					update = function(elem)
 						cells[view.id] = update_row(elem, view, cells[view.id], color, w, budget)
@@ -1941,13 +1926,16 @@ function trains_tab.handle.on_pane_close(player, player_data)
 	util.rerender(player, player_data)
 end
 
---- Escape while the Trains tab shows the pane: the pane closes, the window stays (manager.manager_closed_by_game).
+--- Escape while the Trains tab shows the pane: the pane closes (manager.manager_closed_by_game).
 --- @param player_data PlayerData
---- @return boolean closed
+--- @return uint? train the train that was selected, nil when no pane showed
 function trains_tab.close_pane(player_data)
-	if not (player_data.selected_train and player_data.selected_tab == TAB) then return false end
+	local id = player_data.selected_train
+	if not (id and player_data.selected_tab == TAB) then return nil end
+	local pane = player_data.refs and player_data.refs[PANE]
+	if not (pane and pane.valid and pane.visible) then return nil end
 	trains_tab.select(player_data, nil)
-	return true
+	return id
 end
 
 --- relative.tick found the pane's train gone.
@@ -2065,11 +2053,13 @@ local function pane_dump(pi)
 		gap = refs[BODY].style.horizontal_spacing,
 		pane_rows_height = pane_height(pd),
 	}
+	out.fixed = logic.PANE_FIXED
+	out.camera_gap = logic.PANE_CAMERA_GAP
 	local camera = refs[PANE_CAMERA_FLOW][CAMERA]
 	if camera then
 		local front = pd.selected_train and front_stock_of(pd.selected_train)
 		out.camera = {
-			visible = camera.visible,
+			visible = refs[PANE_CAMERA_FLOW].visible and camera.visible,
 			entity = camera.entity and camera.entity.valid and camera.entity.unit_number or nil,
 			front = front and front.unit_number or nil,
 			zoom = camera.zoom,
@@ -2083,7 +2073,13 @@ local function pane_dump(pi)
 		out.panel = relative.view(open.panel, pd.relative_pane)
 		out.panel_tags = open.panel.tags
 		out.body_max = open.panel.scroll.style.maximal_height
+		local buttons = open.panel.footer.buttons.children[1]
+		out.open_manager = buttons and buttons.open_manager and buttons.open_manager.visible or false
+		out.panel_subheader = open.panel.subheader.visible
+		out.panel_banner = open.panel.banner.visible
 	end
+	local pending = storage.manager.pane_escapes
+	out.escape_pending = pending and pending[pi] ~= nil or false
 	local header = refs[HEADER]
 	local cells, total, shown = {}, 0, 0
 	for _, cell in ipairs(header.children) do
@@ -2099,12 +2095,28 @@ local function pane_dump(pi)
 	out.columns_total = total + math.max(shown - 1, 0) * 8 + 20
 	local state = util.gui_state(pd, HEADER)
 	out.table_width = tonumber(string.match(state.wsig or "", "^(%d+)"))
+	local w = state.widths
+	if w then
+		local dropped = {}
+		for k in pairs(w.dropped) do dropped[#dropped + 1] = k end
+		table.sort(dropped)
+		out.dropped = dropped
+		out.group = { name = w.group_name, comps = w.group_comps, bypass = w.group_bypass }
+	end
 	out.rows = {}
 	for i, row in ipairs(refs[SCROLL].children) do
 		local id = row.tags.train_id
 		local ship = id and row.children[10].children[1]
+		local visible = {}
+		if id then
+			for k, cell in ipairs(row.children) do
+				if cell.visible then visible[#visible + 1] = COLUMNS[k] end
+			end
+		end
 		out.rows[i] = { id = id, style = row.style.name, height = row.style.minimal_height,
-			slots = ship and ship.column_count or nil, shipment_width = id and row.children[10].style.minimal_width or nil }
+			slots = ship and ship.column_count or nil, shipment_width = id and row.children[10].style.minimal_width or nil,
+			cells = id and table.concat(visible, ",") or nil }
+		if id then out.rows[i].shipment_visible = row.children[10].visible end
 	end
 	return out
 end
