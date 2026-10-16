@@ -11,6 +11,7 @@ local inventory_tab = require("scripts.gui.inventory")
 local log_tab = require("scripts.gui.log")
 local utilization_tab = require("scripts.gui.utilization")
 local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
+local problems_tab = require("scripts.gui.problems")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local analytics = require("scripts.analytics")
@@ -20,7 +21,10 @@ local manager = {}
 
 local DEFAULT_TAB = "overview_tab"
 -- Tabs whose content gets the banner and subheader, in pane order.
-local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab", "utilization_tab", "delivery_breakdown_tab" }
+local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "problems_tab", "log_tab",
+	"utilization_tab", "delivery_breakdown_tab" }
+-- Tabs that ignore the item filter, so they never show its chip (the Problems tab lists every finding).
+local NO_ITEM_CHIP = { problems_tab = true }
 -- Tabs the station-name search applies to.
 local SEARCH_TABS = { inventory_tab = true, stations_tab = true, trains_tab = true }
 -- The last render must be this old before the title bar says how old it is.
@@ -67,6 +71,7 @@ function manager.create(player)
 		add_header(inventory_tab.create(), "inventory_tab", header),
 		add_header(stations_tab.create(widths), "stations_tab", header),
 		add_header(trains_tab.create(widths), "trains_tab", header),
+		add_header(problems_tab.create(), "problems_tab", header, problems_tab.subheader_right()),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
 	}
 	if analytics.is_enabled() then
@@ -239,6 +244,7 @@ local CONTENT_FRAMES = {
 	inventory_tab = "manager_inventory_content_frame",
 	stations_tab = "manager_stations_content_frame",
 	trains_tab = "manager_trains_tab_content_frame",
+	problems_tab = "manager_problems_content_frame",
 	log_tab = "manager_log_content_frame",
 }
 
@@ -262,6 +268,7 @@ function manager.apply_layout(player, player_data)
 	end
 	overview_tab.apply_layout(player_data, layout)
 	inventory_tab.apply_layout(player_data, layout)
+	problems_tab.apply_layout(player_data, layout)
 	log_tab.apply_layout(player_data, layout)
 	return layout
 end
@@ -359,7 +366,7 @@ function manager.refresh_chips(player_data)
 	if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
 	for _, tab in ipairs(HEADER_TABS) do
-		local flow = refs[tab .. "_chip_flow"]
+		local flow = not NO_ITEM_CHIP[tab] and refs[tab .. "_chip_flow"]
 		if flow and flow.valid then
 			flow.visible = shown
 			if shown then
@@ -554,6 +561,7 @@ local tab_builders = {
 	log_tab = log_tab,
 	utilization_tab = utilization_tab,
 	delivery_breakdown_tab = delivery_breakdown_tab,
+	problems_tab = problems_tab,
 }
 
 --- @param map_data MapData
@@ -582,6 +590,7 @@ end
 --- Train alerts as the Trains tab's badge (PLAN3 §4.6).
 --- @param player_data PlayerData
 local function refresh_badges(player_data)
+	problems_tab.refresh_tab(player_data)
 	local tab = player_data.refs.manager_trains_tab
 	if not (tab and tab.valid) then return end
 	local n = #collector.get().alerts
@@ -626,7 +635,8 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_open(player, player_data, refs)
 	-- A window built by an older version of this file survives a script update that has no version bump.
-	if not (refs.manager_filter_row and refs.manager_filter_row.valid) then
+	if not (refs.manager_filter_row and refs.manager_filter_row.valid and refs.manager_problems_tab
+			and refs.manager_problems_tab.valid) then
 		if refs.manager_window and refs.manager_window.valid then
 			refs.manager_window.destroy()
 		end
@@ -637,6 +647,7 @@ function manager.handle.manager_open(player, player_data, refs)
 	player_data.chip_sig = nil
 	player_data.collecting_shown = nil
 	player_data.trains_badge = nil
+	player_data.problems_badge = nil
 	manager.refresh_banners(player_data)
 	manager.apply_layout(player, player_data)
 	refs.manager_window.visible = true

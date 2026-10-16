@@ -6,6 +6,10 @@ local analytics = require("scripts.analytics")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local fork_migrations = require("scripts.fork-migrations")
+local lint = require("scripts.lint")
+
+-- Ticks between world-scan chunks while manager updates are off (100 stops a chunk).
+local WORLD_SCAN_NTH = 10
 
 local ceil = math.ceil
 
@@ -893,6 +897,13 @@ local function register_tick()
 	if mod_settings.manager_ups > DELTA then
 		add(ceil(60 / mod_settings.manager_ups) --[[@as uint]], function()
 			manager.tick(storage)
+		end)
+	else
+		-- Without manager updates the world scan of /cybersyn-find-problems still runs in chunks, on a handler of its
+		-- own that only looks for a running scan.
+		add(WORLD_SCAN_NTH, function()
+			local m = storage.manager
+			if m and m.lint and m.lint.world_job then lint.world_tick() end
 		end)
 	end
 	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without

@@ -102,6 +102,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field in_group boolean the train belongs to a vanilla train group (LuaTrain.group ~= "")
 --- @field group string? that group's name
 --- @field refuel_tick uint? last arrival at a refueler (Train.refuel_tick)
+--- @field refuel_from uint? since when refuelling is tracked for this train (lint.refuel_from): a train without a
+---   refuel_tick is "not refuelled" only once it is older than the threshold from here
 
 --- @class SnapshotDepotGroup depots sharing one name (PLAN3 §4.2, the Trains tab's group rows)
 --- @field ids uint[] depot stop unit numbers
@@ -152,7 +154,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field mask_or {[string]: int} OR of every Cybersyn train's mask on the network
 --- @field in_interrupt_count {[string]: int} trains inside an interrupt, per network
 --- @field not_refuelled_count {[string]: int} per network that has a refueler: trains not seen at one for an hour
----   (never, or refuel_tick older than REFUEL_COUNT_TICKS)
+---   (refuel_tick, or for a train never seen refuelling its refuel_from, older than REFUEL_COUNT_TICKS)
 --- @field group_depots {[string]: int} vanilla train group -> distinct depot names among its Cybersyn trains
 
 local function new_inventory()
@@ -593,7 +595,15 @@ local function summarize_trains(b)
 			end
 			local refuel_tick = train.refuel_tick
 			tr.refuel_tick = refuel_tick
-			local stale = not refuel_tick or now - refuel_tick > REFUEL_COUNT_TICKS
+			local refuel_from = lint.refuel_from(train)
+			tr.refuel_from = refuel_from
+			-- A train never seen refuelling counts once it had as long as the others to get there.
+			local stale
+			if refuel_tick then
+				stale = now - refuel_tick > REFUEL_COUNT_TICKS
+			else
+				stale = now - refuel_from > REFUEL_COUNT_TICKS
+			end
 			local network = train.network_name
 			if network == NETWORK_EACH then
 				if type(train.network_mask) == "table" then

@@ -1,6 +1,7 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
+local lint = require("scripts.lint")
 local rich_name = require("scripts.gui.rich-name")
 
 local util = {}
@@ -1196,13 +1197,17 @@ function util.set_log_subject(fn)
 end
 
 --- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
---- right on an item = clear the item filter, right on a train or a stop = the Log's "this train/stop" chip. Tags {kind = "station"|"depot"|"refueler"|"train"|"item", id}; the
+--- right on an item = clear the item filter, right on a train or a stop = the Log's "this train/stop" chip.
+--- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
+--- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the last world scan found it. The
 --- older tag shapes of the Stations and Trains rows are read too.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
-function util.handle_link_click(player, player_data, e)
-	local kind, id = link_target(e)
+--- @param kind string? the target when the cell's tags do not carry it (the Problems tab's pooled rows)
+--- @param id (uint|string)?
+function util.handle_link_click(player, player_data, e, kind, id)
+	if not kind then kind, id = link_target(e) end
 	if not kind then return end
 	if kind == "item" then
 		util.item_button_click(player, player_data, e, id)
@@ -1234,6 +1239,17 @@ function util.handle_link_click(player, player_data, e)
 			return
 		end
 		util.open_entity(player, player_data, locomotive)
+		return
+	end
+	if kind == "entity" then
+		local entity = lint.world_entity(id)
+		if not (entity and entity.valid) then
+			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
+		elseif e.shift then
+			util.show_on_map(player, player_data, entity)
+		else
+			util.open_entity(player, player_data, entity)
+		end
 		return
 	end
 	local record

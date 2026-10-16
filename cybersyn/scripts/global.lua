@@ -143,6 +143,7 @@
 ---@field public state_tick uint? when last_state began (the load tick for trains that predate the field)
 ---@field public delivery_id uint? id of the current delivery in the full diagnostics log
 ---@field public refuel_tick uint? last arrival at a refueler (nil = never seen refuelling)
+---@field public seen_tick uint? when Cybersyn first registered the train (nil for trains from before the field)
 ---@field public edited_tick uint? last schedule edit by a player that the diagnostics log recorded
 
 ---@alias Manifest ManifestEntry[]
