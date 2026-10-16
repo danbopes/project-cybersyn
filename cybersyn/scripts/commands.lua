@@ -228,17 +228,19 @@ local function gated(action, fn)
 	end
 end
 
---- The entity-search half of the setup checks (B8): a chunked scan on the manager tick that prints its report when it
---- is done; the snapshot-based checks live in the manager's Problems view.
+--- The entity-search half of the setup checks (B8): a chunked scan on the manager tick (or on its own nth tick while
+--- manager updates are off) that prints its report when it is done; the snapshot-based checks live in the manager's
+--- Problems tab. One scan at a time: a second request is told how far the running one is.
 --- @param command CustomCommandData
 local function find_problems_command(command)
 	local player = command.player_index and game.get_player(command.player_index) or nil
-	if (mod_settings.manager_ups or 0) <= 0 then
-		lint.scan_world_now(command.player_index)
-		return
-	end
 	local n = lint.scan_world(command.player_index)
-	local text = { "cybersyn-messages.find-problems-started", n }
+	local text
+	if n then
+		text = { "cybersyn-messages.find-problems-started", n }
+	else
+		text = { "cybersyn-messages.find-problems-running", math.floor((lint.world_progress() or 0) * 100) }
+	end
 	if player then player.print(text) else game.print(text) end
 end
 

@@ -213,6 +213,14 @@ lab.suite("39_lint", {
 		-- a phantom delivery and a vanilla train bound for a Cybersyn stop.
 		lx.refuel_since = read("stats", "refuel_since")
 		write(game.tick - 216001, "stats", "refuel_since")
+		-- Each train has its own grace from when Cybersyn first saw it (phase 6b): these were built a moment ago.
+		lx.seen = {}
+		for _, t in ipairs({ a.t1, a.train_entities[2] }) do
+			lx.seen[t.id] = read("trains", t.id, "seen_tick")
+			write(game.tick - 216001, "trains", t.id, "seen_tick")
+		end
+		lab.check("a new train has its own refuelling grace: seen_tick is set when Cybersyn registers it",
+			lx.seen[a.t1.id] ~= nil and lx.seen[a.t1.id] > lx.refuel_since, { seen = lx.seen, since = lx.refuel_since })
 		-- Manual mode keeps both trains parked and Cybersyn's (a manual switch is not a departure) while their schedules
 		-- change.
 		a.t1.manual_mode = true
@@ -289,8 +297,9 @@ lab.suite("39_lint", {
 			read("trains", l.t2.id, "item_slot_capacity") == 80, { lx.small_layout, lx.big_layout })
 		lab.check("capacity vs layout: the dispatcher records R_LAYOUT", e.reason == "R_LAYOUT" or e.pending == "R_LAYOUT", e)
 		local lf = dev("lint_findings", l.r.id, "layout")[1]
-		lab.check("capacity vs layout: the lint says layout (1 layout accepted, 2 trains), not capacity",
-			lf ~= nil and lf.a == 1 and lf.b == 2 and lf.predicts == "R_LAYOUT" and not has(l.r.id, "capacity"),
+		-- b counts the layouts the allow list keeps out that would carry the request (phase 6b: no longer the trains).
+		lab.check("capacity vs layout: the lint says layout (1 layout accepted, 1 rejected layout carries it), not capacity",
+			lf ~= nil and lf.a == 1 and lf.b == 1 and lf.predicts == "R_LAYOUT" and not has(l.r.id, "capacity"),
 			dev("lint_bits", l.r.id))
 
 		local o = lx.o
@@ -314,6 +323,8 @@ lab.suite("39_lint", {
 		lab.check("lint event when a finding appears (a = check, b = subject)", appeared ~= nil and appeared.station == d1,
 			appeared)
 
+		if lab.problems_verify then lab.problems_verify("39_lint rows") end
+
 		-- Fix them: each finding clears with its own event.
 		a.d1.stop.trains_limit = 1
 		a.train_entities[2].group = ""
@@ -324,6 +335,7 @@ lab.suite("39_lint", {
 		a.train_entities[2].manual_mode = false
 		write(0, "stations", a.r.id, "deliveries_total")
 		write(lx.refuel_since, "stats", "refuel_since")
+		for id, seen in pairs(lx.seen) do write(seen, "trains", id, "seen_tick") end
 		game.get_player(1).admin = true
 		dev("run_command", "cybersyn-recalculate-train-size", 1)
 		game.get_player(1).admin = false
@@ -399,6 +411,7 @@ lab.suite("39_lint", {
 		local n = 0
 		for _ in pairs(found) do n = n + 1 end
 		lab.info("world scan: " .. n .. " subjects with findings on layout-dev plus the rows")
+		if lab.problems_verify then lab.problems_verify("39_lint world scan") end
 
 		-- The command starts the same scan as a chunked job on the manager tick (no window needed).
 		dev("run_command", "cybersyn-find-problems", 1)

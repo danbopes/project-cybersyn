@@ -288,6 +288,7 @@ local function on_train_arrives_depot(map_data, depot_id, depot, train_entity)
 			--priority = add_available_train_to_depot,
 			last_state = train_entity.state,
 			state_tick = game.tick,
+			seen_tick = game.tick,
 			in_interrupt = train_in_interrupt(train_entity),
 		} --[[@as Train]]
 		set_train_layout(map_data, train)

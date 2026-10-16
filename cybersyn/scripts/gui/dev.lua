@@ -19,6 +19,8 @@ local dumpers = {}
 local stats_fn
 
 local manager_gui, manager
+--- Functions tab modules add with dev.add, merged into the interface when it is registered.
+local dev_functions = {}
 
 --- @param tab string "stations" or "stations_tab"
 --- @return string
@@ -35,6 +37,13 @@ end
 --- @param fn fun(player_data: PlayerData, player: LuaPlayer): any
 function dev.register_dump(tab_name, fn)
 	dumpers[canonical(tab_name)] = fn
+end
+
+--- A tab module adds a dev function of its own (loaded before dev.register publishes the interface).
+--- @param name string
+--- @param fn function
+function dev.add(name, fn)
+	dev_functions[name] = fn
 end
 
 --- The stats module may register a summary function for dev.stats().
@@ -1060,6 +1069,7 @@ function dev.register(gui_main, gui_manager)
 	manager_gui = gui_main
 	manager = gui_manager
 	if dev.enabled() and not remote.interfaces["cybersyn-manager-dev"] then
+		for name, fn in pairs(dev_functions) do interface[name] = fn end
 		remote.add_interface("cybersyn-manager-dev", interface)
 	end
 end

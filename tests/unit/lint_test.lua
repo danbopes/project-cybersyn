@@ -97,7 +97,8 @@ test("capacity: a threshold above the largest eligible train, in stacks for item
 	}, 1)
 	local _, lo = run(station(1, { ["iron-plate"] = { 5000 } }), { accepted_layouts = { [1] = true } }, fl2)
 	assert_eq(checks(lo), { "layout" })
-	assert_eq({ lo[1].a, lo[1].b, lo[1].item }, { 1, 2, "iron-plate" })
+	-- One layout accepted; one the stop rejects would carry the 50 slots.
+	assert_eq({ lo[1].a, lo[1].b, lo[1].item }, { 1, 1, "iron-plate" })
 	assert_eq(checks(select(2, run(station(1, { ["iron-plate"] = { 5000 } }), { allows_all_trains = true }, fl2))), {})
 	-- Above every train of any layout it is capacity, whatever the stop accepts.
 	local _, big = run(station(1, { ["iron-plate"] = { 50000 } }), { accepted_layouts = { [1] = true } }, fl2)
@@ -121,7 +122,15 @@ test("layout: trains on the network but none with a layout the stop accepts", fu
 	local fl = fleet({ [1] = { count = 2, item_capacity = 40, fluid_capacity = 0, mask_or = 1 } }, 1)
 	local mask, out = run(station(1, { ["iron-plate"] = { 1000 } }), { accepted_layouts = { [9] = true } }, fl)
 	assert_eq(checks(out), { "layout" })
-	assert_eq({ out[1].a, out[1].b }, { 1, 2 })
+	-- b counts the layouts kept out, not their trains: two trains of one layout are one layout (phase 6b review).
+	assert_eq({ out[1].a, out[1].b }, { 1, 1 })
+	local fl2 = fleet({
+		[1] = { count = 2, item_capacity = 40, fluid_capacity = 0, mask_or = 1 },
+		[2] = { count = 5, item_capacity = 80, fluid_capacity = 0, mask_or = 3 },
+		[3] = { count = 4, item_capacity = 80, fluid_capacity = 0, mask_or = 2 },
+	}, 3)
+	local _, two = run(station(1, { ["iron-plate"] = { 1000 } }), { accepted_layouts = { [9] = true } }, fl2)
+	assert_eq({ two[1].a, two[1].b }, { 1, 2 })
 	-- A provider is checked the same way.
 	local p = station(1, {}, { is_r = false, is_p = true })
 	assert_eq(checks(select(2, run(p, { accepted_layouts = {} }, fl))), { "layout" })
@@ -165,11 +174,16 @@ test("limit 0, same item both ways, occupancy and phantom come from the record a
 	local _, o1 = run(both, nil, fl)
 	assert_eq(checks(o1), { "same_item" })
 	assert_eq(o1[1].a, 2000)
+	assert_eq(o1[1].b, 0)
 	local inbound = station(1, {}, { is_p = true, provided = { ["iron-plate"] = 500 }, deliveries = { ["iron-plate"] = 800 } })
-	assert_eq(checks(select(2, run(inbound, nil, fl))), { "same_item" })
-	-- An item threshold of its own clears it; a stop that only requests never has it.
+	local _, o2 = run(inbound, nil, fl)
+	assert_eq(checks(o2), { "same_item" })
+	assert_eq({ o2[1].a, o2[1].b }, { 800, 1 })
+	-- The dispatcher skips the item whatever its own threshold (central-planning: R_IS_PROVIDING / P_IS_REQUESTING
+	-- read only the deliveries), so an item threshold no longer clears it (phase 6b review); a stop that only
+	-- requests never has it.
 	both.thresholds = { ["iron-plate"] = 500 }
-	assert_eq(checks(select(2, run(both, nil, fl))), {})
+	assert_eq(checks(select(2, run(both, nil, fl))), { "same_item" })
 	local r_only = station(1, { ["iron-plate"] = { 1000 } }, { deliveries = { ["iron-plate"] = -2000 } })
 	assert_eq(checks(select(2, run(r_only, nil, fl))), {})
 end)
@@ -266,4 +280,30 @@ test("mask: a request carries its combinator's mask; mask 0 is a mask finding, n
 	local _, z = run(zero, nil, fl)
 	assert_eq(checks(z), { "mask" })
 	assert_eq({ z[1].a, z[1].b }, { 0, 3 })
+end)
+
+test("rejected_layouts: mask-eligible layouts the allow list keeps out, optionally only those that carry the need", function()
+	local cap = {
+		[1] = { count = 2, item_capacity = 40, fluid_capacity = 0, mask_or = 1 },
+		[2] = { count = 3, item_capacity = 80, fluid_capacity = 50000, mask_or = 1 },
+		[3] = { count = 1, item_capacity = 120, fluid_capacity = 0, mask_or = 2 },
+	}
+	assert_eq(lint.rejected_layouts(cap, 1, false, { [1] = true }), 1)
+	assert_eq(lint.rejected_layouts(cap, 3, false, {}), 3)
+	assert_eq(lint.rejected_layouts(cap, 3, false, {}, 60), 2)
+	assert_eq(lint.rejected_layouts(cap, 3, false, {}, 30000, true), 1)
+	assert_eq(lint.rejected_layouts(cap, 3, true, {}), 0)
+	assert_eq(lint.rejected_layouts(nil, 3, false, {}), 0)
+end)
+
+test("subject_key and refuel_from: trains by negated id; tracking from first sight, never before it began", function()
+	assert_eq(lint.subject_key(LINT_SUBJECT_TRAIN, 7), -7)
+	assert_eq(lint.subject_key(LINT_SUBJECT_STATION, 7), 7)
+	assert_eq(lint.subject_key(LINT_SUBJECT_COMBINATOR, 9), 9)
+	storage.stats = { refuel_since = 1000 }
+	assert_eq(lint.refuel_from({}), 1000)
+	assert_eq(lint.refuel_from({ seen_tick = 500 }), 1000)
+	assert_eq(lint.refuel_from({ seen_tick = 5000 }), 5000)
+	storage.stats = nil
+	assert_eq(lint.refuel_from({ seen_tick = 5000 }), 5000)
 end)
