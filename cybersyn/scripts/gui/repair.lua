@@ -634,8 +634,11 @@ dev.extend({
 	may_act = function(pi)
 		return actions.may_act(game.get_player(pi))
 	end,
-	last_audit = function()
-		return actions.last_line
+	--- The last audit line; `clear` forgets it (to see that a later action writes one).
+	last_audit = function(clear)
+		local line = actions.last_line
+		if clear then actions.last_line = nil end
+		return line
 	end,
 })
 

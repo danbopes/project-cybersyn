@@ -1000,10 +1000,13 @@ local function row_entry(row, acked, ctx)
 		local req = r_st.requested[hash]
 		if req then requested = -req.count end
 	end
-	local sig = table.concat({
+	-- Everything but the clocks; the clocks (wait, read age) move every 10 s and then only their cells are written.
+	local content_sig = table.concat({
 		reason, e.a, e.b, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to), e.lost_n, e.n,
-		acked and "a" or "", inherited and "i" or "", math.floor(wait / text.READ_STEP), text.read_step(read_age), tostring(requested),
+		acked and "a" or "", inherited and "i" or "", tostring(requested),
 	}, "|")
+	local sig = content_sig .. "|" .. math.floor(wait / text.READ_STEP) .. "|" .. text.read_step(read_age)
+	local content_sigs = ctx.content_sigs
 	local widths = ctx.widths
 	local key = r_id .. "|" .. hash
 	local function tooltips()
@@ -1052,6 +1055,7 @@ local function row_entry(row, acked, ctx)
 		row = row,
 		acked = acked,
 		build = function()
+			content_sigs[key] = content_sig
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
 			local link = { [defines.events.on_gui_click] = util.handle.link_click }
 			return {
@@ -1109,6 +1113,16 @@ local function row_entry(row, acked, ctx)
 		end,
 		update = function(cells)
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
+			if content_sigs[key] == content_sig then
+				-- Only the clocks moved: the wait, and the tooltips that carry the wait and the read age.
+				cells[7].caption = wait_caption
+				cells[3].tooltip = chip
+				local requester_cell = cells[2]
+				for _, icon in ipairs(requester_cell.children[1].children) do icon.tooltip = r_tip end
+				requester_cell.children[2].tooltip = r_tip
+				return
+			end
+			content_sigs[key] = content_sig
 			cells[1].tooltip = item_tip
 			update_name_cell(cells[2], requester, "station", r_id, r_tip, acked)
 			local chip_style = acked and "cybersyn_chip_acked" or text.chip_style(reason)
@@ -1159,7 +1173,15 @@ local function render_table(player_data, model)
 	local entries = {}
 	local shown_total = 0
 	if u and not model.collecting then
-		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths }
+		local state = util.gui_state(player_data, TABLE)
+		local content_sigs = state.content_sigs
+		-- Keys that left the table leave their entry behind; dropped wholesale now and then.
+		if not content_sigs or table_size(content_sigs) > 4 * model.rows + 64 then
+			content_sigs = {}
+			state.content_sigs = content_sigs
+		end
+		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths,
+			content_sigs = content_sigs }
 		local rows = model.rows
 		for _, row in ipairs(u.open) do
 			if #entries >= rows then break end

@@ -248,6 +248,60 @@ lab.suite("39_hardening", {
 		lab.check("the tick after the last panel closed clears it", read("manager", "relative_any") == nil)
 	end,
 
+	-- Phase-10 lab gaps: the dialog's own handler checks the right again; an action with diagnostics off is still
+	-- audited (log and force line); Send home leaves the train's schedule on its depot.
+	function(ctx)
+		local setting = settings.global["cybersyn-manager-actions"].value
+		dev("set_setting", "cybersyn-manager-actions", "everyone")
+		dev("action_dialog", PI, "recalc")
+		dev("set_setting", "cybersyn-manager-actions", "nobody")
+		local seq = dev("diag_state").seq
+		local d = dev("action_dialog", PI, nil, true)
+		local recalcs = 0
+		for _, ev in ipairs(dev("diag_events", seq, 4096)) do
+			if ev.kind == "manual_action" and ev.a == 3 then recalcs = recalcs + 1 end
+		end
+		lab.check("Confirm in a dialog opened with the right, after it was taken away: refused, not audited",
+			d.ran == false and recalcs == 0, { d = d, recalcs = recalcs })
+		dev("set_setting", "cybersyn-manager-actions", "everyone")
+		-- Send home: the schedule's current record is the depot.
+		local tid, depot
+		for id, t in pairs(read("trains")) do
+			if t.manifest and t.status >= 1 and t.status <= 4 and t.depot_id then
+				tid, depot = id, t.depot_id
+				break
+			end
+		end
+		if tid then
+			dev("relative_open", PI, "train", tid)
+			dev("action_click", PI, "fail_delivery")
+			dev("action_click", PI, "fail_delivery")
+			local t = read("trains", tid)
+			local schedule = t.entity.get_schedule()
+			local current = schedule.get_records()[schedule.current]
+			local name = read("depots", depot).entity_stop.backer_name
+			lab.check("Send home: the schedule's current record is the train's depot", current and current.station == name,
+				{ current = current and current.station, depot = name })
+			dev("relative_close", PI)
+		else
+			lab.skip("Send home schedule", "no train on a delivery at this point of the run")
+		end
+		-- Diagnostics off: the action still logs and prints its audit line.
+		dev("set_setting", "cybersyn-diagnostics", "off")
+		local station = next(read("stations"))
+		dev("relative_open", PI, "stop", station)
+		dev("last_audit", true)
+		dev("action_click", PI, "rescan")
+		dev("action_click", PI, "rescan")
+		local audit = dev("last_audit")
+		lab.check("with diagnostics off, Rescan is still audited (force line)", type(audit) == "table"
+			and audit[1] == "cybersyn-messages.audit-rescan", audit)
+		dev("relative_close", PI)
+		dev("set_setting", "cybersyn-diagnostics", "basic")
+		dev("set_setting", "cybersyn-manager-actions", setting)
+		lab.check("diagnostics back on", dev("diag_state").mode == "basic")
+	end,
+
 	-- The growth sampler answers with every field the phase-7 growth gate reads.
 	function()
 		local s = dev("growth_sample", PI)
