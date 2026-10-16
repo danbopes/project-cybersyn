@@ -504,7 +504,8 @@ function diag.last_for(kind, id, n)
 end
 
 -- Rows one diag.last_for_step call examines at most. A rare entity's last rows can sit 70,000 rows back in a full
--- ring, which a panel refreshed every update cannot scan in one go.
+-- ring, which a panel refreshed every update cannot scan in one go. Measured on pY 123 (full ring 11,568 rows plus
+-- basic 1,387): a 4,096-row call 1.6-1.7 ms, about 0.4 µs per row; panels pass a smaller budget after their first.
 diag.SCAN_ROWS = 4096
 
 --- Walks both rings backwards over the rows with stop_seq < seq < below, newest first, appending the rows that match

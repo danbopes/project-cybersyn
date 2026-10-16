@@ -33,7 +33,9 @@ local INNER = WIDTH - 2 * PADDING - 12
 -- An unserved row: item 28, the chip, stock and wait, 6 px apart; the chip takes what the numbers leave.
 local UNSERVED_STOCK, UNSERVED_WAIT, UNSERVED_GAP = 76, 44, 6
 local UNSERVED_CHIP = INNER - 28 - UNSERVED_STOCK - UNSERVED_WAIT - 3 * UNSERVED_GAP
-local MOUNT = { stop = "cybersyn_relative_stop", train = "cybersyn_relative_train" }
+-- One mount per window the panel sits beside: the stop's, the locomotive's (the docked train pane: a screen frame) and
+-- each wagon's own window (anchored to it).
+local MOUNT = { stop = "cybersyn_relative_stop", train = "cybersyn_relative_train", cargo = "cybersyn_relative_cargo" }
 local PANEL = "cybersyn_relative_panel"
 local EVENTS = 10
 -- Rows of the stop's event list while the Effective config is expanded, so the panel fits a 1080p screen at scale 1.
@@ -50,6 +52,8 @@ local FLEET_TTL = 7200
 -- While no manager window keeps a snapshot, the stop is read again at most this often: a read of a big multi-requester
 -- (combinators and secondaries) is most of a refresh's cost, and the planner itself polls a stop less often.
 local LIVE_READ_TICKS = 120
+-- Ring rows the "Last events" scan examines per refresh after the first (diag.last_for_step).
+local EVENT_SCAN_ROWS = 512
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
 relative.WIDTH = WIDTH
@@ -1254,11 +1258,14 @@ local function render_events(state, body, kind, id, shown)
 		return
 	end
 	local cursor = state.cursor
+	local first_scan = not cursor
 	if not cursor then
 		cursor = diag.scan_cursor(kind, id, EVENTS)
 		state.cursor = cursor
 	end
-	local rows = diag.last_for_step(cursor)
+	-- The refresh that opens the panel scans diag.SCAN_ROWS at once (a one-off, like the fleet walk's burst); later
+	-- refreshes go on EVENT_SCAN_ROWS at a time, about 0.2 ms on pY's full rings (0.4 µs per row measured).
+	local rows = diag.last_for_step(cursor, not first_scan and EVENT_SCAN_ROWS or nil)
 	local now = game.tick
 	shown = shown or EVENTS
 	-- The rows change only when the cursor's newest row or its first row does; their ages are rewritten in place
@@ -1761,7 +1768,13 @@ end
 -- on 3840x2160 and 1.0 on 1920x1080.
 local ANCHORS = {
 	stop = { gui = defines.relative_gui_type.train_stop_gui, position = defines.relative_gui_position.right, type = "train-stop" },
+	-- A wagon opens its own window (in the middle of the screen), not the docked pane: the panel anchors to it.
+	-- 2.0 has no wagon GUI types: a cargo wagon's window is a container_gui (checked with a client at 4K/1.5). A fluid
+	-- or artillery wagon could not be opened by script in the lab, so they keep the docked-pane frame until checked.
+	cargo = { gui = defines.relative_gui_type.container_gui, position = defines.relative_gui_position.right, type = "cargo-wagon" },
 }
+-- The mount for a rolling stock window of its own; anything else (a locomotive) uses the screen frame.
+local WAGON_MOUNT = { ["cargo-wagon"] = "cargo" }
 local TRAIN_PANE_RIGHT = 451
 local TRAIN_PANE_TOP = 40
 local GAP = 8
@@ -1773,10 +1786,17 @@ local STOP_BODY_MAX = 600
 local STOP_SCREEN_MARGIN = 300
 
 --- @param player LuaPlayer
---- @param kind "stop"|"train"
+--- @param key string a MOUNT key
 --- @return LuaGuiElement root
-local function root_of(player, kind)
-	return kind == "train" and player.gui.screen or player.gui.relative
+local function root_of(player, key)
+	return key == "train" and player.gui.screen or player.gui.relative
+end
+
+--- The mount key of an open panel: its own, or its kind.
+--- @param open {kind: string, mount: string?}
+--- @return string
+local function mount_key(open)
+	return open.mount or open.kind
 end
 
 --- The mount of `kind` if it exists.
@@ -1791,11 +1811,12 @@ end
 --- @param kind "stop"|"train"
 --- @return LuaGuiElement mount
 --- @return LuaGuiElement panel
-local function mount(player, kind)
-	local frame = mount_of(player, kind)
+local function mount(player, kind, key)
+	key = key or kind
+	local frame = mount_of(player, key)
 	if frame and frame[PANEL] then return frame, frame[PANEL] end
 	if frame then frame.destroy() end
-	frame = root_of(player, kind).add({ type = "frame", name = MOUNT[kind], direction = "vertical", anchor = ANCHORS[kind],
+	frame = root_of(player, key).add({ type = "frame", name = MOUNT[key], direction = "vertical", anchor = ANCHORS[key],
 		visible = false })
 	frame.style.padding = 8
 	return frame, relative.build(frame, kind, nil)
@@ -1846,19 +1867,21 @@ end
 --- @param pd PlayerData
 --- @param kind "stop"|"train"
 --- @param id uint
-function relative.open(player, pd, kind, id)
+--- @param key string? the mount (WAGON_MOUNT for a wagon's window); default `kind`
+function relative.open(player, pd, kind, id, key)
 	extras.on_selection(pd, kind, id)
 	hide_all(player)
-	local frame, panel = mount(player, kind)
+	key = key or kind
+	local frame, panel = mount(player, kind, key)
 	local state = pd.relative
 	if not (state and state.kind == kind and state.id == id) then
 		state = new_state(kind, id)
 		pd.relative = state
 	end
 	panel.tags = { kind = kind, id = id }
-	pd.relative_open = { kind = kind, id = id }
+	pd.relative_open = { kind = kind, id = id, mount = key ~= kind and key or nil }
 	storage.manager.relative_any = true
-	if kind == "train" then place_train(player, frame) end
+	if key == "train" then place_train(player, frame) end
 	relative.fit(player, panel)
 	frame.visible = true
 	state.burst = true
@@ -1956,7 +1979,7 @@ function relative.on_gui_opened(e)
 		relative.close(player, pd)
 		return
 	end
-	relative.open(player, pd, kind, id)
+	relative.open(player, pd, kind, id, WAGON_MOUNT[entity.type])
 end
 
 --- on_gui_closed of any entity GUI hides the panels.
@@ -2041,7 +2064,7 @@ function relative.tick(manager_data)
 		if open then
 			any = true
 			local player = game.get_player(i)
-			local frame = player and mount_of(player, open.kind)
+			local frame = player and mount_of(player, mount_key(open))
 			local panel = frame and frame[PANEL]
 			local state = pd.relative
 			if not (panel and state) then
@@ -2070,10 +2093,10 @@ end
 function relative.on_display_changed(player, pd)
 	local open = pd.relative_open
 	if not open then return end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	local panel = frame and frame[PANEL]
 	if not panel then return end
-	if open.kind == "train" then place_train(player, frame) end
+	if mount_key(open) == "train" then place_train(player, frame) end
 	relative.fit(player, panel)
 end
 
@@ -2143,7 +2166,7 @@ end
 local function rerender(player, pd)
 	local open = pd.relative_open
 	if not open then return end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	local panel = frame and frame[PANEL]
 	local state = pd.relative
 	if panel and state then
@@ -2377,7 +2400,7 @@ function dev_fns.relative_dump(pi)
 	local open = pd.relative_open
 	local state = pd.relative
 	if not (open and state) then return out end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	relative.view(frame[PANEL], state, out)
 	if open.kind == "stop" then
 		out.model = strip_model(stop_model(pd, state))
@@ -2396,7 +2419,7 @@ function dev_fns.relative_refresh_ms(pi, n, rebuild)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	local panel = frame[PANEL]
 	n = n or 1
 	local total = game.create_profiler()
@@ -2480,7 +2503,7 @@ function dev_fns.relative_click(pi, name)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
-	local panel = mount_of(player, open.kind)[PANEL]
+	local panel = mount_of(player, mount_key(open))[PANEL]
 	local function find(elem)
 		if elem.name == name then return elem end
 		for _, c in ipairs(elem.children) do
