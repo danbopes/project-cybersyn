@@ -466,7 +466,7 @@ end
 --- @field until_tick uint? nil = until the reason changes
 --- @field reason int? confirmed reason when acknowledged (requests)
 
---- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}}
+--- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}, lint_version: int?} lint_version counts every change to the lint acknowledgements
 function diag.acks()
 	local acks = storage.acks
 	if not acks then
@@ -509,7 +509,11 @@ local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 	local d = storage.diag
 	if not d then return end
 	local item = kind == DIAG_ACK_REQUEST and sub and intern(d, sub) or 0
-	diag.event(d, kind_event, DIAG_SEV_INFO, kind, 0, 0, id, player_index or 0, item, a or 0,
+	-- Lint acknowledgements of trains are keyed by the negated train id (lint.subject_key): write it where the
+	-- train's own lint events put it.
+	local train, station = 0, id
+	if kind == DIAG_ACK_LINT and id < 0 then train, station = -id, 0 end
+	diag.event(d, kind_event, DIAG_SEV_INFO, kind, 0, train, station, player_index or 0, item, a or 0,
 		b or (kind == DIAG_ACK_LINT and sub or 0))
 end
 
@@ -518,7 +522,10 @@ local function end_ack(kind, id, sub, parent, key, cause, player_index)
 	parent[key] = nil
 	local acks = storage.acks
 	if kind == DIAG_ACK_REQUEST and next(parent) == nil then acks.request[id] = nil end
-	if kind == DIAG_ACK_LINT and next(parent) == nil then acks.lint[id] = nil end
+	if kind == DIAG_ACK_LINT then
+		if next(parent) == nil then acks.lint[id] = nil end
+		acks.lint_version = (acks.lint_version or 0) + 1
+	end
 	ack_event(DIAG_KIND_UNACKNOWLEDGED, kind, id, sub, player_index, 0, cause)
 	log_ack("unacknowledged", kind, id, sub, player_index, nil)
 end
@@ -567,6 +574,7 @@ function diag.ack(kind, id, sub, player_index, until_tick, reason)
 	else
 		acks.lint[id] = acks.lint[id] or {}
 		acks.lint[id][sub] = ack
+		acks.lint_version = (acks.lint_version or 0) + 1
 	end
 	ack_event(DIAG_KIND_ACKNOWLEDGED, code, id, sub, player_index, until_tick or 0, nil)
 	log_ack("acknowledged", code, id, sub, player_index, until_tick)
@@ -608,6 +616,16 @@ function diag.is_acked(kind, id, sub)
 	end
 	if ack and ack.until_tick and ack.until_tick <= game.tick then return nil end
 	return ack
+end
+
+--- Ends the acknowledgement of a setup finding that is gone (scripts/lint.lua): the finding cleared, its subject left,
+--- or a world scan no longer found it.
+--- @param key int lint.subject_key of the subject
+--- @param check int LINT_*
+function diag.resolve_lint_ack(key, check)
+	local acks = storage.acks
+	local by = acks and acks.lint and acks.lint[key]
+	if by and by[check] then end_ack(DIAG_ACK_LINT, key, check, by, check, DIAG_ACK_END_RESOLVED, nil) end
 end
 
 --- Drops acknowledgements whose time is up. Runs at every planner cycle start, with or without storage.diag.
@@ -900,7 +918,10 @@ function diag.station_removed(station_id)
 	if acks then
 		acks.request[station_id] = nil
 		acks.station[station_id] = nil
-		acks.lint[station_id] = nil
+		if acks.lint[station_id] then
+			acks.lint[station_id] = nil
+			acks.lint_version = (acks.lint_version or 0) + 1
+		end
 	end
 end
 

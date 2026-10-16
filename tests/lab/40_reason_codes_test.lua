@@ -60,11 +60,18 @@ local function lint_sample(case)
 		for _, check in ipairs(case.lint_expect[role] or {}) do asserted[check] = dev("assert_lint", id, check) end
 		out[role] = { checks = bits.checks, st_lint = bits.st_lint, mask = bits.mask, asserted = asserted }
 	end
+	-- Phase 6b: every finding of this pass is a correct row of the Problems tab (and counts towards the coverage
+	-- check at the end of the run).
+	if lab.problems_verify then
+		out.problems = {}
+		lab.problems_verify(case.name, out.problems)
+	end
 	return out
 end
 
 --- Phase 2b (§6.2): the lint bits that predict the case's reason are set, and no other predicting bit is.
 local function lint_checks(n, case, res)
+	for _, p in ipairs(res.lint and res.lint.problems or {}) do lab.check(p[1], p[2], p[3]) end
 	for _, role in ipairs({ "r", "p" }) do
 		local got = res.lint and res.lint[role]
 		local want = {}
@@ -583,5 +590,6 @@ lab.suite("40_reason_codes", {
 			dev("diag_verify_interrupt", false)
 			if rc.diag_setting then dev("set_setting", "cybersyn-diagnostics", rc.diag_setting) end
 		end
+		if lab.problems_coverage then lab.problems_coverage() end
 	end,
 })

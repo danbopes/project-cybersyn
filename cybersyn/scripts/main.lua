@@ -6,6 +6,10 @@ local analytics = require("scripts.analytics")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local fork_migrations = require("scripts.fork-migrations")
+local lint = require("scripts.lint")
+
+-- Ticks between world-scan chunks while manager updates are off (100 stops a chunk).
+local WORLD_SCAN_NTH = 10
 
 local ceil = math.ceil
 
@@ -896,6 +900,16 @@ local function register_tick()
 			script.on_nth_tick(nth_tick_manager, function()
 				fork_migrations.run_once()
 				manager.tick(storage)
+			end)
+		else
+			-- Without manager updates the world scan of /cybersyn-find-problems still runs in chunks, on a handler of
+			-- its own that only looks for a running scan. Registered from a runtime-global setting, so every peer
+			-- registers the same handlers.
+			local nth = WORLD_SCAN_NTH
+			if mod_settings.tps > DELTA and ceil(60 / mod_settings.tps) == nth then nth = nth + 1 end
+			script.on_nth_tick(nth, function()
+				local m = storage.manager
+				if m and m.lint and m.lint.world_job then lint.world_tick() end
 			end)
 		end
 	end

@@ -454,6 +454,8 @@ test("full pass: trains, fleet, depots and alerts", function()
 		-- PLAN3 §4.2 (phase 2); the stub entity has no state, signal or path, so only the cached flag shows.
 		in_interrupt = false,
 		in_group = false,
+		-- Never seen refuelling: tracked from when refuelling was first recorded (the train has no seen_tick).
+		refuel_from = 1000,
 	})
 	local t12 = snap.trains[12]
 	assert_eq(t12.depot_name, "")
