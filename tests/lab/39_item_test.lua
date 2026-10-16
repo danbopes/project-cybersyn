@@ -262,7 +262,7 @@ lab.suite("39_item", {
 		dev("select_tab", PI, "trains")
 		local trains = find_named(window(), "manager_trains_tab_scroll_pane")
 		local tpath = trains and path_to(trains, function(e)
-			return e.type == "sprite-button" and e.tags and e.tags.item_hash ~= nil
+			return e.type == "sprite-button" and e.tags and e.tags.kind == "item" and e.tags.id ~= nil
 		end)
 		if tpath then
 			local tslot = trains
@@ -270,7 +270,7 @@ lab.suite("39_item", {
 			dev("click", PI, "manager_trains_tab_scroll_pane", tpath)
 			local td = dev("item_dump", PI)
 			lab.check("left-click on a Trains shipment slot opens the drill-down from Trains", td.open and
-				td.hash == tslot.tags.item_hash and td.from_tab == "trains_tab", td.from_tab)
+				td.hash == tslot.tags.id and td.from_tab == "trains_tab", td.from_tab)
 			dev("close_item", PI)
 			lab.check("back returns to Trains", dev("state", PI).selected_tab == "trains_tab" and trains.visible)
 		else

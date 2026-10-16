@@ -449,26 +449,35 @@ function manager.update_status(player_data)
 	-- The caption tracks renders; the snapshot age cycles through a whole collector pass even while the window
 	-- refreshes every second, so it only goes in the tooltip.
 	local render_tick = player_data.last_update_tick
-	local age = render_tick and util.format_duration(game.tick - render_tick) or "-"
 	local data_tick = player_data.rendered_snapshot_tick
-	local data_age = data_tick and util.format_duration(game.tick - data_tick) or "-"
-	label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
-	local caption
-	if player_data.paused then
-		caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
-	else
-		caption = { "cybersyn-gui.updated-ago", age }
-		local hover = player_data.hover
-		if hover and util.hold_active(player_data, hover.scope) then
-			local state = player_data.gui_state and player_data.gui_state[hover.scope]
-			if state and state.dirty then
-				caption = { "", caption, " ", { "cybersyn-gui.layout-held" } }
-			end
-		end
-	end
-	label.caption = caption
 	local stale = player_data.paused or not render_tick or game.tick - render_tick > STALE_TICKS
 	if label.visible ~= stale then label.visible = stale end
+	-- Hidden while renders are recent (nearly always): nothing to write then. Shown, written when its text changed.
+	if stale then
+		local age = render_tick and util.format_duration(game.tick - render_tick) or "-"
+		local data_age = data_tick and util.format_duration(game.tick - data_tick) or "-"
+		local held = false
+		local hover = player_data.hover
+		if not player_data.paused and hover and util.hold_active(player_data, hover.scope) then
+			local state = player_data.gui_state and player_data.gui_state[hover.scope]
+			held = state ~= nil and state.dirty == true
+		end
+		local sig = age .. "|" .. data_age .. "|" .. (player_data.paused and "p" or "") .. (held and "h" or "")
+		if player_data.status_sig ~= sig then
+			player_data.status_sig = sig
+			label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
+			local caption
+			if player_data.paused then
+				caption = { "", "[color=yellow]", { "cybersyn-gui.paused-updated-ago", age }, "[/color]" }
+			else
+				caption = { "cybersyn-gui.updated-ago", age }
+				if held then caption = { "", caption, " ", { "cybersyn-gui.layout-held" } } end
+			end
+			label.caption = caption
+		end
+	else
+		player_data.status_sig = nil
+	end
 
 	local collecting = collector.collecting()
 	local show = collecting ~= nil and not (player_data.paused and data_tick)
@@ -656,6 +665,7 @@ function manager.handle.manager_open(player, player_data, refs)
 	player_data.trains_badge = nil
 	player_data.problems_badge = nil
 	player_data.problems_scan_sig = nil
+	player_data.status_sig = nil
 	manager.refresh_banners(player_data)
 	manager.apply_layout(player, player_data)
 	refs.manager_window.visible = true

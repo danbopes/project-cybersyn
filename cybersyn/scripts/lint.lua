@@ -666,13 +666,21 @@ local train_live = {}
 
 --- @param job LintJob
 --- @param name string
+--- @param force LuaForce? the train's: a stop of another force with that name does not count
 --- @return boolean
-local function stop_exists(job, name)
-	local known = job.names[name]
+local function stop_exists(job, name, force)
+	local names = job.names
+	-- Seeded with the names of the snapshot's stops, depots and refuelers, which only a schedule of their own force
+	-- can reach in practice; any other name is looked up for the train's force and cached per force.
+	local known = names[name]
 	if known == nil then
-		known = #game.train_manager.get_train_stops({ station_name = name }) > 0
-		job.names[name] = known
-		job.lookups = job.lookups + 1
+		local key = force and (force.index .. "\1" .. name) or name
+		known = names[key]
+		if known == nil then
+			known = #game.train_manager.get_train_stops({ station_name = name, force = force }) > 0
+			names[key] = known
+			job.lookups = job.lookups + 1
+		end
 	end
 	return known
 end
@@ -700,9 +708,14 @@ local function check_train(s, job, snap, id)
 	if not ON_TRIP[train.status] then
 		local missing
 		local records = entity.get_schedule().get_records()
+		local force
 		for k, record in ipairs(records or NO_LAYOUTS) do
 			local name = record.station
-			if name and not stop_exists(job, name) then
+			if name and not force then
+				local front = entity.front_stock
+				force = front and front.force or nil
+			end
+			if name and not stop_exists(job, name, force) then
 				missing = k
 				break
 			end
@@ -935,7 +948,10 @@ end
 function lint.scan_world(player_index, quiet)
 	local s = lint.state()
 	if s.world_job then return nil end
-	local stops = game.train_manager.get_train_stops({})
+	-- A player's scan covers their force's stops only (on a multi-force map another force's base is not theirs to
+	-- see); the server's covers every force.
+	local player = player_index and game.get_player(player_index)
+	local stops = game.train_manager.get_train_stops({ force = player and player.force or nil })
 	s.world_job = {
 		player_index = player_index,
 		started_tick = game.tick,

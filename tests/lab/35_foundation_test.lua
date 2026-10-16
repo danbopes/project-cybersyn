@@ -41,8 +41,10 @@ lab.suite("35_foundation", {
 		lab.info("first pass completed after " .. updates .. " manager update(s)")
 		lab.check("first pass completes within 3 updates", updates >= 1 and updates <= 3, updates)
 		status = remote.call(D, "status", pi)
-		lab.check("subheader progress gone, title bar back to Updated", status.subheader == nil
-			and caption_key(status.caption) == "cybersyn-gui.updated-ago" and status.collecting == nil, status)
+		-- Phase 7: the title-bar label is written only while it shows (renders older than 3 s or paused).
+		lab.check("subheader progress gone, title bar back to Updated (or hidden: renders are current)",
+			status.subheader == nil and status.collecting == nil
+			and (not status.title_visible or caption_key(status.caption) == "cybersyn-gui.updated-ago"), status)
 		lab.wait(1)
 	end,
 	function(ctx)

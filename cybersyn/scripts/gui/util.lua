@@ -1012,7 +1012,7 @@ local function slot_button(hash, count, color, tooltip_tail)
 		style = "ltnm_small_slot_button_" .. color,
 		tooltip = tooltip,
 		elem_tooltip = util.elem_tooltip(hash),
-		tags = { item_hash = hash },
+		tags = { kind = "item", id = hash },
 		children = {
 			{
 				type = "label",
@@ -1445,20 +1445,54 @@ end
 --- @return "updated"|"held"|"rebuilt"
 function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 	local n = #entries
-	local keys = {}
-	for i = 1, n do
-		keys[i] = entries[i].key
-	end
-	local children = tbl.children
 	local old = state.keys
-	if old and first + #old * columns ~= #children then
-		old = nil
-	end
 	local sigs = state.sigs
 	if not old or not sigs then
+		old = nil
 		sigs = {}
 		state.sigs = sigs
 	end
+	-- Unchanged keys and sigs (the common render) read no element: `tbl.children` wraps every cell of the table.
+	local same = old ~= nil and #old == n
+	if same then
+		for i = 1, n do
+			if old[i] ~= entries[i].key then
+				same = false
+				break
+			end
+		end
+	end
+	local children
+	if same then
+		for i = 1, n do
+			local entry = entries[i]
+			local fn = entry.update
+			local sig = entry.sig
+			if fn and (sig == nil or sigs[entry.key] ~= sig) then
+				if not children then
+					children = tbl.children
+					-- Someone else changed the table: rebuild instead of writing into the wrong cells.
+					if first + n * columns ~= #children then
+						same = false
+						break
+					end
+				end
+				if sig ~= nil then sigs[entry.key] = sig end
+				local cells = {}
+				local base = first + (i - 1) * columns
+				for c = 1, columns do cells[c] = children[base + c] end
+				fn(cells, entry, i)
+			end
+		end
+		if same then
+			state.dirty = nil
+			return "updated"
+		end
+	end
+	children = children or tbl.children
+	if old and first + #old * columns ~= #children then old = nil end
+	local keys = {}
+	for i = 1, n do keys[i] = entries[i].key end
 
 	local function update(entry, row, index)
 		local fn = entry.update
@@ -1481,13 +1515,6 @@ function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 		local m = math.min(#old, n)
 		while prefix < m and old[prefix + 1] == keys[prefix + 1] do
 			prefix = prefix + 1
-		end
-		if prefix == n and #old == n then
-			for i = 1, n do
-				update(entries[i], i, i)
-			end
-			state.dirty = nil
-			return "updated"
 		end
 		if hold then
 			local index_of = {}

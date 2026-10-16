@@ -452,19 +452,28 @@ local function fleet_model(window)
 	local mins = window.min_available_by_network
 	local now = stats.get().available_count
 	-- The counters only know networks that had a train available at some point; a network whose trains are all
-	-- busy or stuck since the load is the worst of all, at 0.
-	local seen = {}
-	for _, train in pairs(storage.trains) do
-		local net = train.network_name
-		if net == NETWORK_EACH then
-			local mask = train.network_mask
-			if type(mask) == "table" then
-				for n in pairs(mask) do seen[n] = true end
+	-- busy or stuck since the load is the worst of all, at 0. The networks the fleet uses are listed once a minute
+	-- for every window (in storage, so a joining peer reads the same set), not per player and update.
+	local m = storage.manager
+	local minute = math.floor(game.tick / 3600)
+	local cached = m.fleet_networks
+	if not (cached and cached.minute == minute) then
+		local set = {}
+		for _, train in pairs(storage.trains) do
+			local net = train.network_name
+			if net == NETWORK_EACH then
+				local mask = train.network_mask
+				if type(mask) == "table" then
+					for n in pairs(mask) do set[n] = true end
+				end
+			elseif net then
+				set[net] = true
 			end
-		elseif net then
-			seen[net] = true
 		end
+		cached = { minute = minute, set = set }
+		m.fleet_networks = cached
 	end
+	local seen = cached.set
 	for name in pairs(seen) do
 		if mins[name] == nil then mins[name] = 0 end
 	end
@@ -505,7 +514,7 @@ function overview_tab.model(player_data)
 	local layout = player_data.layout
 	local rows = layout and layout.rows_by_tab[TAB] or 10
 	local tracking = mod_settings.track_request_wait_times == true
-	local window = stats.aggregate(period)
+	local window = stats.aggregate(period, true)
 	local d = storage.diag
 	local collecting = snapshot.tick == nil
 	local unserved = d and unserved_model(d, item, rows, minutes * 3600, now) or nil

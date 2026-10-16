@@ -759,8 +759,8 @@ local function shipment_children(tr, filter_item, capacity)
 			mouse_button_filter = { "left", "right" },
 			tooltip = { "", name_tooltip, "\n", { "cybersyn-gui.amount", format.number(count) }, "\n", { "cybersyn-gui.item-click-hint" } },
 			elem_tooltip = util.elem_tooltip(hash),
-			tags = { item_hash = hash },
-			handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_item_click },
+			tags = { kind = "item", id = hash },
+			handler = { [defines.events.on_gui_click] = util.handle.link_click },
 			{
 				type = "label",
 				style = "cybersyn_slot_32_count",
@@ -1930,14 +1930,17 @@ local function measured_rows(player_data)
 		local h = fixed(pane)
 		if not h or h > avail + HEADER_HEIGHT then return -1 end
 	end
+	-- Every shown row counts; rows past the space make the result negative (over-rendering, see stations).
 	local n, used = 0, 0
 	for _, row in ipairs(list.children) do
-		local h = fixed(row)
-		if not h or h <= 0 then break end
-		if used + h > avail then break end
-		used = used + h
-		n = n + 1
+		if row.visible then
+			local h = fixed(row)
+			if not h or h <= 0 then return -1 end
+			used = used + h
+			n = n + 1
+		end
 	end
+	if used > avail then return -n end
 	return n
 end
 
@@ -2021,13 +2024,6 @@ function trains_tab.on_row_click(e)
 		end
 		elem = parent
 	end
-end
-
---- @param e EventData.on_gui_click
-function trains_tab.handle.on_trains_item_click(player, player_data, refs, e)
-	local hash = e.element.tags.item_hash
-	if not hash then return end
-	util.item_button_click(player, player_data, e, hash)
 end
 
 --- @param player_data PlayerData

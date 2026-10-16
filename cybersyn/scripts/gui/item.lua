@@ -741,15 +741,18 @@ local function render_header(player_data, cache)
 		icon.tags = tags
 	end
 	set_caption(refs.item_name, name_tooltip and name_tooltip[4] or hash)
-	local function total(name, key, value, stations)
+	local function total(name, key, value, stations, tooltip_key)
 		local elem = refs["item_total_" .. name]
 		if not (elem and elem.valid) then return end
 		elem.caption = { "cybersyn-gui.item-" .. key, count(value) }
-		elem.tooltip = stations and { "cybersyn-gui.item-total-tooltip", format.number(value), tostring(stations) } or nil
+		elem.tooltip = stations and { tooltip_key or "cybersyn-gui.item-total-tooltip", format.number(value),
+			tostring(stations) } or nil
 	end
 	total("provided", "provided", t.provided, t.provided_stations)
 	total("in_transit", "in-transit", t.in_transit, t.in_transit_stations)
-	total("requested", "requested", t.requested, t.requested_stations)
+	-- Active requests only (the Inventory's figure); the Requesters table also lists those below threshold and the
+	-- stops the dispatcher skips, so its "n of m" counts more stations. The tooltip says which.
+	total("requested", "requested", t.requested, t.requested_stations, "cybersyn-gui.item-requested-tooltip")
 	local delivered = refs.item_total_delivered
 	if delivered and delivered.valid then
 		delivered.caption = { "cybersyn-gui.item-delivered", { "cybersyn-gui.item-period-" .. period }, count(cache.delivered) }
@@ -811,9 +814,10 @@ function item.build(map_data, player_data)
 	local profiler = storage.manager.item_samples and game.create_profiler()
 	local cache, refreshed = get_cache(player_data, view.hash)
 	local m = cache.model
-	render_header(player_data, cache)
 	-- A new pass rebuilds the model in this update and rewrites the rows in the next ones, so neither update pays
-	-- for both (PLAN3 §4.10: 2 ms per update).
+	-- for both (PLAN3 §4.10: 2 ms per update). The header's totals follow with the rows, so header and rows always
+	-- show the same pass (only a drill-down that never showed a header gets it at once).
+	if not refreshed or not cache.header_sig then render_header(player_data, cache) end
 	if refreshed then
 		cache.rows_pending = true
 		if profiler then

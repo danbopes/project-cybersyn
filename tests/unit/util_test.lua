@@ -913,7 +913,7 @@ end)
 local function slot_summary(defs)
 	local out = {}
 	for i, d in ipairs(defs) do
-		out[i] = (d.tags and d.tags.item_hash or d.sprite) .. " " .. string.match(d.style, "_(%a+)$") .. " " .. d.children[1].caption
+		out[i] = (d.tags and d.tags.kind == "item" and d.tags.id or d.sprite) .. " " .. string.match(d.style, "_(%a+)$") .. " " .. d.children[1].caption
 	end
 	return out
 end
@@ -951,7 +951,7 @@ test("slot_table_build_from_station: provided green, active requests red, below 
 		elem_tooltip = { type = "item-with-quality", name = "stone", quality = "normal" },
 		enabled = false,
 		style = "ltnm_small_slot_button_red",
-		tags = { item_hash = "stone" },
+		tags = { kind = "item", id = "stone" },
 		tooltip = {
 			"",
 			{ "", "[item=stone,quality=]", " ", { "item-name.stone" } },
