@@ -118,7 +118,7 @@ test("event_row: rounded age, kind, and the detail each kind needs", function()
 	assert_eq(t.event_detail({ kind = DIAG_KIND_SHORT_LOAD, code = 0, a = 2000, b = 1900 }),
 		{ "cybersyn-gui.relative-event-cargo", "2,000", "1,900" })
 	assert_eq(t.event_detail({ kind = DIAG_KIND_LINT, code = DIAG_LINT_APPEARED, a = LINT_LAYOUT, b = 5 }),
-		{ "", { "cybersyn-diag.lint-layout" }, " ", { "cybersyn-diag.lint-appeared" } })
+		{ "", { "cybersyn-diag.lint-layout" }, " (", { "cybersyn-diag.lint-appeared" }, ")" })
 	assert_eq(t.event_detail({ kind = DIAG_KIND_STATION_LIMIT, code = 0, a = 2, b = 0 }),
 		{ "cybersyn-gui.relative-event-limit", "2", "0" })
 	assert_nil(t.event_detail({ kind = DIAG_KIND_ALERT, code = 1, a = 0, b = 0 }))
@@ -135,7 +135,8 @@ test("s_colour, trains_pair, mask_text", function()
 	assert_eq(t.trains_pair(0, 4294967295), "0 / ∞")
 	assert_eq(t.mask_text(5), "5 (101)")
 	assert_eq(t.mask_text(0), "0 (0)")
-	assert_eq(t.mask_text(-1), "-1 (11111111111111111111111111111111)")
+	assert_eq(t.mask_text(-1), "-1")
+	assert_eq(t.mask_text(65536), "65536")
 end)
 
 -- ---------------------------------------------------------------- diag.last_for_step

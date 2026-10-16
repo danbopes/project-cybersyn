@@ -217,7 +217,7 @@ function text.event_detail(ev)
 	elseif kind == DIAG_KIND_LINT then
 		local check_key = LINT_KEYS[ev.a]
 		local verb = code == DIAG_LINT_APPEARED and "cybersyn-diag.lint-appeared" or "cybersyn-diag.lint-cleared"
-		if check_key then return { "", { "cybersyn-diag.lint-" .. check_key }, " ", { verb } } end
+		if check_key then return { "", { "cybersyn-diag.lint-" .. check_key }, " (", { verb }, ")" } end
 		return { verb }
 	elseif kind == DIAG_KIND_STATION_LIMIT then
 		return { "cybersyn-gui.relative-event-limit", tostring(ev.a or 0), tostring(ev.b or 0) }
@@ -244,12 +244,13 @@ function text.trains_pair(deliveries, limit)
 	return tostring(deliveries or 0) .. " / " .. l
 end
 
---- The mask as a number and in binary, lowest bits last: "5 (101)".
+--- The mask as a number, with its bits for a small positive mask: "5 (101)"; "-1" alone (every bit).
 --- @param mask int
 --- @return string
 function text.mask_text(mask)
 	mask = mask or 0
-	local m = mask % 4294967296
+	if mask < 0 or mask >= 65536 then return tostring(mask) end
+	local m = mask
 	local bits = {}
 	while m > 0 and #bits < 32 do
 		bits[#bits + 1] = tostring(m % 2)

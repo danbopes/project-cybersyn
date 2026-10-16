@@ -160,8 +160,10 @@ lab.suite("39_relative", {
 		local entity = trains[tid].entity
 		lab.check("Cybersyn train: panel open, stop panel hidden", t.open and t.open.kind == "train" and
 			t.mounts.train.visible == true and t.mounts.stop.visible == false, t.mounts)
-		lab.check("Cybersyn train: anchored right of the train window", t.mounts.train.anchor.gui == "train-gui" and
-			t.mounts.train.anchor.position == defines.relative_gui_position.right, t.mounts.train.anchor)
+		local scale = game.get_player(PI).display_scale
+		lab.check("Cybersyn train: a screen frame right of the docked train pane", t.mounts.train.anchor == nil and
+			t.mounts.train.location.x == math.floor(459 * scale) and t.mounts.train.location.y == math.floor(48 * scale),
+			t.mounts.train)
 		lab.check("Cybersyn train: status, state, depot from Cybersyn and the train",
 			tm.status == trains[tid].status and tm.state == entity.state and tm.depot_id == trains[tid].depot_id,
 			{ tm.status, tm.state, tm.depot_id })

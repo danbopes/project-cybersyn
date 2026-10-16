@@ -1,7 +1,6 @@
 -- Cybersyn panels beside the vanilla train-stop and train windows (PLAN3 §4.9). One builder, relative.build, makes
--- the panel anywhere (the in-window Trains detail pane of phase 9 mounts it too); relative.open mounts it in
--- player.gui.relative, anchored to the right of the vanilla window, once per player and kind, and only shows it for a
--- Cybersyn stop or train. While a panel is open it is refreshed on the manager tick: each section is rebuilt only when
+-- the panel anywhere (the in-window Trains detail pane of phase 9 mounts it too); relative.open mounts it beside the
+-- vanilla window (see "mounting") once per player and kind, and only shows it for a Cybersyn stop or train. While a panel is open it is refreshed on the manager tick: each section is rebuilt only when
 -- its signature changes, and ages are rounded to 10 s so an idle panel rebuilds nothing.
 --
 -- Data: the manager snapshot's station record while a manager window keeps one; otherwise one live read of this
@@ -23,8 +22,8 @@ local rtext = require("scripts.gui.relative-text")
 local relative = {}
 
 local WIDTH = 300
--- Inside the body's 8 px padding.
-local INNER = WIDTH - 16
+-- Inside the body's 8 px padding, leaving room for the scroll bar a tall panel gets (relative.fit).
+local INNER = WIDTH - 28
 local MOUNT = { stop = "cybersyn_relative_stop", train = "cybersyn_relative_train" }
 local PANEL = "cybersyn_relative_panel"
 local EVENTS = 10
@@ -222,7 +221,7 @@ function relative.build(parent, kind, id)
 		type = "flow",
 		name = "body",
 		direction = "vertical",
-		style_mods = { padding = 8, vertical_spacing = 8, width = WIDTH },
+		style_mods = { padding = 8, vertical_spacing = 8 },
 	}
 	for _, name in ipairs(sections) do
 		body[#body + 1] = {
@@ -264,7 +263,14 @@ function relative.build(parent, kind, id)
 				handler = { [defines.events.on_gui_click] = relative.handle.relative_toggle_effective },
 			},
 		},
-		body,
+		{
+			type = "scroll-pane",
+			name = "scroll",
+			style = "flib_naked_scroll_pane_no_padding",
+			horizontal_scroll_policy = "never",
+			vertical_scroll_policy = "auto",
+			body,
+		},
 	})
 	return panel
 end
@@ -609,7 +615,9 @@ end
 
 local function render_slots(state, body, m)
 	local st = m.st
-	if not st then
+	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
+	-- still fits a 1080p screen at scale 1.
+	if not st or m.effective then
 		section(state, body, "slots", "", function() return nil end)
 		return
 	end
@@ -689,6 +697,7 @@ local function render_unserved(state, body, m, compact)
 				surface_name = surface_name,
 			}, util.format_duration)
 			local acked = diag.is_acked("request", state.id, r.hash) ~= nil
+			local stock = utext.stock_caption(e.reason, e.a, e.b)
 			local row = {
 				type = "flow",
 				direction = "horizontal",
@@ -709,7 +718,7 @@ local function render_unserved(state, body, m, compact)
 					caption = utext.chip_caption(e.reason),
 					tooltip = tip,
 				},
-				label(utext.stock_caption(e.reason, e.a, e.b)),
+				label(stock ~= utext.NO_VALUE and stock or ""),
 				label(utext.wait_caption(rtext.age_step(wait), inherited, util.short_duration),
 					{ style_mods = { font_color = { 0.7, 0.7, 0.7 } } }),
 			}
@@ -726,7 +735,9 @@ end
 
 local function render_deliveries(state, body, m)
 	local st = m.st
-	if not st then
+	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
+	-- still fits a 1080p screen at scale 1.
+	if not st or m.effective then
 		section(state, body, "deliveries", "", function() return nil end)
 		return
 	end
@@ -751,7 +762,9 @@ end
 
 local function render_control(state, body, m)
 	local st = m.st
-	if not st then
+	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
+	-- still fits a 1080p screen at scale 1.
+	if not st or m.effective then
 		section(state, body, "control", "", function() return nil end)
 		return
 	end
@@ -921,7 +934,8 @@ local function render_events(state, body, kind, id, shown)
 	section(state, body, "events", event_rows_sig(rows, now) .. (cursor.done and "" or "+") .. shown, function()
 		local out = { heading({ "cybersyn-gui.relative-events" }) }
 		if #rows == 0 then
-			out[#out + 1] = note(cursor.done and { "cybersyn-gui.relative-events-none" } or { "cybersyn-gui.relative-events-scanning" })
+			out[#out + 1] = note(cursor.done and { kind == "train" and "cybersyn-gui.relative-events-none-train"
+				or "cybersyn-gui.relative-events-none" } or { "cybersyn-gui.relative-events-scanning" })
 			return out
 		end
 		local d = storage.diag
@@ -1096,13 +1110,14 @@ local function render_route(state, body, m)
 	local now = game.tick
 	local dispatched = m.dispatch_tick and rtext.age_step(now - m.dispatch_tick) or -1
 	local refuel = m.refuel_tick and rtext.age_step(now - m.refuel_tick) or -1
-	local sig = table.concat({ tostring(m.p_station_id), tostring(m.r_station_id), tostring(m.depot_id),
+	local sig = table.concat({ m.status or -1, tostring(m.p_station_id), tostring(m.r_station_id), tostring(m.depot_id),
 		tostring(m.p_station_id and stop_name("station", m.p_station_id)),
 		tostring(m.r_station_id and stop_name("station", m.r_station_id)),
 		tostring(m.depot_id and stop_name("depot", m.depot_id)), dispatched, refuel }, "|")
 	section(state, body, "route", sig, function()
 		local out = {}
-		if m.p_station_id or m.r_station_id then
+		local s = m.status
+		if (m.p_station_id or m.r_station_id) and s and s >= STATUS_TO_P and s <= STATUS_R then
 			out[#out + 1] = {
 				type = "flow",
 				direction = "horizontal",
@@ -1234,7 +1249,7 @@ end
 --- @return table?
 function relative.render(pd, state, panel)
 	state.refreshes = state.refreshes + 1
-	local body = panel.body
+	local body = panel.scroll.body
 	render_banner(state, panel)
 	if state.kind == "stop" then
 		local m = stop_model(pd, state)
@@ -1269,12 +1284,35 @@ function relative.render(pd, state, panel)
 	return m
 end
 
--- ---------------------------------------------------------------- mounting (player.gui.relative)
+-- ---------------------------------------------------------------- mounting
 
+-- The stop panel is anchored to the train-stop window. The train window of 2.0 is the remote view's docked side
+-- pane, and a relative GUI anchored to train_gui is drawn in the middle of the screen whatever its position (lab,
+-- 2.0.77: left, right, top and bottom all land on the centre, over the train the view follows), so the train panel is
+-- a screen frame placed right of that pane: 451 logical px wide below the 40 px title bar, measured at UI scale 1.5
+-- on 3840x2160 and 1.0 on 1920x1080.
 local ANCHORS = {
 	stop = { gui = defines.relative_gui_type.train_stop_gui, position = defines.relative_gui_position.right, type = "train-stop" },
-	train = { gui = defines.relative_gui_type.train_gui, position = defines.relative_gui_position.right },
 }
+local TRAIN_PANE_RIGHT = 451
+local TRAIN_PANE_TOP = 40
+local GAP = 8
+-- Logical px of the screen height the panel leaves free: the title bars above it and the subheader inside it.
+local SCREEN_MARGIN = 120
+
+--- @param player LuaPlayer
+--- @param kind "stop"|"train"
+--- @return LuaGuiElement root
+local function root_of(player, kind)
+	return kind == "train" and player.gui.screen or player.gui.relative
+end
+
+--- The mount of `kind` if it exists.
+--- @return LuaGuiElement?
+local function mount_of(player, kind)
+	local frame = root_of(player, kind)[MOUNT[kind]]
+	return frame and frame.valid and frame or nil
+end
 
 --- The player's mount for `kind`, created on first use.
 --- @param player LuaPlayer
@@ -1282,20 +1320,37 @@ local ANCHORS = {
 --- @return LuaGuiElement mount
 --- @return LuaGuiElement panel
 local function mount(player, kind)
-	local root = player.gui.relative
-	local frame = root[MOUNT[kind]]
-	if frame and frame.valid and frame[PANEL] then return frame, frame[PANEL] end
-	if frame and frame.valid then frame.destroy() end
-	frame = root.add({ type = "frame", name = MOUNT[kind], direction = "vertical", anchor = ANCHORS[kind], visible = false })
+	local frame = mount_of(player, kind)
+	if frame and frame[PANEL] then return frame, frame[PANEL] end
+	if frame then frame.destroy() end
+	frame = root_of(player, kind).add({ type = "frame", name = MOUNT[kind], direction = "vertical", anchor = ANCHORS[kind],
+		visible = false })
 	frame.style.padding = 8
 	return frame, relative.build(frame, kind, nil)
 end
 
+--- Places the train panel beside the docked train pane for the player's current UI scale.
+--- @param player LuaPlayer
+--- @param frame LuaGuiElement
+local function place_train(player, frame)
+	local scale = player.display_scale
+	frame.location = { x = math.floor((TRAIN_PANE_RIGHT + GAP) * scale), y = math.floor((TRAIN_PANE_TOP + GAP) * scale) }
+end
+
+--- Caps the panel's height to the player's screen: a stop with many requests, findings and events scrolls instead of
+--- running off a 1080p screen at scale 1.
+--- @param player LuaPlayer
+--- @param panel LuaGuiElement a relative.build result
+function relative.fit(player, panel)
+	local height = math.floor(player.display_resolution.height / player.display_scale) - SCREEN_MARGIN
+	local scroll = panel.scroll
+	if scroll.style.maximal_height ~= height then scroll.style.maximal_height = height end
+end
+
 local function hide_all(player)
-	local root = player.gui.relative
-	for _, name in pairs(MOUNT) do
-		local frame = root[name]
-		if frame and frame.valid and frame.visible then frame.visible = false end
+	for kind in pairs(MOUNT) do
+		local frame = mount_of(player, kind)
+		if frame and frame.visible then frame.visible = false end
 	end
 end
 
@@ -1323,6 +1378,8 @@ function relative.open(player, pd, kind, id)
 	end
 	panel.tags = { kind = kind, id = id }
 	pd.relative_open = { kind = kind, id = id }
+	if kind == "train" then place_train(player, frame) end
+	relative.fit(player, panel)
 	frame.visible = true
 	if not relative.render(pd, state, panel) then relative.close(player, pd) end
 end
@@ -1381,8 +1438,8 @@ function relative.tick(manager_data)
 		local open = pd.relative_open
 		if open then
 			local player = game.get_player(i)
-			local frame = player and player.gui.relative[MOUNT[open.kind]]
-			local panel = frame and frame.valid and frame[PANEL]
+			local frame = player and mount_of(player, open.kind)
+			local panel = frame and frame[PANEL]
 			local state = pd.relative
 			if not (panel and state) then
 				pd.relative_open = nil
@@ -1421,8 +1478,8 @@ end
 local function rerender(player, pd)
 	local open = pd.relative_open
 	if not open then return end
-	local frame = player.gui.relative[MOUNT[open.kind]]
-	local panel = frame and frame.valid and frame[PANEL]
+	local frame = mount_of(player, open.kind)
+	local panel = frame and frame[PANEL]
 	if panel and pd.relative then relative.render(pd, pd.relative, panel) end
 end
 
@@ -1610,14 +1667,15 @@ end
 function dev_fns.relative_dump(pi)
 	local player, pd = dev_context(pi)
 	local out = { open = pd.relative_open, effective_open = pd.relative_effective_open == true, mounts = {} }
-	for kind, name in pairs(MOUNT) do
-		local frame = player.gui.relative[name]
-		out.mounts[kind] = frame and frame.valid and { visible = frame.visible, anchor = frame.anchor } or nil
+	for kind in pairs(MOUNT) do
+		local frame = mount_of(player, kind)
+		out.mounts[kind] = frame and { visible = frame.visible, anchor = kind == "stop" and frame.anchor or nil,
+			location = kind == "train" and frame.location or nil } or nil
 	end
 	local open = pd.relative_open
 	local state = pd.relative
 	if not (open and state) then return out end
-	local frame = player.gui.relative[MOUNT[open.kind]]
+	local frame = mount_of(player, open.kind)
 	local panel = frame[PANEL]
 	out.width = panel.style.minimal_width
 	out.caption = panel.subheader.caption_label.caption
@@ -1626,7 +1684,7 @@ function dev_fns.relative_dump(pi)
 	out.rebuilds = state.rebuilds
 	out.refreshes = state.refreshes
 	out.sections = {}
-	for _, s in ipairs(panel.body.children) do
+	for _, s in ipairs(panel.scroll.body.children) do
 		out.sections[s.name] = { visible = s.visible, content = s.visible and element_view(s).children or nil }
 	end
 	if open.kind == "stop" then
@@ -1645,7 +1703,7 @@ function dev_fns.relative_refresh_ms(pi, n)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
-	local frame = player.gui.relative[MOUNT[open.kind]]
+	local frame = mount_of(player, open.kind)
 	local panel = frame[PANEL]
 	n = n or 1
 	local total = game.create_profiler()
@@ -1669,7 +1727,7 @@ function dev_fns.relative_click(pi, name)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
-	local panel = player.gui.relative[MOUNT[open.kind]][PANEL]
+	local panel = mount_of(player, open.kind)[PANEL]
 	local function find(elem)
 		if elem.name == name then return elem end
 		for _, c in ipairs(elem.children) do
