@@ -56,9 +56,10 @@ local FLEET_TTL = 7200
 -- (combinators and secondaries) is most of a refresh's cost, and the planner itself polls a stop less often.
 local LIVE_READ_TICKS = 120
 -- Ring rows the "Last events" scan examines per refresh after the first (diag.last_for_step): about 0.31 µs each inside
--- the real tick on pY 123's full rings, so 0.08 ms beside the rest of the panel's 0.06 ms. A stop with few events
--- (most of a big base) is scanned through 20k rows in about 80 refreshes.
-local EVENT_SCAN_ROWS = 256
+-- the real tick on pY 123's full rings, so 0.05 ms beside the rest of the panel's 0.06-0.09 ms (live reads with the
+-- window closed). At 256 the p90 of a refresh was 0.21-0.30 ms. A stop with few events (most of a big base) is
+-- scanned through both full rings (20k rows) in about 125 refreshes, "Scanning…" until then.
+local EVENT_SCAN_ROWS = 160
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
 relative.WIDTH = WIDTH
