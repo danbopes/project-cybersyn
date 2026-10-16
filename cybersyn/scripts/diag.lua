@@ -34,8 +34,13 @@ local SWEEP_SPARE = 36000
 -- A player editing a schedule changes it several times in a row; one log row per train per this long.
 local EDIT_REPEAT = 600
 local ACK_CAP = 1024
-local EXPORT_CHUNK = 2000
+-- A 2,000-row chunk cost 4.1-5.3 ms per update on a 2,030-station base, one chunk over the 5 ms budget.
+local EXPORT_CHUNK = 1000
 local EXPORT_SCAN = 4 * EXPORT_CHUNK
+-- Export jobs drain on this fixed nth tick as well as on the manager tick, so they finish with manager updates off.
+local EXPORT_NTH = 30
+-- Rows a filtered diag.events call examines before it returns with the seq it reached.
+local EVENTS_SCAN = 4096
 
 diag.BASIC_RING = BASIC_RING
 diag.UNSERVED_CAP = UNSERVED_CAP
@@ -43,6 +48,8 @@ diag.FLAP_TICKS = FLAP_TICKS
 diag.FLAP_WINDOW = FLAP_WINDOW
 diag.ACK_CAP = ACK_CAP
 diag.EXPORT_CHUNK = EXPORT_CHUNK
+diag.EXPORT_NTH = EXPORT_NTH
+diag.EVENTS_SCAN = EVENTS_SCAN
 diag.WAIT_SIGNAL_MIN = WAIT_SIGNAL_MIN
 diag.SWEEP_EVERY = SWEEP_EVERY
 diag.SWEEP_SPARE = SWEEP_SPARE
@@ -50,6 +57,17 @@ diag.EDIT_REPEAT = EDIT_REPEAT
 
 local COLUMNS = { "seq", "tick", "kind", "sev", "code", "delivery", "train", "station", "station2", "item", "a", "b" }
 diag.COLUMNS = COLUMNS
+
+--- Kinds whose station2 column holds a second station (provider, requester, the other end of a delivery); the others
+--- put a player index or a lint subject type there.
+local STATION2_IS_STATION = {
+	[DIAG_KIND_UNSERVED_REASON] = true, [DIAG_KIND_SERVED] = true, [DIAG_KIND_FLAPPING] = true,
+	[DIAG_KIND_DISPATCH_FAILED] = true, [DIAG_KIND_DELIVERY_FAILED] = true, [DIAG_KIND_ALERT] = true,
+	[DIAG_KIND_SHORT_LOAD] = true, [DIAG_KIND_UNEXPECTED_CARGO] = true, [DIAG_KIND_RESIDUAL_CARGO] = true,
+	[DIAG_KIND_DISPATCHED] = true, [DIAG_KIND_ARRIVE_P] = true, [DIAG_KIND_LEAVE_P] = true,
+	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true,
+}
+diag.STATION2_IS_STATION = STATION2_IS_STATION
 
 local NO_TRAIN_REASONS = {
 	[REASON_NO_TRAINS_ON_NETWORK] = true,
@@ -228,11 +246,15 @@ local function clear_delivery_ids()
 	end
 end
 
+local finish_exports
+
 --- Brings storage.diag in line with the settings: nil when off, created when missing, the full ring resized.
 --- @return DiagState?
 function diag.apply()
 	local mode = mode_setting()
 	if mode == "off" then
+		local old = storage.diag
+		if old and old.export_jobs[1] then finish_exports(old) end
 		storage.diag = nil
 		return nil
 	end
@@ -335,27 +357,45 @@ local function first_after(r, seq)
 	return lo
 end
 
+diag.ring_at = at
+diag.first_after = first_after
+
 --- @class DiagEventFilter
 --- @field kind int? DIAG_KIND_*
+--- @field kinds {[int]: true}? any of these kinds (with `alerts`: or an alert row whose code is in `alerts`)
+--- @field alerts {[int]: true}? DIAG_ALERT_* codes an alert row may have when `kinds` does not name the alert kind
 --- @field sev int? at most this DIAG_SEV_* (1 = errors only)
---- @field station uint? requester, provider or subject station
+--- @field sevs {[int]: true}? exactly these DIAG_SEV_*
+--- @field station uint? subject station: the station column, or station2 where that column names a station
 --- @field train uint?
 --- @field delivery uint?
 --- @field item int? item index
+--- @field min_tick uint? ignore rows written before this tick
 --- @field max_seq uint? ignore rows written after this
 
 --- @return boolean
 local function matches(r, i, f)
 	if not f then return true end
 	if f.max_seq and r.seq[i] > f.max_seq then return false end
-	if f.kind and r.kind[i] ~= f.kind then return false end
-	if f.sev and r.sev[i] > f.sev then return false end
+	if f.min_tick and r.tick[i] < f.min_tick then return false end
+	local kind = r.kind[i]
+	if f.kind and kind ~= f.kind then return false end
+	local kinds = f.kinds
+	if kinds and not kinds[kind] then
+		local alerts = f.alerts
+		if not (alerts and kind == DIAG_KIND_ALERT and alerts[r.code[i]]) then return false end
+	end
+	local sev = r.sev[i]
+	if f.sev and sev > f.sev then return false end
+	if f.sevs and not f.sevs[sev] then return false end
 	if f.train and r.train[i] ~= f.train then return false end
 	if f.delivery and r.delivery[i] ~= f.delivery then return false end
 	if f.item and r.item[i] ~= f.item then return false end
-	if f.station and r.station[i] ~= f.station and r.station2[i] ~= f.station then return false end
+	local st = f.station
+	if st and r.station[i] ~= st and not (STATION2_IS_STATION[kind] and r.station2[i] == st) then return false end
 	return true
 end
+diag.matches = matches
 
 --- @return table row with every column
 local function row(r, i)
@@ -365,21 +405,30 @@ local function row(r, i)
 end
 
 --- Events with seq above `from_seq`, oldest first, merged from both rings; with from_seq nil, the newest `limit`
---- (still oldest first).
+--- (still oldest first). A filter may match few rows, so at most `max_scan` rows (EVENTS_SCAN by default when there is
+--- a filter) are examined;
+--- the second result is the seq the scan reached, from which a later call continues (forward: pass it as from_seq;
+--- backward: rows below it are still to be examined), nil when the scan reached the end.
 --- @param filter DiagEventFilter?
 --- @param from_seq uint?
 --- @param limit int?
---- @return table[]
-function diag.events(filter, from_seq, limit)
+--- @param max_scan int? rows examined at most; math.huge for an unbounded scan
+--- @return table[] rows
+--- @return uint? reached
+function diag.events(filter, from_seq, limit, max_scan)
 	local d = storage.diag
 	local out = {}
-	if not d then return out end
+	if not d then return out, nil end
 	limit = limit or 1000
+	max_scan = max_scan or (filter and EVENTS_SCAN or math.huge)
 	local rb, rf = d.ring_basic, d.ring_full
+	local scanned = 0
 	if from_seq == nil then
 		-- Newest first, then reversed.
 		local kb, kf = rb.count - 1, rf.count - 1
+		local reached
 		while #out < limit and (kb >= 0 or kf >= 0) do
+			if scanned >= max_scan then break end
 			local ib = kb >= 0 and at(rb, kb) or nil
 			local iff = kf >= 0 and at(rf, kf) or nil
 			local r, i
@@ -388,16 +437,20 @@ function diag.events(filter, from_seq, limit)
 			else
 				r, i, kf = rf, iff, kf - 1
 			end
+			scanned = scanned + 1
+			reached = r.seq[i]
 			if matches(r, i, filter) then out[#out + 1] = row(r, i) end
 		end
 		local n = #out
 		for k = 1, math.floor(n / 2) do
 			out[k], out[n - k + 1] = out[n - k + 1], out[k]
 		end
-		return out
+		return out, (kb >= 0 or kf >= 0) and reached or nil
 	end
 	local kb, kf = first_after(rb, from_seq), first_after(rf, from_seq)
+	local reached
 	while #out < limit and (kb < rb.count or kf < rf.count) do
+		if scanned >= max_scan then break end
 		local ib = kb < rb.count and at(rb, kb) or nil
 		local iff = kf < rf.count and at(rf, kf) or nil
 		local r, i
@@ -406,10 +459,15 @@ function diag.events(filter, from_seq, limit)
 		else
 			r, i, kf = rf, iff, kf + 1
 		end
-		if filter and filter.max_seq and r.seq[i] > filter.max_seq then break end
+		if filter and filter.max_seq and r.seq[i] > filter.max_seq then
+			kb, kf = rb.count, rf.count
+			break
+		end
+		scanned = scanned + 1
+		reached = r.seq[i]
 		if matches(r, i, filter) then out[#out + 1] = row(r, i) end
 	end
-	return out
+	return out, (kb < rb.count or kf < rf.count) and reached or nil
 end
 
 --- The last `n` events about one train, station or delivery, newest first (a backward scan of both rings).
@@ -1310,16 +1368,43 @@ end
 
 -- ---------------------------------------------------------------- schedule edits, lint, manual actions
 
---- on_train_schedule_changed raised by a player on a Cybersyn train (A2): one row per train per EDIT_REPEAT.
+--- on_train_schedule_changed raised by a player on a Cybersyn train (A2). An edit of a vanilla group's schedule fires
+--- once per member train, so a grouped train adds itself to the row its group's edit by the same player wrote (`b` =
+--- trains in it) for EDIT_REPEAT; an ungrouped train writes one row per EDIT_REPEAT. `a` = the player index.
 --- @param d DiagState
 --- @param train Train
-function diag.schedule_edited(d, train_id, train, player_index)
+--- @param player_index uint
+--- @param group string? LuaTrain.group ("" or nil when the train is in none)
+function diag.schedule_edited(d, train_id, train, player_index, group)
 	local now = game.tick
 	local last = train.edited_tick
 	if last and now - last < EDIT_REPEAT then return end
 	train.edited_tick = now
-	diag.event(d, DIAG_KIND_SCHEDULE_EDITED, DIAG_SEV_WARNING, 0, train.delivery_id, train_id,
-		train.r_station_id or train.p_station_id or 0, player_index, 0, player_index, 0)
+	local rows = d.edit_rows
+	if not rows then
+		rows = {}
+		d.edit_rows = rows
+	end
+	local key = group and group ~= "" and (player_index .. "|" .. group) or nil
+	if key then
+		local open = rows[key]
+		local r = d.ring_basic
+		if open and now - open.tick < EDIT_REPEAT and r.seq[open.h] == open.seq then
+			if not open.trains[train_id] then
+				open.trains[train_id] = true
+				r.b[open.h] = r.b[open.h] + 1
+			end
+			return
+		end
+	end
+	for k, open in pairs(rows) do
+		if now - open.tick >= EDIT_REPEAT then rows[k] = nil end
+	end
+	local seq = diag.event(d, DIAG_KIND_SCHEDULE_EDITED, DIAG_SEV_WARNING, 0, train.delivery_id, train_id,
+		train.r_station_id or train.p_station_id or 0, player_index, 0, player_index, 1)
+	if key and seq then
+		rows[key] = { h = d.ring_basic.head, seq = seq, tick = now, trains = { [train_id] = true } }
+	end
 end
 
 --- A lint finding appeared or cleared (`a` = check, `b` = subject id; trains also in `train`, stops in `station`).
@@ -1349,6 +1434,7 @@ end
 --- @class DiagExportJob
 --- @field player_index uint 0 = the server
 --- @field path string relative to script-output
+--- @field start_seq uint rows at or below this were gone (or not written yet) when the export started
 --- @field next_seq uint rows above this are still to be written
 --- @field end_seq uint rows above this were written after the export started
 --- @field filter DiagEventFilter?
@@ -1408,7 +1494,18 @@ function diag.csv_line(ev, item_hash)
 		ev.station2, csv_item(item_hash, ev.item), ev.a, ev.b)
 end
 
---- Queues an export of everything both rings hold now (matching `filter`); the manager tick writes it in chunks.
+--- Who hears that an export job ended: fun(job: DiagExportJob, cause: "done"|"off"). Set once at load by the GUI, so
+--- every Lua state has the same one.
+--- @type fun(job: DiagExportJob, cause: string)?
+local export_listener
+
+--- @param fn fun(job: DiagExportJob, cause: string)
+function diag.set_export_listener(fn)
+	export_listener = fn
+end
+
+--- Queues an export of everything both rings hold now (matching `filter`); the manager tick and a fixed nth tick write
+--- it in chunks.
 --- @param player_index uint? whose machine gets the file; 0 or nil = the server
 --- @param filter DiagEventFilter?
 --- @return string? path relative to script-output, nil while diagnostics are off
@@ -1419,16 +1516,42 @@ function diag.export(player_index, filter)
 	for _, job in ipairs(d.export_jobs) do
 		if job.path == path and job.player_index == (player_index or 0) then return path end
 	end
+	local oldest = d.seq
+	for _, r in ipairs({ d.ring_basic, d.ring_full }) do
+		if r.count > 0 then oldest = math.min(oldest, r.seq[at(r, 0)] - 1) end
+	end
 	d.export_jobs[#d.export_jobs + 1] = {
 		player_index = player_index or 0,
 		path = path,
-		next_seq = 0,
+		start_seq = oldest,
+		next_seq = oldest,
 		end_seq = d.seq,
 		filter = filter,
 		rows = 0,
 		started = false,
 	}
 	return path
+end
+
+--- Share of a job's rows already scanned, 0..1.
+--- @param job DiagExportJob
+--- @return number
+function diag.export_progress(job)
+	local total = job.end_seq - job.start_seq
+	if total <= 0 then return 1 end
+	return math.max(0, math.min(1, (job.next_seq - job.start_seq) / total))
+end
+
+--- The first queued job of a player (0 = the server), if any.
+--- @param player_index uint
+--- @return DiagExportJob?
+function diag.export_job(player_index)
+	local d = storage.diag
+	if not d then return nil end
+	for _, job in ipairs(d.export_jobs) do
+		if job.player_index == player_index then return job end
+	end
+	return nil
 end
 
 --- Writes the next chunk of the oldest export job.
@@ -1480,14 +1603,39 @@ function diag.export_step()
 	helpers.write_file(job.path, table.concat(parts), job.started, job.player_index)
 	job.started = true
 	job.rows = job.rows + rows
-	if exhausted then table.remove(d.export_jobs, 1) end
+	if exhausted then
+		job.next_seq = end_seq
+		table.remove(d.export_jobs, 1)
+		if export_listener then export_listener(job, "done") end
+	end
 	return exhausted
 end
 
---- Drained from manager_gui.tick: one chunk per manager update, so an export never stalls a tick.
+--- One chunk, at most once per game tick: called from the manager tick and from a fixed nth tick registered whatever
+--- the settings say, so an export also finishes while manager updates are off.
+--- @return DiagExportJob? job the job the chunk belonged to
 function diag.export_tick()
 	local d = storage.diag
-	if d and d.export_jobs[1] then diag.export_step() end
+	local job = d and d.export_jobs[1]
+	if not job or d.export_tick == game.tick then return nil end
+	d.export_tick = game.tick
+	diag.export_step()
+	return job
+end
+
+--- Diagnostics are being turned off: queued exports are finished now, so no file is left truncated.
+--- @param d DiagState
+finish_exports = function(d)
+	while d.export_jobs[1] do
+		local job = d.export_jobs[1]
+		local listener = export_listener
+		export_listener = nil
+		diag.export_step()
+		export_listener = listener
+		if not d.export_jobs[1] or d.export_jobs[1] ~= job then
+			if export_listener then export_listener(job, "off") end
+		end
+	end
 end
 
 -- ---------------------------------------------------------------- migration

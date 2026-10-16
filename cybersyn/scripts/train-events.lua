@@ -604,7 +604,7 @@ function on_train_schedule_changed(event)
 		local player_index = event.player_index
 		if player_index then
 			local d = storage.diag
-			if d then diag.schedule_edited(d, train_e.id, train, player_index) end
+			if d then diag.schedule_edited(d, train_e.id, train, player_index, train_e.group) end
 		end
 	end
 end
