@@ -34,8 +34,9 @@ sizing.TAB_CHROME = {
 	-- subheader 36, gap 12, caption strip 36, frame borders 4
 	log_tab = 88,
 	-- The item drill-down (scripts/gui/item.lua) in place of a tab's content: subheader 36, then three tables of
-	-- gap 12, caption strip 36, column header 20, frame borders 4.
-	item_tab = 252,
+	-- gap 12, caption strip 36, column header 20, frame borders 4; plus the 4 px border of the deep frame that hosts
+	-- it on Stations and Trains.
+	item_tab = 256,
 }
 
 -- Row height per tab (PLAN3 §4.3): every row of a list tab has a fixed height (Stations 32, Trains 36, including the
@@ -76,8 +77,14 @@ function sizing.compute(res_w, res_h, scale, filter_row, banner)
 	local chrome = sizing.TAB_CHROME
 	local heights = sizing.ROW_HEIGHT
 	-- The Overview sets the content height; every other tab fits as many of its own rows into the same height, so
-	-- switching tabs never resizes the window.
-	local overview_rows = math.max(sizing.MIN_ROWS, math.floor((space - chrome.overview_tab) / heights.overview_tab))
+	-- switching tabs never resizes the window. On a small screen the height is raised until every tab gets its
+	-- minimum rows (the drill-down's chrome is the tallest), even past the share of the screen.
+	local need = 0
+	for tab, h in pairs(heights) do
+		need = math.max(need, chrome[tab] + sizing.MIN_ROWS * h)
+	end
+	local overview_rows = math.max(sizing.MIN_ROWS, math.floor((space - chrome.overview_tab) / heights.overview_tab),
+		math.ceil((need - chrome.overview_tab) / heights.overview_tab))
 	local content = chrome.overview_tab + overview_rows * heights.overview_tab
 	local rows = {}
 	for tab, h in pairs(heights) do

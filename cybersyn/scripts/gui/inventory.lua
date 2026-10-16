@@ -14,7 +14,6 @@ local inventory_tab = {}
 --- @field inventory_sorts {[string]: string}? per grid the column its sort buttons chose; a grid without one follows
 ---   the tab's sort (util.get_sort), which the Overview's Throughput tile and the dev interface set
 --- @field inventory_dim true? Provided dims the items nobody on the same network requests
---- @field inventory_delivered {minute: int, items: {[string]: int}}? items delivered in the last hour, per game minute
 
 local TAB = "inventory_tab"
 local GRIDS = { "provided", "in_transit", "requested" }
@@ -990,12 +989,7 @@ function inventory_tab.build(map_data, player_data)
 			if state.render_sig ~= render_sig or state.dirty or not state.keys then
 				if not delivered then
 					-- Once a minute, not on each of the renders a refresh is spread over.
-					local d = player_data.inventory_delivered
-					if not (d and d.minute == minute) then
-						d = { minute = minute, items = stats.aggregate(60).items }
-						player_data.inventory_delivered = d
-					end
-					delivered = d.items
+					delivered = util.delivered_items(player_data, 60)
 				end
 				local ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
 					delivered, dim)

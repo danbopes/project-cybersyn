@@ -10,7 +10,6 @@ local format = require("__flib__.format")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local dev = require("scripts.gui.dev")
-local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local text = require("scripts.gui.unserved-text")
 local name_cell = require("scripts.gui.name-cell")
@@ -37,6 +36,7 @@ local item_model = require("scripts.gui.item-model")
 --- @class PlayerData
 --- @field item_view ItemView? the open drill-down
 --- @field item_cache ItemCache? its model and render caches; dropped on close
+--- @field delivered_items {minute: int, by_period: {[int]: {[string]: int}}}? util.delivered_items' per-minute cache
 
 local item = {}
 
@@ -48,9 +48,12 @@ local ROW = 32
 -- Requesters column that shows the wait, and the step of the "last delivery n ago" tooltip age.
 local WAIT_COLUMN = 5
 local AGE_STEP = 3600
--- Rows rewritten in place per update, over the three tables (Requesters first): a collector pass that re-sorts the
--- lists spreads its rewrites over two or three updates instead of one long one (PLAN3 §4.10: 2 ms per update).
-local REWRITE_ROWS = 8
+-- Row writes per update (PLAN3 §4.10: 2 ms per update), counted in rows rewritten in place; a new row costs about
+-- three rewrites. A table is rewritten whole or not at all, so it always shows one pass's rows in that pass's order
+-- (a table left for the next update keeps the previous pass's rows, count and wait clock). New rows are added a few
+-- per update below rows that already match the model, as the Trains tab builds its first page.
+local WRITE_BUDGET = 18
+local BUILD_COST = 3
 local RENDER_ORDER = { "requesters", "providers", "trains" }
 
 -- The content element of every tab that can host the drill-down (manager.lua sizes them).
@@ -178,7 +181,8 @@ local function section_def(t, flex)
 	}
 	for _, c in ipairs(COLUMNS[t]) do
 		local tooltip = c.header == "priority" and { "cybersyn-gui.item-priority-tooltip" } or nil
-		tbl[#tbl + 1] = header_cell({ "cybersyn-gui.item-col-" .. c.header }, c.width or flex[t], c.kind == "value", tooltip)
+		tbl[#tbl + 1] = header_cell({ "cybersyn-gui.item-col-" .. c.header }, c.width or flex[t],
+			c.kind == "value" or c.kind == "train", tooltip)
 	end
 	local caption_tooltip = t == "requesters" and { "cybersyn-gui.item-requesters-tooltip" } or nil
 	return {
@@ -286,6 +290,12 @@ end
 local function teardown(player, player_data)
 	local view = player_data.item_view
 	local refs = player_data.refs
+	-- Cleared before player.opened is released: the release re-enters on_gui_closed, which must find no drill-down
+	-- (otherwise it closes it again with back and re-selects the tab it came from).
+	player_data.item_view = nil
+	player_data.item_cache = nil
+	local release = view and view.took_opened
+	if view then view.took_opened = nil end
 	if view and refs then
 		local frame = refs[VIEW]
 		-- A rebuilt window has fresh tab contents: nothing of them was hidden.
@@ -299,10 +309,6 @@ local function teardown(player, player_data)
 				if child then child.visible = true end
 			end
 		end
-		if view.took_opened and player and player_data.pinning then
-			local window = refs.manager_window
-			if window and window.valid and player.opened == window then player.opened = nil end
-		end
 	end
 	if refs then
 		for name, elem in pairs(refs) do
@@ -314,8 +320,10 @@ local function teardown(player, player_data)
 	if states then
 		for _, t in ipairs(item_model.TABLES) do states[table_name(t)] = nil end
 	end
-	player_data.item_view = nil
-	player_data.item_cache = nil
+	if release and player and player_data.pinning and refs then
+		local window = refs.manager_window
+		if window and window.valid and player.opened == window then player.opened = nil end
+	end
 end
 
 --- Closes the drill-down; with `back`, the tab it was opened from is selected again.
@@ -341,11 +349,12 @@ function item.open(player, player_data, hash)
 		if view.hash ~= hash then
 			view.hash = hash
 			player_data.item_cache = nil
+			-- Every cell is rewritten for the new item: the per-cell memo of the old one says nothing about it.
 			local states = player_data.gui_state
 			if states then
 				for _, t in ipairs(item_model.TABLES) do
 					local s = states[table_name(t)]
-					if s then s.sigs = nil end
+					if s then s.sigs, s.cells = nil, nil end
 				end
 			end
 		end
@@ -353,6 +362,8 @@ function item.open(player, player_data, hash)
 	end
 	item.close(player, player_data)
 	local refs = player_data.refs
+	local layout = player_data.layout
+	if not layout then return end
 	local from = player_data.selected_tab or "overview_tab"
 	local host = host_of(from)
 	if host ~= from then util.select_tab(player_data, host) end
@@ -365,8 +376,6 @@ function item.open(player, player_data, hash)
 			hidden[#hidden + 1] = i
 		end
 	end
-	local layout = player_data.layout
-	if not layout then return end
 	gui.add(content, view_def(from, layout), refs)
 	view = { hash = hash, from_tab = from, host = host, hidden = hidden }
 	player_data.item_view = view
@@ -399,6 +408,26 @@ function item.on_window_closed(player, player_data)
 	item.close(player, player_data, true)
 	util.rerender(player, player_data)
 	return true
+end
+
+--- The pin button was toggled while the drill-down is open. Pinned, the window keeps player.opened for the drill-down's
+--- Escape; unpinned, it holds player.opened anyway and Escape closes the window.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @return boolean kept the window stays player.opened: the pin handler must not release it
+function item.on_pin_changed(player, player_data)
+	local view = player_data.item_view
+	if not view then return false end
+	if not player_data.pinning or player_data.auto_pinned or player.controller_type == defines.controllers.remote then
+		view.took_opened = nil
+		return false
+	end
+	local window = player_data.refs.manager_window
+	if window and window.valid and player.opened == window then
+		view.took_opened = true
+		return true
+	end
+	return false
 end
 
 -- ---------------------------------------------------------------- render
@@ -605,19 +634,22 @@ local function requester_entry(r, ctx, i)
 	local acked = e and diag.is_acked("request", r.id, ctx.hash) ~= nil or false
 	local wait = r.wait_start and now - r.wait_start or nil
 	local age = st and collector.delivery_age(st) or nil
+	local network = tostring(st and st.network_name)
+	local inherited = e and e.first_tick < ctx.inherit_before or false
+	local lost = e and e.lost_n > 0 and e.lost_to and station_view(ctx.snapshot, e.lost_to) or nil
 	-- The wait caption has its own clock (wait_clock); the tooltips' ages move in steps, so a steady row is not
-	-- rewritten every update.
+	-- rewritten every update. The evaluation count in the chip's tooltip refreshes with that step too.
+	local e_sig = e and table.concat({ e.reason, e.a, e.b, acked and "a" or "", inherited and "i" or "",
+		math.floor((now - e.first_tick) / text.READ_STEP), table.concat(e.rej, ","), tostring(e.lost_to), e.lost_n,
+		lost and lost.name or "" }, "\1") or ""
 	local sig = table.concat({
-		name, r.requested, r.threshold, r.priority, r.group, tostring(r.position), r.incoming, wait and 1 or 0,
-		age and math.floor(age / AGE_STEP) or -1,
-		e and e.reason or 0, e and e.a or 0, e and e.b or 0, acked and "a" or "",
-		e and math.floor((now - e.first_tick) / text.READ_STEP) or -1,
+		name, network, r.requested, r.threshold, r.priority, r.group, tostring(r.position), r.incoming, wait and 1 or 0,
+		age and math.floor(age / AGE_STEP) or -1, e_sig,
 	}, "|")
 	local age_step = age and math.floor(age / AGE_STEP) or -1
-	local station_sig = table.concat({ name, r.id, tostring(r.position), r.priority, r.group, age_step,
-		tostring(st and st.network_name) }, "\1")
-	local chip_sig = e and table.concat({ e.reason, e.a, e.b, acked and "a" or "", math.floor((now - e.first_tick) / text.READ_STEP),
-		r.requested }, "\1") or tostring(r.group)
+	local station_sig = table.concat({ name, r.id, tostring(r.position), r.priority, r.group, age_step, network }, "\1")
+	-- The chip's tooltip names the requester and its network, so they are part of its sig: rows are keyed by position.
+	local chip_sig = table.concat({ r.id, name, network, r.group, r.requested, e_sig, e and e.n or "" }, "\1")
 	return row_entry("requesters", i, r.id .. "#" .. sig, function()
 		local last = age and { "cybersyn-gui.time-ago", util.short_duration(age - age % AGE_STEP) }
 			or { "cybersyn-gui.item-last-served-never" }
@@ -645,11 +677,16 @@ local function requester_entry(r, ctx, i)
 					network = network_text(st and st.network_name),
 					rej = e.rej,
 					wait = now - e.first_tick,
-					inherited = e.first_tick < ctx.inherit_before,
+					inherited = inherited,
 					n = e.n,
 					surface_name = ctx.surface_name,
 				}, util.format_duration),
 			}
+			if lost then
+				local tip = chip.tooltip
+				tip[#tip + 1] = "\n"
+				tip[#tip + 1] = { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) }
+			end
 		elseif r.group ~= item_model.QUEUED then
 			local key = item_model.GROUP_KEYS[r.group]
 			chip = { caption = { "cybersyn-gui.item-group-" .. key }, tooltip = { "cybersyn-gui.item-group-" .. key .. "-tooltip" },
@@ -699,14 +736,14 @@ local ENTRY = { providers = provider_entry, requesters = requester_entry, trains
 
 --- The Wait column of the shown requester rows, every update: one caption write per row whose seconds moved.
 --- @param tbl LuaGuiElement
---- @param rows ItemRequesterRow[]
---- @param n int
+--- @param rows ItemRequesterRow[] the model rows the table shows (the previous pass's while its rewrite waits)
+--- @param n int rows built
 --- @param now uint
 local function wait_clock(tbl, rows, n, now)
 	local children
 	local cols = #COLUMNS.requesters
 	for i = 1, n do
-		local start = rows[i].wait_start
+		local start = rows[i] and rows[i].wait_start
 		if start then
 			children = children or tbl.children
 			local cell = children[cols * i + WAIT_COLUMN]
@@ -735,7 +772,7 @@ local function render_header(player_data, cache)
 	local dkey = period .. ":" .. minute
 	if cache.delivered_key ~= dkey then
 		cache.delivered_key = dkey
-		cache.delivered = stats.aggregate(period).items[hash] or 0
+		cache.delivered = util.delivered_items(player_data, period)[hash] or 0
 	end
 	local t = m.totals
 	local collecting = collector.collecting()
@@ -793,7 +830,7 @@ end
 
 --- @param player_data PlayerData
 --- @return ItemCache
---- @return boolean refreshed the model of the shown item was rebuilt for a new collector pass
+--- @return boolean refreshed the model was (re)built in this call: for a new collector pass, a new item or a new view
 local function get_cache(player_data, hash)
 	local snapshot = collector.get()
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass)
@@ -806,7 +843,7 @@ local function get_cache(player_data, hash)
 	end
 	cache = { hash = hash, key = key, model = m }
 	player_data.item_cache = cache
-	return cache, false
+	return cache, true
 end
 
 --- Renders the open drill-down. False when there is none (or it just closed because another tab was selected),
@@ -841,13 +878,27 @@ function item.build(map_data, player_data)
 	cache.rows_pending = nil
 	local layout = player_data.layout
 	local total = layout and layout.rows_by_tab[TAB] or 3
+
+	-- A table under the cursor keeps its rows as they are (the hover hold); new data waits until the cursor leaves.
+	local held, any_held = {}, false
+	for _, t in ipairs(item_model.TABLES) do
+		local name = table_name(t)
+		local state = util.gui_state(player_data, name)
+		held[t] = state.keys ~= nil and #state.keys > 0 and util.hold_active(player_data, name)
+		any_held = any_held or held[t]
+	end
+	-- A new split changes the three body heights at once, so every table follows it in the same update; it waits
+	-- while a table is held.
 	local alloc = item_model.split_rows(total, { providers = #m.providers, requesters = #m.requesters, trains = #m.trains })
 	local asig = total .. ":" .. alloc.providers .. ":" .. alloc.requesters .. ":" .. alloc.trains
-	if cache.alloc_sig ~= asig then
+	local forced = false
+	if cache.alloc_sig ~= asig and (not any_held or not cache.alloc) then
 		cache.alloc_sig = asig
 		cache.alloc = alloc
 		apply_alloc(refs, alloc)
+		forced = true
 	end
+	alloc = cache.alloc
 
 	local snapshot = collector.get()
 	local d = storage.diag
@@ -867,7 +918,6 @@ function item.build(map_data, player_data)
 			return s and s.name or tostring(index)
 		end,
 	}
-	local budget, deferred = REWRITE_ROWS, 0
 	ctx.memo = {}
 	for _, t in ipairs(item_model.TABLES) do
 		local state = util.gui_state(player_data, table_name(t))
@@ -875,43 +925,54 @@ function item.build(map_data, player_data)
 		if not (state.cells and state.keys) then state.cells = {} end
 		ctx.memo[t] = state.cells
 	end
+	local budget, wrote, deferred = WRITE_BUDGET, false, 0
 	for _, t in ipairs(RENDER_ORDER) do
 		local rows = m[t]
 		local n = math.min(#rows, alloc[t])
 		local name = table_name(t)
 		local tbl = refs[name]
-		-- Under the cursor a table keeps its rows as they are (the hover hold), new data waits for the next update.
-		if tbl and tbl.valid and not util.hold_active(player_data, name) then
-			local state = util.gui_state(player_data, name)
-			local sigs = state.keys and state.sigs
+		local state = util.gui_state(player_data, name)
+		if tbl and tbl.valid and not held[t] then
 			local built = state.keys and #state.keys or 0
-			local entries = {}
+			local sigs = state.keys and state.sigs
+			local entries, changed = {}, 0
 			local make = ENTRY[t]
 			for i = 1, n do
 				local entry = make(rows[i], ctx, i)
-				-- Rows that exist and changed are rewritten up to the update's budget; the rest keep their content (and
-				-- their old sig) until the next update. Missing rows are always built.
-				if i <= built and (not sigs or sigs[i] ~= entry.sig) then
-					if budget > 0 then
-						budget = budget - 1
-					else
-						entry.update = nil
-						deferred = deferred + 1
-					end
-				end
+				if i <= built and not (sigs and sigs[i] == entry.sig) then changed = changed + 1 end
 				entries[i] = entry
 			end
-			util.sync_table_rows(tbl, #COLUMNS[t], #COLUMNS[t], entries, state)
-			if t == "requesters" then wait_clock(tbl, rows, n, ctx.now) end
+			if changed == 0 or forced or not wrote or changed <= budget then
+				budget = budget - changed
+				wrote = wrote or changed > 0
+				if n > built then
+					local room = math.max(0, math.floor(budget / BUILD_COST))
+					if not wrote and room == 0 then room = 1 end
+					local keep = math.min(n, built + room)
+					for i = keep + 1, n do entries[i] = nil end
+					budget = budget - (keep - built) * BUILD_COST
+					wrote = wrote or keep > built
+					deferred = deferred + n - keep
+				end
+				util.sync_table_rows(tbl, #COLUMNS[t], #COLUMNS[t], entries, state)
+				state.shown, state.shown_n = rows, n
+			else
+				deferred = deferred + changed + math.max(0, n - built)
+			end
+		end
+		-- Wait clock, count and empty state follow the rows the table shows, not the model it may not show yet.
+		local shown = state.shown
+		if t == "requesters" and shown and tbl and tbl.valid then
+			wait_clock(tbl, shown, math.min(state.keys and #state.keys or 0, state.shown_n), ctx.now)
 		end
 		local empty = refs["item_" .. t .. "_empty_flow"]
-		local show_empty = #rows == 0
+		local show_empty = shown ~= nil and #shown == 0
 		if empty and empty.valid and empty.visible ~= show_empty then empty.visible = show_empty end
 		local c = refs["item_" .. t .. "_count"]
-		local csig = n .. "/" .. #rows
-		if c and c.valid and cache["count_" .. t] ~= csig then
-			cache["count_" .. t] = csig
-			c.caption = { "cybersyn-gui.item-count", tostring(n), tostring(#rows) }
+		local csig = shown and (state.shown_n .. "/" .. #shown) or ""
+		if c and c.valid and state.count_sig ~= csig then
+			state.count_sig = csig
+			c.caption = shown and { "cybersyn-gui.item-count", tostring(state.shown_n), tostring(#shown) } or ""
 		end
 	end
 	cache.deferred = deferred
@@ -1144,8 +1205,8 @@ dev.add("item_escape", function(pi)
 		selected_tab = player_data.selected_tab }
 end)
 
---- `n` renders of the drill-down in this tick; `rebuild` drops the model and the row sigs before each, the cost of the
---- update right after a collector pass completes.
+--- `n` renders of the drill-down in this tick. With `rebuild` the model is dropped before each, so every render is the
+--- update that rebuilds it (model and header, the "R" kind of item_samples); the row writes follow in later updates.
 dev.add("item_profile", function(pi, n, rebuild)
 	local player_data = storage.manager.players[pi]
 	n = n or 1

@@ -835,11 +835,12 @@ function manager.handle.manager_toggle_pinned(player, player_data, refs)
 	manager.refresh_toggles(player_data)
 	if not player_data.is_manager_open then return end
 	if player_data.pinning then
-		-- Releasing player.opened raises on_gui_closed, which a pinned window ignores.
-		if player.opened == refs.manager_window then
+		-- Releasing player.opened raises on_gui_closed, which a pinned window ignores. An open drill-down keeps it.
+		if player.opened == refs.manager_window and not item.on_pin_changed(player, player_data) then
 			player.opened = nil
 		end
 	else
+		item.on_pin_changed(player, player_data)
 		player.opened = refs.manager_window
 	end
 end

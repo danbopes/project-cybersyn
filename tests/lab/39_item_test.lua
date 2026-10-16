@@ -171,6 +171,27 @@ lab.suite("39_item", {
 		model_checks("inventory", ix.hash)
 		ix.first = dev("item_dump", PI)
 
+		-- 'Delivered' in the drill-down is the figure of the Inventory slot's tooltip (one per-minute cache).
+		local function find_key(ls, key)
+			if type(ls) ~= "table" then return nil end
+			if ls[1] == key then return ls end
+			for i = 2, #ls do
+				local hit = find_key(ls[i], key)
+				if hit then return hit end
+			end
+			return nil
+		end
+		local grid = find_named(window(), "inventory_provided_table")
+		local slot = grid and grid.children[1]
+		local line = slot and find_key(slot.tooltip, "cybersyn-gui.inventory-delivered-hour")
+		local shown = line and string.gsub(tostring(line[2]), "%D", "")
+		if ix.first.period == 60 then
+			lab.check("drill-down Delivered == the Inventory slot tooltip's Delivered · last hour",
+				shown ~= nil and shown == tostring(ix.first.delivered), { shown, ix.first.delivered })
+		else
+			lab.skip("drill-down Delivered == Inventory tooltip", "Overview period is not one hour")
+		end
+
 		-- Number cells right-aligned (the value style), chips the cybersyn_chip styles.
 		local styles_ok = true
 		for _, tname in ipairs({ "providers", "requesters", "trains" }) do
@@ -226,10 +247,13 @@ lab.suite("39_item", {
 			top_child(scroll, "manager_stations_content_frame").visible)
 
 		-- Selecting another tab leaves the drill-down.
-		dev("open_item", PI, hash)
+		local od0 = dev("open_item", PI, hash)
+		lab.check("on the pinned window the drill-down holds player.opened (Escape reaches it)", od0.took_opened == true, od0)
 		dev("select_tab", PI, "trains")
 		lab.check("selecting another tab closes the drill-down", not dev("item_dump", PI).open and
 			find_named(window(), "item_view") == nil)
+		lab.check("and the tab selected stays selected (releasing player.opened does not re-select the old tab)",
+			dev("state", PI).selected_tab == "trains_tab", dev("state", PI).selected_tab)
 		dev("select_tab", PI, "stations")
 		lab.check("and the host tab's content is back", scroll.valid and scroll.visible and
 			top_child(scroll, "manager_stations_content_frame").visible)
@@ -338,7 +362,12 @@ lab.suite("39_item", {
 		local lo_row
 		for _, r in ipairs(d.rendered.requesters) do if r.id == case.r_station then lo_row = r end end
 		lab.check("the loser's row carries its reason chip with the four-line tooltip", lo_row and lo_row.chip_tooltip and
-			lo_row.chip_tooltip[1] == "" and #lo_row.chip_tooltip == 8, lo_row)
+			lo_row.chip_tooltip[1] == "" and #lo_row.chip_tooltip >= 8, lo_row)
+		local lost_line = lo_row and lo_row.chip_tooltip and lo_row.chip_tooltip[10]
+		lab.check("the loser's chip names the winner it lost to, with the count",
+			type(lost_line) == "table" and lost_line[1] == "cybersyn-diag.lost-priority" and type(lost_line[2]) == "string" and
+			(tonumber(lost_line[3]) or 0) > 0,
+			lost_line)
 
 		-- Dump twice, two seconds apart: the same rows in the same order.
 		ix.dump1 = d
@@ -359,7 +388,8 @@ lab.suite("39_item", {
 			{ keys(d1), keys(d2) })
 
 		-- Whole rows on four screens: the shares add up to the rows the layout computed for the drill-down.
-		for _, screen in ipairs({ { 1920, 1080, 1 }, { 2560, 1440, 1.25 }, { 3840, 2160, 1.5 }, { 3840, 2160, 2 } }) do
+		for _, screen in ipairs({ { 1920, 1080, 1 }, { 2560, 1440, 1.25 }, { 3840, 2160, 1.5 }, { 3840, 2160, 2 },
+			{ 1366, 768, 1.5 }, { 1920, 1080, 2 } }) do
 			local rows = dev("set_layout", PI, screen[1], screen[2], screen[3])
 			dev("update", PI, 1)
 			local d = dev("item_dump", PI)
@@ -368,7 +398,7 @@ lab.suite("39_item", {
 			local label = screen[1] .. "x" .. screen[2] .. "@" .. screen[3]
 			lab.check(label .. ": shares add up to the computed rows, rendered within them",
 				a and a.providers + a.requesters + a.trains == r.computed and r.rendered <= r.computed and
-				252 + r.computed * 32 <= r.content_height and 252 + (r.computed + 1) * 32 > r.content_height,
+				r.computed >= 3 and 256 + r.computed * 32 <= r.content_height and 256 + (r.computed + 1) * 32 > r.content_height,
 				{ a, r.computed, r.rendered, r.content_height, rows.computed })
 		end
 		lab.big_screen(PI)

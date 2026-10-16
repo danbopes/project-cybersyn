@@ -1,6 +1,7 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
+local stats = require("scripts.stats")
 local lint = require("scripts.lint")
 local rich_name = require("scripts.gui.rich-name")
 
@@ -826,6 +827,26 @@ end
 --- Re-renders the selected tab now instead of waiting for the next manager update.
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
+--- Items delivered in the last `minutes`, from stats.aggregate, cached per game minute for this player and shared by
+--- every view (the Inventory tooltips, the item drill-down), so they never show two figures in the same minute.
+--- @param player_data PlayerData
+--- @param minutes int
+--- @return {[string]: int}
+function util.delivered_items(player_data, minutes)
+	local minute = math.floor(game.tick / 3600)
+	local cache = player_data.delivered_items
+	if not (cache and cache.minute == minute) then
+		cache = { minute = minute, by_period = {} }
+		player_data.delivered_items = cache
+	end
+	local items = cache.by_period[minutes]
+	if not items then
+		items = stats.aggregate(minutes).items
+		cache.by_period[minutes] = items
+	end
+	return items
+end
+
 function util.rerender(player, player_data)
 	if rerender_fn then rerender_fn(player, player_data) end
 end
@@ -1325,7 +1346,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.handed_back_tick = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
-	player_data.inventory_delivered = nil
+	player_data.delivered_items = nil
 	player_data.stations_query = nil
 	player_data.trains_query = nil
 	player_data.overview_cache = nil
