@@ -1,6 +1,6 @@
 -- Phase 2b dispatcher-adjacent bundle (PLAN3 §4.4, §4.5, §4.14): cargo anomalies at the provider and requester
 -- departures (items and the fluid tolerance boundary), refuel_tick at a refueler, schedule_edited, the planner-cycle
--- counters, and the per-(item, network) no-train alert (B6).
+-- counters, the per-(item, network) no-train alert (B6) and the permission gate on the three console commands (B7).
 --
 -- Rows k = 30.. on cyb-bench (cases.lua's builders), torn down at the end. An operator in on_tick stands in for
 -- inserters and pumps: it loads at the provider and unloads at the requester as each scenario says, and makes a
@@ -446,6 +446,85 @@ lab.suite("39_bundle", {
 			end
 		end
 		lab.check("B6: the log has the alert of each requester it was shown on, once", #logged == 2, logged)
+	end,
+
+	-- B7 (PLAN3 §4.14): the three console commands through their real handlers with a synthetic event (the engine's
+	-- command path cannot be driven as a player from RCON; a joining client that is not admin would type them
+	-- instead, so this emulation is the test).
+	function()
+		local p = game.get_player(1)
+		local was_admin = p.admin
+		local setting = settings.global["cybersyn-manager-actions"].value
+		lab.check("actions setting defaults to admins", setting == "admins", setting)
+		local function actions_since(seq)
+			local n = 0
+			for _, ev in ipairs(dev("diag_events", seq, 100000)) do
+				if ev.seq > seq and ev.kind == "manual_action" then n = n + 1 end
+			end
+			return n
+		end
+		local function run(name, admin)
+			p.admin = admin
+			local seq = dev("diag_state").seq
+			dev("run_command", name, 1)
+			return actions_since(seq) == 1
+		end
+		-- A train with a wrong cached capacity shows whether the recalculation really ran.
+		local probe = bx.list[1].trains[1]
+		local function recalculated(admin)
+			local right = read("trains", probe, "item_slot_capacity")
+			remote.call("cybersyn", "write_global", 7, "trains", probe, "item_slot_capacity")
+			local ran = run("cybersyn-recalculate-train-size", admin)
+			local now = read("trains", probe, "item_slot_capacity")
+			remote.call("cybersyn", "write_global", right, "trains", probe, "item_slot_capacity")
+			return ran and now == right, ran or now ~= 7
+		end
+		for _, case in ipairs({
+			{ "admins", true, true }, { "admins", false, false },
+			{ "everyone", true, true }, { "everyone", false, true },
+			{ "nobody", true, false }, { "nobody", false, false },
+		}) do
+			dev("set_setting", "cybersyn-manager-actions", case[1])
+			local ran, touched = recalculated(case[2])
+			local who = case[2] and "an admin" or "a non-admin"
+			if case[3] then
+				lab.check("gate " .. case[1] .. ": " .. who .. " may recalculate train sizes (audited)", ran, touched)
+			else
+				lab.check("gate " .. case[1] .. ": " .. who .. " is refused (nothing ran, nothing audited)",
+					not ran and not touched, touched)
+			end
+		end
+		dev("set_setting", "cybersyn-manager-actions", "admins")
+		lab.check("gate admins: a non-admin is refused /cybersyn-fix-priorities",
+			not run("cybersyn-fix-priorities", false))
+		lab.check("gate admins: an admin may run /cybersyn-fix-priorities", run("cybersyn-fix-priorities", true))
+		lab.check("gate admins: a non-admin is refused /cybersyn-abolish-same-depot",
+			not run("cybersyn-abolish-same-depot", false))
+		-- An admin's abolish rewrites every depot and train; their settings are restored afterwards.
+		local depots, trains = {}, {}
+		for id, depot in pairs(read("depots")) do
+			local comb = depot.entity_comb
+			if comb and comb.valid then
+				depots[id] = { comb = comb, params = comb.get_control_behavior().parameters,
+					limit = depot.entity_stop.trains_limit }
+			end
+		end
+		for id, train in pairs(read("trains")) do trains[id] = train.use_any_depot end
+		lab.check("gate admins: an admin may run /cybersyn-abolish-same-depot", run("cybersyn-abolish-same-depot", true))
+		for id, d in pairs(depots) do
+			if d.comb.valid then
+				d.comb.get_control_behavior().parameters = d.params
+				local stop = read("depots", id, "entity_stop")
+				if stop and stop.valid and d.limit > 2100000000 then stop.trains_limit = nil end
+			end
+		end
+		for id, v in pairs(trains) do
+			if read("trains", id) then remote.call("cybersyn", "write_global", v or nil, "trains", id, "use_any_depot") end
+		end
+		local ev = dev("diag_events", nil, 1)[1]
+		lab.check("manual_action event: action, player and target", ev and ev.kind == "manual_action" and
+			ev.code_name == "abolish_same_depot" and ev.station2 == 1 and ev.b == 0, ev)
+		p.admin = was_admin
 	end,
 
 	function()

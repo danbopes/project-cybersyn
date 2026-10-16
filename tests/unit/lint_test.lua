@@ -1,7 +1,8 @@
--- scripts/lint.lua (PLAN3 §4.12): the check predicates against plain records.
+-- scripts/lint.lua (PLAN3 §4.12): the check predicates against plain records, and scripts/actions.lua (§4.14).
 
 local H = require("harness")
 local lint = H.load("scripts.lint")
+local actions = H.load("scripts.actions")
 
 local function checks(out)
 	local names = {}
@@ -192,4 +193,23 @@ test("train: group, missing record, never refuelled, capacity drift (items, then
 	assert_eq(checks(out), { "capacity_drift" })
 	-- A quality fluid wagon's size is not known from the prototype: no fluid comparison.
 	assert_eq(lint.check_train({}, 3, { item_slot_capacity = 0, fluid_capacity = 25000 }, { items = 0 }), 0)
+end)
+
+test("actions: single player always; admins, everyone and nobody against player.admin", function()
+	local admin, other = { admin = true, valid = true }, { admin = false, valid = true }
+	game.is_multiplayer = function() return false end
+	settings.global["cybersyn-manager-actions"] = { value = "nobody" }
+	assert_true(actions.may_act(other))
+	game.is_multiplayer = function() return true end
+	local want = {
+		admins = { true, false, true },
+		everyone = { true, true, true },
+		nobody = { false, false, false },
+	}
+	for setting, w in pairs(want) do
+		settings.global["cybersyn-manager-actions"] = { value = setting }
+		assert_eq({ actions.may_act(admin), actions.may_act(other), actions.may_act(nil) }, w, setting)
+	end
+	settings.global["cybersyn-manager-actions"] = nil
+	assert_eq(actions.setting(), "admins")
 end)

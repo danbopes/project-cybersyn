@@ -9,6 +9,10 @@ local util = {}
 --- @type fun(name: string): RichNameParts
 util.parse_rich_name = rich_name.parse
 
+--- Whether a player may run a state-changing action (PLAN3 §4.14); handlers call it, buttons only mirror it.
+--- @type fun(player: LuaPlayer?): boolean
+util.may_act = require("scripts.actions").may_act
+
 --- Create a flying text at the player's cursor with an error sound.
 --- @param player LuaPlayer
 --- @param message LocalisedString

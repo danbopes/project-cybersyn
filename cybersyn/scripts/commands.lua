@@ -1,3 +1,4 @@
+local actions = require("scripts.actions")
 local lint = require("scripts.lint")
 
 --- @param entity LuaEntity
@@ -213,6 +214,20 @@ local function abolish_same_depot()
 	game.print({ "cybersyn-messages.abolish-same-depot-command-result", num_depots, num_trains })
 end
 
+--- A command that changes game state: refused without the right (PLAN3 §4.14, B7), audited when it ran.
+--- @param action int ACTION_*
+--- @param fn fun()
+--- @return fun(command: CustomCommandData)
+local function gated(action, fn)
+	return function(command)
+		local player = command.player_index and game.get_player(command.player_index) or nil
+		local what = "/" .. command.name
+		if not actions.check(player, what) then return end
+		fn()
+		actions.audit(action, nil, player, what)
+	end
+end
+
 --- The entity-search half of the setup checks (B8): a chunked scan on the manager tick that prints its report when it
 --- is done; the snapshot-based checks live in the manager's Problems view.
 --- @param command CustomCommandData
@@ -229,10 +244,10 @@ end
 
 --- Console command handlers by name; the dev interface dispatches them with a synthetic event.
 cybersyn_command_handlers = {
-	["cybersyn-recalculate-train-size"] = function() retrigger_train_calculation(true) end,
+	["cybersyn-recalculate-train-size"] = gated(ACTION_RECALCULATE_TRAIN_SIZE, function() retrigger_train_calculation(true) end),
 	["cybersyn-find-problems"] = find_problems_command,
-	["cybersyn-fix-priorities"] = fix_priorities_command,
-	["cybersyn-abolish-same-depot"] = abolish_same_depot,
+	["cybersyn-fix-priorities"] = gated(ACTION_FIX_PRIORITIES, fix_priorities_command),
+	["cybersyn-abolish-same-depot"] = gated(ACTION_ABOLISH_SAME_DEPOT, abolish_same_depot),
 }
 
 commands.add_command("cybersyn-recalculate-train-size", { "cybersyn-messages.recalculate-train-size-command-help" },
