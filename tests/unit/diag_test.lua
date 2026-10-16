@@ -494,7 +494,7 @@ test("rings: resizing the full ring keeps the newest rows and their order", func
 	assert_eq({ #ev, ev[1].a, ev[1025].a }, { 1025, 1978, 3002 })
 end)
 
-test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk per tick", function()
+test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk per export tick", function()
 	at(50)
 	local d = setup("full")
 	local writes = {}
@@ -518,8 +518,6 @@ test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk
 	local ended = {}
 	diag.set_export_listener(function(j, cause) ended[#ended + 1] = { j.path, j.rows, cause } end)
 	assert_eq(#d.export_jobs, 1)
-	diag.export_tick()
-	-- The manager tick and the fixed nth tick may both run in one game tick: one chunk only.
 	diag.export_tick()
 	assert_eq(#writes, 1)
 	assert_near(diag.export_progress(job), 1000 / 4001, 1e-9)
@@ -608,7 +606,7 @@ test("export: the Log's filter (severities, kind group with alert codes, window,
 	helpers.write_file = function() end
 end)
 
-test("export: turning diagnostics off finishes a queued export instead of dropping it", function()
+test("export: turning diagnostics off keeps a queued export draining one chunk per export tick", function()
 	at(70)
 	local d = setup("basic")
 	local writes = {}
@@ -622,11 +620,54 @@ test("export: turning diagnostics off finishes a queued export instead of droppi
 	diag.set_export_listener(function(j, cause) ended[#ended + 1] = { j.rows, cause } end)
 	setup("off")
 	assert_nil(storage.diag)
+	-- Nothing is written in the setting's tick; the job outlives diagnostics with its rings.
+	assert_eq(#writes, 1)
+	assert_eq(ended, {})
+	assert_eq(#diag.export_jobs(), 1)
+	assert_not_nil(diag.export_job(4))
+	diag.export_tick()
+	assert_eq(#writes, 2)
+	diag.export_tick()
+	assert_eq(#writes, 3)
 	assert_eq(ended, { { 2500, "off" } })
+	assert_nil(storage.diag_export_tail)
+	assert_nil(diag.export_tick())
 	local n = 0
 	for _ in string.gmatch(table.concat(writes), "[^\n]+") do n = n + 1 end
 	assert_eq(n, 2501)
 	diag.set_export_listener(nil)
+	helpers.write_file = function() end
+end)
+
+test("export and events after full -> basic: the full session's rows are gone from every reader", function()
+	at(80)
+	local d = setup("full")
+	local writes = {}
+	helpers.write_file = function(path, data) writes[#writes + 1] = data end
+	diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 3, 0, 0, 0, 0, 0)
+	diag.event(d, DIAG_KIND_ALERT, DIAG_SEV_ERROR, 1, 0, 3, 0, 0, 0, 0, 0)
+	assert_eq(#diag.events(nil, nil, 100), 2)
+	d = setup("basic")
+	diag.event(d, DIAG_KIND_ALERT, DIAG_SEV_WARNING, 1, 0, 3, 0, 0, 0, 0, 0)
+	assert_eq(d.ring_full.count, 0)
+	local evs = diag.events(nil, nil, 100)
+	assert_eq(#evs, 2)
+	assert_eq({ evs[1].seq, evs[2].seq }, { 2, 3 })
+	diag.export(nil, nil)
+	diag.export_tick()
+	local lines = {}
+	for line in string.gmatch(table.concat(writes), "[^\n]+") do lines[#lines + 1] = line end
+	assert_eq(#lines, 3)
+	-- A job started while full was on keeps that ring until it ends, even when full is switched off meanwhile.
+	d = setup("full")
+	diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 3, 0, 0, 0, 0, 0)
+	writes = {}
+	diag.export(nil, nil)
+	d = setup("basic")
+	diag.export_tick()
+	lines = {}
+	for line in string.gmatch(table.concat(writes), "[^\n]+") do lines[#lines + 1] = line end
+	assert_eq(#lines, 1 + 3)
 	helpers.write_file = function() end
 end)
 

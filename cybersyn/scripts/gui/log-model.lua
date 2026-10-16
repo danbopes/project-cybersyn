@@ -5,8 +5,8 @@
 -- Nothing here scans a ring whole per update: a full ring on a 2,030-station base is 20,480 rows, about 4 ms to walk.
 -- The rows come from a backward scan from the head that stops once the window's rows are filled, then follow the head
 -- forward; the counts are kept per 256-seq bucket so rows leaving the window (or the ring) at the old end are
--- subtracted by recounting one bucket; every scan that may run long examines at most `budget` rows per update and
--- continues from the seq it reached on the next one.
+-- subtracted by recounting one bucket; every scan examines at most `budget` rows per call, reports how many it used
+-- (the Log shares one budget per update between them) and continues from the seq it reached on the next call.
 
 local format = require("__flib__.format")
 local diag = require("scripts.diag")
@@ -15,6 +15,8 @@ local model = {}
 
 model.BUDGET = 4096
 model.BUCKET = 256
+-- Counts this far behind the head are rebuilt by the chunked backward scan rather than caught up in one call.
+model.COUNTS_BEHIND = 4096
 model.SUMMARY_TOP = 10
 -- Window drop-down: 10 min, 1 h, everything the rings hold.
 model.WINDOWS = { 36000, 216000, false }
@@ -46,7 +48,9 @@ model.GROUPS = {
 	},
 	{
 		name = "trains",
-		kinds = { DIAG_KIND_TRAIN_STATE, DIAG_KIND_SCHEDULE_EDITED, DIAG_KIND_ALERT },
+		kinds = { DIAG_KIND_TRAIN_STATE, DIAG_KIND_SCHEDULE_EDITED },
+		-- Listed under this group in the drop-down only: picking it shows every alert, whatever it is about.
+		items = { DIAG_KIND_ALERT },
 		alerts = { DIAG_ALERT_STUCK, DIAG_ALERT_NONEMPTY_IN_DEPOT, DIAG_ALERT_AT_INCORRECT_STATION,
 			DIAG_ALERT_CANNOT_PATH_BETWEEN_SURFACES, DIAG_ALERT_GROUP_SCHEDULE_BROKEN, DIAG_ALERT_SCHEDULE_BROKEN,
 			DIAG_ALERT_UNEXPECTED_TRAIN },
@@ -67,6 +71,9 @@ model.KIND_ITEMS = { {} }
 for g, group in ipairs(model.GROUPS) do
 	model.KIND_ITEMS[#model.KIND_ITEMS + 1] = { group = g }
 	for _, kind in ipairs(group.kinds) do
+		model.KIND_ITEMS[#model.KIND_ITEMS + 1] = { kind = kind }
+	end
+	for _, kind in ipairs(group.items or {}) do
 		model.KIND_ITEMS[#model.KIND_ITEMS + 1] = { kind = kind }
 	end
 end
@@ -202,6 +209,7 @@ end
 --- @param visit fun(r: DiagRing, i: int): boolean?
 --- @return boolean ended the rings or the window ended
 --- @return uint? below where a later call continues (the row that stopped the scan is examined again)
+--- @return int examined rows examined
 local function scan_back(rb, rf, below, cf, budget, visit)
 	local kb = first_after(rb, below - 1) - 1
 	local kf = rf and (first_after(rf, below - 1) - 1) or -1
@@ -217,14 +225,14 @@ local function scan_back(rb, rf, below, cf, budget, visit)
 		elseif iff then
 			r, i, kf = rf, iff, kf - 1
 		else
-			return true, nil
+			return true, nil, n
 		end
 		-- Seq order is tick order in both rings, so the first row before the window ends the whole scan.
-		if min_tick and r.tick[i] < min_tick then return true, nil end
+		if min_tick and r.tick[i] < min_tick then return true, nil, n end
 		local seq = r.seq[i]
-		if n >= budget then return false, seq + 1 end
+		if n >= budget then return false, seq + 1, n end
 		n = n + 1
-		if (not any or match(r, i, cf)) and visit(r, i) then return false, seq + 1 end
+		if (not any or match(r, i, cf)) and visit(r, i) then return false, seq + 1, n end
 	end
 end
 model.scan_back = scan_back
@@ -237,6 +245,7 @@ model.scan_back = scan_back
 --- @param visit fun(r: DiagRing, i: int)
 --- @return uint reached every row up to this seq was visited
 --- @return boolean ended no row above `reached` was left
+--- @return int visited
 local function scan_fwd(rb, rf, after, budget, visit)
 	local kb = first_after(rb, after)
 	local nb = rb.count
@@ -246,7 +255,7 @@ local function scan_fwd(rb, rf, after, budget, visit)
 	end
 	local n, reached = 0, after
 	while kb < nb or kf < nf do
-		if n >= budget then return reached, false end
+		if n >= budget then return reached, false, n end
 		local ib = kb < nb and at(rb, kb) or nil
 		local iff = kf < nf and at(rf, kf) or nil
 		local r, i
@@ -259,7 +268,7 @@ local function scan_fwd(rb, rf, after, budget, visit)
 		reached = r.seq[i]
 		visit(r, i)
 	end
-	return reached, true
+	return reached, true, n
 end
 model.scan_fwd = scan_fwd
 
@@ -287,17 +296,26 @@ local function rings(d)
 end
 model.rings = rings
 
---- Changes whenever diagnostics were recreated or full was switched: seqs of an old state mean nothing then.
+--- Which diagnostics state a seq belongs to: a recreated state starts its seqs again from 0.
+--- @param d DiagState
+--- @return string
+local function state_id(d)
+	return tostring(d.id or d.loaded_tick)
+end
+model.state_id = state_id
+
+--- Changes whenever diagnostics were recreated or full was switched: the rows read then change.
 --- @param d DiagState
 --- @return string
 local function epoch(d)
-	return tostring(d.loaded_tick) .. (d.full and "f" or "b")
+	return state_id(d) .. (d.full and "f" or "b")
 end
 model.epoch = epoch
 
 -- ---------------------------------------------------------------- rows
 
---- @class LogGroup one shown row: one event, or adjacent identical events (same kind, code, train, stations, item)
+--- @class LogGroup one shown row: one event, or adjacent identical events (same kind, severity, code, train, stations,
+--- item, and for the kinds whose numbers say what the event is about, those numbers)
 --- @field seq uint newest event of the row
 --- @field first uint oldest event of the row (the row's key: stable while newer identical events join at the top)
 --- @field tick uint newest event's tick
@@ -327,11 +345,19 @@ local function new_group(r, i)
 end
 model.new_group = new_group
 
+-- Kinds whose `a` (and `b`) name what the event is about rather than measure it: a lint finding's check and subject,
+-- a manual action and its target, the player who edited a schedule. Two such events differ when those differ.
+local A_NAMES = { [DIAG_KIND_LINT] = true, [DIAG_KIND_MANUAL_ACTION] = true, [DIAG_KIND_SCHEDULE_EDITED] = true }
+local B_NAMES = { [DIAG_KIND_LINT] = true, [DIAG_KIND_MANUAL_ACTION] = true }
+model.A_NAMES, model.B_NAMES = A_NAMES, B_NAMES
+
 --- @param g LogGroup
 --- @return boolean
 local function identical(g, r, i)
-	return g.kind == r.kind[i] and g.code == r.code[i] and g.train == r.train[i] and g.station == r.station[i]
-		and g.station2 == r.station2[i] and g.item == r.item[i]
+	local kind = g.kind
+	return kind == r.kind[i] and g.sev == r.sev[i] and g.code == r.code[i] and g.train == r.train[i]
+		and g.station == r.station[i] and g.station2 == r.station2[i] and g.item == r.item[i]
+		and (not A_NAMES[kind] or g.a == r.a[i]) and (not B_NAMES[kind] or g.b == r.b[i])
 end
 model.identical = identical
 
@@ -365,6 +391,7 @@ end
 --- @field top uint every row up to this seq has been considered at the top
 --- @field below uint? the backward scan continues below this seq; nil once complete
 --- @field anchor uint? Follow off: rows written after this seq are not shown
+--- @field anchor_state string? the diagnostics state the anchor's seq belongs to
 --- @field limit int
 
 --- Brings the rows up to date. Follow on: new events join at the top (an identical newest row counts them), rows
@@ -375,12 +402,18 @@ end
 --- @param cf LogCompiled
 --- @param limit int rows shown
 --- @param follow boolean
---- @param budget int rows examined at most by each scan
+--- @param budget int rows examined at most, both scans together
 --- @return boolean changed
+--- @return int examined
 function model.update_rows(rs, d, cf, limit, follow, budget)
 	local rb, rf = rings(d)
 	local head = d.seq
-	if not follow and not rs.anchor then rs.anchor = rs.top or head end
+	-- An anchor taken in an earlier diagnostics state is a seq of another numbering.
+	if rs.anchor and rs.anchor_state ~= state_id(d) then rs.anchor, rs.top = nil, nil end
+	if not follow and not rs.anchor then
+		rs.anchor = rs.top or head
+		rs.anchor_state = state_id(d)
+	end
 	if follow then rs.anchor = nil end
 	local sig = table.concat({ epoch(d), cf.sig, cf.sev_sig, limit, tostring(rs.anchor) }, "|")
 	local changed = false
@@ -394,6 +427,7 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 	end
 	local groups = rs.groups
 	local sevs = cf.sevs
+	local used = 0
 	if follow and head > rs.top then
 		if head - rs.top > budget then
 			-- Too far behind (a long pause): start again from the head.
@@ -401,7 +435,7 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 			return model.update_rows(rs, d, cf, limit, follow, budget)
 		end
 		local added = 0
-		scan_fwd(rb, rf, rs.top, budget, function(r, i)
+		local _, _, n = scan_fwd(rb, rf, rs.top, budget, function(r, i)
 			if not (sevs[r.sev[i]] and match(r, i, cf)) then return end
 			if cf.min_tick and r.tick[i] < cf.min_tick then return end
 			added = added + 1
@@ -413,6 +447,7 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 				table.insert(groups, 1, new_group(r, i))
 			end
 		end)
+		used = n
 		rs.top = head
 		if added > 0 then
 			changed = true
@@ -428,8 +463,8 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 			changed = true
 		end
 	end
-	if rs.below then
-		local ended, below = scan_back(rb, rf, rs.below, cf, budget, function(r, i)
+	if rs.below and used < budget then
+		local ended, below, n = scan_back(rb, rf, rs.below, cf, budget - used, function(r, i)
 			if not sevs[r.sev[i]] then return false end
 			local last = groups[#groups]
 			if last and identical(last, r, i) then
@@ -442,6 +477,7 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 			changed = true
 			return false
 		end)
+		used = used + n
 		-- Stopped by a row that does not fit: the last row's count is complete, and nothing more is needed.
 		if ended or (below and #groups >= limit) then
 			rs.below = nil
@@ -450,7 +486,7 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 		end
 		changed = true
 	end
-	return changed
+	return changed, used
 end
 
 -- ---------------------------------------------------------------- severity counts
@@ -518,11 +554,14 @@ end
 --- @param cs LogCountsState
 --- @param d DiagState
 --- @param cf LogCompiled
---- @param budget int
---- @return boolean building the first count is not complete yet (the totals are a lower bound)
+--- @param budget int rows examined at most, catching up and building together
+--- @return boolean building the count is not complete yet (the totals are a lower bound)
+--- @return int examined
 function model.update_counts(cs, d, cf, budget)
 	local rb, rf = rings(d)
 	local sig = epoch(d) .. "|" .. cf.sig
+	-- Far behind the head (the Log was not shown for a while): a fresh chunked count instead of one long catch-up.
+	if cs.sig == sig and d.seq - cs.hi > model.COUNTS_BEHIND then cs.sig = nil end
 	if cs.sig ~= sig then
 		cs.sig = sig
 		cs.hi = d.seq
@@ -532,25 +571,30 @@ function model.update_counts(cs, d, cf, budget)
 		cs.total = { 0, 0, 0 }
 	end
 	local min_tick = cf.min_tick
+	local used = 0
 	if d.seq > cs.hi then
-		scan_fwd(rb, rf, cs.hi, math.huge, function(r, i)
+		local reached, ended, n = scan_fwd(rb, rf, cs.hi, budget, function(r, i)
 			if (not min_tick or r.tick[i] >= min_tick) and match(r, i, cf) then
 				count_add(cs, r == rb and 1 or 2, r.seq[i], r.sev[i])
 			end
 		end)
-		cs.hi = d.seq
+		used = n
+		cs.hi = ended and d.seq or reached
+		if not ended then return true, used end
 	end
 	if cs.build then
-		local ended, below = scan_back(rb, rf, cs.build, cf, budget, function(r, i)
+		if used >= budget then return true, used end
+		local ended, below, n = scan_back(rb, rf, cs.build, cf, budget - used, function(r, i)
 			count_add(cs, r == rb and 1 or 2, r.seq[i], r.sev[i])
 			return false
 		end)
+		used = used + n
 		cs.build = (not ended) and below or nil
-		if cs.build then return true end
+		if cs.build then return true, used end
 	end
 	count_trim(cs, 1, rb, cf)
 	if rf then count_trim(cs, 2, rf, cf) end
-	return false
+	return false, used
 end
 
 -- ---------------------------------------------------------------- unread errors (the tab's badge)
@@ -561,11 +605,20 @@ end
 --- @field n int unread errors
 --- @field seen uint? the seen seq the count started from
 
+--- The seq a player has seen the Log up to, in this diagnostics state (0 when it was seen in another one).
+--- @param seen {state: string, seq: uint}?
+--- @param d DiagState
+--- @return uint
+function model.seen_seq(seen, d)
+	if seen and seen.state == state_id(d) then return seen.seq end
+	return 0
+end
+
 --- Counts error rows newer than `seen` (the newest seq the player had on screen in the Log), at most `budget` new rows
 --- per call.
 --- @param bs LogBadgeState
 --- @param d DiagState
---- @param seen uint?
+--- @param seen uint? a seq of this diagnostics state (model.seen_seq)
 --- @param budget int
 --- @return int unread
 function model.update_badge(bs, d, seen, budget)
@@ -574,7 +627,6 @@ function model.update_badge(bs, d, seen, budget)
 		bs.epoch, bs.hi, bs.n, bs.seen = e, 0, 0, nil
 	end
 	seen = seen or 0
-	-- A seen seq above the head belongs to an earlier diagnostics state.
 	if seen > d.seq then seen = 0 end
 	if seen ~= bs.seen then
 		bs.seen, bs.hi, bs.n = seen, seen, 0
@@ -603,18 +655,35 @@ end
 --- @field top_stations {id: uint, n: int, sev: int}[]? once done
 --- @field top_items {item: int, n: int, sev: int}[]?
 
+--- @return boolean a ranks before b: more events, then the worse severity, then the lower id
+local function ranks_before(n1, s1, k1, n2, s2, k2)
+	if n1 ~= n2 then return n1 > n2 end
+	if s1 ~= s2 then return s1 < s2 end
+	return k1 < k2
+end
+
+--- The SUMMARY_TOP entries by rank, by insertion into a short sorted list (a base has thousands of stations; only the
+--- top few are ever shown).
 --- @param map {[number]: int[]}
 --- @param key_name string
 --- @return table[]
 local function top(map, key_name)
-	local list = {}
-	for id, c in pairs(map) do list[#list + 1] = { [key_name] = id, n = c[1], sev = c[2] } end
-	table.sort(list, function(a, b)
-		if a.n ~= b.n then return a.n > b.n end
-		if a.sev ~= b.sev then return a.sev < b.sev end
-		return a[key_name] < b[key_name]
-	end)
-	for k = #list, model.SUMMARY_TOP + 1, -1 do list[k] = nil end
+	local list, size = {}, model.SUMMARY_TOP
+	for id, c in pairs(map) do
+		local n, sev = c[1], c[2]
+		local len = #list
+		local last = list[len]
+		if len < size or ranks_before(n, sev, id, last.n, last.sev, last[key_name]) then
+			local pos = len + 1
+			while pos > 1 do
+				local p = list[pos - 1]
+				if not ranks_before(n, sev, id, p.n, p.sev, p[key_name]) then break end
+				pos = pos - 1
+			end
+			table.insert(list, pos, { [key_name] = id, n = n, sev = sev })
+			if #list > size then list[#list] = nil end
+		end
+	end
 	return list
 end
 model.top = top
@@ -627,6 +696,7 @@ model.top = top
 --- @param cf LogCompiled
 --- @param budget int
 --- @return boolean done
+--- @return int examined
 function model.update_summary(ss, d, cf, budget)
 	local rb, rf = rings(d)
 	local sig = epoch(d) .. "|" .. cf.sig .. "|" .. cf.sev_sig
@@ -639,10 +709,10 @@ function model.update_summary(ss, d, cf, budget)
 		ss.top_stations, ss.top_items = nil, nil
 		ss.scanned = 0
 	end
-	if not ss.below then return true end
+	if not ss.below then return true, 0 end
 	local stations, items, sevs = ss.stations, ss.items, cf.sevs
 	local scanned = ss.scanned
-	local ended, below = scan_back(rb, rf, ss.below, cf, budget, function(r, i)
+	local ended, below, used = scan_back(rb, rf, ss.below, cf, budget, function(r, i)
 		local sev = r.sev[i]
 		if not sevs[sev] then return false end
 		scanned = scanned + 1
@@ -674,10 +744,10 @@ function model.update_summary(ss, d, cf, budget)
 		ss.top_stations = top(stations, "id")
 		ss.top_items = top(items, "item")
 		ss.stations, ss.items = nil, nil
-		return true
+		return true, used
 	end
 	ss.below = below
-	return false
+	return false, used
 end
 
 -- ---------------------------------------------------------------- text
@@ -687,6 +757,8 @@ end
 --- @return string
 function model.repeat_caption(n)
 	if n <= 1 then return "" end
+	-- The count column is narrow; the age tooltip of a collapsed row gives the exact number.
+	if n >= 10000 then return "×" .. format.number(n, true) end
 	return "×" .. format.number(n)
 end
 

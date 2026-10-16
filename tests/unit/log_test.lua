@@ -111,6 +111,32 @@ test("collapse: adjacent identical rows become one with a count; the oldest seq 
 	assert_eq(model.repeat_caption(1), "")
 	assert_eq(model.repeat_caption(3), "×3")
 	assert_eq(model.repeat_caption(1200), "×1,200")
+	assert_eq(model.repeat_caption(11000), "×11 k")
+end)
+
+test("collapse: never across severities, nor across the numbers that name a lint finding or an action", function()
+	setup()
+	local function e(seq, kind, sev, a, b)
+		return { seq = seq, tick = seq, kind = kind, sev = sev, code = 0, delivery = 0, train = 0, station = 5,
+			station2 = 0, item = 0, a = a, b = b }
+	end
+	-- Two findings that appeared together on one stop: two rows, each with its own check and severity.
+	local rows = model.collapse({
+		e(6, DIAG_KIND_LINT, DIAG_SEV_ERROR, 3, 5),
+		e(5, DIAG_KIND_LINT, DIAG_SEV_WARNING, 7, 5),
+		e(4, DIAG_KIND_LINT, DIAG_SEV_WARNING, 7, 5),
+		e(3, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, 1, 2),
+		e(2, DIAG_KIND_STATION_LIMIT, DIAG_SEV_WARNING, 1, 2),
+		e(1, DIAG_KIND_STATION_LIMIT, DIAG_SEV_WARNING, 4, 9),
+	})
+	local shape = {}
+	for i, g in ipairs(rows) do shape[i] = { g.seq, g.n, g.sev, g.a } end
+	assert_eq(shape, { { 6, 1, DIAG_SEV_ERROR, 3 }, { 5, 2, DIAG_SEV_WARNING, 7 }, { 3, 1, DIAG_SEV_INFO, 1 },
+		{ 2, 2, DIAG_SEV_WARNING, 1 } })
+	local edits = model.collapse({ e(2, DIAG_KIND_SCHEDULE_EDITED, 3, 1, 1), e(1, DIAG_KIND_SCHEDULE_EDITED, 3, 2, 1) })
+	assert_eq(#edits, 2)
+	local actions = model.collapse({ e(2, DIAG_KIND_MANUAL_ACTION, 3, 1, 10), e(1, DIAG_KIND_MANUAL_ACTION, 3, 1, 11) })
+	assert_eq(#actions, 2)
 end)
 
 test("rows: a backward fill to the limit, then the head followed; identical new events join the top row", function()
@@ -210,9 +236,25 @@ test("counts: equal a brute-force count through eviction, a moving window and a 
 	for round = 1, 6 do
 		burst(700, 7)
 		cf = model.compile(f, game.tick)
-		model.update_counts(cs, d, cf, 300)
+		-- 700 new rows against a 300-row budget: caught up over three calls, each within the budget.
+		local calls = 0
+		while true do
+			calls = calls + 1
+			local building, used = model.update_counts(cs, d, cf, 300)
+			assert_true(used <= 300)
+			if not building then break end
+		end
+		assert_eq(calls, 3, "round " .. round)
 		assert_eq(cs.total, oracle_counts(d, cf), "round " .. round)
 	end
+	-- Far behind (the Log was not shown for a while): a fresh chunked count, never one long walk.
+	burst(model.COUNTS_BEHIND + 10, 1)
+	cf = model.compile(f, game.tick)
+	local building, used = model.update_counts(cs, d, cf, 300)
+	assert_true(building)
+	assert_true(used <= 300)
+	while model.update_counts(cs, d, cf, 300) do end
+	assert_eq(cs.total, oracle_counts(d, cf))
 	-- Everything kept, with a station subject: still the brute force.
 	local all = model.compile(filter({ subject = { kind = "station", id = 3 } }), game.tick)
 	local cs2 = {}
@@ -220,8 +262,30 @@ test("counts: equal a brute-force count through eviction, a moving window and a 
 	assert_eq(cs2.total, oracle_counts(d, all))
 	burst(1500, 1)
 	all = model.compile(filter({ subject = { kind = "station", id = 3 } }), game.tick)
-	model.update_counts(cs2, d, all, 500)
+	while model.update_counts(cs2, d, all, 500) do end
 	assert_eq(cs2.total, oracle_counts(d, all))
+end)
+
+test("budget: rows and counts report the rows they examined and never pass the budget they were given", function()
+	at(0)
+	local d = setup("full", 4096)
+	for n = 1, 3000 do ev(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, { train = n % 50 }) end
+	-- A train with no events: the rows scan the whole ring, a budget's worth per update.
+	local cf = model.compile(filter({ train = 999 }), game.tick)
+	local rs, cs = {}, {}
+	local updates = 0
+	repeat
+		updates = updates + 1
+		local left = 400
+		local _, used = model.update_rows(rs, d, cf, 10, true, left)
+		assert_true(used <= left)
+		left = left - used
+		local _, used2 = model.update_counts(cs, d, cf, left)
+		assert_true(used + used2 <= 400, "update " .. updates)
+	until rs.below == nil and not cs.build
+	assert_true(updates >= 3000 / 400)
+	assert_eq(#rs.groups, 0)
+	assert_eq(cs.total, { 0, 0, 0 })
 end)
 
 test("badge: errors after the last seen seq, counted forward within a budget; seen clears it", function()
@@ -240,6 +304,30 @@ test("badge: errors after the last seen seq, counted forward within a budget; se
 	d = setup("basic")
 	ev(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR)
 	assert_eq(model.update_badge(bs, d, 10, 100), 1)
+end)
+
+test("badge and Follow off across a diagnostics restart: an old state's seq means nothing in the new one", function()
+	at(0)
+	local d = setup()
+	for _ = 1, 20 do ev(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR) end
+	local seen = { state = model.state_id(d), seq = 15 }
+	assert_eq(model.seen_seq(seen, d), 15)
+	local rs = {}
+	local cf = model.compile(filter({ follow = false }), 0)
+	model.update_rows(rs, d, cf, 5, false, 100)
+	assert_eq(rs.anchor, 20)
+	setup("off")
+	d = setup("basic")
+	local bs = {}
+	-- The new state's seq passes the old seen seq: the badge keeps counting every error of the new state.
+	for k = 1, 25 do
+		ev(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR)
+		assert_eq(model.update_badge(bs, d, model.seen_seq(seen, d), 100), k)
+	end
+	-- The anchor is taken again in the new state's numbering.
+	model.update_rows(rs, d, cf, 5, false, 100)
+	assert_eq(rs.anchor, 25)
+	assert_eq(rs.anchor_state, model.state_id(d))
 end)
 
 test("summary: top stations and items by events in the window with the worst severity", function()
@@ -270,6 +358,27 @@ test("summary: top stations and items by events in the window with the worst sev
 	assert_eq(ss2.top_stations, { { id = 12, n = 1, sev = DIAG_SEV_ERROR } })
 end)
 
+test("summary top: the short insertion list equals a full sort", function()
+	setup()
+	local map, list = {}, {}
+	local x = 7
+	for id = 1, 500 do
+		x = (x * 1103515245 + 12345) % 2147483648
+		local n, sev = x % 13, 1 + x % 3
+		map[id] = { n, sev }
+		list[#list + 1] = { id = id, n = n, sev = sev }
+	end
+	table.sort(list, function(a, b)
+		if a.n ~= b.n then return a.n > b.n end
+		if a.sev ~= b.sev then return a.sev < b.sev end
+		return a.id < b.id
+	end)
+	local want = {}
+	for i = 1, model.SUMMARY_TOP do want[i] = list[i] end
+	assert_eq(model.top(map, "id"), want)
+	assert_eq(model.top({ [4] = { 1, 2 } }, "id"), { { id = 4, n = 1, sev = 2 } })
+end)
+
 test("compile and export_filter: groups take their alerts by code; train field and chip combine", function()
 	setup()
 	local cf = model.compile(filter({ group = 1 }), 100)
@@ -283,7 +392,7 @@ test("compile and export_filter: groups take their alerts by code; train field a
 	assert_eq(ex.train, -1)
 	ex = model.export_filter(model.compile(filter({ window = 2, subject = { kind = "station", id = 9 } }), 300000, 3))
 	assert_eq({ ex.station, ex.min_tick, ex.item, ex.sevs }, { 9, 300000 - 216000, 3, nil })
-	-- Every kind is in exactly one group, except alerts, which every group with alert codes may take.
+	-- Every kind is in exactly one group, except alerts, which belong to a group by their code.
 	local seen = {}
 	for _, g in ipairs(model.GROUPS) do
 		for _, k in ipairs(g.kinds) do
@@ -291,7 +400,20 @@ test("compile and export_filter: groups take their alerts by code; train field a
 			seen[k] = true
 		end
 	end
+	assert_nil(seen[DIAG_KIND_ALERT])
+	seen[DIAG_KIND_ALERT] = true
 	for k = 1, #DIAG_KIND_NAMES do assert_true(seen[k] == true, "kind " .. DIAG_KIND_NAMES[k] .. " in no group") end
+	-- The trains group takes train alerts only; every kind can still be picked on its own.
+	local trains = model.compile(filter({ group = 4 }), 100)
+	assert_eq(model.GROUPS[4].name, "trains")
+	assert_nil(trains.kinds[DIAG_KIND_ALERT])
+	assert_true(trains.alerts[DIAG_ALERT_STUCK])
+	assert_nil(trains.alerts[DIAG_ALERT_MISSING_TRAIN])
+	local items = {}
+	for _, it in ipairs(model.KIND_ITEMS) do
+		if it.kind then items[it.kind] = (items[it.kind] or 0) + 1 end
+	end
+	for k = 1, #DIAG_KIND_NAMES do assert_eq(items[k], 1, "drop-down item " .. DIAG_KIND_NAMES[k]) end
 	local codes = {}
 	for _, g in ipairs(model.GROUPS) do
 		for _, c in ipairs(g.alerts or {}) do codes[c] = (codes[c] or 0) + 1 end

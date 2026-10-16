@@ -894,8 +894,10 @@ local function register_tick()
 			analytics.tick(storage)
 		end)
 	end
+	local manager_nth
 	if mod_settings.manager_ups > DELTA then
-		add(ceil(60 / mod_settings.manager_ups) --[[@as uint]], function()
+		manager_nth = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
+		add(manager_nth, function()
 			manager.tick(storage)
 		end)
 	else
@@ -907,8 +909,13 @@ local function register_tick()
 		end)
 	end
 	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
-	-- a queued job.
-	add(diag.EXPORT_NTH, manager.export_tick)
+	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
+	-- tick is a manager tick.
+	local skip_nth = manager_nth and manager_nth > 1 and diag.EXPORT_NTH % manager_nth ~= 0 and manager_nth or nil
+	add(diag.EXPORT_NTH, function()
+		if skip_nth and game.tick % skip_nth == 0 then return end
+		manager.export_tick()
+	end)
 	for _, nth in ipairs(order) do
 		local list = by_nth[nth]
 		if #list == 1 then

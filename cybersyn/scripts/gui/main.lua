@@ -204,6 +204,7 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 		local manager_data = storage.manager
 		if not manager_data then return end
 		for _, v in pairs(manager_data.players) do
+			if not storage.diag then manager.log_tab.forget(v) end
 			if v.refs and v.refs.manager_window and v.refs.manager_window.valid then
 				manager.log_tab.refresh_visibility(v)
 			end
@@ -340,7 +341,6 @@ end
 
 ---@param global cybersyn.global
 function manager_gui.tick(storage)
-	manager.log_tab.export_tick()
 	local manager_data = storage.manager
 	if not manager_data then return end
 	collector.tick()
@@ -370,7 +370,7 @@ function manager_gui.tick(storage)
 	end
 end
 
---- Export jobs drain here too (a fixed nth tick, whatever the manager's update rate).
+--- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
 	manager.log_tab.export_tick()
 end

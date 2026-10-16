@@ -18,7 +18,7 @@ local text = require("scripts.gui.unserved-text")
 --- @field log_counts LogCountsState?
 --- @field log_badge LogBadgeState?
 --- @field log_summary LogSummaryState? only while Summary is on
---- @field log_seen_seq uint? newest seq the player had the Log on screen for (the badge counts errors after it)
+--- @field log_seen {state: string, seq: uint}? newest seq the player had the Log on screen for, in which diagnostics state (the badge counts errors after it)
 --- @field log_export {path: string, state: "running"|"done"|"off", rows: int?, chunks: int?, first_tick: uint?, last_tick: uint?}? the player's latest export
 --- @field log_widths {station: int, message: int, rows: int}? cell widths for the current layout
 --- @field log_caps {[string]: any}? signatures of the subheader and caption texts last written
@@ -37,16 +37,21 @@ local ROW_PADDING = 4 + 8
 local FRAME_BORDER = 4
 local ICON = 20
 local NAME_ICONS = 3
--- Rows examined per update (measured on a 2,030-station base, full ring of 16,384 rows): the rows' backward scan
--- stops early on a dense filter, the counts and the Summary visit every row of the window.
-local ROWS_BUDGET = 2048
-local COUNTS_BUDGET = 1024
-local SUMMARY_BUDGET = 1024
-local BADGE_BUDGET = model.BUDGET
+-- Ring rows examined per update by the rows, the Summary and the counts together, in that order (about 1 µs a row on a
+-- 2,030-station base with a full ring of 16,384 rows): what the rows leave goes to the Summary, then to the counts.
+local SCAN_BUDGET = 640
+-- The badge scans on every tab's render, so it gets a budget of its own.
+local BADGE_BUDGET = 1024
+-- Subheader controls on the right of a fixed width (logical px), and the spacing of the subheader flow; the item and
+-- subject chips share what is left of the content width.
+local SEV_BUTTON_WIDTH = 84
+local SUBHEADER_FIXED = 3 * SEV_BUTTON_WIDTH + 190 + 40 + 72 + 140 + 3 * 28 + 9 * 8
+local SUBHEADER_PADDING = 16
+local CHIP_MAX = 240
 local SEV_SPRITES = { "flib_indicator_red", "flib_indicator_orange", "flib_indicator_white" }
+local FOLLOW_SPRITE = "utility/play"
+local SUMMARY_SPRITE = "utility/list_view"
 local SEV_KEYS = { "error", "warning", "info" }
-local CYCLE_MINUTES = 10
-local MINUTE = 3600
 
 -- Kind sprites, checked against the loaded prototypes once (a pure function of them, so the same in every Lua state).
 local KIND_SPRITE_CANDIDATES = {
@@ -178,11 +183,20 @@ end
 --- @field icons {sprite: string, quality: string?}[]
 --- @field kind "station"|"depot"|"refueler"
 
+--- Views made during one render, by id (rows of one stop share it); emptied when the render ends, so nothing stale
+--- outlives the call.
+--- @type {[uint]: LogNameView|false}?
+local view_cache
+
 --- A station, depot or refueler by its stop's unit number, from the snapshot when it holds the station.
 --- @param id uint
 --- @return LogNameView?
 local function station_view(id)
 	if not id or id == 0 then return nil end
+	if view_cache then
+		local v = view_cache[id]
+		if v ~= nil then return v or nil end
+	end
 	local st = collector.get().stations[id]
 	local name, parts, kind
 	if st then
@@ -199,7 +213,10 @@ local function station_view(id)
 			kind = "refueler"
 		end
 		local stop = record and record.entity_stop
-		if not (stop and stop.valid) then return nil end
+		if not (stop and stop.valid) then
+			if view_cache then view_cache[id] = false end
+			return nil
+		end
 		name = stop.backer_name
 		parts = parse_name(name)
 	end
@@ -210,9 +227,12 @@ local function station_view(id)
 			icons[i] = { sprite = lead[i], quality = parts.lead_quality and parts.lead_quality[i] or nil }
 		end
 	end
+	-- A name made only of icons shows them in the icon slots; the text would repeat them.
 	local label = parts and parts.text or name
-	if label == nil or label == "" then label = name end
-	return { name = name, text = label, icons = icons, kind = kind }
+	if label == nil or label == "" then label = #icons > 0 and "" or name end
+	local view = { name = name, text = label, icons = icons, kind = kind }
+	if view_cache then view_cache[id] = view end
+	return view
 end
 log_tab.station_view = station_view
 
@@ -250,6 +270,7 @@ local function sev_button(sev)
 		type = "button",
 		name = "log_sev_" .. sev,
 		style = "cybersyn_log_sev_button",
+		style_mods = { width = SEV_BUTTON_WIDTH },
 		caption = "[img=" .. SEV_SPRITES[sev] .. "] 0",
 		toggled = true,
 		tags = { sev = sev },
@@ -264,7 +285,7 @@ local function kind_items()
 		if it.group then
 			items[i] = { "", "[font=default-semibold]", { "cybersyn-gui.log-group-" .. model.GROUPS[it.group].name }, "[/font]" }
 		elseif it.kind then
-			items[i] = { "", "   ", { "cybersyn-diag.kind-" .. DIAG_KIND_KEYS[it.kind] } }
+			items[i] = { "cybersyn-diag.kind-" .. DIAG_KIND_KEYS[it.kind] }
 		else
 			items[i] = { "cybersyn-gui.log-all-kinds" }
 		end
@@ -272,11 +293,23 @@ local function kind_items()
 	return items
 end
 
+--- A toggle in the subheader: a tool button, its name in bold above the tooltip.
+local function toggle_button(name, sprite, caption_key, handler)
+	return {
+		type = "sprite-button",
+		name = name,
+		style = "tool_button",
+		sprite = sprite,
+		auto_toggle = false,
+		tooltip = { "", "[font=default-bold]", { caption_key }, "[/font]\n", { caption_key .. "-tooltip" } },
+		handler = { [defines.events.on_gui_click] = handler },
+	}
+end
+
 --- The subheader's right side; manager.lua puts it after the shared chip and progress note.
 --- @return flib.GuiElemDef[]
 function log_tab.subheader_right()
 	return {
-		{ type = "label", name = "log_export_note", style = "cybersyn_subheader_note", visible = false },
 		sev_button(DIAG_SEV_ERROR),
 		sev_button(DIAG_SEV_WARNING),
 		sev_button(DIAG_SEV_INFO),
@@ -307,6 +340,7 @@ function log_tab.subheader_right()
 			type = "button",
 			name = "log_subject_chip",
 			style = "cybersyn_item_chip",
+			style_mods = { maximal_width = CHIP_MAX, horizontally_squashable = true },
 			visible = false,
 			mouse_button_filter = { "left", "right" },
 			tooltip = { "cybersyn-gui.log-subject-tooltip" },
@@ -321,22 +355,8 @@ function log_tab.subheader_right()
 			tooltip = { "cybersyn-gui.log-window-tooltip" },
 			handler = { [defines.events.on_gui_selection_state_changed] = log_tab.handle.log_window_changed },
 		},
-		{
-			type = "checkbox",
-			name = "log_follow",
-			caption = { "cybersyn-gui.log-follow" },
-			tooltip = { "cybersyn-gui.log-follow-tooltip" },
-			state = true,
-			handler = { [defines.events.on_gui_checked_state_changed] = log_tab.handle.log_follow_changed },
-		},
-		{
-			type = "checkbox",
-			name = "log_summary_toggle",
-			caption = { "cybersyn-gui.log-summary" },
-			tooltip = { "cybersyn-gui.log-summary-tooltip" },
-			state = false,
-			handler = { [defines.events.on_gui_checked_state_changed] = log_tab.handle.log_summary_changed },
-		},
+		toggle_button("log_follow", FOLLOW_SPRITE, "cybersyn-gui.log-follow", log_tab.handle.log_follow_changed),
+		toggle_button("log_summary_toggle", SUMMARY_SPRITE, "cybersyn-gui.log-summary", log_tab.handle.log_summary_changed),
 		{
 			type = "sprite-button",
 			name = "log_export_button",
@@ -385,8 +405,11 @@ function log_tab.create()
 					type = "frame",
 					direction = "horizontal",
 					style = "cybersyn_unserved_caption_frame",
-					{ type = "label", name = "log_header", style = "subheader_caption_label", caption = "" },
+					{ type = "label", name = "log_header", style = "subheader_caption_label", caption = "",
+						style_mods = { horizontally_squashable = true } },
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
+					{ type = "label", name = "log_export_note", style = "cybersyn_subheader_note", visible = false,
+						style_mods = { maximal_width = 420, horizontally_squashable = true } },
 					{ type = "label", name = "log_status", style = "cybersyn_subheader_note", caption = "" },
 				},
 				{
@@ -439,6 +462,17 @@ function log_tab.apply_layout(player_data, layout)
 	if player_data.log_caps then
 		player_data.log_caps.log_summary_stations = nil
 		player_data.log_caps.log_summary_items = nil
+	end
+	-- The item chip (icon 28 + caption) and the subject chip share what the fixed controls leave, each squashed to its
+	-- part, so the right end of the subheader is never pushed out of the window.
+	local free = cw - SUBHEADER_PADDING - SUBHEADER_FIXED - 2 * 8
+	local chip = math.max(60, math.min(CHIP_MAX, math.floor(free / 2)))
+	local subject = refs.log_subject_chip
+	if subject and subject.valid then subject.style.maximal_width = chip end
+	local item_chip = refs[TAB .. "_chip"]
+	if item_chip and item_chip.valid then
+		item_chip.style.maximal_width = math.max(32, chip - 28)
+		item_chip.style.horizontally_squashable = true
 	end
 	local body = refs.log_body
 	if body and body.valid then body.style.height = rows * ROW_HEIGHT end
@@ -495,8 +529,30 @@ local function station_tooltip(view, extra)
 	return tooltip
 end
 
--- Station names and train validity are read again at most this often for a row whose event did not change.
+-- Station names and train validity are read again at most this often for a row whose event did not change; each row
+-- at its own phase (by its key), so the rows are not all rewritten in one update.
 local NAME_REFRESH = 600
+
+--- @param key uint
+--- @param now uint
+--- @return int
+local function name_epoch(key, now)
+	return math.floor((now + key * 37) / NAME_REFRESH)
+end
+
+--- The row's cell elements, kept in its memo (reading `children` makes a wrapper per child on every call).
+--- @param elem LuaGuiElement the row
+--- @param m table the row's memo
+--- @return LuaGuiElement[]
+local function row_cells(elem, m)
+	local cells = m.cells
+	if cells and cells[1].valid then return cells end
+	cells = elem.children
+	m.cells = cells
+	local station = cells[5].children
+	m.slots, m.button = station[1].children, station[2]
+	return cells
+end
 
 --- Writes a row's cells, each only when what it shows changed since `m` (what the element shows now; empty for a
 --- new row). A row whose event, count and numbers are unchanged is not looked at until the name refresh.
@@ -504,8 +560,9 @@ local NAME_REFRESH = 600
 --- @param g LogGroup
 --- @param m table the row's memo, updated
 --- @param now uint
-local function write_cells(cells, g, m, now)
-	m.seq, m.n_, m.a_, m.b_, m.epoch = g.seq, g.n, g.a, g.b, math.floor(now / NAME_REFRESH)
+--- @param key uint
+local function write_cells(cells, g, m, now, key)
+	m.seq, m.n_, m.a_, m.b_, m.epoch = g.seq, g.n, g.a, g.b, name_epoch(key, now)
 	if prof then prof.written = prof.written + 1 end
 	local tsig = g.first_tick .. "|" .. g.tick .. "|" .. g.n
 	if m.t ~= tsig then
@@ -527,13 +584,8 @@ local function write_cells(cells, g, m, now)
 	local trsig = g.train .. (train_ok and "t" or "")
 	if m.tr ~= trsig then
 		local train = cells[4]
-		if g.train ~= 0 then
-			train.caption = tostring(g.train)
-			train.tooltip = { "", { "cybersyn-gui.log-train", tostring(g.train) }, "\n", { "cybersyn-gui.link-footer" } }
-		else
-			train.caption = ""
-			train.tooltip = ""
-		end
+		-- The tooltip (the link footer) is the cell's own from its build: the caption is the train id.
+		train.caption = g.train ~= 0 and tostring(g.train) or ""
 		local style = train_ok and "cybersyn_log_link" or "cybersyn_log_link_gone"
 		if m.trs ~= style then
 			train.style = style
@@ -544,13 +596,13 @@ local function write_cells(cells, g, m, now)
 	end
 	-- station: the icons only when the name or the target changed
 	local view = station_view(g.station)
-	local ssig = g.station .. "|" .. (view and view.name or "")
+	-- The other station of the event (the provider, the other end of a delivery) is named in this cell's tooltip.
+	local other = diag.STATION2_IS_STATION[g.kind] and g.station2 ~= 0 and station_view(g.station2) or nil
+	local ssig = g.station .. "|" .. (view and view.name or "") .. "|" .. (other and other.name or "")
 	if m.st ~= ssig then
-		local cell = cells[5]
-		local icons, button = cell.children[1], cell.children[2]
+		local button, slots = m.button, m.slots
 		-- Three icon slots made with the row, shown as the name needs them: a row reused for another station
 		-- creates no elements.
-		local slots
 		local mi = m.icons
 		if not mi then
 			mi = {}
@@ -560,7 +612,6 @@ local function write_cells(cells, g, m, now)
 			local icon = view and view.icons[i]
 			local sprite = icon and valid_sprite(icon.sprite) or false
 			if mi[i] ~= sprite then
-				slots = slots or icons.children
 				local slot = slots[i]
 				if sprite then slot.sprite = sprite end
 				if (mi[i] or false) == false or sprite == false then slot.visible = sprite ~= false end
@@ -578,7 +629,7 @@ local function write_cells(cells, g, m, now)
 			button.enabled = view ~= nil
 			m.en = view ~= nil
 		end
-		button.tooltip = station_tooltip(view, nil)
+		button.tooltip = station_tooltip(view, other and { "cybersyn-gui.log-other-station", other.name } or nil)
 		m.st = ssig
 	end
 	-- item
@@ -595,9 +646,13 @@ local function write_cells(cells, g, m, now)
 				m.q = quality or ""
 			end
 			item.elem_tooltip = util.elem_tooltip(hash)
+			if m.itip == false then item.tooltip = { "cybersyn-gui.item-click-hint" } end
+			m.itip = true
 		else
 			item.sprite = nil
 			item.elem_tooltip = nil
+			if m.itip ~= false then item.tooltip = "" end
+			m.itip = false
 		end
 		m.item = hash or ""
 	end
@@ -605,12 +660,6 @@ local function write_cells(cells, g, m, now)
 	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n
 	if m.msg ~= msig then
 		cells[7].caption = log_tab.message(g)
-		-- The message's tooltip names the other station of the event (the provider, the other end of a delivery);
-		-- the kind is the kind sprite's tooltip.
-		local other = diag.STATION2_IS_STATION[g.kind] and g.station2 ~= 0 and station_view(g.station2) or nil
-		local tip = other and { "cybersyn-gui.log-other-station", other.name } or ""
-		if other or m.mt then cells[7].tooltip = tip end
-		m.mt = other ~= nil
 		m.msg = msig
 	end
 	if m.n ~= g.n then
@@ -634,6 +683,7 @@ local function cell_defs(widths)
 			style = "cybersyn_log_link",
 			style_mods = { width = W.train },
 			mouse_button_filter = { "left", "right" },
+			tooltip = { "cybersyn-gui.link-footer" },
 			tags = { cell = "train" },
 			handler = link,
 		}),
@@ -690,9 +740,14 @@ local function row_build(entry)
 end
 
 local function row_built(elem, entry)
-	local m = {}
-	local cells = elem.children
-	write_cells(cells, entry.g, m, r_now)
+	if not entry.g then
+		elem.visible = false
+		r_memo[entry.key] = { hidden = true }
+		return
+	end
+	local m = { g = entry.g }
+	local cells = row_cells(elem, m)
+	write_cells(cells, entry.g, m, r_now, entry.key)
 	m.a = model.age_caption(r_now, entry.g, util.short_duration)
 	cells[1].caption = m.a
 	r_memo[entry.key] = m
@@ -711,23 +766,35 @@ local function row_update(elem, entry)
 		m = {}
 		r_memo[key] = m
 	end
-	local cells
-	if m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.epoch ~= math.floor(now / NAME_REFRESH) then
-		cells = elem.children
-		write_cells(cells, g, m, now)
+	m.g = g
+	if not g then
+		if not m.hidden then
+			elem.visible = false
+			m.hidden = true
+		end
+		return
+	end
+	if m.hidden then
+		elem.visible = true
+		m.hidden = nil
+	end
+	if m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.epoch ~= name_epoch(key, now) then
+		write_cells(row_cells(elem, m), g, m, now, key)
 	end
 	local age = model.age_caption(now, g, util.short_duration)
 	if m.a ~= age then
-		cells = cells or elem.children
-		cells[1].caption = age
+		row_cells(elem, m)[1].caption = age
 		m.a = age
 	end
 end
 
 --- Rows live in a one-column table whose odd-row background gives the tint, so a row that moves needs no restyle.
+--- The table always holds `limit` rows: those without a group are hidden placeholders, so a filter that shows few
+--- rows destroys none and the next one that shows many creates none.
 --- @param player_data PlayerData
 --- @param groups LogGroup[]
-local function render_rows(player_data, groups)
+--- @param limit int
+local function render_rows(player_data, groups, limit)
 	local refs = player_data.refs
 	local parent = refs[ROWS]
 	local widths = player_data.log_widths
@@ -739,15 +806,19 @@ local function render_rows(player_data, groups)
 		state.memo = memo
 	end
 	r_memo, r_widths, r_now = memo, widths, game.tick
+	view_cache = {}
 	local entries = {}
 	for i, g in ipairs(groups) do
 		entries[i] = { key = g.first, g = g, build = row_build, built = row_built, reuse = row_reuse, update = row_update }
+	end
+	for i = #groups + 1, math.max(limit, #groups) do
+		entries[i] = { key = -i, build = row_build, built = row_built, reuse = row_reuse, update = row_update }
 	end
 	util.sync_children(parent, entries, state, util.hold_active(player_data, ROWS), true)
 	local keep = {}
 	for _, key in ipairs(state.keys or {}) do keep[key] = memo[key] end
 	state.memo = keep
-	r_memo, r_widths = nil, nil
+	r_memo, r_widths, view_cache = nil, nil, nil
 end
 
 -- ---------------------------------------------------------------- summary
@@ -823,26 +894,13 @@ end
 
 -- ---------------------------------------------------------------- subheader and header line
 
---- Dispatches per planner cycle: deliveries dispatched per tick over the last CYCLE_MINUTES minute buckets, times the
---- last cycle's length (one cycle's own count jumps between 0 and a handful).
---- @return number? per_cycle
---- @return int ticks last cycle length
+--- The last planner cycle as storage.stats.cycle holds it, the same figures the Overview's Throughput tooltip shows.
+--- @return int? dispatches
+--- @return int ticks
 local function cycle_figures()
-	local s = storage.stats
-	local cycle = s and s.cycle
-	local ticks = cycle and cycle.ticks_last or 0
-	if not (s and s.minute and ticks > 0) then return nil, ticks end
-	local now = game.tick
-	local oldest = now - now % MINUTE - (CYCLE_MINUTES - 1) * MINUTE
-	local first, dispatches = nil, 0
-	for _, b in pairs(s.minute) do
-		if b.start_tick and b.start_tick >= oldest and b.start_tick <= now then
-			dispatches = dispatches + (b.dispatches or 0)
-			if not first or b.start_tick < first then first = b.start_tick end
-		end
-	end
-	if not first or now <= first then return cycle.dispatches_last, ticks end
-	return dispatches / (now - first) * ticks, ticks
+	local cycle = storage.stats and storage.stats.cycle
+	if not cycle then return nil, 0 end
+	return cycle.dispatches_last, cycle.ticks_last or 0
 end
 
 --- "covering the last 11 min · basic · planner cycle 43 ticks · 2.7 dispatches per cycle"; with full on, the full
@@ -864,7 +922,7 @@ local function header_line(d)
 		mode = { "cybersyn-gui.log-mode-full", full_covering }
 	end
 	local per_cycle, ticks = cycle_figures()
-	local per = per_cycle and string.format("%.1f", per_cycle) or "–"
+	local per = per_cycle and format.number(per_cycle) or "–"
 	return { "cybersyn-gui.log-header", covering, mode, tostring(ticks), per },
 		covering .. "|" .. full_covering .. "|" .. ticks .. "|" .. per
 end
@@ -878,8 +936,7 @@ function log_tab.refresh_export_note(player_data)
 	local ex = player_data.log_export
 	local job
 	if ex and ex.state == "running" then
-		local d = storage.diag
-		for _, j in ipairs(d and d.export_jobs or {}) do
+		for _, j in ipairs(diag.export_jobs()) do
 			if j.path == ex.path then job = j end
 		end
 	end
@@ -918,8 +975,10 @@ local function render_sev_buttons(player_data, cs, building)
 			if c[button.name] ~= sig then
 				c[button.name] = sig
 				local count = format.number(n) .. (building and "+" or "")
-				button.caption = "[img=" .. SEV_SPRITES[sev] .. "] " .. count
-				button.toggled = shown
+				-- Five digits and more in short form, so the fixed-width button never truncates; the tooltip has it all.
+				local short = n >= 10000 and (format.number(n, true) .. (building and "+" or "")) or count
+				button.caption = "[img=" .. SEV_SPRITES[sev] .. "] " .. short
+				if button.toggled ~= shown then button.toggled = shown end
 				button.tooltip = { "cybersyn-gui.log-sev-tooltip", { "cybersyn-diag.sev-" .. SEV_KEYS[sev] }, count }
 			end
 		end
@@ -946,8 +1005,8 @@ function log_tab.restore_widgets(player_data)
 	end
 	local window = refs.log_window_dropdown
 	if window and window.valid then window.selected_index = f.window or model.DEFAULT_WINDOW end
-	if refs.log_follow and refs.log_follow.valid then refs.log_follow.state = f.follow ~= false end
-	if refs.log_summary_toggle and refs.log_summary_toggle.valid then refs.log_summary_toggle.state = f.summary == true end
+	if refs.log_follow and refs.log_follow.valid then refs.log_follow.toggled = f.follow ~= false end
+	if refs.log_summary_toggle and refs.log_summary_toggle.valid then refs.log_summary_toggle.toggled = f.summary == true end
 	local chip = refs.log_subject_chip
 	if chip and chip.valid then
 		local s = f.subject
@@ -958,9 +1017,11 @@ function log_tab.restore_widgets(player_data)
 				name = { "cybersyn-gui.log-train", tostring(s.id) }
 			else
 				local view = station_view(s.id)
-				name = view and view.name or tostring(s.id)
+				name = view and (view.text ~= "" and view.text or view.name) or tostring(s.id)
+				chip.tooltip = { "", view and view.name or tostring(s.id), "\n", { "cybersyn-gui.log-subject-tooltip" } }
 			end
 			chip.caption = { "cybersyn-gui.log-subject-chip", name }
+			if s.kind == "train" then chip.tooltip = { "cybersyn-gui.log-subject-tooltip" } end
 		end
 	end
 	local c = player_data.log_caps
@@ -982,9 +1043,20 @@ function log_tab.refresh_visibility(player_data)
 	if tab.visible ~= on then tab.visible = on end
 	if not on then
 		if tab.badge_text ~= "" then tab.badge_text = "" end
-		player_data.log_badge = nil
+		log_tab.forget(player_data)
 		if player_data.selected_tab == TAB then util.select_tab(player_data, "overview_tab") end
 	end
+end
+
+--- Diagnostics are off: every seq the player's Log state holds belongs to a state that is gone.
+--- @param player_data PlayerData
+function log_tab.forget(player_data)
+	player_data.log_badge = nil
+	player_data.log_seen = nil
+	player_data.log_seen_seq = nil
+	player_data.log_rows = nil
+	player_data.log_counts = nil
+	player_data.log_summary = nil
 end
 
 --- Unread errors as the tab's badge (PLAN3 §4.6).
@@ -999,7 +1071,7 @@ function log_tab.refresh_badge(player_data)
 		bs = {}
 		player_data.log_badge = bs
 	end
-	local n = model.update_badge(bs, d, player_data.log_seen_seq, BADGE_BUDGET)
+	local n = model.update_badge(bs, d, model.seen_seq(player_data.log_seen, d), BADGE_BUDGET)
 	local caption = n > 0 and format.number(n) or ""
 	if tab.badge_text ~= caption then
 		tab.badge_text = caption
@@ -1008,10 +1080,14 @@ function log_tab.refresh_badge(player_data)
 end
 
 --- @param player_data PlayerData
-function log_tab.mark_seen(player_data)
+--- @param seq uint the newest seq the Log has on screen
+function log_tab.mark_seen(player_data, seq)
 	local d = storage.diag
 	if not d then return end
-	player_data.log_seen_seq = d.seq
+	local id = model.state_id(d)
+	local seen = player_data.log_seen
+	if seen and seen.state == id and seen.seq >= seq then return end
+	player_data.log_seen = { state = id, seq = seq }
 end
 
 --- @param map_data MapData
@@ -1041,14 +1117,19 @@ function log_tab.build(map_data, player_data)
 	local rows_flow, summary_flow, empty_flow = refs[ROWS], refs.log_summary, refs.log_empty_flow
 	local status_sig, status
 	local empty_sig, empty_caption
-	local rebuilt = false
+	-- One scan budget per update: the rows (or the Summary) first, the counts get what is left.
+	local left = SCAN_BUDGET
+	local seen = d.seq
 	if f.summary then
 		local ss = player_data.log_summary
 		if not ss then
 			ss = {}
 			player_data.log_summary = ss
 		end
-		local done = model.update_summary(ss, d, cf, SUMMARY_BUDGET)
+		local done, used = model.update_summary(ss, d, cf, left)
+		left = left - used
+		-- The Summary is a count up to as_of, not a view of the newest rows.
+		seen = nil
 		if rows_flow.visible then rows_flow.visible = false end
 		local any = done and (#ss.top_stations > 0 or #ss.top_items > 0)
 		if summary_flow.visible ~= (any == true) then summary_flow.visible = any == true end
@@ -1070,16 +1151,15 @@ function log_tab.build(map_data, player_data)
 			player_data.log_rows = rs
 		end
 		prof_start("rows")
-		local old_sig = rs.sig
-		model.update_rows(rs, d, cf, limit, f.follow ~= false, ROWS_BUDGET)
-		rebuilt = rs.sig ~= old_sig
+		local _, used = model.update_rows(rs, d, cf, limit, f.follow ~= false, left)
+		left = left - used
 		prof_stop("rows")
 		prof_start("render")
 		if summary_flow.visible then summary_flow.visible = false end
 		local any = #rs.groups > 0
 		if rows_flow.visible ~= any then rows_flow.visible = any end
 		-- With nothing to show the row elements stay (hidden), to be reused when rows come back.
-		if any then render_rows(player_data, rs.groups) end
+		if any then render_rows(player_data, rs.groups, limit) end
 		prof_stop("render")
 		if not any then
 			if rs.below then
@@ -1092,13 +1172,13 @@ function log_tab.build(map_data, player_data)
 			local newer = d.seq - rs.anchor
 			status_sig = "paused" .. newer
 			status = { "cybersyn-gui.log-paused", format.number(newer) }
+			seen = rs.anchor
 		else
 			status_sig, status = "", ""
 		end
 	end
-	-- A filter change rewrites every row; the counts' first scan waits for the next update.
 	prof_start("counts")
-	local building = model.update_counts(cs, d, cf, rebuilt and 0 or COUNTS_BUDGET)
+	local building = model.update_counts(cs, d, cf, math.max(0, left))
 	render_sev_buttons(player_data, cs, building)
 	prof_stop("counts")
 
@@ -1111,7 +1191,7 @@ function log_tab.build(map_data, player_data)
 	local header, header_sig = header_line(d)
 	set_caption(player_data, refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
 	log_tab.refresh_export_note(player_data)
-	log_tab.mark_seen(player_data)
+	if seen then log_tab.mark_seen(player_data, seen) end
 	prof_stop("rest")
 end
 
@@ -1121,7 +1201,11 @@ end
 function log_tab.rendered_rows(player_data)
 	local parent = player_data.refs[ROWS]
 	if not (parent and parent.valid and parent.visible) then return 0 end
-	return #parent.children
+	local n = 0
+	for _, row in ipairs(parent.children) do
+		if row.visible then n = n + 1 end
+	end
+	return n
 end
 
 dev.register_rows(TAB, log_tab.rendered_rows)
@@ -1143,7 +1227,7 @@ diag.set_export_listener(function(job, cause)
 	end
 end)
 
---- The fixed nth tick and the manager tick: one export chunk, then the note of whoever started that export.
+--- The fixed export tick: one export chunk, then the note of whoever started that export.
 function log_tab.export_tick()
 	local job = diag.export_tick()
 	if not job then return end
@@ -1239,6 +1323,9 @@ end
 --- @param kind string
 --- @param id uint
 function log_tab.set_subject(player, player_data, kind, id)
+	-- The tab is hidden while diagnostics are off, so a filter set now would only surprise later; and the log knows
+	-- trains and Cybersyn stops only.
+	if not storage.diag or kind == "entity" or kind == "item" then return end
 	local f = get_filter(player_data)
 	local subject_kind = kind == "train" and "train" or "station"
 	f.subject = { kind = subject_kind, id = id }
@@ -1251,9 +1338,7 @@ function log_tab.set_subject(player, player_data, kind, id)
 		local view = station_view(id)
 		name = view and view.name or tostring(id)
 	end
-	if storage.diag then
-		player.create_local_flying_text({ create_at_cursor = true, text = { "cybersyn-gui.log-subject-set", name } })
-	end
+	player.create_local_flying_text({ create_at_cursor = true, text = { "cybersyn-gui.log-subject-set", name } })
 end
 
 util.set_log_subject(log_tab.set_subject)
@@ -1312,16 +1397,19 @@ function log_tab.handle.log_window_changed(player, player_data, refs, e)
 	changed(player, player_data)
 end
 
---- @param e EventData.on_gui_checked_state_changed
+--- @param e EventData.on_gui_click
 function log_tab.handle.log_follow_changed(player, player_data, refs, e)
-	get_filter(player_data).follow = e.element.state
+	local f = get_filter(player_data)
+	f.follow = f.follow == false
+	e.element.toggled = f.follow
 	changed(player, player_data)
 end
 
---- @param e EventData.on_gui_checked_state_changed
+--- @param e EventData.on_gui_click
 function log_tab.handle.log_summary_changed(player, player_data, refs, e)
 	local f = get_filter(player_data)
-	f.summary = e.element.state
+	f.summary = not f.summary
+	e.element.toggled = f.summary
 	-- Toggling it on again recomputes it.
 	player_data.log_summary = nil
 	changed(player, player_data)
@@ -1341,13 +1429,13 @@ local function row_group(player_data, elem)
 	local rows = player_data.refs[ROWS]
 	while elem and elem.valid and elem.parent and elem.parent ~= rows do elem = elem.parent end
 	if not (elem and elem.valid and elem.parent == rows) then return nil end
-	local keys = util.gui_state(player_data, ROWS).keys
-	local key = keys and keys[elem.get_index_in_parent()]
-	local rs = player_data.log_rows
-	for _, g in ipairs(rs and rs.groups or {}) do
-		if g.first == key then return g end
-	end
-	return nil
+	local state = util.gui_state(player_data, ROWS)
+	local key = state.keys and state.keys[elem.get_index_in_parent()]
+	if not key then return nil end
+	-- The memo keeps the group a row shows, also one the rows have dropped while the hover hold kept it on screen.
+	local m = state.memo and state.memo[key]
+	if m and m.g then return m.g end
+	return find_group(player_data, key)
 end
 
 --- The link target of a row's train, station or item cell: {kind, id} or nil.
@@ -1442,6 +1530,7 @@ dev.register_dump(TAB, function(player_data)
 	local handler_tag = "__" .. script.mod_name .. "_handler"
 	if parent and parent.valid and parent.visible then
 		for i, row in ipairs(parent.children) do
+			if not row.visible then break end
 			local c = row.children
 			local station = c[5].children[2]
 			rows[i] = {
@@ -1477,7 +1566,7 @@ dev.register_dump(TAB, function(player_data)
 		out.sev_buttons[sev] = { caption = b.caption, toggled = b.toggled }
 	end
 	out.subject_chip = refs.log_subject_chip.visible and refs.log_subject_chip.caption or nil
-	out.seen = player_data.log_seen_seq
+	out.seen = model.seen_seq(player_data.log_seen, d)
 	out.summary_shown = refs.log_summary.visible
 	return out
 end)
@@ -1582,7 +1671,7 @@ dev.register_function("log_filter_state", function(pi)
 	local st2 = {}
 	for kind in pairs(diag.STATION2_IS_STATION) do st2[DIAG_KIND_NAMES[kind]] = true end
 	return { min_tick = cf.min_tick, export = model.export_filter(cf), limit = row_limit(player_data),
-		station2_kinds = st2, item = player_data.search_item, now = game.tick }
+		station2_kinds = st2, item = player_data.search_item, now = game.tick, filter = get_filter(player_data) }
 end)
 
 return log_tab

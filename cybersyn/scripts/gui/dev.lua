@@ -425,6 +425,11 @@ function interface.tick(n)
 	end)
 end
 
+--- `n` runs of the fixed export tick (one export chunk each).
+function interface.export_tick(n)
+	for _ = 1, n or 1 do manager_gui.export_tick() end
+end
+
 --- One manager tick for player `pi`, its collector step and render timed separately, with the heap change (a drop
 --- means a garbage collection cycle finished inside it); flags a completed pass.
 function interface.tick_split(pi)
@@ -705,7 +710,7 @@ function interface.diag_state()
 		horizon_ticks = horizon,
 		interrupt_checks = verify and verify.checks or nil,
 		interrupt_mismatches = verify and verify.mismatches or nil,
-		export_jobs = d and #d.export_jobs or 0,
+		export_jobs = #diag.export_jobs(),
 		kinds = DIAG_KIND_NAMES,
 		tick = game.tick,
 	}
@@ -732,7 +737,7 @@ function interface.diag_reset()
 	return interface.diag_state()
 end
 
---- Exports both rings at once (the GUI's export runs in chunks on the manager tick) and returns the path under
+--- Exports the rings at once (the GUI's export runs in chunks on a fixed nth tick) and returns the path under
 --- script-output.
 function interface.diag_export(pi)
 	local player = pi and pi > 0 and game.get_player(pi)

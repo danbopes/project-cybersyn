@@ -37,8 +37,9 @@ local ACK_CAP = 1024
 -- A 2,000-row chunk cost 4.1-5.3 ms per update on a 2,030-station base, one chunk over the 5 ms budget.
 local EXPORT_CHUNK = 1000
 local EXPORT_SCAN = 4 * EXPORT_CHUNK
--- Export jobs drain on this fixed nth tick as well as on the manager tick, so they finish with manager updates off.
-local EXPORT_NTH = 30
+-- Export jobs drain one chunk on this fixed nth tick only (main.lua skips the ticks the manager updates on), so they
+-- finish with manager updates or diagnostics off; a prime, so it rarely meets another handler's nth.
+local EXPORT_NTH = 7
 -- Rows a filtered diag.events call examines before it returns with the seq it reached.
 local EVENTS_SCAN = 4096
 
@@ -140,6 +141,7 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field item_served {[int]: uint} item index -> tick create_delivery last served a requester of it
 --- @field next_delivery uint
 --- @field export_jobs DiagExportJob[]
+--- @field id int? which state this is (seqs restart in a new one); older states have none
 --- @field loaded_tick uint when this state was created
 --- @field inherit_cycles int? planner cycle starts seen since creation, while the inherited window is open
 --- @field inherit_until uint? start of the second planner cycle after creation; see diag.inherit_threshold
@@ -192,7 +194,9 @@ end
 
 --- @return DiagState
 local function new_state()
+	storage.diag_serial = (storage.diag_serial or 0) + 1
 	return {
+		id = storage.diag_serial,
 		mode = "basic",
 		full = false,
 		seq = 0,
@@ -246,7 +250,7 @@ local function clear_delivery_ids()
 	end
 end
 
-local finish_exports
+local detach_exports
 
 --- Brings storage.diag in line with the settings: nil when off, created when missing, the full ring resized.
 --- @return DiagState?
@@ -254,7 +258,7 @@ function diag.apply()
 	local mode = mode_setting()
 	if mode == "off" then
 		local old = storage.diag
-		if old and old.export_jobs[1] then finish_exports(old) end
+		if old and old.export_jobs[1] then detach_exports(old) end
 		storage.diag = nil
 		return nil
 	end
@@ -264,6 +268,9 @@ function diag.apply()
 		storage.diag = d
 		clear_delivery_ids()
 	end
+	-- Rows of a full session would otherwise stay in every reader that does not check the mode (events, export, the
+	-- Log), next to basic rows that kept coming.
+	if mode ~= "full" and d.ring_full.count > 0 then d.ring_full = new_ring(full_ring_size(), false) end
 	d.mode = mode
 	d.full = mode == "full"
 	d.unserved_dropped = d.unserved_dropped or 0
@@ -1464,6 +1471,10 @@ end
 --- @field chunks int? chunks written so far
 --- @field first_tick uint? tick of the first chunk
 --- @field last_tick uint? tick of the latest chunk
+--- @field rb DiagRing the basic ring the job reads (kept when diagnostics are turned off mid-export)
+--- @field rf DiagRing? the full ring, only while full was on when the job started
+--- @field item_hash string[]
+--- @field off boolean? diagnostics were turned off before the job ended
 
 local HEADER = "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
 
@@ -1528,8 +1539,8 @@ function diag.set_export_listener(fn)
 	export_listener = fn
 end
 
---- Queues an export of everything both rings hold now (matching `filter`); the manager tick and a fixed nth tick write
---- it in chunks.
+--- Queues an export of everything the rings the Log reads hold now (matching `filter`); a fixed nth tick writes it in
+--- chunks.
 --- @param player_index uint? whose machine gets the file; 0 or nil = the server
 --- @param filter DiagEventFilter?
 --- @return string? path relative to script-output, nil while diagnostics are off
@@ -1544,8 +1555,9 @@ function diag.export(player_index, filter)
 		d.export_name_tick, d.export_name_n = tick, 1
 	end
 	local path = "cybersyn/diag-" .. tick .. (d.export_name_n > 1 and ("-" .. d.export_name_n) or "") .. ".csv"
+	local rb, rf = d.ring_basic, d.full and d.ring_full or nil
 	local oldest = d.seq
-	for _, r in ipairs({ d.ring_basic, d.ring_full }) do
+	for _, r in ipairs({ rb, rf }) do
 		if r.count > 0 then oldest = math.min(oldest, r.seq[at(r, 0)] - 1) end
 	end
 	d.export_jobs[#d.export_jobs + 1] = {
@@ -1557,6 +1569,9 @@ function diag.export(player_index, filter)
 		filter = filter,
 		rows = 0,
 		started = false,
+		rb = rb,
+		rf = rf,
+		item_hash = d.item_hash,
 	}
 	return path
 end
@@ -1574,24 +1589,42 @@ end
 --- @param player_index uint
 --- @return DiagExportJob?
 function diag.export_job(player_index)
-	local d = storage.diag
-	if not d then return nil end
-	for _, job in ipairs(d.export_jobs) do
-		if job.player_index == player_index then return job end
+	for _, list in ipairs({ storage.diag_export_tail or {}, storage.diag and storage.diag.export_jobs or {} }) do
+		for _, job in ipairs(list) do
+			if job.player_index == player_index then return job end
+		end
 	end
 	return nil
+end
+
+--- Every queued job: those that outlived diagnostics first (they drain first), then the current state's.
+--- @return DiagExportJob[]
+function diag.export_jobs()
+	local out = {}
+	for _, job in ipairs(storage.diag_export_tail or {}) do out[#out + 1] = job end
+	local d = storage.diag
+	for _, job in ipairs(d and d.export_jobs or {}) do out[#out + 1] = job end
+	return out
 end
 
 --- Writes the next chunk of the oldest export job.
 --- @return boolean? done nil when there was no job
 function diag.export_step()
-	local d = storage.diag
-	local job = d and d.export_jobs[1]
+	local list = storage.diag_export_tail
+	if not (list and list[1]) then
+		local d = storage.diag
+		list = d and d.export_jobs
+	end
+	local job = list and list[1]
 	if not job then return nil end
+	local d = storage.diag
+	local rb, rf = job.rb, job.rf
+	-- A job queued before jobs kept their rings reads the live ones.
+	if not rb then rb, rf = d.ring_basic, d.full and d.ring_full or nil end
+	local nf = rf and rf.count or 0
 	-- Formatted straight from the ring columns: a row table per event made a 2,000-row chunk cost ~20 ms.
-	local rb, rf = d.ring_basic, d.ring_full
-	local kb, kf = first_after(rb, job.next_seq), first_after(rf, job.next_seq)
-	local filter, end_seq, item_hash = job.filter, job.end_seq, d.item_hash
+	local kb, kf = first_after(rb, job.next_seq), rf and first_after(rf, job.next_seq) or 0
+	local filter, end_seq, item_hash = job.filter, job.end_seq, job.item_hash or d.item_hash
 	local parts, n, rows = {}, 0, 0
 	if not job.started then
 		n = 1
@@ -1601,7 +1634,7 @@ function diag.export_step()
 	-- A selective filter matches few rows, so the scan is bounded as well as the rows written.
 	while rows < EXPORT_CHUNK and scanned < EXPORT_SCAN do
 		local ib = kb < rb.count and at(rb, kb) or nil
-		local iff = kf < rf.count and at(rf, kf) or nil
+		local iff = kf < nf and at(rf, kf) or nil
 		local r, i
 		if ib and (not iff or rb.seq[ib] < rf.seq[iff]) then
 			r, i, kb = rb, ib, kb + 1
@@ -1636,37 +1669,42 @@ function diag.export_step()
 	job.last_tick = game.tick
 	if exhausted then
 		job.next_seq = end_seq
-		table.remove(d.export_jobs, 1)
-		if export_listener then export_listener(job, "done") end
+		table.remove(list, 1)
+		if list == storage.diag_export_tail and not list[1] then storage.diag_export_tail = nil end
+		if export_listener then export_listener(job, job.off and "off" or "done") end
 	end
 	return exhausted
 end
 
---- One chunk, at most once per game tick: called from the manager tick and from a fixed nth tick registered whatever
---- the settings say, so an export also finishes while manager updates are off.
+--- One chunk: called from a fixed nth tick registered whatever the settings say (off the manager's own ticks), so an
+--- export also finishes while manager updates or diagnostics are off.
 --- @return DiagExportJob? job the job the chunk belonged to
 function diag.export_tick()
-	local d = storage.diag
-	local job = d and d.export_jobs[1]
-	if not job or d.export_tick == game.tick then return nil end
-	d.export_tick = game.tick
+	local list = storage.diag_export_tail
+	local job = list and list[1]
+	if not job then
+		local d = storage.diag
+		job = d and d.export_jobs[1]
+	end
+	if not job then return nil end
 	diag.export_step()
 	return job
 end
 
---- Diagnostics are being turned off: queued exports are finished now, so no file is left truncated.
+--- Diagnostics are being turned off: queued exports keep their rings and go on draining one chunk per export tick, so
+--- no file is left truncated and no tick writes more than one chunk.
 --- @param d DiagState
-finish_exports = function(d)
-	while d.export_jobs[1] do
-		local job = d.export_jobs[1]
-		local listener = export_listener
-		export_listener = nil
-		diag.export_step()
-		export_listener = listener
-		if not d.export_jobs[1] or d.export_jobs[1] ~= job then
-			if export_listener then export_listener(job, "off") end
+detach_exports = function(d)
+	local tail = storage.diag_export_tail or {}
+	for _, job in ipairs(d.export_jobs) do
+		if not job.rb then
+			job.rb, job.rf, job.item_hash = d.ring_basic, d.full and d.ring_full or nil, d.item_hash
 		end
+		job.off = true
+		tail[#tail + 1] = job
 	end
+	d.export_jobs = {}
+	storage.diag_export_tail = tail
 end
 
 -- ---------------------------------------------------------------- migration

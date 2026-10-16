@@ -328,16 +328,18 @@ lab.suite("38_diag", {
 			ev.station == c.r_station and ev.station2 == c.p_station and ev.a == 1 and ev.b == 1, ev)
 	end,
 
-	-- Export: synchronous for the lab, chunked on the manager tick for the GUI.
+	-- Export: synchronous for the lab, chunked on the fixed export tick for the GUI.
 	function()
 		local path = dev("diag_export", lab.pi)
 		lab.check("export returns its script-output path", type(path) == "string" and
 			string.match(path, "^cybersyn/diag%-%d+%.csv$") ~= nil, path)
 		lab.info("export written to " .. tostring(path))
 		local async = dev("diag_export_async", lab.pi)
-		lab.check("an export queued for the manager tick", dev("diag_state").export_jobs == 1, async)
+		lab.check("an export queued for the export tick", dev("diag_state").export_jobs == 1, async)
 		dev("tick", 6)
-		lab.check("the manager tick drained it", dev("diag_state").export_jobs == 0)
+		lab.check("the manager tick leaves it to the export tick", dev("diag_state").export_jobs == 1)
+		dev("export_tick", 6)
+		lab.check("the export tick drained it", dev("diag_state").export_jobs == 0)
 
 		script.on_event(defines.events.on_tick, nil)
 		pcall(dg.case.cleanup)

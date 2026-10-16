@@ -6,15 +6,22 @@
 
 local D, pi = lab.D, lab.pi
 
-local KIND, SEV = {}, { error = 1, warning = 2, info = 3 }
+local KIND, KIND_NAME, SEV = {}, {}, { error = 1, warning = 2, info = 3 }
 
 local function dev(fn, ...)
 	return remote.call(D, fn, ...)
 end
 
+--- Updates until the rows and the counts are complete (each update scans a bounded number of ring rows).
 local function render()
-	dev("update", pi, 1)
-	return dev("log_dump", pi)
+	local d
+	for _ = 1, 60 do
+		dev("update", pi, 1)
+		d = dev("log_dump", pi)
+		local summary = d.filter and d.filter.summary
+		if not (d.counting or (not summary and d.complete == false)) then break end
+	end
+	return d
 end
 
 --- Every event the rings hold, newest first.
@@ -25,25 +32,47 @@ local function all_events()
 	return out
 end
 
---- The Log's filter as the export applies it, re-implemented over plain event rows.
+local WINDOWS = { 36000, 216000, false }
+
+--- The Log's filter re-implemented from the player's raw filter (severities, kind, train field, subject, window) over
+--- plain event rows. Only which kinds and alert codes make up a group comes from the mod (that is the groups' data).
 local function oracle_filter(fs, with_sev)
-	local ex, st2 = fs.export, fs.station2_kinds
+	local f, ex, st2 = fs.filter, fs.export, fs.station2_kinds
+	local window = WINDOWS[f.window or 3]
+	local min_tick = window and math.max(0, fs.now - window) or nil
+	local kind_name = f.kind and KIND_NAME[f.kind]
+	local subject = f.subject
 	return function(ev)
-		if ex.min_tick and ev.tick < ex.min_tick then return false end
-		if ex.kinds and not ex.kinds[KIND[ev.kind]] then
-			if not (ev.kind == "alert" and ex.alerts and ex.alerts[ev.code]) then return false end
+		if min_tick and ev.tick < min_tick then return false end
+		if f.group then
+			if not (ex.kinds[KIND[ev.kind]] or (ev.kind == "alert" and ex.alerts and ex.alerts[ev.code])) then return false end
+		elseif kind_name and ev.kind ~= kind_name then
+			return false
 		end
-		if with_sev and ex.sevs and not ex.sevs[SEV[ev.sev]] then return false end
-		if ex.train and ev.train ~= ex.train then return false end
-		if ex.station and ev.station ~= ex.station and not (st2[ev.kind] and ev.station2 == ex.station) then return false end
+		if with_sev and not f.sev[SEV[ev.sev]] then return false end
+		if f.train and ev.train ~= f.train then return false end
+		if subject and subject.kind == "train" and ev.train ~= subject.id then return false end
+		if subject and subject.kind ~= "train" and ev.station ~= subject.id and
+			not (st2[ev.kind] and ev.station2 == subject.id) then
+			return false
+		end
 		if fs.item and ev.item ~= fs.item then return false end
 		return true
 	end
 end
 
+-- Adjacent events make one row when they say the same thing about the same subjects: every column but the seq, the
+-- tick, the delivery and the numbers, except where the numbers name what the event is about (a lint finding's check
+-- and subject, a manual action and its target, the player who edited a schedule).
+local NAMED_A = { lint = true, manual_action = true, schedule_edited = true }
+local NAMED_B = { lint = true, manual_action = true }
 local function same_row(a, b)
-	return a.kind == b.kind and a.code == b.code and a.train == b.train and a.station == b.station and
-		a.station2 == b.station2 and a.item == b.item
+	for _, c in ipairs({ "kind", "sev", "code", "train", "station", "station2", "item" }) do
+		if a[c] ~= b[c] then return false end
+	end
+	if NAMED_A[a.kind] and a.a ~= b.a then return false end
+	if NAMED_B[a.kind] and a.b ~= b.b then return false end
+	return true
 end
 
 --- Rows the Log must show: matching events newest first, adjacent identical ones collapsed, `limit` rows.
@@ -98,7 +127,10 @@ end
 
 lab.suite("39_log", {
 	function(ctx)
-		for k, name in ipairs(dev("diag_state").kinds) do KIND[name] = k end
+		for k, name in ipairs(dev("diag_state").kinds) do
+			KIND[name] = k
+			KIND_NAME[k] = name
+		end
 		ctx.planner = settings.global["cybersyn-enable-planner"].value
 		ctx.ups = settings.global["cybersyn-manager-updates-per-second"].value
 		dev("set_setting", "cybersyn-enable-planner", true)
@@ -228,6 +260,20 @@ lab.suite("39_log", {
 		dev("log_set_filter", pi, { follow = true })
 		d = render()
 		lab.check("Follow back on: the newest event is on top", d.groups[1].a == 9, d.groups[1])
+		-- Two findings that appear together on one stop are two rows, each with its own check and severity.
+		local lsid = ctx.station_ids[7]
+		dev("diag_event", "lint", "warning", { code = 1, station = lsid, a = 5, b = lsid })
+		dev("diag_event", "lint", "error", { code = 1, station = lsid, a = 3, b = lsid })
+		dev("diag_event", "lint", "error", { code = 1, station = lsid, a = 9, b = lsid })
+		d = check_rows("lint findings")
+		lab.check("xn: lint findings of different checks and severities are rows of their own", d.groups[1].a == 9 and
+			d.groups[1].n == 1 and d.groups[2].a == 3 and d.groups[2].n == 1 and d.groups[3].a == 5 and
+			d.groups[3].sev == "warning", { d.groups[1], d.groups[2], d.groups[3] })
+		-- The header's cycle figures are storage.stats.cycle, as on the Overview.
+		local cycle = dev("cycle") or {}
+		lab.check("header: planner cycle ticks and dispatches per cycle == stats.cycle", type(d.header) == "table" and
+			d.header[4] == tostring(cycle.ticks_last or 0) and
+			d.header[5] == (cycle.dispatches_last and tostring(cycle.dispatches_last) or "–"), { d.header, cycle })
 		dev("set_setting", "cybersyn-enable-planner", true)
 	end,
 
@@ -351,6 +397,10 @@ lab.suite("39_log", {
 			if g.station ~= sid and g.station2 ~= sid then only = false end
 		end
 		lab.check("…and every row is about that stop", only and #d.groups > 0, #d.groups)
+		local pool = find(screen, "log_rows")
+		lab.check("one row element per layout row; those without a group are hidden, none destroyed", pool and
+			#pool.children == d.limit and dev("rows", pi, "log").rendered == #d.groups,
+			{ children = pool and #pool.children, limit = d.limit, groups = #d.groups })
 		dev("click", pi, "log_subject_chip")
 		d = render()
 		lab.check("the chip's click clears it", d.filter.subject == nil and d.subject_chip == nil, d.filter.subject)
@@ -417,15 +467,50 @@ lab.suite("39_log", {
 		lab.info("export with updates off: " .. tostring(ex.rows) .. " rows, " .. tostring(ex.chunks) .. " chunks, ticks " ..
 			tostring(ex.first_tick) .. ".." .. tostring(ex.last_tick))
 		dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
-		-- Diagnostics off with a job queued: the file is finished, the note says so, the tab hides.
+		-- Full, then basic: the full session's rows leave the Log and the export alike.
+		dev("set_setting", "cybersyn-diagnostics", "basic")
+		dev("select_tab", pi, "log")
+		for _ = 1, 40 do
+			d = render()
+			if not d.counting then break end
+		end
+		local basic_only = true
+		for _, ev in ipairs(all_events()) do
+			if ev.kind == "dispatched" or ev.kind == "arrive_p" or ev.kind == "leave_p" or ev.kind == "arrive_r" or
+				ev.kind == "leave_r" or ev.kind == "returned" or ev.kind == "train_state" then
+				basic_only = false
+			end
+		end
+		local res = dev("log_export", pi)
+		local fs = dev("log_filter_state", pi)
+		local pass, want = oracle_filter(fs, true), 0
+		for _, ev in ipairs(all_events()) do
+			if pass(ev) then want = want + 1 end
+		end
+		local shown = d.counts[1] + d.counts[2] + d.counts[3]
+		lab.check("full -> basic: no full row is left, export rows == the Log's counted rows", basic_only and res and
+			res.rows == want and res.rows == shown and want > 0, { rows = res and res.rows, want = want, shown = shown })
+		dev("set_setting", "cybersyn-diagnostics", "full")
+		-- Diagnostics off with a job queued: the tab hides; the job keeps its rings and goes on one chunk per export tick.
+		for i = 1, 2600 do dev("diag_event", "station_limit", "info", { station = ctx.station_ids[1 + i % 10], a = i, b = 0 }) end
 		dev("click", pi, "log_export_button")
 		dev("set_setting", "cybersyn-diagnostics", "off")
+		ctx.off_at = game.tick
 		d = dev("log_dump", pi)
 		local st = dev("state", pi)
 		lab.check("diagnostics off: the tab hides and the window leaves it", d.tab_visible == false and
 			st.selected_tab ~= "log_tab", { d.tab_visible, st.selected_tab })
-		lab.check("diagnostics off mid-export: the job was finished, the note says so", type(d.export_note) == "table" and
-			d.export_note[1] == "cybersyn-gui.log-exported-off", d.export_note)
+		lab.check("diagnostics off mid-export: nothing written in the setting's tick, the job still queued",
+			dev("diag_state").export_jobs == 1 and (d.export or {}).state == "running", d.export)
+		lab.wait_until(function() return dev("diag_state").export_jobs == 0 end, 1200, 1)
+	end,
+
+	function(ctx)
+		local d = dev("log_dump", pi)
+		local ex = d.export or {}
+		lab.check("diagnostics off mid-export: the job finished over later ticks, the note says so",
+			type(d.export_note) == "table" and d.export_note[1] == "cybersyn-gui.log-exported-off" and
+			(ex.chunks or 0) >= 3 and ex.last_tick > ctx.off_at, { note = d.export_note, ex = ex, off = ctx.off_at })
 		dev("update", pi, 2)
 		dev("set_setting", "cybersyn-diagnostics", "basic")
 		dev("update", pi, 1)
