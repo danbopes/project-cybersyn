@@ -848,3 +848,96 @@ styles.cybersyn_overview_empty_label = {
 	vertical_align = "center",
 	maximal_width = 600,
 }
+
+-- PROBLEMS TAB STYLES (PLAN3 §4.7): 32 px rows in a vertical flow, group rows in the subheader colour.
+
+styles.cybersyn_problems_frame = {
+	type = "frame_style",
+	parent = "inside_deep_frame",
+	horizontally_stretchable = "on",
+	vertical_flow_style = {
+		type = "vertical_flow_style",
+		vertical_spacing = 0,
+	},
+}
+
+styles.cybersyn_problems_header = {
+	type = "horizontal_flow_style",
+	horizontal_spacing = 8,
+	left_padding = 4,
+	right_padding = 10,
+	height = 20,
+	vertical_align = "center",
+}
+
+styles.cybersyn_problems_row = {
+	type = "frame_style",
+	parent = "frame",
+	graphical_set = {},
+	padding = 0,
+	left_padding = 4,
+	right_padding = 10,
+	height = 32,
+	horizontally_stretchable = "on",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 8,
+		vertical_align = "center",
+	},
+}
+
+styles.cybersyn_problems_row_odd = {
+	type = "frame_style",
+	parent = "cybersyn_problems_row",
+	graphical_set = { base = { center = { position = { 472, 25 }, size = { 1, 1 } } } },
+}
+
+styles.cybersyn_problems_group_row = {
+	type = "frame_style",
+	parent = "cybersyn_problems_row",
+	graphical_set = { base = { center = { position = { 256, 25 }, size = { 1, 1 } } } },
+}
+
+styles.cybersyn_problems_dot = {
+	type = "image_style",
+	size = 16,
+	stretch_image_to_widget_size = true,
+	left_margin = 2,
+	right_margin = 2,
+}
+
+styles.cybersyn_problems_group_caption = {
+	type = "label_style",
+	parent = "caption_label",
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_problems_detail = {
+	type = "label_style",
+	parent = "cybersyn_unserved_cell",
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_problems_detail_acked = {
+	type = "label_style",
+	parent = "cybersyn_problems_detail",
+	font_color = { 0.5, 0.5, 0.5 },
+}
+
+styles.cybersyn_problems_fix = {
+	type = "label_style",
+	parent = "cybersyn_unserved_cell",
+	font_color = { 0.6, 0.6, 0.6 },
+	horizontally_squashable = "on",
+}
+
+styles.cybersyn_problems_subfooter = {
+	type = "frame_style",
+	parent = "subfooter_frame",
+	horizontally_stretchable = "on",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 8,
+		vertical_align = "center",
+	},
+}

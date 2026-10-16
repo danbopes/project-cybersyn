@@ -29,6 +29,8 @@ sizing.TAB_CHROME = {
 	trains_tab = 112,
 	-- subheader 36, sort bar 28, two gaps of 8, grid caption 20, frame borders
 	inventory_tab = 108,
+	-- subheader 36, column header 20, subfooter 36, frame borders
+	problems_tab = 96,
 }
 
 -- Row height per tab. Stations and Trains keep their current row frames until phase 4 restyles them to the 32 and
@@ -39,6 +41,7 @@ sizing.ROW_HEIGHT = {
 	stations_tab = 88,
 	trains_tab = 67,
 	inventory_tab = 40,
+	problems_tab = 32,
 }
 
 --- @class ManagerLayout
