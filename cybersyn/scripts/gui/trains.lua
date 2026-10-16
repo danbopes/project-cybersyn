@@ -878,7 +878,7 @@ local function build_row(view, color, w, hidden)
 			caption = tostring(view.id),
 			tooltip = { "cybersyn-gui.trains-open-train-tooltip" },
 			tags = { kind = "train", id = view.id },
-			mouse_button_filter = { "left" },
+			mouse_button_filter = { "left", "right" },
 			handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		}, SCROLL),
 		{
