@@ -95,6 +95,7 @@ end
 --- @field subject_train uint?
 --- @field item int? item index (the manager's item filter); -1 = an item diagnostics never logged
 --- @field min_tick uint?
+--- @field any boolean some filter besides the severities and the window is set (else `match` is always true)
 --- @field sig string everything but the severities
 --- @field sev_sig string
 
@@ -131,6 +132,7 @@ function model.compile(f, now, item)
 		station = station,
 		subject_train = subject_train,
 		min_tick = window and math.max(0, now - window) or nil,
+		any = kinds ~= nil or f.train ~= nil or item ~= nil or s ~= nil,
 		sig = table.concat({ tostring(f.group), tostring(f.kind), tostring(f.train), s and s.kind or "", s and s.id or "",
 			tostring(f.window), tostring(item) }, "|"),
 		sev_sig = (sevs[1] and "e" or "") .. (sevs[2] and "w" or "") .. (sevs[3] and "i" or ""),
@@ -204,6 +206,7 @@ local function scan_back(rb, rf, below, cf, budget, visit)
 	local kb = first_after(rb, below - 1) - 1
 	local kf = rf and (first_after(rf, below - 1) - 1) or -1
 	local min_tick = cf.min_tick
+	local any = cf.any ~= false
 	local n = 0
 	while true do
 		local ib = kb >= 0 and at(rb, kb) or nil
@@ -221,7 +224,7 @@ local function scan_back(rb, rf, below, cf, budget, visit)
 		local seq = r.seq[i]
 		if n >= budget then return false, seq + 1 end
 		n = n + 1
-		if match(r, i, cf) and visit(r, i) then return false, seq + 1 end
+		if (not any or match(r, i, cf)) and visit(r, i) then return false, seq + 1 end
 	end
 end
 model.scan_back = scan_back

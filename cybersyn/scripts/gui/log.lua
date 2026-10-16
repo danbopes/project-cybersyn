@@ -37,7 +37,12 @@ local ROW_PADDING = 4 + 8
 local FRAME_BORDER = 4
 local ICON = 20
 local NAME_ICONS = 3
-local BUDGET = model.BUDGET
+-- Rows examined per update (measured on a 2,030-station base, full ring of 16,384 rows): the rows' backward scan
+-- stops early on a dense filter, the counts and the Summary visit every row of the window.
+local ROWS_BUDGET = 2048
+local COUNTS_BUDGET = 1024
+local SUMMARY_BUDGET = 1024
+local BADGE_BUDGET = model.BUDGET
 local SEV_SPRITES = { "flib_indicator_red", "flib_indicator_orange", "flib_indicator_white" }
 local SEV_KEYS = { "error", "warning", "info" }
 local CYCLE_MINUTES = 10
@@ -60,8 +65,8 @@ local KIND_SPRITE_CANDIDATES = {
 	[DIAG_KIND_RESIDUAL_CARGO] = { "item/cargo-wagon" },
 	[DIAG_KIND_SCHEDULE_EDITED] = { "utility/rename_icon", "item/locomotive" },
 	[DIAG_KIND_LINT] = { "item/cybersyn-combinator", "item/decider-combinator" },
-	[DIAG_KIND_ACKNOWLEDGED] = { "utility/check_mark" },
-	[DIAG_KIND_UNACKNOWLEDGED] = { "utility/check_mark" },
+	[DIAG_KIND_ACKNOWLEDGED] = { "utility/check_mark_white", "utility/check_mark" },
+	[DIAG_KIND_UNACKNOWLEDGED] = { "utility/check_mark_white", "utility/check_mark" },
 	[DIAG_KIND_MANUAL_ACTION] = { "utility/hand", "utility/rename_icon" },
 	[DIAG_KIND_DISPATCHED] = { "item/locomotive" },
 	[DIAG_KIND_ARRIVE_P] = { "item/locomotive" },
@@ -389,7 +394,7 @@ function log_tab.create()
 					name = "log_body",
 					direction = "vertical",
 					style_mods = { vertical_spacing = 0 },
-					{ type = "flow", name = ROWS, direction = "vertical", style_mods = { vertical_spacing = 0 } },
+					{ type = "table", name = ROWS, style = "cybersyn_log_rows_table", column_count = 1 },
 					{
 						type = "flow",
 						name = "log_summary",
@@ -449,6 +454,25 @@ end
 
 -- ---------------------------------------------------------------- rows
 
+-- A pure function of the loaded prototypes, so the same in every Lua state.
+local sprite_ok = {}
+
+--- @param path string
+--- @return string
+local function valid_sprite(path)
+	local ok = sprite_ok[path]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(path)
+		sprite_ok[path] = ok
+	end
+	return ok and path or "utility/questionmark"
+end
+
+--- Phase profilers while the dev interface measures a render (nil otherwise).
+--- @type {counts: LuaProfiler, rows: LuaProfiler, render: LuaProfiler, rest: LuaProfiler, written: int}?
+local prof
+
+
 --- @param g LogGroup
 --- @return string? hash
 local function group_item(g)
@@ -471,143 +495,136 @@ local function station_tooltip(view, extra)
 	return tooltip
 end
 
---- @class LogRowView everything a row shows, computed once per render
---- @field g LogGroup
---- @field view LogNameView?
---- @field hash string?
---- @field vsig string the names and train validity the cells show
-
 -- Station names and train validity are read again at most this often for a row whose event did not change.
 local NAME_REFRESH = 600
 
---- What a row's cells depend on besides names: a collapsed row changes its newest event, count and numbers.
---- @param g LogGroup
---- @param now uint
---- @return string
-local function data_sig(g, now)
-	return g.seq .. "|" .. g.n .. "|" .. g.a .. "|" .. g.b .. "|" .. math.floor(now / NAME_REFRESH)
-end
-
---- @param g LogGroup
---- @return LogRowView
-local function row_view(g)
-	local view = station_view(g.station)
-	local hash = group_item(g)
-	local train_ok = g.train ~= 0 and storage.trains[g.train] ~= nil
-	local vsig = (view and view.name or "") .. "|" .. (train_ok and "t" or "")
-	return { g = g, view = view, hash = hash, vsig = vsig, train_ok = train_ok }
-end
-
---- @param rv LogRowView
---- @param i int
-local function name_icon_def(rv, i)
-	local icon = rv.view.icons[i]
-	return hoverable({
-		type = "sprite-button",
-		style = "cybersyn_name_icon",
-		sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
-		quality = icon.quality,
-		tags = { kind = rv.view.kind, id = rv.g.station },
-		mouse_button_filter = { "left", "right" },
-		handler = { [defines.events.on_gui_click] = util.handle.link_click },
-	})
-end
-
---- Everything of a row that depends on its data, written into existing cells (the row's structure never changes).
+--- Writes a row's cells, each only when what it shows changed since `m` (what the element shows now; empty for a
+--- new row). A row whose event, count and numbers are unchanged is not looked at until the name refresh.
 --- @param cells LuaGuiElement[]
---- @param rv LogRowView
---- @param widths {station: int, message: int}
-local function write_cells(cells, rv, widths)
-	local g = rv.g
-	cells[1].tooltip = model.age_tooltip(g, util.format_duration)
-	cells[2].sprite = SEV_SPRITES[g.sev] or SEV_SPRITES[3]
-	cells[2].tooltip = { "cybersyn-diag.sev-" .. (SEV_KEYS[g.sev] or "info") }
-	cells[3].sprite = kind_sprite(g.kind)
-	cells[3].tooltip = { "cybersyn-diag.kind-" .. (DIAG_KIND_KEYS[g.kind] or "alert") }
+--- @param g LogGroup
+--- @param m table the row's memo, updated
+--- @param now uint
+local function write_cells(cells, g, m, now)
+	m.seq, m.n_, m.a_, m.b_, m.epoch = g.seq, g.n, g.a, g.b, math.floor(now / NAME_REFRESH)
+	if prof then prof.written = prof.written + 1 end
+	local tsig = g.first_tick .. "|" .. g.tick .. "|" .. g.n
+	if m.t ~= tsig then
+		cells[1].tooltip = model.age_tooltip(g, util.format_duration)
+		m.t = tsig
+	end
+	if m.sev ~= g.sev then
+		cells[2].sprite = SEV_SPRITES[g.sev] or SEV_SPRITES[3]
+		cells[2].tooltip = { "cybersyn-diag.sev-" .. (SEV_KEYS[g.sev] or "info") }
+		m.sev = g.sev
+	end
+	if m.kind ~= g.kind then
+		cells[3].sprite = kind_sprite(g.kind)
+		cells[3].tooltip = { "cybersyn-diag.kind-" .. (DIAG_KIND_KEYS[g.kind] or "alert") }
+		m.kind = g.kind
+	end
 	-- train
-	local train = cells[4]
-	local t = train.tags
-	if g.train ~= 0 then
-		train.caption = tostring(g.train)
-		train.enabled = true
-		train.style = rv.train_ok and "cybersyn_log_link" or "cybersyn_log_link_gone"
-		train.style.width = W.train
-		train.tooltip = { "", { "cybersyn-gui.log-train", tostring(g.train) }, "\n", { "cybersyn-gui.link-footer" } }
-		t.kind, t.id = "train", g.train
-	else
-		train.caption = ""
-		train.enabled = false
-		train.tooltip = ""
-		t.kind, t.id = nil, nil
-	end
-	train.tags = t
-	-- station: icons rebuilt only when the name or the target changed
-	local cell = cells[5]
-	local icons, button = cell.children[1], cell.children[2]
-	local view = rv.view
-	local isig = (view and view.name or "") .. "|" .. g.station
-	if icons.tags.s ~= isig then
-		icons.clear()
-		if view then
-			for i = 1, #view.icons do gui.add(icons, name_icon_def(rv, i)) end
+	local train_ok = g.train ~= 0 and storage.trains[g.train] ~= nil
+	local trsig = g.train .. (train_ok and "t" or "")
+	if m.tr ~= trsig then
+		local train = cells[4]
+		if g.train ~= 0 then
+			train.caption = tostring(g.train)
+			train.tooltip = { "", { "cybersyn-gui.log-train", tostring(g.train) }, "\n", { "cybersyn-gui.link-footer" } }
+		else
+			train.caption = ""
+			train.tooltip = ""
 		end
-		icons.tags = { s = isig }
+		local style = train_ok and "cybersyn_log_link" or "cybersyn_log_link_gone"
+		if m.trs ~= style then
+			train.style = style
+			train.style.width = W.train
+			m.trs = style
+		end
+		m.tr = trsig
 	end
-	local tip = station_tooltip(view, nil)
-	for _, icon in ipairs(icons.children) do icon.tooltip = tip end
-	if view then
-		button.caption = view.text
-	elseif g.station ~= 0 then
-		button.caption = { "cybersyn-gui.log-gone-station", tostring(g.station) }
-	else
-		button.caption = ""
+	-- station: the icons only when the name or the target changed
+	local view = station_view(g.station)
+	local ssig = g.station .. "|" .. (view and view.name or "")
+	if m.st ~= ssig then
+		local cell = cells[5]
+		local icons, button = cell.children[1], cell.children[2]
+		-- Three icon slots made with the row, shown as the name needs them: a row reused for another station
+		-- creates no elements.
+		local slots
+		local mi = m.icons
+		if not mi then
+			mi = {}
+			m.icons = mi
+		end
+		for i = 1, NAME_ICONS do
+			local icon = view and view.icons[i]
+			local sprite = icon and valid_sprite(icon.sprite) or false
+			if mi[i] ~= sprite then
+				slots = slots or icons.children
+				local slot = slots[i]
+				if sprite then slot.sprite = sprite end
+				if (mi[i] or false) == false or sprite == false then slot.visible = sprite ~= false end
+				mi[i] = sprite
+			end
+		end
+		if view then
+			button.caption = view.text
+		elseif g.station ~= 0 then
+			button.caption = { "cybersyn-gui.log-gone-station", tostring(g.station) }
+		else
+			button.caption = ""
+		end
+		if m.en ~= (view ~= nil) then
+			button.enabled = view ~= nil
+			m.en = view ~= nil
+		end
+		button.tooltip = station_tooltip(view, nil)
+		m.st = ssig
 	end
-	button.enabled = view ~= nil
-	button.tooltip = tip
-	local bt = button.tags
-	bt.kind, bt.id = view and view.kind or nil, view and g.station or nil
-	button.tags = bt
 	-- item
-	local item = cells[6]
-	local it = item.tags
-	local sprite, quality = nil, nil
-	if rv.hash then sprite, quality = util.item_sprite_and_tooltip(rv.hash) end
-	if sprite then
-		item.sprite = sprite
-		item.quality = quality
-		item.elem_tooltip = util.elem_tooltip(rv.hash)
-		item.tooltip = { "cybersyn-gui.item-click-hint" }
-		item.enabled = true
-		it.kind, it.id = "item", rv.hash
-	else
-		-- Enabled even when empty: a disabled slot draws its frame.
-		item.sprite = nil
-		item.elem_tooltip = nil
-		item.tooltip = ""
-		item.enabled = true
-		it.kind, it.id = nil, nil
+	local hash = group_item(g)
+	if m.item ~= (hash or "") then
+		local item = cells[6]
+		local sprite, quality = nil, nil
+		if hash then sprite, quality = util.item_sprite_and_tooltip(hash) end
+		-- An empty slot shows nothing and log_link_click ignores it (disabled, it would draw its frame).
+		if sprite then
+			item.sprite = sprite
+			if m.q ~= (quality or "") then
+				item.quality = quality
+				m.q = quality or ""
+			end
+			item.elem_tooltip = util.elem_tooltip(hash)
+		else
+			item.sprite = nil
+			item.elem_tooltip = nil
+		end
+		m.item = hash or ""
 	end
-	item.tags = it
-	-- message, count, print
-	local message = log_tab.message(g)
-	cells[7].caption = message
-	local tip7 = { "", "[font=default-semibold]", { "cybersyn-diag.kind-" .. (DIAG_KIND_KEYS[g.kind] or "alert") }, "[/font]\n", message }
-	if diag.STATION2_IS_STATION[g.kind] and g.station2 ~= 0 then
-		local other = station_view(g.station2)
-		if other then tip7 = { "", tip7, "\n", { "cybersyn-gui.log-other-station", other.name } } end
+	-- message, count
+	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n
+	if m.msg ~= msig then
+		cells[7].caption = log_tab.message(g)
+		-- The message's tooltip names the other station of the event (the provider, the other end of a delivery);
+		-- the kind is the kind sprite's tooltip.
+		local other = diag.STATION2_IS_STATION[g.kind] and g.station2 ~= 0 and station_view(g.station2) or nil
+		local tip = other and { "cybersyn-gui.log-other-station", other.name } or ""
+		if other or m.mt then cells[7].tooltip = tip end
+		m.mt = other ~= nil
+		m.msg = msig
 	end
-	cells[7].tooltip = tip7
-	cells[8].caption = model.repeat_caption(g.n)
-	local pt = cells[9].tags
-	pt.seq = g.seq
-	cells[9].tags = pt
+	if m.n ~= g.n then
+		cells[8].caption = model.repeat_caption(g.n)
+		m.n = g.n
+	end
 end
 
 --- The cells of a row, empty; write_cells fills them.
 --- @param widths {station: int, message: int}
 --- @return flib.GuiElemDef[]
 local function cell_defs(widths)
-	local link = { [defines.events.on_gui_click] = util.handle.link_click }
+	-- Rows are reused for other events, so their link cells carry no target: the click finds it from the row.
+	local link = { [defines.events.on_gui_click] = log_tab.handle.log_link_click }
 	return {
 		hoverable({ type = "label", style = "cybersyn_log_age", style_mods = { width = W.age } }),
 		hoverable({ type = "sprite", style = "cybersyn_log_dot" }),
@@ -617,6 +634,7 @@ local function cell_defs(widths)
 			style = "cybersyn_log_link",
 			style_mods = { width = W.train },
 			mouse_button_filter = { "left", "right" },
+			tags = { cell = "train" },
 			handler = link,
 		}),
 		{
@@ -624,12 +642,20 @@ local function cell_defs(widths)
 			direction = "horizontal",
 			style = "cybersyn_log_cell_flow",
 			style_mods = { width = widths.station },
-			{ type = "flow", direction = "horizontal", style = "cybersyn_log_icon_flow", tags = { s = "" } },
+			{
+				type = "flow",
+				direction = "horizontal",
+				style = "cybersyn_log_icon_flow",
+				{ type = "sprite", style = "cybersyn_log_icon", visible = false, ignored_by_interaction = true },
+				{ type = "sprite", style = "cybersyn_log_icon", visible = false, ignored_by_interaction = true },
+				{ type = "sprite", style = "cybersyn_log_icon", visible = false, ignored_by_interaction = true },
+			},
 			hoverable({
 				type = "button",
 				style = "cybersyn_log_link",
 				style_mods = { maximal_width = widths.station - NAME_ICONS * ICON - 8 },
 				mouse_button_filter = { "left", "right" },
+				tags = { cell = "station" },
 				handler = link,
 			}),
 		},
@@ -637,6 +663,8 @@ local function cell_defs(widths)
 			type = "sprite-button",
 			style = "cybersyn_log_item",
 			mouse_button_filter = { "left", "right" },
+			tooltip = { "cybersyn-gui.item-click-hint" },
+			tags = { cell = "item" },
 			handler = link,
 		}),
 		hoverable({ type = "label", style = "cybersyn_log_message", style_mods = { width = widths.message } }),
@@ -646,18 +674,57 @@ local function cell_defs(widths)
 			style = "cybersyn_log_print",
 			sprite = "utility/center",
 			tooltip = { "cybersyn-gui.log-print-tooltip" },
-			tags = { seq = 0 },
 			handler = { [defines.events.on_gui_click] = log_tab.handle.log_print_click },
 		}),
 	}
 end
 
---- @param index int
---- @return string
-local function row_style(index)
-	return index % 2 == 0 and "cybersyn_log_row_odd" or "cybersyn_log_row"
+-- One set of row callbacks for every row (util.sync_children passes the entry); the render's context is in upvalues
+-- set by render_rows, so a render allocates no closures.
+local r_memo, r_widths, r_now
+
+--- @param entry {key: uint, g: LogGroup}
+local function row_build(entry)
+	r_memo[entry.key] = nil
+	return hoverable({ type = "frame", direction = "horizontal", style = "cybersyn_log_row", children = cell_defs(r_widths) })
 end
 
+local function row_built(elem, entry)
+	local m = {}
+	local cells = elem.children
+	write_cells(cells, entry.g, m, r_now)
+	m.a = model.age_caption(r_now, entry.g, util.short_duration)
+	cells[1].caption = m.a
+	r_memo[entry.key] = m
+end
+
+-- The element keeps what it showed for the vanished key, so its memo moves with it.
+local function row_reuse(elem, old_key, entry)
+	r_memo[entry.key] = r_memo[old_key] or {}
+	r_memo[old_key] = nil
+end
+
+local function row_update(elem, entry)
+	local key, g, now = entry.key, entry.g, r_now
+	local m = r_memo[key]
+	if not m then
+		m = {}
+		r_memo[key] = m
+	end
+	local cells
+	if m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.epoch ~= math.floor(now / NAME_REFRESH) then
+		cells = elem.children
+		write_cells(cells, g, m, now)
+	end
+	local age = model.age_caption(now, g, util.short_duration)
+	if m.a ~= age then
+		cells = cells or elem.children
+		cells[1].caption = age
+		m.a = age
+	end
+end
+
+--- Rows live in a one-column table whose odd-row background gives the tint, so a row that moves needs no restyle.
 --- @param player_data PlayerData
 --- @param groups LogGroup[]
 local function render_rows(player_data, groups)
@@ -671,70 +738,16 @@ local function render_rows(player_data, groups)
 		memo = {}
 		state.memo = memo
 	end
-	local now = game.tick
-	local short = util.short_duration
+	r_memo, r_widths, r_now = memo, widths, game.tick
 	local entries = {}
 	for i, g in ipairs(groups) do
-		local key = g.first
-		entries[i] = {
-			key = key,
-			build = function()
-				memo[key] = nil
-				return hoverable({
-					type = "frame",
-					direction = "horizontal",
-					style = row_style(i),
-					children = cell_defs(widths),
-				})
-			end,
-			built = function(elem)
-				local v = row_view(g)
-				local cells = elem.children
-				write_cells(cells, v, widths)
-				local age = model.age_caption(now, g, short)
-				cells[1].caption = age
-				memo[key] = { d = data_sig(g, now), v = v.vsig, p = i % 2, a = age, seq = g.seq, n = g.n,
-					ab = g.a .. "|" .. g.b }
-			end,
-			reuse = function(elem, old_key)
-				memo[old_key] = nil
-				memo[key] = nil
-			end,
-			update = function(elem, entry, index)
-				local m = memo[key]
-				if not m then
-					m = {}
-					memo[key] = m
-				end
-				local parity = index % 2
-				if m.p ~= parity then
-					elem.style = row_style(index)
-					m.p = parity
-				end
-				local cells
-				local dsig = data_sig(g, now)
-				if m.d ~= dsig then
-					m.d = dsig
-					local v = row_view(g)
-					if m.v ~= v.vsig or m.seq ~= g.seq or m.n ~= g.n or m.ab ~= g.a .. "|" .. g.b then
-						cells = elem.children
-						write_cells(cells, v, widths)
-						m.v, m.seq, m.n, m.ab = v.vsig, g.seq, g.n, g.a .. "|" .. g.b
-					end
-				end
-				local age = model.age_caption(now, g, short)
-				if m.a ~= age then
-					cells = cells or elem.children
-					cells[1].caption = age
-					m.a = age
-				end
-			end,
-		}
+		entries[i] = { key = g.first, g = g, build = row_build, built = row_built, reuse = row_reuse, update = row_update }
 	end
 	util.sync_children(parent, entries, state, util.hold_active(player_data, ROWS), true)
 	local keep = {}
 	for _, key in ipairs(state.keys or {}) do keep[key] = memo[key] end
 	state.memo = keep
+	r_memo, r_widths = nil, nil
 end
 
 -- ---------------------------------------------------------------- summary
@@ -986,7 +999,7 @@ function log_tab.refresh_badge(player_data)
 		bs = {}
 		player_data.log_badge = bs
 	end
-	local n = model.update_badge(bs, d, player_data.log_seen_seq, BUDGET)
+	local n = model.update_badge(bs, d, player_data.log_seen_seq, BADGE_BUDGET)
 	local caption = n > 0 and format.number(n) or ""
 	if tab.badge_text ~= caption then
 		tab.badge_text = caption
@@ -1003,6 +1016,14 @@ end
 
 --- @param map_data MapData
 --- @param player_data PlayerData
+local function prof_start(name)
+	if prof then prof[name].restart() end
+end
+
+local function prof_stop(name)
+	if prof then prof[name].stop() end
+end
+
 function log_tab.build(map_data, player_data)
 	local refs = player_data.refs
 	if not (refs.log_body and refs.log_body.valid) then return end
@@ -1017,19 +1038,17 @@ function log_tab.build(map_data, player_data)
 		cs = {}
 		player_data.log_counts = cs
 	end
-	local building = model.update_counts(cs, d, cf, BUDGET)
-	render_sev_buttons(player_data, cs, building)
-
 	local rows_flow, summary_flow, empty_flow = refs[ROWS], refs.log_summary, refs.log_empty_flow
 	local status_sig, status
 	local empty_sig, empty_caption
+	local rebuilt = false
 	if f.summary then
 		local ss = player_data.log_summary
 		if not ss then
 			ss = {}
 			player_data.log_summary = ss
 		end
-		local done = model.update_summary(ss, d, cf, BUDGET)
+		local done = model.update_summary(ss, d, cf, SUMMARY_BUDGET)
 		if rows_flow.visible then rows_flow.visible = false end
 		local any = done and (#ss.top_stations > 0 or #ss.top_items > 0)
 		if summary_flow.visible ~= (any == true) then summary_flow.visible = any == true end
@@ -1050,11 +1069,18 @@ function log_tab.build(map_data, player_data)
 			rs = { groups = {} }
 			player_data.log_rows = rs
 		end
-		model.update_rows(rs, d, cf, limit, f.follow ~= false, BUDGET)
+		prof_start("rows")
+		local old_sig = rs.sig
+		model.update_rows(rs, d, cf, limit, f.follow ~= false, ROWS_BUDGET)
+		rebuilt = rs.sig ~= old_sig
+		prof_stop("rows")
+		prof_start("render")
 		if summary_flow.visible then summary_flow.visible = false end
 		local any = #rs.groups > 0
 		if rows_flow.visible ~= any then rows_flow.visible = any end
-		render_rows(player_data, rs.groups)
+		-- With nothing to show the row elements stay (hidden), to be reused when rows come back.
+		if any then render_rows(player_data, rs.groups) end
+		prof_stop("render")
 		if not any then
 			if rs.below then
 				empty_sig, empty_caption = "scanning", { "cybersyn-gui.log-scanning" }
@@ -1070,6 +1096,13 @@ function log_tab.build(map_data, player_data)
 			status_sig, status = "", ""
 		end
 	end
+	-- A filter change rewrites every row; the counts' first scan waits for the next update.
+	prof_start("counts")
+	local building = model.update_counts(cs, d, cf, rebuilt and 0 or COUNTS_BUDGET)
+	render_sev_buttons(player_data, cs, building)
+	prof_stop("counts")
+
+	prof_start("rest")
 	local show_empty = empty_caption ~= nil
 	if empty_flow.visible ~= show_empty then empty_flow.visible = show_empty end
 	if show_empty then set_caption(player_data, refs.log_empty, empty_sig, empty_caption) end
@@ -1079,6 +1112,7 @@ function log_tab.build(map_data, player_data)
 	set_caption(player_data, refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
 	log_tab.refresh_export_note(player_data)
 	log_tab.mark_seen(player_data)
+	prof_stop("rest")
 end
 
 --- Rows shown, for dev.rows.
@@ -1299,11 +1333,63 @@ function log_tab.handle.log_export_click(player, player_data, refs, e)
 end
 
 --- @param e EventData.on_gui_click
+--- The group a row element shows, from its position in the rows table.
+--- @param player_data PlayerData
+--- @param elem LuaGuiElement a row or anything inside one
+--- @return LogGroup?
+local function row_group(player_data, elem)
+	local rows = player_data.refs[ROWS]
+	while elem and elem.valid and elem.parent and elem.parent ~= rows do elem = elem.parent end
+	if not (elem and elem.valid and elem.parent == rows) then return nil end
+	local keys = util.gui_state(player_data, ROWS).keys
+	local key = keys and keys[elem.get_index_in_parent()]
+	local rs = player_data.log_rows
+	for _, g in ipairs(rs and rs.groups or {}) do
+		if g.first == key then return g end
+	end
+	return nil
+end
+
+--- The link target of a row's train, station or item cell: {kind, id} or nil.
+--- @param g LogGroup
+--- @param cell string
+--- @return string? kind
+--- @return any id
+local function cell_target(g, cell)
+	if cell == "train" then
+		if g.train ~= 0 then return "train", g.train end
+	elseif cell == "station" then
+		local view = station_view(g.station)
+		if view then return view.kind, g.station end
+	elseif cell == "item" then
+		local hash = group_item(g)
+		if hash then return "item", hash end
+	end
+	return nil, nil
+end
+
+--- A train, station or item cell of a row: the shared link semantics (util.handle_link_click) on the row's target.
+--- @param e EventData.on_gui_click
+function log_tab.handle.log_link_click(player, player_data, refs, e)
+	util.touch_hover(e)
+	local g = row_group(player_data, e.element)
+	if not g then return end
+	local kind, id = cell_target(g, e.element.tags.cell)
+	if not kind then return end
+	util.handle_link_click(player, player_data, {
+		element = { tags = { kind = kind, id = id } },
+		button = e.button, shift = e.shift, control = e.control, alt = e.alt, player_index = e.player_index,
+	})
+end
+
+--- @param e EventData.on_gui_click
 function log_tab.handle.log_print_click(player, player_data, refs, e)
 	util.touch_hover(e)
-	local seq = e.element.tags.seq
-	if seq and seq > 0 then log_tab.print_row(player, player_data, seq) end
+	local g = row_group(player_data, e.element)
+	if g then log_tab.print_row(player, player_data, g.seq) end
 end
+
+log_tab.cell_target = cell_target
 
 gui.add_handlers(log_tab.handle, log_tab.wrapper)
 
@@ -1346,6 +1432,13 @@ dev.register_dump(TAB, function(player_data)
 	end
 	local rows = {}
 	local parent = refs[ROWS]
+	-- What a row's link cells open, from the group shown at that position (rows are not held while dumping).
+	local function target(i, cell)
+		local g = rs and rs.groups[i]
+		if not g then return {} end
+		local k, id = cell_target(g, cell)
+		return { kind = k, id = id }
+	end
 	local handler_tag = "__" .. script.mod_name .. "_handler"
 	if parent and parent.valid and parent.visible then
 		for i, row in ipairs(parent.children) do
@@ -1360,19 +1453,19 @@ dev.register_dump(TAB, function(player_data)
 				dot = c[2].sprite,
 				kind_sprite = c[3].sprite,
 				train = c[4].caption,
-				train_tags = c[4].tags,
+				train_tags = target(i, "train"),
 				station = station.caption,
-				station_tags = station.tags,
+				station_tags = target(i, "station"),
 				station_handler = station.tags[handler_tag] ~= nil,
-				item = c[6].tags.id,
+				item = target(i, "item").id,
 				elem_tooltip = c[6].elem_tooltip,
 				message = c[7].caption,
 				count = c[8].caption,
-				print_seq = c[9].tags.seq,
 			}
 		end
 	end
 	out.rows = rows
+	out.rows_style = parent and parent.valid and parent.style.name or nil
 	out.keys = util.gui_state(player_data, ROWS).keys
 	out.held = util.gui_state(player_data, ROWS).dirty == true
 	out.header = refs.log_header.caption
@@ -1394,8 +1487,9 @@ dev.register_function("log_dump", function(pi)
 end)
 
 --- Keys present in `f` are applied (false clears): sev = {bool, bool, bool}, kind = kind name, group = group name,
---- train, subject = {kind, id}, window = 1..3, follow, summary.
-dev.register_function("log_set_filter", function(pi, f)
+--- train, subject = {kind, id}, window = 1..3, follow, summary. `quiet`: no render (so the next update is the one a
+--- filter change costs).
+dev.register_function("log_set_filter", function(pi, f, quiet)
 	local player = game.get_player(pi)
 	local player_data = storage.manager.players[pi]
 	local filter = get_filter(player_data)
@@ -1424,7 +1518,7 @@ dev.register_function("log_set_filter", function(pi, f)
 		player_data.log_summary = nil
 	end
 	log_tab.restore_widgets(player_data)
-	if player and player_data.is_manager_open then util.rerender(player, player_data) end
+	if player and player_data.is_manager_open and not quiet then util.rerender(player, player_data) end
 	return filter
 end)
 
@@ -1438,6 +1532,38 @@ dev.register_function("log_export", function(pi)
 	local job = d.export_jobs[#d.export_jobs]
 	while d.export_jobs[1] do diag.export_step() end
 	return { path = path, rows = job and job.rows }
+end)
+
+--- Times every chunk of an unfiltered export written now (budget measurement); returns one LocalisedString per chunk.
+dev.register_function("log_export_bench", function(pi)
+	local d = storage.diag
+	if not d then return nil end
+	diag.export(0, nil)
+	local job = d.export_jobs[#d.export_jobs]
+	local out = {}
+	while d.export_jobs[1] do
+		local before = job.rows
+		local p = game.create_profiler()
+		diag.export_step()
+		p.stop()
+		out[#out + 1] = { "", #out + 1, ": ", job.rows - before, " rows ", p }
+	end
+	return out
+end)
+
+--- One Log render of player `pi` timed by phase: counts, the rows model, writing the rows, the rest; plus the rows
+--- written.
+dev.register_function("log_profile", function(pi)
+	local player_data = storage.manager.players[pi]
+	prof = { written = 0 }
+	for _, k in ipairs({ "counts", "rows", "render", "rest" }) do prof[k] = game.create_profiler(true) end
+	local total = game.create_profiler()
+	log_tab.build(storage, player_data)
+	total.stop()
+	local p = prof
+	prof = nil
+	return { "", "total ", total, " | counts ", p.counts, " | rows ", p.rows, " | render ", p.render, " | rest ", p.rest,
+		" | rows written ", p.written }
 end)
 
 --- Prints the row holding `seq` to player `pi` as the Print button does; returns the printed LocalisedString.

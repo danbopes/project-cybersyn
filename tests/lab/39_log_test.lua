@@ -134,8 +134,9 @@ lab.suite("39_log", {
 		local r = dev("rows", pi, "log")
 		lab.check("rows rendered == the layout's rows (4K at 1.5)", r.rendered == r.computed and r.computed == d.limit and
 			#d.groups == r.computed, r)
-		lab.check("every row is 28 px in the row styles", d.rows[1] and (d.rows[1].style == "cybersyn_log_row") and
-			(d.rows[2].style == "cybersyn_log_row_odd"), d.rows[1] and d.rows[1].style)
+		lab.check("every row is a 28 px row frame in the striped rows table", d.rows[1] and
+			d.rows[1].style == "cybersyn_log_row" and d.rows[2].style == "cybersyn_log_row" and
+			d.rows_style == "cybersyn_log_rows_table", { d.rows[1] and d.rows[1].style, d.rows_style })
 		-- cybersyn_log_age is the right-aligned grey label style (the alignment cannot be read back from a style).
 		lab.check("age column right-aligned with the absolute tick in the tooltip", d.rows[1].age_style == "cybersyn_log_age" and
 			type(d.rows[1].age_tooltip) == "table" and d.rows[1].age_tooltip[1] == "cybersyn-gui.log-age-tooltip",
@@ -353,6 +354,17 @@ lab.suite("39_log", {
 		dev("click", pi, "log_subject_chip")
 		d = render()
 		lab.check("the chip's click clears it", d.filter.subject == nil and d.subject_chip == nil, d.filter.subject)
+		-- The same from a Log row's own station cell (rows are reused, so the cell finds its target from the row).
+		local idx, target
+		for i, row in ipairs(d.rows) do
+			if row.station_tags.kind == "station" then idx, target = i, row.station_tags.id break end
+		end
+		local res = idx and dev("click", pi, "log_rows", { idx, 5, 2 }, { right = true })
+		d = render()
+		lab.check("right-click on a Log row's station cell sets the chip to that stop", idx ~= nil and
+			d.filter.subject and d.filter.subject.id == target, { idx = idx, res = res, subject = d.filter.subject })
+		dev("click", pi, "log_subject_chip")
+		render()
 	end,
 
 	-- Export: the filter, the row count, the CSV path, and a job spanning several ticks.

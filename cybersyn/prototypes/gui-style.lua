@@ -849,7 +849,7 @@ styles.cybersyn_overview_empty_label = {
 	maximal_width = 600,
 }
 
--- LOG TAB STYLES (PLAN3 §4.7 Log: 28 px rows, alternate-row tint)
+-- LOG TAB STYLES (PLAN3 §4.7 Log: 28 px rows; the rows table below gives the alternate-row tint)
 
 styles.cybersyn_log_row = {
 	type = "frame_style",
@@ -863,14 +863,6 @@ styles.cybersyn_log_row = {
 		type = "horizontal_flow_style",
 		vertical_align = "center",
 		horizontal_spacing = 8,
-	},
-}
-
-styles.cybersyn_log_row_odd = {
-	type = "frame_style",
-	parent = "cybersyn_log_row",
-	graphical_set = {
-		base = { position = { 472, 25 }, size = 1 },
 	},
 }
 
@@ -917,6 +909,12 @@ styles.cybersyn_log_icon_flow = {
 	type = "horizontal_flow_style",
 	vertical_align = "center",
 	horizontal_spacing = 0,
+}
+
+styles.cybersyn_log_icon = {
+	type = "image_style",
+	size = 20,
+	stretch_image_to_widget_size = true,
 }
 
 styles.cybersyn_log_item = {
@@ -987,5 +985,19 @@ styles.cybersyn_log_summary_table = {
 	parent = "cybersyn_unserved_table",
 	column_alignments = {
 		{ column = 3, alignment = "right" },
+	},
+}
+
+styles.cybersyn_log_rows_table = {
+	type = "table_style",
+	parent = "table",
+	horizontal_spacing = 0,
+	vertical_spacing = 0,
+	cell_padding = 0,
+	horizontally_stretchable = "on",
+	odd_row_graphical_set = {
+		filename = "__core__/graphics/gui-new.png",
+		position = { 472, 25 },
+		size = 1,
 	},
 }

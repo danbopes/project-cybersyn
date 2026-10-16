@@ -303,14 +303,14 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs)
 			sigs[old_key] = nil
 			cur[i] = key
 			pos_of[key] = i
-			entry.reuse(elems[i], old_key)
+			entry.reuse(elems[i], old_key, entry)
 			sigs[key] = nil
 			run_update(entry, elems[i], i, sigs)
 		else
-			local def = entry.build()
+			local def = entry.build(entry)
 			def.index = i
 			local _, elem = gui.add(parent, def)
-			if entry.built then entry.built(elem) end
+			if entry.built then entry.built(elem, entry) end
 			table.insert(cur, i, key)
 			table.insert(elems, i, elem)
 			for m = i, #cur do
@@ -330,7 +330,8 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs)
 end
 
 --- Reconciles `parent`'s children with `entries`, an ordered array of
---- `{key=, build=fun(): GuiElemDef, update=fun(elem, entry, index)?, sig=string|number?}`.
+--- `{key=, build=fun(entry): GuiElemDef, update=fun(elem, entry, index)?, sig=string|number?}` (build, built and reuse
+--- also get the entry, so one function can serve every row).
 --- Same key sequence: `update` each child in place. Otherwise, when `hold` is set, structure is left alone
 --- (children whose key is still present get `update`d) and `state.dirty` is set; when not held, the common
 --- prefix is updated in place, the rest destroyed and rebuilt.
@@ -411,8 +412,8 @@ function util.sync_children(parent, entries, state, hold, movable)
 	end
 	for i = prefix + 1, n do
 		local entry = entries[i]
-		local _, elem = gui.add(parent, entry.build())
-		if entry.built then entry.built(elem) end
+		local _, elem = gui.add(parent, entry.build(entry))
+		if entry.built then entry.built(elem, entry) end
 		if entry.sig ~= nil then new_sigs[entry.key] = entry.sig end
 	end
 	state.sigs = new_sigs
