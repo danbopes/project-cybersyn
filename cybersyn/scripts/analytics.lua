@@ -450,10 +450,19 @@ function analytics.get_active_failures(map_data, oldest_tick)
 			-- Use request_start_tick for full wait duration, fall back to last_tick for old entries
 			local start = failure.request_start_tick or failure.start_tick or failure.last_tick
 			local duration_seconds = (current_tick - start) / 60
+			-- The reason the Unserved chip shows (flap-confirmed) when diagnostics hold this request, so both tabs
+			-- name it the same; the per-evaluation reason only without diagnostics.
+			local reason = failure.reason
+			local d = storage.diag
+			local ix = d and d.item_ix[failure.item_hash]
+			local by_item = ix and d.unserved[failure.r_station_id]
+			local e = by_item and by_item[ix]
+			if e then reason = e.reason end
 			results[#results + 1] = {
 				item_hash = failure.item_hash,
 				r_station_id = failure.r_station_id,
 				failure_reason = failure.failure_reason,
+				reason = reason,
 				duration = duration_seconds,
 				request_start_tick = start,
 				last_tick = failure.last_tick,

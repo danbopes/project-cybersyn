@@ -1312,3 +1312,37 @@ styles.cybersyn_log_rows_table = {
 		size = 1,
 	},
 }
+
+-- Phase 10: the button above the vanilla trains window, and the opt-in HUD line.
+styles.cybersyn_trains_anchor_frame = {
+	type = "frame_style",
+	parent = "frame",
+	padding = 8,
+}
+
+styles.cybersyn_hud_frame = {
+	type = "frame_style",
+	parent = "frame",
+	padding = 4,
+	right_padding = 8,
+	horizontal_flow_style = { type = "horizontal_flow_style", horizontal_spacing = 6 },
+}
+
+styles.cybersyn_hud_drag = {
+	type = "empty_widget_style",
+	parent = "draggable_space",
+	width = 10,
+	height = 40,
+	left_margin = 0,
+	right_margin = 0,
+}
+
+styles.cybersyn_hud_label = {
+	type = "label_style",
+	font = "default-bold",
+}
+
+styles.cybersyn_hud_note = {
+	type = "label_style",
+	font_color = { 0.7, 0.7, 0.7 },
+}

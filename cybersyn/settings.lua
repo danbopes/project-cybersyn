@@ -201,6 +201,13 @@ data:extend({
 		allowed_values = { "admins", "everyone", "nobody" },
 	},
 	{
+		type = "bool-setting",
+		name = "cybersyn-manager-hud",
+		order = "ad",
+		setting_type = "runtime-per-user",
+		default_value = false,
+	},
+	{
 		type = "double-setting",
 		name = "cybersyn-manager-refuel-hours",
 		order = "ac",

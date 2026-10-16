@@ -7,6 +7,9 @@ local util = require("scripts.gui.util")
 local diag = require("scripts.diag")
 local relative = require("scripts.gui.relative")
 local trains_tab = require("scripts.gui.trains")
+local extras = require("scripts.gui.extras")
+local repair = require("scripts.gui.repair")
+local explain = require("scripts.gui.explain")
 
 trains_tab.set_relative(relative)
 relative.set_pane_gone(trains_tab.on_pane_gone)
@@ -88,6 +91,33 @@ end
 
 local manager_gui = {}
 manager_gui.manager = manager
+
+--- Opens the manager on `tab` (the trains-window button, a HUD click), or switches an open one to it.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param tab string
+local function open_manager_on(player, pd, tab)
+	pd.selected_tab = tab
+	if pd.is_manager_open then
+		util.select_tab(pd, tab)
+		local window = pd.refs and pd.refs.manager_window
+		if not pd.pinning and window and window.valid then player.opened = window end
+		manager.render(player, pd)
+	else
+		manager.handle.manager_open(player, pd, pd.refs)
+	end
+end
+extras.set_open_manager(open_manager_on)
+manager_gui.open_manager_on = open_manager_on
+
+--- The remote interface's toggle_gui (scripts/remote-interface.lua), the same as the shortcut.
+--- @param player_index uint
+function cybersyn_manager_toggle(player_index)
+	if not game.get_player(player_index) then return end
+	local pd = storage.manager and storage.manager.players[player_index]
+	if not pd then return end
+	manager.wrapper({ player_index = player_index }, manager.handle.manager_toggle)
+end
 
 function manager_gui.on_lua_shortcut(e)
 	if e.prototype_name == "cybersyn-toggle-gui" or e.input_name == "cybersyn-toggle-gui" or e.element then
@@ -180,6 +210,7 @@ local function create_player(player_index)
 	}
 	init_player_fields(player_data)
 	storage.manager.players[player_index] = player_data
+	extras.ensure_trains_anchor(player)
 
 	--manager.update(storage, player, player_data)
 	--top_left_button_update(player, player_data)
@@ -196,6 +227,10 @@ function manager_gui.on_player_left_game(e)
 		manager.wrapper(e, manager.handle.manager_close)
 	end
 	if player_data and player_data.relative_open then relative.close(player, player_data) end
+	if player_data then
+		explain.close(player, player_data)
+		if player then repair.close_dialog(player, player_data) end
+	end
 end
 
 function manager_gui.on_player_removed(e)
@@ -234,6 +269,10 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 				manager.log_tab.refresh_visibility(v)
 			end
 		end
+	elseif e.setting == "cybersyn-manager-hud" then
+		local player_data = e.player_index and storage.manager.players[e.player_index]
+		local player = e.player_index and game.get_player(e.player_index)
+		if player and player_data then extras.hud_setting_changed(player, player_data) end
 	elseif e.setting == "cybersyn-manager-unserved-minutes" then
 		local player_data = e.player_index and storage.manager.players[e.player_index]
 		if player_data then player_data.unserved_minutes = nil end
@@ -394,8 +433,18 @@ function manager_gui.tick(storage)
 			end
 		end
 	end
+	extras.tick(manager_data)
+	repair.tick(manager_data)
+	explain.tick(manager_data)
 	relative.tick(manager_data)
 end
+
+--- Every extras.HUD_TICKS, whatever the manager's update rate (scripts/main.lua).
+manager_gui.hud_tick = extras.hud_tick
+manager_gui.HUD_TICKS = extras.HUD_TICKS
+
+--- The Refresh allow-lists job while manager updates are off (scripts/main.lua's world-scan tick).
+manager_gui.job_tick = repair.job_tick
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
@@ -433,6 +482,9 @@ function manager_gui.reset_player(i, v)
 		end
 		v.refs = manager.create(player)
 		relative.reset(player, v)
+		extras.reset(player, v)
+		explain.close(player, v)
+		repair.close_dialog(player, v)
 		v.is_manager_open = false
 		v.gui_state = {}
 		player.set_shortcut_toggled("cybersyn-toggle-gui", false)

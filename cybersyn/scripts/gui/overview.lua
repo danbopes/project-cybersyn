@@ -10,6 +10,7 @@ local dev = require("scripts.gui.dev")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local text = require("scripts.gui.unserved-text")
+local explain = require("scripts.gui.explain")
 
 --- @class PlayerData
 --- @field overview_period int? minutes covered by the Throughput tile and the headroom minimum: 10, 60 or 1440
@@ -943,18 +944,8 @@ local function update_name_cell(cell, view, kind, id, tooltip, acked)
 	button.tags = t
 end
 
---- @param network_name string?
---- @return LocalisedString
-local function network_text(network_name)
-	if not network_name then return "?" end
-	if network_name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
-	return network_icon(network_name)
-end
-
-local function surface_name(index)
-	local s = game.get_surface(index)
-	return s and s.name or tostring(index)
-end
+local network_text = util.network_text
+local surface_name = util.surface_name
 
 --- One table row's data and its cells.
 --- @param row {r_id: uint, hash: string, e: DiagEntry}
@@ -1003,6 +994,8 @@ local function row_entry(row, acked, ctx)
 			read_age = read_age,
 			surface_name = surface_name,
 		}, util.format_duration)
+		chip[#chip + 1] = "\n"
+		chip[#chip + 1] = { "cybersyn-gui.unserved-explain-hint" }
 		local r_tip = station_tooltip(requester, read)
 		local p_tip = station_tooltip(provider, nil)
 		local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) }) or ""
@@ -1051,6 +1044,8 @@ local function row_entry(row, acked, ctx)
 					style_mods = { width = W.why },
 					caption = text.chip_caption(reason),
 					tooltip = chip,
+					tags = { r_id = r_id, hash = hash },
+					handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_explain_click },
 				}),
 				name_cell(provider, "station", p_id, widths.provider, p_tip, acked),
 				hoverable({ type = "label", style = value_style, style_mods = { width = W.stock }, caption = stock }),
@@ -1386,6 +1381,15 @@ function overview_tab.handle.overview_count_click(player, player_data, refs, e)
 	local manager = overview_tab.manager
 	if manager then manager.refresh_sort_headers(player_data) end
 	util.rerender(player, player_data)
+end
+
+--- The Why chip: Explain for that row (scripts/gui/explain.lua), a second click closes it.
+--- @param e EventData.on_gui_click
+function overview_tab.handle.overview_explain_click(player, player_data, refs, e)
+	util.touch_hover(e)
+	local tags = e.element.tags
+	if not (tags.r_id and tags.hash) then return end
+	explain.open(player, player_data, tags.r_id, tags.hash)
 end
 
 --- Acknowledge (PLAN3 §4.13): click = 24 h, shift-click = 1 h, control-click = until the reason changes; a click

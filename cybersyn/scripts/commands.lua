@@ -129,10 +129,32 @@ function retrigger_train_calculation(print_message)
 	local map_data = storage
 	log("Recalculating all train capacities")
 	local nbtrains = 0
+	-- set_train_layout counts the train into its layout, so the counts start from 0 and every layout no train
+	-- re-derives is dropped afterwards; otherwise each run would add every train a second time.
+	local counts = map_data.layout_train_count
+	for id in pairs(map_data.layouts) do counts[id] = 0 end
 	for _,train in pairs(map_data.trains) do
 		if train.entity and train.entity.valid then
 			set_train_layout(map_data, train)
 			nbtrains = nbtrains+1
+		elseif counts[train.layout_id] then
+			counts[train.layout_id] = counts[train.layout_id] + 1
+		end
+	end
+	local orphans = {}
+	for id in pairs(map_data.layouts) do
+		if counts[id] == 0 then orphans[#orphans + 1] = id end
+	end
+	if #orphans > 0 then
+		for _, id in ipairs(orphans) do
+			counts[id] = nil
+			map_data.layouts[id] = nil
+		end
+		for _, stop in pairs(map_data.stations) do
+			for _, id in ipairs(orphans) do stop.accepted_layouts[id] = nil end
+		end
+		for _, stop in pairs(map_data.refuelers) do
+			for _, id in ipairs(orphans) do stop.accepted_layouts[id] = nil end
 		end
 	end
 	if print_message then

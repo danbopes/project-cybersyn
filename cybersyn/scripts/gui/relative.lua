@@ -20,6 +20,8 @@ local utext = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
 local pm = require("scripts.gui.problems-model")
 local problems_tab = require("scripts.gui.problems")
+local extras = require("scripts.gui.extras")
+local repair = require("scripts.gui.repair")
 
 local relative = {}
 
@@ -830,7 +832,7 @@ local function render_stop_head(state, body, m)
 				for _, x in ipairs(m.findings) do
 					if x.check == check then f = x end
 				end
-				pair[#pair + 1] = lint_chip(check, f and finding_fix(f) or nil)
+				pair[#pair + 1] = lint_chip(check, f and { "", pm.detail(f, problems_tab.ENV), "\n", pm.fix(f.check) } or nil)
 			end
 			out[#out + 1] = pair
 			return out
@@ -1279,10 +1281,45 @@ local function tool(name, sprite, tooltip, handler, enabled, tags)
 	}
 end
 
-local function render_stop_buttons(state, body, m)
+-- ---------------------------------------------------------------- phase-10 tools and actions in the footer
+
+--- The footer's signature part that the phase-10 tools and actions depend on (scripts/gui/extras.lua, repair.lua).
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param kind "stop"|"train"
+--- @param id uint
+--- @return string
+local function extras_sig(player, pd, kind, id)
+	return "|" .. extras.tools_sig(pd, kind, id) .. "|" .. repair.sig(player, pd, kind, id)
+end
+
+--- The footer rows: `row` (the panel's own buttons) with the phase-10 tool buttons appended, the action row below,
+--- and the latest Test path result of this stop.
+--- @return flib.GuiElemDef[]
+local function extras_rows(player, pd, kind, id, row)
+	local rows = { row }
+	if kind == "train" then
+		-- Open in manager and Locate fill the train panel's first row; the tools share the action row.
+		local actions_row = repair.train_row(player, pd, id, extras.train_tools(pd, id))
+		rows[#rows + 1] = actions_row
+	else
+		for _, def in ipairs(extras.stop_tools()) do row[#row + 1] = def end
+		local actions_row = repair.stop_row(player, pd, id)
+		if actions_row then rows[#rows + 1] = actions_row end
+	end
+	if kind == "stop" then
+		local caption = extras.path_note(pd, id)
+		if caption then rows[#rows + 1] = line(caption) end
+	end
+	return rows
+end
+
+local function render_stop_buttons(state, body, m, pd)
 	local station = storage.stations[state.id]
 	local has2 = station and station.entity_comb2 and station.entity_comb2.valid or false
-	local buttons_sig = m.sub .. tostring(has2)
+	local player = game.get_player(pd.player_index)
+	if not player then return end
+	local buttons_sig = m.sub .. tostring(has2) .. extras_sig(player, pd, "stop", state.id)
 	if state.sigs["buttons"] ~= buttons_sig then
 		section(state, body, "buttons", buttons_sig, function()
 			local row = {
@@ -1304,9 +1341,7 @@ local function render_stop_buttons(state, body, m)
 					relative.handle.relative_comb, has2)
 			end
 			row[#row + 1] = { type = "empty-widget", style = "flib_horizontal_pusher" }
-			row[#row + 1] = tool("rescan", "utility/refresh", { "cybersyn-gui.relative-rescan-later" }, nil, false)
-			row[#row + 1] = tool("test_path", "utility/rail_path_not_possible", { "cybersyn-gui.relative-test-path-later" }, nil, false)
-			return { row }
+			return extras_rows(player, pd, "stop", state.id, row)
 		end)
 	end
 end
@@ -1543,12 +1578,14 @@ local function render_signal(state, body, m)
 	end
 end
 
-local function render_train_buttons(state, body, m)
+local function render_train_buttons(state, body, m, pd)
+	local player = game.get_player(pd.player_index)
+	if not player then return end
 	-- In the manager's Trains pane the train is already the selected row: no Open in manager.
-	local buttons_sig = state.pane and "pane" or "train"
+	local buttons_sig = (state.pane and "pane" or "train") .. extras_sig(player, pd, "train", state.id)
 	if state.sigs["buttons"] ~= buttons_sig then
 		section(state, body, "buttons", buttons_sig, function()
-			return {
+			return extras_rows(player, pd, "train", state.id,
 				{
 					type = "flow",
 					direction = "horizontal",
@@ -1569,9 +1606,7 @@ local function render_train_buttons(state, body, m)
 						handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
 					},
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
-					tool("path_trace", "utility/rail_path_not_possible", { "cybersyn-gui.relative-path-trace-later" }, nil, false),
-				},
-			}
+				})
 		end)
 	end
 end
@@ -1641,7 +1676,7 @@ function relative.render(pd, state, panel)
 		else
 			if state.sigs["events"] ~= "" then section(state, body, "events", "", hidden) end
 		end
-		render_stop_buttons(state, panel.footer, m)
+		render_stop_buttons(state, panel.footer, m, pd)
 		return m
 	end
 	local m = train_model(pd, state)
@@ -1653,7 +1688,7 @@ function relative.render(pd, state, panel)
 	render_schedule(state, body, m)
 	render_signal(state, body, m)
 	render_events(state, body, "train", state.id)
-	render_train_buttons(state, panel.footer, m)
+	render_train_buttons(state, panel.footer, m, pd)
 	return m
 end
 
@@ -1752,6 +1787,7 @@ end
 --- @param kind "stop"|"train"
 --- @param id uint
 function relative.open(player, pd, kind, id)
+	extras.on_selection(pd, kind, id)
 	hide_all(player)
 	local frame, panel = mount(player, kind)
 	local state = pd.relative
@@ -2137,6 +2173,12 @@ function relative.handle.relative_locate_signal(player, pd, e)
 	if signal and signal.valid then util.show_on_map(player, pd, signal) end
 end
 
+-- The phase-10 footer buttons find their subject from the panel's tags (mountable anywhere) and repaint the panel
+-- they sit in at once, so an armed "Confirm?" or a drawn trace shows on the click, not on the next manager tick.
+repair.subject = extras.panel_subject
+extras.on_change = rerender
+repair.on_change = rerender
+
 gui.add_handlers(relative.handle, relative.wrapper, "cybersyn_relative")
 
 -- ---------------------------------------------------------------- dev interface
@@ -2330,7 +2372,7 @@ function dev_fns.relative_profile(pi)
 	step("setup", function() render_setup(state, body, m) end)
 	step("effective", function() render_effective(state, body, m) end)
 	step("events", function() render_events(state, body, "station", state.id, compact and EVENTS_COMPACT or EVENTS) end)
-	step("buttons", function() render_stop_buttons(state, panel.footer, m) end)
+	step("buttons", function() render_stop_buttons(state, panel.footer, m, pd) end)
 	return out
 end
 

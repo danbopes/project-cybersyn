@@ -17,6 +17,7 @@ local logic = require("scripts.gui.tab-logic")
 local name_cell = require("scripts.gui.name-cell")
 local rich_name = require("scripts.gui.rich-name")
 local stations_tab = require("scripts.gui.stations")
+local extras = require("scripts.gui.extras")
 
 local trains_tab = {}
 
@@ -1527,6 +1528,8 @@ end
 function trains_tab.select(player_data, id)
 	if id and not front_stock_of(id) then id = nil end
 	player_data.selected_train = id
+	-- A path trace belongs to the train it was drawn for; another selection (or none) removes it.
+	extras.on_selection(player_data, "train", id)
 	if not id and relative then relative.unmount(player_data) end
 end
 

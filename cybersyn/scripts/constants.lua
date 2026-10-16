@@ -336,4 +336,9 @@ DIAG_LINT_CLEARED = 2
 ACTION_FIX_PRIORITIES = 1
 ACTION_ABOLISH_SAME_DEPOT = 2
 ACTION_RECALCULATE_TRAIN_SIZE = 3
-ACTION_NAMES = { "fix_priorities", "abolish_same_depot", "recalculate_train_size" }
+ACTION_FAIL_DELIVERY = 4
+ACTION_RESCAN_STATION = 5
+ACTION_REFRESH_ALLOW_LISTS = 6
+ACTION_TEST_PATH = 7
+ACTION_NAMES = { "fix_priorities", "abolish_same_depot", "recalculate_train_size", "fail_delivery", "rescan_station",
+	"refresh_allow_lists", "test_path" }

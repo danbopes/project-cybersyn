@@ -22,6 +22,24 @@ function util.error_flying_text(player, message)
 	player.play_sound({ path = "utility/cannot_build" })
 end
 
+--- A requester's network as the Unserved texts show it: the signal's icon, "Each" for the each-network, "?" without
+--- one. The Overview row and Explain both go through here so they name a network the same way.
+--- @param network_name string?
+--- @return LocalisedString
+function util.network_text(network_name)
+	if not network_name then return "?" end
+	if network_name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
+	local _, image = util.generate_item_references(network_name)
+	return image ~= "" and image or network_name
+end
+
+--- @param index uint
+--- @return string
+function util.surface_name(index)
+	local s = game.get_surface(index)
+	return s and s.name or tostring(index)
+end
+
 --- Builds a valid sprite path or returns nil
 --- @param item string
 --- @return string, string, LocalizedString
@@ -1198,8 +1216,17 @@ function util.set_log_subject(fn)
 	log_subject_fn = fn
 end
 
+local pin_fn
+
+--- Lets extras.lua take control+shift clicks (add a map pin) without a require cycle.
+--- @param fn fun(player: LuaPlayer, kind: string, id: uint)
+function util.set_pin(fn)
+	pin_fn = fn
+end
+
 --- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
---- right on an item = clear the item filter, right on a train or a stop = the Log's "this train/stop" chip.
+--- control + shift = a map pin, right on an item = clear the item filter, right on a train or a stop = the Log's
+--- "this train/stop" chip.
 --- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
 --- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the last world scan found it. The
 --- older tag shapes of the Stations and Trains rows are read too.
@@ -1223,6 +1250,10 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		return
 	end
 	if e.button and e.button ~= defines.mouse_button_type.left then return end
+	if e.control and e.shift then
+		if kind ~= "entity" and pin_fn then pin_fn(player, kind, id) end
+		return
+	end
 	if kind == "train" then
 		local train = storage.trains[id]
 		local entity = train and train.entity

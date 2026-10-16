@@ -140,13 +140,18 @@ lab.suite("39_relative", {
 		lab.check("provider: read live while no manager window keeps a snapshot", d.model.source == "live", d.model.source)
 		local st = read("stations", rx.provider)
 		lab.check("provider: status from the ladder", d.model.status ~= nil, d.model.status)
-		lab.check("provider: comb1 enabled, Rescan and Test path disabled placeholders", (function()
+		-- Phase 10 replaced the disabled placeholders: Test path and Pin are tools in the first row, Rescan station is
+		-- the action row below (enabled only with the right; 39_extras covers the permission matrix).
+		lab.check("provider: comb1, Test path and Pin enabled, Rescan station in the action row", (function()
 			local row = d.sections.buttons.content[1].children
 			local names = {}
 			for _, c in ipairs(row) do if c.name then names[c.name] = c end end
-			return names.comb1 and names.comb1.enabled and names.rescan and names.rescan.enabled == false and
-				names.test_path and names.test_path.enabled == false and names.open_manager ~= nil
-		end)())
+			local actions = d.sections.buttons.content[2]
+			local rescan = actions and actions.children and actions.children[1]
+			return names.comb1 and names.comb1.enabled and names.test_path and names.test_path.enabled == true and
+				names.pin and names.pin.enabled == true and names.open_manager ~= nil and rescan ~= nil
+				and rescan.name == "rescan"
+		end)(), d.sections.buttons)
 		stop_checks("requester", rx.requester, false, true)
 		stop_checks("both", rx.both, true, true)
 		local setup = serpent.line(dev("relative_dump", PI).sections.setup.content)
@@ -178,11 +183,16 @@ lab.suite("39_relative", {
 		local records = entity.get_schedule().get_records() or {}
 		lab.check("Cybersyn train: schedule records and the active one", #tm.schedule == #records and
 			tm.current == entity.get_schedule().current, { #tm.schedule, #records, tm.current })
-		lab.check("Cybersyn train: Locate and Open in manager, Path trace a disabled placeholder", (function()
+		lab.check("Cybersyn train: Locate, Open in manager, Path trace and Pin; Send home in the action row", (function()
 			local names = {}
 			for _, c in ipairs(t.sections.buttons.content[1].children) do if c.name then names[c.name] = c end end
-			return names.locate ~= nil and names.open_manager ~= nil and names.path_trace and names.path_trace.enabled == false
-		end)())
+			local actions = t.sections.buttons.content[2]
+			local second = {}
+			for _, c in ipairs(actions and actions.children or {}) do if c.name then second[c.name] = c end end
+			local fail = actions and actions.children and actions.children[1]
+			return names.locate ~= nil and names.open_manager ~= nil and second.path_trace and second.path_trace.enabled == true
+				and second.pin ~= nil and fail ~= nil and fail.name == "fail_delivery"
+		end)(), t.sections.buttons)
 		local v = dev("relative_open", PI, "train", rx.vanilla_train.id)
 		lab.check("train Cybersyn does not know: no panel", v.open == nil and v.mounts.train.visible == false, v)
 		dev("relative_open", PI, "train", tid)
