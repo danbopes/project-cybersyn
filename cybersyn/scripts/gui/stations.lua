@@ -31,7 +31,9 @@ local SLOT = 32
 -- Banner, subheader, column header and subfooter (styles cybersyn_tab_subheader, cybersyn_list_header,
 -- cybersyn_list_subfooter).
 local STRIP_HEIGHT = 36
+local FIRST_UPDATE_ROWS = 15
 local band = bit32.band
+local FLAG_UNSERVED, FLAG_SETUP, FAILING = logic.FLAG_UNSERVED, logic.FLAG_SETUP, logic.FAILING
 -- Alert kind 1 is Cybersyn's stuck-train alert (storage.active_alerts).
 local ALERT_STUCK = 1
 
@@ -275,18 +277,26 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	local counts = { all = 0, unserved = 0, setup = 0, failing = 0 }
 	for _, s in ipairs(STATUSES) do counts[s] = 0 end
 	local ctx = { status = status }
+	local station_flags, passes = logic.station_flags, util.station_passes
+	local all, unserved, setup, failing = 0, 0, 0, 0
 	for id, st in pairs(stations) do
-		if util.station_passes(st, f) then
+		if passes(st, f) then
 			local s = st.status or "ok"
 			status[id] = s
 			counts[s] = counts[s] + 1
-			counts.all = counts.all + 1
-			local fl = logic.station_flags(st)
-			flags[id] = fl
-			count_flags(counts, fl, 1)
+			all = all + 1
+			local fl = station_flags(st)
+			-- Records without a chip flag keep no entry (most stations on a large base).
+			if fl ~= 0 then
+				flags[id] = fl
+				if band(fl, FLAG_UNSERVED) ~= 0 then unserved = unserved + 1 end
+				if band(fl, FLAG_SETUP) ~= 0 then setup = setup + 1 end
+				if band(fl, FAILING) ~= 0 then failing = failing + 1 end
+			end
 			keys[id] = key_fn(st, ctx)
 		end
 	end
+	counts.all, counts.unserved, counts.setup, counts.failing = all, unserved, setup, failing
 	local cache = {
 		epoch = epoch, pos = pos, fsig = fsig, column = column,
 		status = status, keys = keys, flags = flags, counts = counts, dirty = true, changed = {},
@@ -311,8 +321,8 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 		local st = stations[id]
 		local old = status[id]
 		local new = st and util.station_passes(st, f) and (st.status or "ok") or nil
-		local old_flags = flags[id]
-		local new_flags = new and logic.station_flags(st) or nil
+		local old_flags = flags[id] or 0
+		local new_flags = new and logic.station_flags(st) or 0
 		if old ~= new then
 			cache.version = (cache.version or 0) + 1
 			if old then
@@ -330,9 +340,9 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 			end
 		end
 		if old_flags ~= new_flags then
-			if old_flags then count_flags(counts, old_flags, -1) end
-			if new_flags then count_flags(counts, new_flags, 1) end
-			flags[id] = new_flags
+			count_flags(counts, old_flags, -1)
+			count_flags(counts, new_flags, 1)
+			flags[id] = new_flags ~= 0 and new_flags or nil
 			cache.version = (cache.version or 0) + 1
 		end
 		local key = new and key_fn(st, ctx) or nil
@@ -344,8 +354,26 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 	end
 end
 
---- Ties sort by name, then id.
-local function id_of(id) return id end
+--- The display order as a comparator over station ids: key in the requested direction with nil last, then name and
+--- id ascending (the order util.sort_by gives, without its per-row tables: 2,030 of them per sort on pY 123).
+--- @param keys {[uint]: any}
+--- @param stations {[uint]: SnapshotStation}
+--- @param ascending boolean
+--- @return fun(a: uint, b: uint): boolean
+local function order_less(keys, stations, ascending)
+	return function(a, b)
+		local ka, kb = keys[a], keys[b]
+		if ka ~= kb then
+			if ka == nil then return false end
+			if kb == nil then return true end
+			if ascending then return ka < kb end
+			return ka > kb
+		end
+		local na, nb = stations[a].name_lower, stations[b].name_lower
+		if na ~= nb then return na < nb end
+		return a < b
+	end
+end
 
 --- Sorting every station costs about 3 ms on a 2,000-station base and a pass changes the keys of only some of
 --- them, so the previous order is kept for the rest and the re-sorted changed ids are merged into it.
@@ -358,20 +386,8 @@ local function merge_changes(cache, stations, ascending)
 	end
 	local old = cache.order
 	if #moved * 4 > #old then return nil end
-	util.sort_by(moved, function(id) return keys[id] end, ascending, function(id) return stations[id].name_lower end, id_of)
-	-- Same order as util.sort_by: key in the requested direction with nil last, then name and id ascending.
-	local function less(a, b)
-		local ka, kb = keys[a], keys[b]
-		if ka ~= kb then
-			if ka == nil then return false end
-			if kb == nil then return true end
-			if ascending then return ka < kb end
-			return ka > kb
-		end
-		local na, nb = stations[a].name_lower, stations[b].name_lower
-		if na ~= nb then return na < nb end
-		return a < b
-	end
+	local less = order_less(keys, stations, ascending)
+	table.sort(moved, less)
 	local order = {}
 	local n, j, m = 0, 1, #moved
 	for _, id in ipairs(old) do
@@ -439,10 +455,10 @@ function stations_tab.query(player_data)
 	-- The first pass after opening is still filling records: rows and counts from part of the stations would change
 	-- on every update and disagree with the other tabs, so there are none until it completes.
 	local cache = player_data.stations_query
-	-- The first build after a boosted pass is split over the next two updates, so no tick carries more than one of
-	-- the pass's last batch, classifying and sorting every station (~5 ms on pY 123) or writing every row of the page:
-	-- the completing update shows the placeholder still, the next one fills the query cache and still shows the
-	-- placeholder, the one after renders from it.
+	-- The first build after a boosted pass is split over the next three updates, so no tick carries more than one of
+	-- the pass's last batch, classifying every station, sorting them (together 6.4-6.6 ms on pY 123 with the chip
+	-- flags) or writing every row of the page (3.8-4.4 ms): the completing update shows the placeholder still, the
+	-- next one classifies, the one after sorts, both still showing the placeholder, and the next renders the rows.
 	if not snapshot.tick or (not cache and snapshot.boosted and snapshot.tick == game.tick) then
 		return {}, {}, { status = {}, flags = {}, stuck = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
 	end
@@ -460,6 +476,10 @@ function stations_tab.query(player_data)
 	else
 		cache = rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	end
+	if first_build then
+		cache.defer_sort = true
+		return {}, {}, { status = {}, flags = {}, stuck = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
+	end
 	local status = cache.status
 	local stuck, stuck_sig = stuck_set(snapshot)
 	local n_stuck = 0
@@ -474,15 +494,12 @@ function stations_tab.query(player_data)
 	-- A data-driven re-sort waits for the update after the one that completed the pass, which carries the pass's
 	-- last collector batch; the next one carries only the cheap start of a new pass.
 	if resort or (cache.dirty and cache.sorted_tick ~= snapshot.tick and snapshot.tick ~= game.tick) then
-		local keys = cache.keys
-		local function key_of(id) return keys[id] end
-		local function name_of(id) return stations[id].name_lower end
 		local order = not resort and merge_changes(cache, stations, ascending) or nil
 		cache.sort_kind = order and "merged" or "full"
 		if not order then
 			order = {}
 			for id in pairs(status) do order[#order + 1] = id end
-			util.sort_by(order, key_of, ascending, name_of, id_of)
+			table.sort(order, order_less(cache.keys, stations, ascending))
 		end
 		cache.order = order
 		cache.ascending = ascending
@@ -504,7 +521,8 @@ function stations_tab.query(player_data)
 		end
 		cache.rows, cache.rows_order, cache.rows_wanted, cache.rows_version = rows, cache.order, want_sig, cache.version
 	end
-	if first_build then
+	if cache.defer_sort then
+		cache.defer_sort = nil
 		return {}, {}, { status = {}, flags = {}, stuck = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
 	end
 	return rows, cache.counts, ctx, column, ascending
@@ -1199,6 +1217,11 @@ function stations_tab.build(map_data, player_data)
 			end,
 		}
 	end
+	-- The window's first render after a reopen rewrites every row (the memo went with the close): half of them now,
+	-- the rest on the next update, so neither carries the whole page on a large base.
+	if not state.cells and #entries > FIRST_UPDATE_ROWS then
+		for i = FIRST_UPDATE_ROWS + 1, #entries do entries[i].update = nil end
+	end
 	local result = util.sync_children(list, entries, state, hold, true)
 	if result == "held" then
 		-- Rows that left the page keep their memo until the hold ends and they are rebuilt.
@@ -1297,7 +1320,7 @@ dev.register_dump(TAB, function(player_data)
 		local st = by_id[id]
 		keys[i] = st and key_fn(st, ctx)
 		statuses[i] = ctx.status[id]
-		names[i] = row.children[1].children[2].caption
+		names[i] = name_cell.button(row.children[1]).caption
 		setup[i] = row.children[2].children[3].visible
 	end
 	local chips, chip_counts = {}, {}

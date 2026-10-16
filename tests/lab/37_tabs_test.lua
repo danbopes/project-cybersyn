@@ -506,24 +506,30 @@ lab.suite("37_tabs", {
 		remote.call(D, "update", pi, 1)
 		local list = find(player.gui.screen, "manager_stations_tab_scroll_pane")
 		local links_ok, n = true, 0
+		local function button_index(cell)
+			for i, child in ipairs(cell.children) do
+				if child.type == "button" then return i end
+			end
+		end
 		for _, row in ipairs(list.children) do
-			local button = row.children[1].children[2]
+			local cell = row.children[1]
+			local i = button_index(cell)
+			local button = i and cell.children[i]
 			n = n + 1
-			if not (button.type == "button" and button.tags.kind == "station" and button.tags.id == row.tags.station_id
-					and button.tags[HANDLER]) then
+			if not (button and button.tags.kind == "station" and button.tags.id == row.tags.station_id and button.tags[HANDLER]) then
 				links_ok = false
 			end
-			for _, side in ipairs({ row.children[1].children[1], row.children[1].children[3] }) do
-				for _, icon in ipairs(side.children) do
-					if icon.type == "sprite-button" and not (icon.tags.kind == "station" and icon.tags.id == row.tags.station_id) then
-						links_ok = false
-					end
+			for _, icon in ipairs(cell.children) do
+				if icon.type == "sprite-button" and not (icon.tags.kind == "station" and icon.tags.id == row.tags.station_id
+						and icon.tags[HANDLER]) then
+					links_ok = false
 				end
 			end
 		end
 		lab.check("every Stations name cell is a tag button {station, id} with the link handler (" .. n .. ")", links_ok and n > 0)
 		-- A right click reaches the handler without opening anything (only items react to it).
-		local res = lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 1, 2 }, { right = true })
+		local res = lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 1, button_index(list.children[1].children[1]) },
+			{ right = true })
 		lab.check("a click on a Stations name cell reaches its handler", res == true, res)
 
 		remote.call(D, "select_tab", pi, "trains")
@@ -534,13 +540,14 @@ lab.suite("37_tabs", {
 			if row.tags.train_id then
 				n = n + 1
 				local id_button = row.children[1]
-				local depot = row.children[5].children[2]
+				local depot = row.children[5].children[button_index(row.children[5])]
 				local target = row.children[2].children[2]
 				if not (id_button.tags.kind == "train" and id_button.tags.id == row.tags.train_id and id_button.tags[HANDLER]
 						and depot.tags.kind == "depot" and depot.tags[HANDLER]) then
 					links_ok = false
 				end
-				if target.visible and not (target.children[2].tags.kind == "station" or target.children[2].tags.kind == "refueler") then
+				local tb = target.visible and target.children[button_index(target)]
+				if target.visible and not (tb.tags.kind == "station" or tb.tags.kind == "refueler") then
 					links_ok = false
 				end
 			end

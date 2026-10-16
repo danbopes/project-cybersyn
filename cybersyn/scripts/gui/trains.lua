@@ -34,6 +34,7 @@ local SLOT = 32
 local REFUELERS = "\1refuelers"
 -- Fuel is read from the locomotives of the rows on the page, again every this many renders.
 local FUEL_EVERY = 5
+local FIRST_BUILD_ROWS = 14
 
 local STATE_NAME = {}
 for name, value in pairs(defines.train_state) do STATE_NAME[value] = name end
@@ -388,22 +389,38 @@ local function has_refueler(tr, to_refuelers)
 	return name ~= nil and to_refuelers[name] ~= nil
 end
 
---- The flag chips a train belongs to, at `now`.
+--- Counts one train into the chip counts and says whether it belongs to the chip `wanted` (nil = all).
 --- @param tr SnapshotTrain
+--- @param counts {[string]: int}
+--- @param wanted string?
 --- @param now uint
 --- @param hours number
 --- @param to_refuelers table?
---- @return {[string]: true}
-local function train_chips(tr, now, hours, to_refuelers)
-	local out = {}
+--- @return boolean
+local function count_train(tr, counts, wanted, now, hours, to_refuelers)
+	local member = wanted == nil
 	local s = status_chip(tr)
-	if s then out[s] = true end
-	if tr.in_interrupt then out.interrupt = true end
-	if tr.in_group then out.in_group = true end
-	if has_refueler(tr, to_refuelers) and logic.not_refuelled(now, tr.refuel_tick, hours) then out.not_refuelled = true end
-	local state = tr.state and STATE_NAME[tr.state]
-	if logic.in_trouble(state, now - (tr.state_since or now)) then out.trouble = true end
-	return out
+	if s then
+		counts[s] = counts[s] + 1
+		if s == wanted then member = true end
+	end
+	if tr.in_interrupt then
+		counts.interrupt = counts.interrupt + 1
+		if wanted == "interrupt" then member = true end
+	end
+	if tr.in_group then
+		counts.in_group = counts.in_group + 1
+		if wanted == "in_group" then member = true end
+	end
+	if has_refueler(tr, to_refuelers) and logic.not_refuelled(now, tr.refuel_tick, hours) then
+		counts.not_refuelled = counts.not_refuelled + 1
+		if wanted == "not_refuelled" then member = true end
+	end
+	if logic.in_trouble(tr.state and STATE_NAME[tr.state], now - (tr.state_since or now)) then
+		counts.trouble = counts.trouble + 1
+		if wanted == "trouble" then member = true end
+	end
+	return member
 end
 
 --- Filtered and sorted trains, cached until the fleet is summarised again or the filters or sort change; chip
@@ -439,18 +456,23 @@ function trains_tab.query(map_data, player_data)
 	local hours = refuel_hours(player_data)
 	local to_refuelers = storage.to_refuelers
 	local wanted = active_chip(player_data)
-	local counts = { all = #cache.all }
-	for _, key in ipairs(TRAIN_CHIPS) do if key ~= "all" then counts[key] = 0 end end
-	local rows = {}
-	for _, tr in ipairs(cache.all) do
-		local chips = train_chips(tr, now, hours, to_refuelers)
-		for key in pairs(chips) do counts[key] = counts[key] + 1 end
-		if not wanted or chips[wanted] then rows[#rows + 1] = tr end
+	-- Trouble and refuel age move with time, so the chips are counted again once a second, not on every render.
+	local csig = tostring(wanted) .. "\1" .. hours .. "\1" .. math.floor(now / 60)
+	local chips = cache.chips
+	if not (chips and chips.sig == csig) then
+		local counts = { all = #cache.all }
+		for _, key in ipairs(TRAIN_CHIPS) do if key ~= "all" then counts[key] = 0 end end
+		local rows = {}
+		for _, tr in ipairs(cache.all) do
+			if count_train(tr, counts, wanted, now, hours, to_refuelers) then rows[#rows + 1] = tr end
+		end
+		chips = { sig = csig, counts = counts, rows = rows }
+		cache.chips = chips
 	end
-	return rows, snapshot, {
+	return chips.rows, snapshot, {
 		names = names, layout_keys = layout_keys, comps = comps, icons = icons, key_fn = key_fn,
-		sprite_of = new_sprite_cache(), counts = counts, all = cache.all, hours = hours, now = now, column = column,
-		ascending = ascending, to_refuelers = to_refuelers,
+		sprite_of = new_sprite_cache(), counts = chips.counts, all = cache.all, hours = hours, now = now, column = column,
+		ascending = ascending, to_refuelers = to_refuelers, cache = cache,
 	}
 end
 
@@ -1312,7 +1334,10 @@ function trains_tab.build(map_data, player_data)
 	end
 	state.fuel = new_fuel
 
-	local hidden, values = hidden_columns(ctx.all)
+	local cache = ctx.cache
+	if not cache.hidden then cache.hidden, cache.values = hidden_columns(ctx.all) end
+	local hidden, values = {}, cache.values
+	for k in pairs(cache.hidden) do hidden[k] = true end
 	local fuel_uniform, fuel_value = logic.single_value(page, function(tr) return new_fuel[tr.id] or nil end)
 	if fuel_uniform and fuel_value == nil then hidden.fuel = true end
 	local w = widths_for(player_data, hidden)
@@ -1397,8 +1422,20 @@ function trains_tab.build(map_data, player_data)
 		end
 	end
 
+	-- A list built from nothing (the window was just created, or it showed "Collecting…" while a reopened window waited
+	-- for its first pass) gets its rows over two updates, and so does a list whose render memo was dropped when the
+	-- window closed (every row rewritten): 27 rows cost 4-5 ms on pY 123 in one go.
+	if #entries > FIRST_BUILD_ROWS then
+		if #list.children == 0 or state.placeholder then
+			for i = #entries, FIRST_BUILD_ROWS + 1, -1 do entries[i] = nil end
+		elseif not state.sigs or next(state.sigs) == nil then
+			-- Without an update a row keeps no sig, so the next render rewrites it.
+			for i = FIRST_BUILD_ROWS + 1, #entries do entries[i].update = nil end
+		end
+	end
 	local result = util.sync_children(list, entries, state, util.hold_active(player_data, SCROLL))
 	state.last_result = result
+	state.placeholder = (last < first and not snapshot.tick) or nil
 	if result == "rebuilt" then
 		local live = {}
 		for _, key in ipairs(state.keys) do
@@ -1433,7 +1470,7 @@ dev.register_dump(TAB, function(player_data)
 			keys[n] = key_of[id]
 			local status_flow = row.children[2].children
 			statuses[n] = status_flow[1].caption
-			targets[n] = status_flow[2].visible and status_flow[2].children[2].caption or false
+			targets[n] = status_flow[2].visible and name_cell.button(status_flow[2]).caption or false
 			local chip = row.children[6].children[2]
 			states[n] = chip.visible and chip.caption or false
 		elseif row.tags.depot_group then

@@ -202,7 +202,9 @@ test("query: removed station leaves rows and counts", function()
 	assert_eq(ids(rows), { 1, 2, 3, 4, 6, 7, 8, 9 })
 end)
 
-test("query: the first build after a boosted pass is spread over the two updates after the one that completed it", function()
+-- Phase 4 adds the chip flags to the classification, so the first build takes three updates (classify, sort, rows)
+-- instead of two (classify and sort, rows).
+test("query: the first build after a boosted pass is spread over the three updates after the one that completed it", function()
 	local stations_tab, _, snap = setup()
 	local pd = { player_index = 1 }
 	snap.boosted = true
@@ -212,13 +214,20 @@ test("query: the first build after a boosted pass is spread over the two updates
 	assert_eq(counts, {})
 	assert_true(ctx.pending)
 	assert_nil(pd.stations_query)
-	-- Next update: classified and sorted into the cache, rows still pending.
+	-- Next update: classified into the cache, not sorted yet, rows still pending.
 	game.tick = 21
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 0)
 	assert_true(ctx.pending)
-	assert_eq(#pd.stations_query.order, 9)
+	assert_nil(pd.stations_query.order)
+	assert_eq(pd.stations_query.counts.all, 9)
+	-- The one after: sorted, rows still pending.
 	game.tick = 22
+	rows, counts, ctx = stations_tab.query(pd)
+	assert_eq(#rows, 0)
+	assert_true(ctx.pending)
+	assert_eq(#pd.stations_query.order, 9)
+	game.tick = 23
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 9)
 	assert_eq(counts.all, 9)

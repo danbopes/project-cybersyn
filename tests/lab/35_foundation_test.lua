@@ -46,7 +46,8 @@ lab.suite("35_foundation", {
 		lab.wait(1)
 	end,
 	function(ctx)
-		-- The first Stations build after a boosted pass spreads over the next two renders.
+		-- The first Stations build after a boosted pass spreads over the next renders (classify, sort, rows; phase 4 split
+		-- the classification from the sort); the dump's own query takes the step the second tick left.
 		remote.call(D, "tick", 2)
 		local d = remote.call(D, "dump", pi, "stations")
 		lab.check("stations tab shows every station after the pass", d.total == lab.dev("summary").station_count and d.total > 0, d.total)
@@ -101,7 +102,7 @@ lab.suite("35_foundation", {
 		remote.call(D, "tick", 1)
 		local d = remote.call(D, "dump", pi, "stations")
 		-- dump runs the query again, so only the rendered state shows what this update drew.
-		lab.check("stations: the next update sorts but still shows the placeholder", d.warning == true and d.visible == false,
+		lab.check("stations: the next update classifies but still shows the placeholder", d.warning == true and d.visible == false,
 			{ warning = d.warning, visible = d.visible })
 		ctx.defer_tick = game.tick
 		lab.wait(1)
