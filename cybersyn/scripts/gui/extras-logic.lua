@@ -22,7 +22,8 @@ local function collinear(ax, ay, bx, by, cx, cy)
 end
 
 --- Polyline vertices for a path of points: duplicates dropped, interior points of collinear runs dropped, then, if
---- still more than `max_segments` segments, every k-th vertex kept (the first and the last always).
+--- still more than `max_segments` segments, exactly `max_segments` + 1 of them kept, evenly spread (the first and the
+--- last always).
 --- @param xs number[]
 --- @param ys number[]
 --- @param n int points to read from xs/ys
@@ -52,13 +53,11 @@ function logic.sample_runs(xs, ys, n, max_segments)
 	vx[#vx + 1], vy[#vy + 1] = px[m], py[m]
 	local runs = #vx - 1
 	if runs <= max_segments then return vx, vy, runs end
-	local step = math.ceil(runs / max_segments)
+	-- Evenly spread over the turning points, so the whole budget is used and no stretch loses all its corners.
 	local tx, ty = {}, {}
-	for i = 1, #vx, step do
-		tx[#tx + 1], ty[#ty + 1] = vx[i], vy[i]
-	end
-	if tx[#tx] ~= vx[#vx] or ty[#ty] ~= vy[#vy] then
-		tx[#tx + 1], ty[#ty + 1] = vx[#vx], vy[#vy]
+	for k = 0, max_segments do
+		local i = 1 + math.floor(k * runs / max_segments + 0.5)
+		tx[k + 1], ty[k + 1] = vx[i], vy[i]
 	end
 	return tx, ty, runs
 end
@@ -120,20 +119,26 @@ end
 
 -- ---------------------------------------------------------------- HUD
 
---- The HUD's numbers from the two O(1) sources: the live unserved entries per reason and the available trains per
---- network. Headroom is the network with the fewest available trains now; nil without any network.
+--- The HUD's numbers from the live unserved entries per reason and the available trains per network. Headroom is
+--- the network with the fewest available trains now (the Overview's "Now"); a network in `networks` that never had
+--- an available train has no counter and counts as 0. nil without any network.
 --- @param counts {[int]: int} diag.counts_by_reason()
 --- @param available {[string]: int} stats available_count
+--- @param networks {[string]: true}? networks that have Cybersyn trains
 --- @return {unserved: int, headroom: int?, network: string?, top_reason: int?, top_count: int}
-function logic.hud_values(counts, available)
+function logic.hud_values(counts, available, networks)
 	local total, top, top_n = 0, nil, 0
 	for reason, n in pairs(counts) do
 		total = total + n
 		if n > top_n or (n == top_n and top and reason < top) then top, top_n = reason, n end
 	end
 	local headroom, network
-	for name, n in pairs(available) do
+	local function consider(name, n)
 		if not headroom or n < headroom or (n == headroom and name < network) then headroom, network = n, name end
+	end
+	for name, n in pairs(available) do consider(name, n) end
+	for name in pairs(networks or {}) do
+		if available[name] == nil then consider(name, 0) end
 	end
 	return { unserved = total, headroom = headroom, network = network, top_reason = top, top_count = top_n }
 end

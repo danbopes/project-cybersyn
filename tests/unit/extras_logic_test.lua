@@ -43,11 +43,18 @@ test("sample_runs: a zig-zag longer than the cap is thinned to at most the cap, 
 	local xs, ys, n = points(list)
 	local vx, vy, runs = l.sample_runs(xs, ys, n)
 	assert_eq(runs, 999)
-	assert_true(#vx - 1 <= l.TRACE_SEGMENTS, "segments " .. (#vx - 1))
+	assert_eq(#vx - 1, l.TRACE_SEGMENTS, "the whole budget is used")
 	assert_eq({ vx[1], vy[1] }, { 0, 0 })
 	assert_eq({ vx[#vx], vy[#vy] }, { 999, 1 })
-	local vx2 = l.sample_runs(xs, ys, n, 10)
-	assert_true(#vx2 - 1 <= 10, "segments " .. (#vx2 - 1))
+	local vx2, vy2 = l.sample_runs(xs, ys, n, 10)
+	assert_eq(#vx2 - 1, 10)
+	assert_eq({ vx2[11], vy2[11] }, { 999, 1 })
+	local seen = {}
+	for i = 2, #vx2 do
+		assert_true(vx2[i] > vx2[i - 1], "vertices stay in path order")
+		seen[#seen + 1] = vx2[i] - vx2[i - 1]
+	end
+	for _, gap in ipairs(seen) do assert_true(gap >= 99 and gap <= 101, "evenly spread, gap " .. gap) end
 end)
 
 test("sample_runs: fewer than two distinct points draw nothing", function()
@@ -113,6 +120,8 @@ test("hud_values: totals, worst network, top reason with ties by lowest code", f
 	assert_eq(v, { unserved = 10, headroom = 0, network = "signal-B", top_reason = 1, top_count = 4 })
 	v = l.hud_values({}, {})
 	assert_eq(v, { unserved = 0, top_count = 0 })
+	v = l.hud_values({}, { ["signal-B"] = 3 }, { ["signal-A"] = true, ["signal-B"] = true })
+	assert_eq({ v.headroom, v.network }, { 0, "signal-A" }, "a network with trains but no counter is at 0")
 end)
 
 test("pick_train: named first, then fits + available + largest, ties by id", function()
