@@ -18,6 +18,8 @@ local diag = require("scripts.diag")
 local lint = require("scripts.lint")
 local utext = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
+local pm = require("scripts.gui.problems-model")
+local problems_tab = require("scripts.gui.problems")
 
 local relative = {}
 
@@ -791,11 +793,6 @@ local function lint_chip(check, tooltip)
 	}
 end
 
-local function finding_fix(f)
-	return { "cybersyn-diag.lint-fix-" .. LINT_KEYS[f.check], tostring(f.a or 0), tostring(f.b or 0),
-		f.network and network_rich(f.network) or "?" }
-end
-
 local function render_stop_head(state, body, m)
 	local sig = table.concat({ m.sub, tostring(m.is_p), tostring(m.is_r), tostring(m.is_stack), tostring(m.status),
 		m.nets_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
@@ -1054,7 +1051,9 @@ local function render_setup(state, body, m)
 			end
 			for _, f in ipairs(m.findings) do
 				out[#out + 1] = line({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } }, nil, sev_color(LINT_SEVERITY[f.check]))
-				out[#out + 1] = note(finding_fix(f))
+				-- Same detail and fix texts as the Problems tab, so one finding reads alike in both places.
+				out[#out + 1] = note(pm.detail(f, problems_tab.ENV))
+				out[#out + 1] = note(pm.fix(f.check))
 			end
 			return out
 		end)
