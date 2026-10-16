@@ -976,7 +976,10 @@ local function main()
 
 	script.on_event(defines.events.on_train_created, on_train_built)
 	script.on_event(defines.events.on_train_changed_state, on_train_changed)
-	script.on_event(defines.events.on_train_schedule_changed, on_train_schedule_changed)
+	script.on_event(defines.events.on_train_schedule_changed, function(e)
+		on_train_schedule_changed(e)
+		manager.on_train_schedule_changed(e)
+	end)
 
 	script.on_event(defines.events.on_entity_renamed, on_rename)
 
@@ -1045,6 +1048,12 @@ local function main()
 	script.on_event(defines.events.on_player_created, manager.on_player_created)
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
 	script.on_event(defines.events.on_gui_closed, manager.on_gui_closed)
+	-- The relative panels run after the entity GUI handlers register_gui_actions installed.
+	local entity_gui_opened = script.get_event_handler(defines.events.on_gui_opened)
+	script.on_event(defines.events.on_gui_opened, function(e)
+		if entity_gui_opened then entity_gui_opened(e) end
+		manager.on_gui_opened(e)
+	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)
 	script.on_event({

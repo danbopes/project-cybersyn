@@ -1,0 +1,305 @@
+-- Phase 5 relative panels (PLAN3 §4.9): the stop and train panels beside the vanilla windows, driven through the
+-- dev API (relative_open emulates on_gui_opened: player.opened cannot be set for the offline lab player).
+--
+-- Subjects: the save's provider, requester and both-stop; a stop without a Cybersyn combinator (hidden); a Cybersyn
+-- train and a train Cybersyn does not know (hidden); and the R_LAYOUT scenario of cases.lua on row k = 60, whose
+-- requester's allow list no train matches. Checks: role, network and mask, status and the occupancy pair against
+-- Cybersyn's own tables and the stop entity; the Effective config numbers (threshold in stacks, largest eligible
+-- capacity, mask match counts) against the snapshot's fleet capability and a count of read_global("trains"), with
+-- and without a snapshot; the allow-list line; the Setup section against lint_bits; the unserved chip and the last
+-- events against the diagnostics; the paused banner; dump twice identical with no section rebuilt; Open in manager.
+
+local DEV = "cybersyn-manager-dev"
+local SPEED = 50
+local K = 60
+local PI = 1
+
+local function dev(fn, ...)
+	return remote.call(DEV, fn, ...)
+end
+
+local function read(...)
+	return (remote.call("cybersyn", "read_global", ...))
+end
+
+local rx = {}
+lab.relative = rx
+
+local function find_station(pred)
+	local ids = {}
+	for id, st in pairs(read("stations")) do
+		if pred(st) and id < 2000 then ids[#ids + 1] = id end
+	end
+	table.sort(ids)
+	return ids[1]
+end
+
+--- Cybersyn trains on `net` whose mask shares a bit with `mask`, and their distinct depots.
+local function oracle_matches(net, mask)
+	local n, depots, nd = 0, {}, 0
+	for _, t in pairs(read("trains")) do
+		local m
+		if t.network_name == "signal-each" then
+			m = type(t.network_mask) == "table" and t.network_mask[net] or nil
+		elseif t.network_name == net then
+			m = type(t.network_mask) == "number" and t.network_mask or 0
+		end
+		if m and bit32.band(m, mask) ~= 0 then
+			n = n + 1
+			if t.depot_id and not depots[t.depot_id] then
+				depots[t.depot_id] = true
+				nd = nd + 1
+			end
+		end
+	end
+	return n, nd
+end
+
+--- The largest item capacity among the snapshot's layouts on `net` that share a bit with `mask` and the stop accepts.
+local function oracle_capacity(net, mask, station)
+	local cap = dev("fleet_capability").capability[net] or {}
+	local best = 0
+	for layout_id, c in pairs(cap) do
+		if bit32.band(c.mask_or, mask) ~= 0 and (station.allows_all_trains or (station.accepted_layouts or {})[layout_id]) then
+			if c.item_capacity > best then best = c.item_capacity end
+		end
+	end
+	return best
+end
+
+local function stop_checks(label, id, want_p, want_r)
+	local d = dev("relative_open", PI, "stop", id)
+	local st = read("stations", id)
+	local m = d.model or {}
+	lab.check(label .. ": panel open and its mount visible", d.open and d.open.kind == "stop" and d.open.id == id and
+		d.mounts.stop and d.mounts.stop.visible == true and (d.mounts.train == nil or d.mounts.train.visible == false), d.open)
+	lab.check(label .. ": anchored right of the train-stop window",
+		d.mounts.stop and d.mounts.stop.anchor.gui == "train-stop-gui" and d.mounts.stop.anchor.type == "train-stop" and
+		d.mounts.stop.anchor.position == defines.relative_gui_position.right, d.mounts.stop and d.mounts.stop.anchor)
+	lab.check(label .. ": 300 px frame captioned Cybersyn", d.width == 300 and d.caption and
+		d.caption[1] == "cybersyn-gui.relative-caption", { d.width, d.caption })
+	lab.check(label .. ": role", m.is_p == want_p and m.is_r == want_r and m.is_p == (st.is_p == true) and
+		m.is_r == (st.is_r == true), { m.is_p, m.is_r })
+	lab.check(label .. ": network and mask as Cybersyn reads them", m.network_name == st.network_name and m.nets and
+		m.nets[1] and m.nets[1].mask == st.network_mask, { m.nets, st.network_name, st.network_mask })
+	lab.check(label .. ": occupancy pair = deliveries_total / trains_limit and the stop's trains_count",
+		m.deliveries == st.deliveries_total and m.limit == st.entity_stop.trains_limit and
+		m.trains_count == st.entity_stop.trains_count, { m.deliveries, m.limit, m.trains_count })
+	return d
+end
+
+lab.suite("39_relative", {
+	function()
+		dev("close", PI)
+		dev("drop_snapshot")
+		rx.setting = settings.global["cybersyn-diagnostics"].value
+		dev("set_setting", "cybersyn-diagnostics", "basic")
+		rx.provider = find_station(function(st) return st.is_p and not st.is_r end)
+		rx.requester = find_station(function(st) return st.is_r and not st.is_p end)
+		rx.both = find_station(function(st) return st.is_r and st.is_p end)
+		-- A network of its own, so 40_reason_codes' R_LAYOUT scenario starts from a clean signal-S.
+		local network = cases.NETWORKS.R_LAYOUT
+		cases.NETWORKS.R_LAYOUT = "signal-Y"
+		local ok, case = pcall(cases.R_LAYOUT, { k = K })
+		cases.NETWORKS.R_LAYOUT = network
+		lab.check("R_LAYOUT scenario builds", ok, case)
+		if not ok then return end
+		rx.case = case
+		-- A plain stop and a train Cybersyn does not know, on the scenario's row.
+		local s = case.surface
+		rx.plain = s.create_entity({ name = "train-stop", position = { 40, case.y - 1 }, direction = defines.direction.west,
+			force = game.forces.player, raise_built = true })
+		rx.plain.backer_name = "rc-relative-plain"
+		case.entities[#case.entities + 1] = rx.plain
+		local loco = s.create_entity({ name = "locomotive", position = { 20, case.y + 1 }, direction = defines.direction.east,
+			force = game.forces.player })
+		case.entities[#case.entities + 1] = loco
+		rx.vanilla_train = loco.train
+		lab.wait_until(function() return cases.trains_ready(case) end, 3600, SPEED)
+	end,
+
+	function()
+		local case = rx.case
+		lab.check("R_LAYOUT train parked", cases.trains_ready(case))
+		case.stages[1].run(case)
+		-- The first failing evaluation, the flap window and a few cycles for the entry and its event.
+		lab.wait(2400, SPEED)
+	end,
+
+	function()
+		-- No snapshot: the panel reads the stop live.
+		local d = stop_checks("provider", rx.provider, true, false)
+		lab.check("provider: read live while no manager window keeps a snapshot", d.model.source == "live", d.model.source)
+		local st = read("stations", rx.provider)
+		lab.check("provider: status from the ladder", d.model.status ~= nil, d.model.status)
+		lab.check("provider: comb1 enabled, Rescan and Test path disabled placeholders", (function()
+			local row = d.sections.buttons.content[1].children
+			local names = {}
+			for _, c in ipairs(row) do if c.name then names[c.name] = c end end
+			return names.comb1 and names.comb1.enabled and names.rescan and names.rescan.enabled == false and
+				names.test_path and names.test_path.enabled == false and names.open_manager ~= nil
+		end)())
+		stop_checks("requester", rx.requester, false, true)
+		stop_checks("both", rx.both, true, true)
+		local setup = serpent.line(dev("relative_dump", PI).sections.setup.content)
+		if dev("lint_state").pass == 0 then
+			lab.check("save station: no lint pass ran yet, Setup says so", setup:find("relative-setup-not-run", 1, true) ~= nil, setup)
+		else
+			lab.check("save station: Setup lists the stop's findings or says there are none",
+				setup:find(#dev("lint_findings", rx.both) > 0 and "lint-fix-" or "relative-setup-none", 1, true) ~= nil, setup)
+		end
+		local plain = dev("relative_open", PI, "stop", rx.plain.unit_number)
+		lab.check("plain stop without a combinator: no panel", plain.open == nil and plain.mounts.stop.visible == false, plain)
+
+		-- Trains.
+		local trains = read("trains")
+		local tid
+		for id in pairs(trains) do if not tid or id < tid then tid = id end end
+		local t = dev("relative_open", PI, "train", tid)
+		local tm = t.model or {}
+		local entity = trains[tid].entity
+		lab.check("Cybersyn train: panel open, stop panel hidden", t.open and t.open.kind == "train" and
+			t.mounts.train.visible == true and t.mounts.stop.visible == false, t.mounts)
+		lab.check("Cybersyn train: anchored right of the train window", t.mounts.train.anchor.gui == "train-gui" and
+			t.mounts.train.anchor.position == defines.relative_gui_position.right, t.mounts.train.anchor)
+		lab.check("Cybersyn train: status, state, depot from Cybersyn and the train",
+			tm.status == trains[tid].status and tm.state == entity.state and tm.depot_id == trains[tid].depot_id,
+			{ tm.status, tm.state, tm.depot_id })
+		local records = entity.get_schedule().get_records() or {}
+		lab.check("Cybersyn train: schedule records and the active one", #tm.schedule == #records and
+			tm.current == entity.get_schedule().current, { #tm.schedule, #records, tm.current })
+		lab.check("Cybersyn train: Locate and Open in manager, Path trace a disabled placeholder", (function()
+			local names = {}
+			for _, c in ipairs(t.sections.buttons.content[1].children) do if c.name then names[c.name] = c end end
+			return names.locate ~= nil and names.open_manager ~= nil and names.path_trace and names.path_trace.enabled == false
+		end)())
+		local v = dev("relative_open", PI, "train", rx.vanilla_train.id)
+		lab.check("train Cybersyn does not know: no panel", v.open == nil and v.mounts.train.visible == false, v)
+		dev("relative_open", PI, "train", tid)
+		local closed = dev("relative_close", PI)
+		lab.check("closing the window hides the panel and clears the state", closed.open == nil and
+			closed.mounts.train.visible == false and closed.mounts.stop.visible == false, closed)
+		rx.tid = tid
+
+		-- The R_LAYOUT requester: unserved chip, events, the allow-list line (no snapshot: the fleet walk).
+		local case = rx.case
+		local r = case.r_station
+		dev("relative_open", PI, "stop", r)
+		if not (dev("relative_dump", PI).effective_open) then dev("relative_toggle_effective", PI) end
+		-- The walk counts FLEET_CHUNK trains per refresh.
+		for _ = 1, 10 do dev("relative_refresh_ms", PI, 1) end
+		local d = dev("relative_dump", PI)
+		local m = d.model
+		local unserved = dev("diag_unserved", r)[case.item]
+		lab.check("R_LAYOUT requester: unserved row with the dispatcher's reason", m.unserved and m.unserved[1] and
+			m.unserved[1].reason == "R_LAYOUT" and unserved and unserved.reason == "R_LAYOUT", { m.unserved, unserved })
+		lab.check("R_LAYOUT requester: the reason chip rendered",
+			serpent.line(d.sections.unserved.content):find("chip-r-layout", 1, true) ~= nil)
+		local last = dev("diag_last_for", "station", r, 10)
+		lab.check("R_LAYOUT requester: last events = diag_last_for (bounded scan done)",
+			d.cursor and d.cursor.done and d.cursor.rows == #last and #last > 0, { d.cursor, #last })
+		local e = m.effective
+		local station = read("stations", r)
+		local net = e and e.nets[1]
+		local n_trains, n_depots = oracle_matches(case.network, station.network_mask)
+		lab.check("effective (walk): mask matches n trains · n depots = read_global trains",
+			net and net.trains == n_trains and net.depots == n_depots and n_trains > 0, { net, n_trains, n_depots })
+		lab.check("effective: allow list accepts layouts but no train matches (red line)",
+			net and net.accepted ~= false and net.allow_trains == 0 and
+			serpent.line(d.sections.effective.content):find("relative-eff-allow\"", 1, true) ~= nil, net)
+		local item = e and e.items[1]
+		local stack = prototypes.item[case.item].stack_size
+		lab.check("effective: threshold in stacks = ceil(threshold / stack size)", item and item.hash == case.item and
+			item.need == math.ceil(item.effective / stack), item)
+
+		-- With a snapshot: capability from the collector's fleet facts, the same match counts.
+		dev("collect")
+		dev("lint_run")
+		for _ = 1, 10 do dev("relative_refresh_ms", PI, 1) end
+		d = dev("relative_dump", PI)
+		m = d.model
+		e = m.effective
+		net = e.nets[1]
+		lab.check("with a snapshot: the panel reads the snapshot record", m.source == "snapshot", m.source)
+		lab.check("effective (snapshot): largest eligible capacity = fleet_capability", net.item_capacity ==
+			oracle_capacity(case.network, station.network_mask, station) and e.capability_source == "snapshot",
+			{ net.item_capacity, oracle_capacity(case.network, station.network_mask, station) })
+		lab.check("effective (snapshot): match counts unchanged", net.trains == n_trains and net.depots == n_depots, net)
+		-- A save requester that accepts every layout: a capacity the fleet really has.
+		dev("relative_open", PI, "stop", rx.requester)
+		for _ = 1, 10 do dev("relative_refresh_ms", PI, 1) end
+		local sd = dev("relative_dump", PI)
+		local sst = read("stations", rx.requester)
+		local snet = sd.model.effective and sd.model.effective.nets[1]
+		local scap = oracle_capacity(sst.network_name, sst.network_mask, sst)
+		local sn, snd = oracle_matches(sst.network_name, sst.network_mask)
+		lab.check("effective (snapshot, save requester): largest eligible capacity and match counts", snet and scap > 0 and
+			snet.item_capacity == scap and snet.trains == sn and snet.depots == snd, { snet, scap, sn, snd })
+		local sitem = sd.model.effective and sd.model.effective.items[1]
+		local sstack = sitem and prototypes.item[sitem.hash] and prototypes.item[sitem.hash].stack_size
+		lab.check("effective (save requester): stacks = ceil(threshold / stack size), spare = capacity - stacks",
+			sitem and sstack and sitem.need == math.ceil(sitem.effective / sstack) and sitem.gap == scap - sitem.need, sitem)
+		dev("relative_open", PI, "stop", r)
+		local bits = dev("lint_bits", r)
+		local names = {}
+		for _, f in ipairs(m.findings) do names[#names + 1] = f.check end
+		table.sort(names)
+		local want = {}
+		for _, f in ipairs(dev("lint_findings", r)) do want[#want + 1] = f.check end
+		table.sort(want)
+		lab.check("Setup section = lint_bits and lint_findings of the stop", m.lint_bits == bits.mask and
+			serpent.line(names) == serpent.line(want) and #names > 0, { m.lint_bits, bits, names, want })
+		lab.check("Setup section renders the layout finding and its fix line",
+			serpent.line(d.sections.setup.content):find("lint-fix-layout", 1, true) ~= nil)
+
+		-- Sig guard: two dumps at one tick are identical and the second refresh rebuilt nothing.
+		local a = dev("relative_dump", PI)
+		dev("relative_refresh_ms", PI, 1)
+		local b = dev("relative_dump", PI)
+		lab.check("dump twice: identical sections and model", serpent.line(a.sections) == serpent.line(b.sections) and
+			serpent.line(a.model) == serpent.line(b.model))
+		lab.check("refresh with nothing changed rebuilds no section", b.rebuilds == a.rebuilds, { a.rebuilds, b.rebuilds })
+		lab.info({ "", "refresh requester, effective open: ", dev("relative_refresh_ms", PI, 50) })
+		dev("relative_toggle_effective", PI)
+		lab.info({ "", "refresh requester, effective closed: ", dev("relative_refresh_ms", PI, 50) })
+
+		-- The dispatcher-paused banner.
+		dev("set_setting_as", PI, "cybersyn-enable-planner", false)
+		dev("relative_refresh_ms", PI, 1)
+		local paused = dev("relative_dump", PI)
+		dev("set_setting_as", PI, "cybersyn-enable-planner", true)
+		dev("relative_refresh_ms", PI, 1)
+		local resumed = dev("relative_dump", PI)
+		lab.check("paused banner shown while the dispatcher is off, gone after", paused.banner ~= nil and
+			resumed.banner == nil, { paused.banner, resumed.banner })
+
+		-- Open in manager: Stations tab searching this stop.
+		dev("relative_click", PI, "open_manager")
+		local state = dev("state", PI)
+		lab.check("Open in manager: Stations tab, searching the stop's name", state.is_open and
+			state.selected_tab == "stations_tab" and state.filters.terms ~= nil, state)
+		local keys = dev("dump", PI, "stations")
+		lab.check("Open in manager: the stop is listed", serpent.line(keys):find(tostring(r), 1, true) ~= nil)
+		dev("close", PI)
+		dev("clear_filters", PI)
+		dev("relative_open", PI, "train", rx.tid)
+		dev("relative_click", PI, "open_manager")
+		state = dev("state", PI)
+		lab.check("Open in manager (train): Trains tab searching #id", state.is_open and state.selected_tab == "trains_tab" and
+			state.filters.terms and state.filters.terms[1] == "#" .. rx.tid, state.filters)
+		dev("close", PI)
+		dev("clear_filters", PI)
+		dev("relative_close", PI)
+	end,
+
+	function()
+		cases.destroy(rx.case)
+		dev("drop_snapshot")
+		dev("set_setting", "cybersyn-diagnostics", rx.setting)
+		lab.wait(600, SPEED)
+	end,
+
+	function()
+		lab.check("relative rows torn down", read("stations", rx.case.r_station) == nil)
+	end,
+})

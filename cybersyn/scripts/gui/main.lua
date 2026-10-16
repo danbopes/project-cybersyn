@@ -5,6 +5,7 @@ local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
 local util = require("scripts.gui.util")
 local diag = require("scripts.diag")
+local relative = require("scripts.gui.relative")
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
@@ -57,6 +58,9 @@ local diag = require("scripts.diag")
 --- @field collecting_shown int? progress the subheaders show, -1 = none
 --- @field trains_badge int? alert count on the Trains tab
 --- @field unserved_minutes int? cached cybersyn-manager-unserved-minutes
+--- @field relative_open {kind: "stop"|"train", id: uint}? the Cybersyn panel beside an open vanilla window
+--- @field relative RelativeState? that panel's render state, see scripts/gui/relative.lua
+--- @field relative_effective_open true? the stop panel's Effective config section is expanded
 
 local function top_left_button_update(player, player_data)
 	local button_flow = mod_gui.get_button_flow(player)
@@ -108,6 +112,7 @@ end
 --- Registered for every on_gui_closed (scripts/main.lua), so no registration depends on game state.
 --- @param e EventData.on_gui_closed
 function manager_gui.on_gui_closed(e)
+	relative.on_gui_closed(e)
 	manager_gui.on_lua_shortcut(e)
 	-- Closing the GUI a link opened hands player.opened back at once when nothing else holds it, so a second Escape
 	-- closes the manager instead of opening the game menu. restore_opened stays set: the engine may still close the
@@ -122,6 +127,12 @@ function manager_gui.on_gui_closed(e)
 	player_data.handed_back_tick = game.tick
 	manager.restore_opened(player, player_data)
 end
+
+--- Registered for every on_gui_opened (scripts/main.lua), after the entity GUI handlers of scripts/gui.lua.
+manager_gui.on_gui_opened = relative.on_gui_opened
+
+--- Registered for every on_train_schedule_changed (scripts/main.lua), after Cybersyn's own handler.
+manager_gui.on_train_schedule_changed = relative.on_train_schedule_changed
 
 --- Fields absent from PlayerData in older saves.
 --- @param player_data PlayerData
@@ -172,6 +183,7 @@ function manager_gui.on_player_left_game(e)
 	if player and player_data and player_data.is_manager_open then
 		manager.wrapper(e, manager.handle.manager_close)
 	end
+	if player_data and player_data.relative_open then relative.close(player, player_data) end
 end
 
 function manager_gui.on_player_removed(e)
@@ -360,6 +372,7 @@ function manager_gui.tick(storage)
 			end
 		end
 	end
+	relative.tick(manager_data)
 end
 
 --- on_player_display_resolution_changed / on_player_display_scale_changed.
