@@ -1544,7 +1544,8 @@ local function render_signal(state, body, m)
 end
 
 local function render_train_buttons(state, body, m)
-	local buttons_sig = "train"
+	-- In the manager's Trains pane the train is already the selected row: no Open in manager.
+	local buttons_sig = state.pane and "pane" or "train"
 	if state.sigs["buttons"] ~= buttons_sig then
 		section(state, body, "buttons", buttons_sig, function()
 			return {
@@ -1557,6 +1558,7 @@ local function render_train_buttons(state, body, m)
 						name = "open_manager",
 						caption = { "cybersyn-gui.relative-open-manager" },
 						tooltip = { "cybersyn-gui.relative-open-manager-train-tooltip" },
+						visible = not state.pane,
 						handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
 					},
 					{
@@ -1578,7 +1580,7 @@ end
 
 local function render_banner(state, panel)
 	-- mod_settings mirrors the setting (scripts/main.lua grab_all_settings), without a settings.global read per refresh.
-	local paused = mod_settings.enable_planner == false
+	local paused = mod_settings.enable_planner == false and not state.pane
 	local by = paused and storage.manager.paused_by or nil
 	local sig = paused and ("p" .. tostring(by)) or ""
 	if state.sigs.banner == sig then return end
@@ -1768,6 +1770,60 @@ function relative.open(player, pd, kind, id)
 	if not alive then relative.close(player, pd) end
 end
 
+--- Mounts the panel of `kind`/`id` in `parent` inside the manager window (the Trains detail pane), reusing the one
+--- already there, and renders it at once. relative.tick refreshes it while `pd.relative_pane_open` is set, the window
+--- is open and shows the Trains tab; it has its own state (`pd.relative_pane`), so a vanilla window's panel can be
+--- open beside it.
+--- @param pd PlayerData
+--- @param parent LuaGuiElement
+--- @param kind "stop"|"train"
+--- @param id uint
+--- @param body_height int? the scroll body's height cap in logical px
+--- @return LuaGuiElement? panel nil when the subject is gone (nothing stays mounted then)
+function relative.mount(pd, parent, kind, id, body_height)
+	local panel = parent[PANEL]
+	if panel and panel.tags.kind ~= kind then
+		panel.destroy()
+		panel = nil
+	end
+	local state = pd.relative_pane
+	if not panel then
+		panel = relative.build(parent, kind, id)
+		-- The pane's own subheader names the train and the tab shows the paused banner.
+		panel.subheader.visible = false
+		-- The scrollbar then sits inside the panel instead of widening it.
+		panel.scroll.style.horizontally_stretchable = true
+		state = nil
+	end
+	if not (state and state.kind == kind and state.id == id) then
+		state = new_state(kind, id)
+		state.pane = true
+		pd.relative_pane = state
+	end
+	panel.tags = { kind = kind, id = id, pane = true }
+	local scroll = panel.scroll
+	if body_height and scroll.style.maximal_height ~= body_height then scroll.style.maximal_height = body_height end
+	pd.relative_pane_open = { kind = kind, id = id, panel = panel }
+	state.burst = true
+	local alive = relative.render(pd, state, panel)
+	state.burst = nil
+	if not alive then
+		relative.unmount(pd)
+		return nil
+	end
+	return panel
+end
+
+--- Removes the panel relative.mount put in the manager window, and its state.
+--- @param pd PlayerData
+function relative.unmount(pd)
+	local pane = pd.relative_pane_open
+	local panel = pane and pane.panel
+	if panel and panel.valid then panel.destroy() end
+	pd.relative_pane_open = nil
+	pd.relative_pane = nil
+end
+
 --- What a vanilla window shows, as a relative panel subject: a Cybersyn stop or train, else nil.
 --- @param entity LuaEntity
 --- @return "stop"|"train"|nil kind
@@ -1836,10 +1892,47 @@ end
 -- (storage.manager.relative_samples). The profilers are not game state and are never read back into it.
 local samples = {}
 
+local pane_gone_fn
+
+--- Lets the Trains tab hear that its detail pane's train is gone, without a require cycle.
+--- @param fn fun(player: LuaPlayer, pd: PlayerData)
+function relative.set_pane_gone(fn)
+	pane_gone_fn = fn
+end
+
+--- Refreshes the panel mounted in the manager (relative.mount) while the window shows the Trains tab.
+--- @param manager_data Manager
+--- @param i uint
+--- @param pd PlayerData
+local function tick_pane(manager_data, i, pd)
+	local pane = pd.relative_pane_open
+	local panel = pane.panel
+	local state = pd.relative_pane
+	if not (panel and panel.valid and state) then
+		pd.relative_pane_open = nil
+		pd.relative_pane = nil
+		return
+	end
+	if not (pd.is_manager_open and pd.selected_tab == "trains_tab") then return end
+	local p = manager_data.relative_samples and game.create_profiler()
+	local alive = relative.render(pd, state, panel)
+	if p then
+		p.stop()
+		samples[#samples + 1] = { p = p, read = state.read == true, walk = state.walk_tick == game.tick,
+			kind = "pane", tick = game.tick, rebuilds = state.rebuilds }
+	end
+	if not alive then
+		relative.unmount(pd)
+		local player = game.get_player(i)
+		if player and pane_gone_fn then pane_gone_fn(player, pd) end
+	end
+end
+
 --- The manager tick: refreshes every open panel, and closes one whose vanilla window is gone.
 --- @param manager_data Manager
 function relative.tick(manager_data)
 	for i, pd in pairs(manager_data.players) do
+		if pd.relative_pane_open then tick_pane(manager_data, i, pd) end
 		local open = pd.relative_open
 		if open then
 			local player = game.get_player(i)
@@ -1884,6 +1977,7 @@ end
 function relative.reset(player, pd)
 	pd.relative_open = nil
 	pd.relative = nil
+	relative.unmount(pd)
 	for kind in pairs(MOUNT) do
 		local frame = mount_of(player, kind)
 		if frame then frame.destroy() end
@@ -1895,17 +1989,20 @@ end
 function relative.on_train_schedule_changed(e)
 	local manager_data = storage.manager
 	if not manager_data then return end
-	-- Cybersyn changes a schedule on every dispatch: read the train only when some train panel is open.
+	-- Cybersyn changes a schedule on every dispatch: read the train only when some train panel is open, and allocate
+	-- nothing.
 	local id
 	for _, pd in pairs(manager_data.players) do
-		local state = pd.relative
-		if state and state.kind == "train" then
-			if not id then
-				local train = e.train
-				if not (train and train.valid) then return end
-				id = train.id
+		for k = 1, 2 do
+			local state = k == 1 and pd.relative or pd.relative_pane
+			if state and state.kind == "train" then
+				if not id then
+					local train = e.train
+					if not (train and train.valid) then return end
+					id = train.id
+				end
+				if state.id == id then state.schedule = nil end
 			end
-			if state.id == id then state.schedule = nil end
 		end
 	end
 end
@@ -1918,6 +2015,23 @@ function relative.wrapper(e, handler)
 	local pd = manager_data and manager_data.players[e.player_index]
 	if not (player and pd) then return end
 	handler(player, pd, e)
+end
+
+--- The state of the panel a click came from: the one mounted in the manager (relative.mount) or the one beside the
+--- vanilla window.
+--- @param pd PlayerData
+--- @param e {element: LuaGuiElement}?
+--- @return RelativeState?
+local function state_of(pd, e)
+	local elem = e and e.element
+	while elem and elem.valid do
+		if elem.name == PANEL then
+			if elem.tags.pane then return pd.relative_pane end
+			return pd.relative
+		end
+		elem = elem.parent
+	end
+	return pd.relative
 end
 
 local function rerender(player, pd)
@@ -1950,8 +2064,8 @@ end
 --- the Trains tab searching "#<id>" for a train. The other filters are cleared so the subject is in the list.
 --- @param player LuaPlayer
 --- @param pd PlayerData
-function relative.open_manager(player, pd)
-	local state = pd.relative
+function relative.open_manager(player, pd, state)
+	state = state or pd.relative
 	if not state then return end
 	local tab, query
 	if state.kind == "train" then
@@ -1983,13 +2097,13 @@ function relative.open_manager(player, pd)
 	end
 end
 
-function relative.handle.relative_open_manager(player, pd)
-	relative.open_manager(player, pd)
+function relative.handle.relative_open_manager(player, pd, e)
+	relative.open_manager(player, pd, state_of(pd, e))
 end
 
 --- comb1 / comb2 tool buttons: the station's (or depot's, refueler's) combinators.
 function relative.handle.relative_comb(player, pd, e)
-	local state = pd.relative
+	local state = state_of(pd, e)
 	if not state or state.kind ~= "stop" then return end
 	local which = e.element.name
 	local station = storage.stations[state.id]
@@ -2007,16 +2121,16 @@ function relative.handle.relative_comb(player, pd, e)
 	end
 end
 
-function relative.handle.relative_locate_train(player, pd)
-	local state = pd.relative
+function relative.handle.relative_locate_train(player, pd, e)
+	local state = state_of(pd, e)
 	local train = state and state.kind == "train" and storage.trains[state.id]
 	local entity = train and train.entity
 	local front = entity and entity.valid and entity.front_stock
 	if front then util.show_on_map(player, pd, front, front) end
 end
 
-function relative.handle.relative_locate_signal(player, pd)
-	local state = pd.relative
+function relative.handle.relative_locate_signal(player, pd, e)
+	local state = state_of(pd, e)
 	local train = state and state.kind == "train" and storage.trains[state.id]
 	local entity = train and train.entity
 	local signal = entity and entity.valid and entity.signal
@@ -2092,6 +2206,29 @@ local function dev_entity(kind, id)
 	return nil
 end
 
+--- What a panel shows, for the dev interface: width, caption, banner, refresh counters and every section's captions.
+--- @param panel LuaGuiElement a relative.build result
+--- @param state RelativeState
+--- @param out table? filled in and returned
+--- @return table
+function relative.view(panel, state, out)
+	out = out or {}
+	out.width = panel.style.minimal_width
+	out.caption = panel.subheader.caption_label.caption
+	out.caption_tooltip = panel.subheader.caption_label.tooltip
+	out.banner = panel.banner.visible and panel.banner.banner_label.caption or nil
+	out.rebuilds = state.rebuilds
+	out.rebuilt = state.rebuilt
+	out.refreshes = state.refreshes
+	out.sections = {}
+	for _, s in ipairs(panel.scroll.body.children) do
+		out.sections[s.name] = { visible = s.visible, content = s.visible and element_view(s).children or nil }
+	end
+	local b = panel.footer.buttons
+	out.sections.buttons = { visible = b.visible, content = b.visible and element_view(b).children or nil }
+	return out
+end
+
 local dev_fns = {}
 
 --- Emulates on_gui_opened of a stop's or train's vanilla window: player.opened cannot be set for an offline player,
@@ -2129,20 +2266,7 @@ function dev_fns.relative_dump(pi)
 	local state = pd.relative
 	if not (open and state) then return out end
 	local frame = mount_of(player, open.kind)
-	local panel = frame[PANEL]
-	out.width = panel.style.minimal_width
-	out.caption = panel.subheader.caption_label.caption
-	out.caption_tooltip = panel.subheader.caption_label.tooltip
-	out.banner = panel.banner.visible and panel.banner.banner_label.caption or nil
-	out.rebuilds = state.rebuilds
-	out.rebuilt = state.rebuilt
-	out.refreshes = state.refreshes
-	out.sections = {}
-	for _, s in ipairs(panel.scroll.body.children) do
-		out.sections[s.name] = { visible = s.visible, content = s.visible and element_view(s).children or nil }
-	end
-	local b = panel.footer.buttons
-	out.sections.buttons = { visible = b.visible, content = b.visible and element_view(b).children or nil }
+	relative.view(frame[PANEL], state, out)
 	if open.kind == "stop" then
 		out.model = strip_model(stop_model(pd, state))
 	else

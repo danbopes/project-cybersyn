@@ -718,7 +718,81 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 		player.opened = refs.manager_window
 		return
 	end
+	-- Escape with the Trains detail pane open closes the pane. This event cannot tell Escape from another GUI replacing
+	-- the window (an entity clicked in the world, the map, another mod), and taking player.opened back here would take
+	-- it from that GUI. So the window gets player.opened back on a later tick (manager.settle_pane_escapes), unless a
+	-- GUI opens or the controller changes first (manager.interrupt_pane_escape): then the window closes as it did
+	-- before the pane, and the selection stays.
+	local train = trains_tab.close_pane(player_data)
+	if train then
+		local manager_data = storage.manager
+		local pending = manager_data.pane_escapes or {}
+		manager_data.pane_escapes = pending
+		pending[player.index] = { tick = game.tick, train = train, controller = player.controller_type }
+		manager.render(player, player_data)
+		return
+	end
 	manager.handle.manager_close(player, player_data, refs)
+end
+
+--- @param manager_data Manager
+--- @param pi uint
+--- @return {tick: uint, train: uint, controller: defines.controllers}?
+local function take_pane_escape(manager_data, pi)
+	local pending = manager_data and manager_data.pane_escapes
+	local p = pending and pending[pi]
+	if not p then return nil end
+	pending[pi] = nil
+	if not next(pending) then manager_data.pane_escapes = nil end
+	return p
+end
+
+--- A GUI opened or the controller changed while an Escape of the Trains pane waits for its hand-back: something
+--- replaced the window, which closes; the train stays selected for the next open.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.interrupt_pane_escape(player, player_data)
+	local p = take_pane_escape(storage.manager, player.index)
+	if not (p and player_data.is_manager_open) then return end
+	trains_tab.select(player_data, p.train)
+	manager.handle.manager_close(player, player_data, player_data.refs)
+end
+
+--- on_gui_opened: any GUI but the manager window itself interrupts a waiting pane Escape.
+--- @param e EventData.on_gui_opened
+function manager.on_other_gui_opened(e)
+	local manager_data = storage.manager
+	if not (manager_data and manager_data.pane_escapes and manager_data.pane_escapes[e.player_index]) then return end
+	local player_data = manager_data.players[e.player_index]
+	local window = player_data and player_data.refs and player_data.refs.manager_window
+	if e.element and window and e.element == window then return end
+	local player = game.get_player(e.player_index)
+	if player and player_data then manager.interrupt_pane_escape(player, player_data) end
+end
+
+--- Hands player.opened back to windows whose Trains pane an Escape closed in an earlier tick, when nothing else took
+--- the screen meanwhile; otherwise the window closes. Runs on the manager tick and the fixed export tick.
+function manager.settle_pane_escapes()
+	local manager_data = storage.manager
+	local pending = manager_data and manager_data.pane_escapes
+	if not pending then return end
+	local tick = game.tick
+	for pi, p in pairs(pending) do
+		if p.tick ~= tick then
+			take_pane_escape(manager_data, pi)
+			local player = game.get_player(pi)
+			local player_data = manager_data.players[pi]
+			local window = player_data and player_data.refs and player_data.refs.manager_window
+			if player and player_data and player_data.is_manager_open and window and window.valid
+				and not player_data.pinning then
+				if player.opened_gui_type ~= defines.gui_type.none or player.controller_type ~= p.controller then
+					manager.handle.manager_close(player, player_data, player_data.refs)
+				elseif player.opened ~= window then
+					player.opened = window
+				end
+			end
+		end
+	end
 end
 
 --- Gives player.opened back to an unpinned manager whose link opened another GUI, once no GUI holds player.opened.
@@ -752,6 +826,7 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.on_controller_changed(player, player_data)
+	manager.interrupt_pane_escape(player, player_data)
 	if not player_data.auto_pinned or player.controller_type == defines.controllers.remote then return end
 	player_data.auto_pinned = nil
 	player_data.pinning = false

@@ -1070,7 +1070,7 @@ local function main()
 	script.on_event(defines.events.on_gui_click, function(e)
 		manager_util.touch_hover(e)
 		manager_util.note_click(e)
-		flib_gui.dispatch(e)
+		if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
 	end)
 
 	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)
