@@ -250,9 +250,9 @@ local function confirm_click(player, pd, e, what, run)
 		pd.confirm = nil
 		return false
 	end
-	local elem = e.element
-	local state, fire = logic.confirm_click(pd.confirm, key, game.tick, elem.valid and elem.style.name == "red_button")
+	local state, fire = logic.confirm_click(pd.confirm, key, game.tick)
 	pd.confirm = state
+	if state then storage.manager.confirm_any = true end
 	if fire then run() end
 	if repair.on_change then repair.on_change(player, pd) end
 	return fire
@@ -489,18 +489,30 @@ function repair.tick(manager_data)
 	repair.job_tick()
 end
 
---- Disarms expired confirm buttons and redraws them. Also called on the fixed export tick, so a "Confirm?" goes back
---- within a few ticks of its expiry whatever the manager's update rate (with updates at 0 too).
+--- Redraws expired confirm buttons, and drops their state once the click grace (logic.CONFIRM_GRACE) is over too. Also
+--- called on the fixed export tick, so a "Confirm?" goes back within a few ticks of its expiry whatever the manager's
+--- update rate (with updates at 0 too); free while no player has a button armed.
 --- @param manager_data Manager
 function repair.expire(manager_data)
+	if not manager_data.confirm_any then return end
 	local now = game.tick
+	local any
 	for i, pd in pairs(manager_data.players) do
-		if logic.confirm_expired(pd.confirm, now) then
-			pd.confirm = nil
-			local player = repair.on_change and game.get_player(i)
-			if player then repair.on_change(player, pd) end
+		local cur = pd.confirm
+		if cur then
+			if logic.confirm_gone(cur, now) then
+				pd.confirm = nil
+			else
+				any = true
+				if not cur.redrawn and logic.confirm_expired(cur, now) then
+					cur.redrawn = true
+					local player = repair.on_change and game.get_player(i)
+					if player then repair.on_change(player, pd) end
+				end
+			end
 		end
 	end
+	manager_data.confirm_any = any
 end
 
 --- The panel subject of a clicked element; set by extras (relative.build's frame tags).

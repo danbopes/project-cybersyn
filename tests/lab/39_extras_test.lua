@@ -398,9 +398,11 @@ lab.suite("39_extras", {
 		local b = dev("action_button", PI, "rescan")
 		lab.check("the armed button expired after 180 ticks (manager tick)", b and key_of(b.caption) == "cybersyn-gui.action-rescan"
 			and b.style == "button", b)
+		lab.check("no confirm left: the expiry walk is off again", read("manager", "confirm_any") == nil)
 		local seq = seq_now()
 		dev("action_click", PI, "rescan")
-		lab.check("a click after the expiry arms again instead of running", #actions_after(seq, ACTION_RESCAN) == 0)
+		lab.check("a click after the expiry and its grace arms again instead of running", #actions_after(seq, ACTION_RESCAN) == 0)
+		lab.check("an armed button turns the expiry walk on", read("manager", "confirm_any") == true)
 		dev("relative_close", PI)
 
 		-- Fail delivery and send home: refused under nobody, then run as an admin under admins.

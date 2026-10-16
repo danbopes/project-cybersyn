@@ -818,16 +818,22 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 	-- Escape with an overlay open closes the overlay. This event cannot tell Escape from another GUI replacing the
 	-- window (an entity clicked in the world, the map, another mod), and taking player.opened back here would take it
 	-- from that GUI. So the window gets player.opened back on a later tick (manager.settle_pane_escapes), unless a GUI
-	-- opens or the controller changes first (manager.interrupt_pane_escape): then an unpinned window closes as it did before the
-	-- overlay (a pane's train stays selected), and a pinned one stays without player.opened.
-	local kind, train = peel_overlay(player, player_data)
+	-- opens or the controller changes first (manager.interrupt_pane_escape): then an unpinned window closes as it did
+	-- before the overlay (a pane's train stays selected). A pinned window stays on screen through other GUIs and remote
+	-- view (PLAN3 §1), so its overlay is peeled only once the later tick shows nothing replaced the window.
+	local kind, train
+	if pinned then
+		kind = manager.top_overlay(player_data)
+	else
+		kind, train = peel_overlay(player, player_data)
+	end
 	if kind then
 		local manager_data = storage.manager
 		local pending = manager_data.pane_escapes or {}
 		manager_data.pane_escapes = pending
 		pending[player.index] = { tick = game.tick, train = train, controller = player.controller_type, kind = kind,
-			pinned = pinned }
-		manager.render(player, player_data)
+			pinned = pinned, peel = pinned or nil }
+		if not pinned then manager.render(player, player_data) end
 		return
 	end
 	if pinned then
@@ -849,16 +855,33 @@ local function take_pane_escape(manager_data, pi)
 	return p
 end
 
---- A GUI opened or the controller changed while an Escape waits for its hand-back: something replaced the window. An
---- unpinned window closes (the pane's train stays selected for the next open); a pinned one stays, without
---- player.opened.
+--- A pinned window whose player.opened another GUI or remote view took keeps its overlays. A search field lost the
+--- keyboard (its query stays); the window takes player.opened back for the rest once no GUI holds it, on the
+--- controller it has now (manager.restore_opened), so Escape reaches them again.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
-function manager.interrupt_pane_escape(player, player_data)
+--- @param entity LuaEntity? the entity whose GUI replaced the window: closing it hands player.opened back at once
+local function keep_pinned_overlays(player, player_data, entity)
+	player_data.overlay_took = nil
+	if player_data.search_focused then
+		player_data.search_focused = nil
+		manager.refresh_search_fields(player_data)
+	end
+	if manager.top_overlay(player_data) and not player_data.restore_opened then
+		player_data.restore_opened = { entity = entity, controller = player.controller_type }
+	end
+end
+
+--- A GUI opened or the controller changed while an Escape waits for its hand-back: something replaced the window. An
+--- unpinned window closes (the pane's train stays selected for the next open); a pinned one stays with its overlays.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param entity LuaEntity? the entity of the GUI that opened
+function manager.interrupt_pane_escape(player, player_data, entity)
 	local p = take_pane_escape(storage.manager, player.index)
 	if not (p and player_data.is_manager_open) then return end
 	if p.pinned then
-		player_data.overlay_took = nil
+		keep_pinned_overlays(player, player_data, entity)
 		return
 	end
 	if p.train then trains_tab.select(player_data, p.train) end
@@ -874,12 +897,12 @@ function manager.on_other_gui_opened(e)
 	local window = player_data and player_data.refs and player_data.refs.manager_window
 	if e.element and window and e.element == window then return end
 	local player = game.get_player(e.player_index)
-	if player and player_data then manager.interrupt_pane_escape(player, player_data) end
+	if player and player_data then manager.interrupt_pane_escape(player, player_data, e.entity) end
 end
 
 --- Hands player.opened back to windows an Escape peeled an overlay of in an earlier tick, when nothing else took the
---- screen meanwhile; otherwise an unpinned window closes. A pinned window takes it back only while an overlay is still
---- open. Runs every few ticks (scripts/main.lua: the planner's tick, the manager tick and the fixed export tick).
+--- screen meanwhile; otherwise an unpinned window closes. A pinned window peels its overlay here, and only when nothing
+--- replaced it, then takes player.opened back while an overlay is still open. Runs every few ticks (scripts/main.lua: the planner's tick, the manager tick and the fixed export tick).
 function manager.settle_pane_escapes()
 	local manager_data = storage.manager
 	local pending = manager_data and manager_data.pane_escapes
@@ -895,11 +918,19 @@ function manager.settle_pane_escapes()
 				local replaced = (player.opened_gui_type ~= defines.gui_type.none and player.opened ~= window)
 					or player.controller_type ~= p.controller
 				if p.pinned then
-					if replaced or not (manager.top_overlay(player_data) and may_take_opened(player, player_data)) then
-						player_data.overlay_took = nil
-					elseif player.opened ~= window then
-						player.opened = window
-						player_data.overlay_took = player.opened == window or nil
+					if replaced then
+						keep_pinned_overlays(player, player_data, nil)
+					else
+						if p.peel then
+							peel_overlay(player, player_data)
+							manager.render(player, player_data)
+						end
+						if not (manager.top_overlay(player_data) and may_take_opened(player, player_data)) then
+							player_data.overlay_took = nil
+						elseif player.opened ~= window then
+							player.opened = window
+							player_data.overlay_took = player.opened == window or nil
+						end
 					end
 				elseif replaced then
 					manager.handle.manager_close(player, player_data, player_data.refs)
@@ -1110,6 +1141,9 @@ function manager.on_search_input(e)
 	-- GUI (a chest, the train window) leaves Ctrl+F to that GUI instead of taking the keyboard from it.
 	local window = player_data.refs and player_data.refs.manager_window
 	if player.opened_gui_type ~= defines.gui_type.none and player.opened ~= window then return end
+	-- With no GUI open at all (a pinned window without overlays), the client turns the same keypress into the map
+	-- search in remote view; taking the keyboard here would only lose it to that again.
+	if player.opened_gui_type == defines.gui_type.none then return end
 	manager.focus_search(player, player_data)
 end
 

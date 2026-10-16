@@ -1413,6 +1413,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.stations_query = nil
 	player_data.trains_query = nil
 	player_data.overview_cache = nil
+	player_data.overview_failing = nil
 	player_data.stations_order = nil
 	-- Render signatures and row memos only skip redundant updates, and the memos reference snapshot records, so
 	-- they are not worth keeping in the save while closed; a container without them updates every child once on
@@ -1422,6 +1423,7 @@ function util.close_manager_window(player, player_data, refs, force)
 		for _, state in pairs(states) do
 			state.sigs = nil
 			state.cells = nil
+			state.content_sigs = nil
 		end
 	end
 

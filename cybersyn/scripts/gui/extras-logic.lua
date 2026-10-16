@@ -71,17 +71,20 @@ logic.CONFIRM_TICKS = 180
 --- @field key string the action and its target, e.g. "fail:12"
 --- @field tick uint when the first click armed it
 
---- A click on the button `key`: the first click arms it, a second click within CONFIRM_TICKS fires it. A click on
---- another button arms that one instead (one armed button per player). `shown` = the button still reads "Confirm?"
---- (its expiry has not been drawn yet): what the player saw is what the click does, so it fires.
+--- Ticks a click on an armed button still fires after its "Confirm?" was drawn back. A client's click is applied a few
+--- ticks after the player saw the button (the multiplayer input latency), so a click on a "Confirm?" made just before
+--- the redraw lands just after it.
+logic.CONFIRM_GRACE = 30
+
+--- A click on the button `key`: the first click arms it, a second click within CONFIRM_TICKS (+ CONFIRM_GRACE) fires
+--- it. A click on another button arms that one instead (one armed button per player).
 --- @param cur ConfirmState?
 --- @param key string
 --- @param now uint
---- @param shown boolean? the clicked button shows the armed state
 --- @return ConfirmState? next state
 --- @return boolean fire
-function logic.confirm_click(cur, key, now, shown)
-	if cur and cur.key == key and (now - cur.tick < logic.CONFIRM_TICKS or shown) then return nil, true end
+function logic.confirm_click(cur, key, now)
+	if cur and cur.key == key and now - cur.tick < logic.CONFIRM_TICKS + logic.CONFIRM_GRACE then return nil, true end
 	return { key = key, tick = now }, false
 end
 
@@ -98,6 +101,14 @@ end
 --- @return boolean
 function logic.confirm_expired(cur, now)
 	return cur ~= nil and now - cur.tick >= logic.CONFIRM_TICKS
+end
+
+--- Past the grace too: the state can go.
+--- @param cur ConfirmState?
+--- @param now uint
+--- @return boolean
+function logic.confirm_gone(cur, now)
+	return cur ~= nil and now - cur.tick >= logic.CONFIRM_TICKS + logic.CONFIRM_GRACE
 end
 
 -- ---------------------------------------------------------------- chunked job

@@ -301,8 +301,10 @@ lab.suite("39_item", {
 		-- Escape: on a pinned window it closes only the drill-down.
 		dev("open_item", PI, hash)
 		local e = dev("item_escape", PI)
-		lab.check("Escape on the pinned window closes the drill-down, the window stays", e.before and not e.open and e.manager_open,
-			e)
+		lab.check("Escape on the pinned window waits for a later tick (another GUI may have replaced the window)",
+			e.before and e.open and e.manager_open, e)
+		dev("pane_escapes", PI, true)
+		lab.check("then closes the drill-down, the window stays", not dev("item_dump", PI).open and dev("state", PI).is_open)
 		-- Unpinned: one rule for every overlay since phase 7 (manager.top_overlay): Escape closes the drill-down and
 		-- the window stays, as it does for the Trains pane; the next Escape closes the window. (Phase 8 closed the
 		-- window with the drill-down here.)

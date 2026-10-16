@@ -1141,15 +1141,12 @@ function lint.scan_world_now(player_index, quiet)
 	return s.world
 end
 
---- A station left Cybersyn: its findings of the last pass go now, not at the next pass, so the Problems tab counts the
---- same stations as the Overview's misconfigured line (which reads the snapshot records) in between.
+--- Drops a station's findings from a findings list; returns the list itself when it has none.
+--- @param findings LintFinding[]
 --- @param id uint
-function lint.station_removed(id)
-	local manager = storage.manager
-	local s = manager and manager.lint
-	if not s then return end
-	s.bits[id] = nil
-	local findings = s.findings
+--- @return LintFinding[] kept
+--- @return boolean hit
+local function without_station(findings, id)
 	local hit = false
 	for _, f in ipairs(findings) do
 		if f.subject == LINT_SUBJECT_STATION and f.id == id then
@@ -1157,11 +1154,32 @@ function lint.station_removed(id)
 			break
 		end
 	end
-	if not hit then return end
+	if not hit then return findings, false end
 	local kept = {}
 	for _, f in ipairs(findings) do
 		if not (f.subject == LINT_SUBJECT_STATION and f.id == id) then kept[#kept + 1] = f end
 	end
+	return kept, true
+end
+
+--- A station left Cybersyn: its findings of the last pass go now, not at the next pass, so the Problems tab counts the
+--- same stations as the Overview's misconfigured line in between. Its snapshot record's mask goes with them (the
+--- record itself stays until the collector's pass ends), and the running pass forgets it so its commit does not
+--- bring it back.
+--- @param id uint
+function lint.station_removed(id)
+	local manager = storage.manager
+	local s = manager and manager.lint
+	if not s then return end
+	if s.bits[id] then set_station_lint(id, 0) end
+	s.bits[id] = nil
+	local job = s.job
+	if job and job.bits and job.findings then
+		job.bits[id] = nil
+		job.findings = without_station(job.findings, id)
+	end
+	local kept, hit = without_station(s.findings, id)
+	if not hit then return end
 	s.findings = kept
 	s.removed = (s.removed or 0) + 1
 end

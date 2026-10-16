@@ -872,7 +872,8 @@ function model.message(g, ctx)
 		if stock == "–" then return { msg .. "-plain", ctx.chip(code) } end
 		return { msg, ctx.chip(code), stock }
 	elseif kind == DIAG_KIND_SERVED then
-		return { msg, ctx.duration(a), format.number(b), ctx.chip(code) }
+		-- The plural takes the plain number: a grouped one ("8,646") is not a number to the locale engine.
+		return { msg, ctx.duration(a), format.number(b), ctx.chip(code), tostring(b) }
 	elseif kind == DIAG_KIND_FLAPPING then
 		return { msg, format.number(b), ctx.chip(code) }
 	elseif kind == DIAG_KIND_DISPATCH_FAILED then

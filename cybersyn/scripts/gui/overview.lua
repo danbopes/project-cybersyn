@@ -1061,8 +1061,10 @@ local function row_entry(row, acked, ctx)
 	local provider = p_id and station_view(p_id, ctx.snapshot) or nil
 	local lost = e.lost_n > 0 and e.lost_to and station_view(e.lost_to, ctx.snapshot) or nil
 	local wait = now - e.first_tick
+	-- On the 10 s step, as the stop panel shows the same entry, whichever update last wrote the row.
+	local wait_shown = wait - wait % text.READ_STEP
 	local inherited = e.first_tick < ctx.inherit_before
-	local wait_caption = text.wait_caption(wait, inherited, util.short_duration)
+	local wait_caption = text.wait_caption(wait_shown, inherited, util.short_duration)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
 	local requested
 	if r_st then
@@ -1081,6 +1083,18 @@ local function row_entry(row, acked, ctx)
 	local content_sigs = ctx.content_sigs
 	local widths = ctx.widths
 	local key = r_id .. "|" .. hash
+	--- The ack's "for another …" is a clock too: the clocks-only path writes it with the wait.
+	--- @return LocalisedString
+	--- @return boolean counting
+	local function ack_tooltip()
+		if not acked then return { "cybersyn-gui.unserved-ack-tooltip" }, false end
+		local a = diag.is_acked("request", r_id, hash)
+		local who = a and a.player_index and game.get_player(a.player_index)
+		local until_text = a and a.until_tick and util.format_duration(a.until_tick - now) or nil
+		return { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
+			until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.unserved-ack-reason" } },
+			until_text ~= nil
+	end
 	local function tooltips(clocks_only)
 		local read = read_age and text.read_ago(read_age, util.format_duration) or nil
 		local chip = text.chip_tooltip({
@@ -1092,7 +1106,7 @@ local function row_entry(row, acked, ctx)
 			b = e.b,
 			network = network_text(r_st and r_st.network_name),
 			rej = e.rej,
-			wait = wait,
+			wait = wait_shown,
 			inherited = inherited,
 			n = e.n,
 			read_age = read_age,
@@ -1104,18 +1118,8 @@ local function row_entry(row, acked, ctx)
 		if clocks_only then return chip, r_tip end
 		local p_tip = station_tooltip(provider, nil)
 		local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) }) or ""
-		local ack
-		if acked then
-			local a = diag.is_acked("request", r_id, hash)
-			local who = a and a.player_index and game.get_player(a.player_index)
-			local until_text = a and a.until_tick and util.format_duration(a.until_tick - now) or nil
-			ack = { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
-				until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.unserved-ack-reason" } }
-		else
-			ack = { "cybersyn-gui.unserved-ack-tooltip" }
-		end
 		local item_tip = { "", { "cybersyn-gui.item-click-hint" } }
-		return chip, r_tip, p_tip, l_tip, ack, item_tip
+		return chip, r_tip, p_tip, l_tip, ack_tooltip(), item_tip
 	end
 	local stock = text.stock_caption(reason, e.a, e.b)
 	local value_style = acked and "cybersyn_unserved_value_acked" or "cybersyn_unserved_value"
@@ -1214,6 +1218,10 @@ local function row_entry(row, acked, ctx)
 				local requester_cell = cells[2]
 				for _, icon in ipairs(requester_cell.children[1].children) do icon.tooltip = r_tip end
 				requester_cell.children[2].tooltip = r_tip
+				if acked then
+					local ack, counting = ack_tooltip()
+					if counting then cells[8].tooltip = ack end
+				end
 				if numbers then
 					content_sigs[key] = content_sig
 					cells[5].caption = stock

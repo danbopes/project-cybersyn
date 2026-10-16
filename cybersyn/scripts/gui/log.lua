@@ -929,7 +929,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 			})
 		end
 		gui.add(tbl, { type = "label", style = "cybersyn_log_count", style_mods = { width = 60 }, caption = format.number(e.n),
-			tooltip = { "cybersyn-gui.log-summary-count-tooltip", format.number(e.n) } })
+			tooltip = { "cybersyn-gui.log-summary-count-tooltip", format.number(e.n), tostring(e.n) } })
 	end
 end
 
@@ -1142,7 +1142,7 @@ function log_tab.refresh_badge(player_data)
 	local caption = n > 0 and format.number(n) or ""
 	if tab.badge_text ~= caption then
 		tab.badge_text = caption
-		tab.tooltip = n > 0 and { "cybersyn-gui.log-badge-tooltip", format.number(n) } or ""
+		tab.tooltip = n > 0 and { "cybersyn-gui.log-badge-tooltip", format.number(n), tostring(n) } or ""
 	end
 end
 
@@ -1204,7 +1204,7 @@ function log_tab.build(map_data, player_data)
 		if done then
 			local age = util.short_duration(game.tick - ss.as_of_tick)
 			status_sig = "sum" .. ss.scanned .. "|" .. age
-			status = { "cybersyn-gui.log-summary-status", format.number(ss.scanned), age }
+			status = { "cybersyn-gui.log-summary-status", format.number(ss.scanned), age, tostring(ss.scanned) }
 			if not any then empty_sig, empty_caption = "sum-empty", { "cybersyn-gui.log-empty" } end
 		else
 			status_sig, status = "summing", { "cybersyn-gui.log-summarising" }
@@ -1239,7 +1239,7 @@ function log_tab.build(map_data, player_data)
 			local newer, complete = model.newer(rs, d)
 			local shown = format.number(newer) .. (complete and "" or "+")
 			status_sig = "paused" .. shown
-			status = { "cybersyn-gui.log-paused", shown }
+			status = { "cybersyn-gui.log-paused", shown, tostring(newer) }
 			seen = rs.anchor
 		else
 			status_sig, status = "", ""

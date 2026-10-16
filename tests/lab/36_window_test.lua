@@ -452,12 +452,17 @@ lab.suite("36_window", {
 		lab.check("Ctrl+F does nothing while the manager is closed", not s.open and not remote.call(D, "state", pi).is_open, s)
 		remote.call(D, "open", pi)
 		remote.call(D, "select_tab", pi, "overview")
+		-- Pinned with no GUI open, the client turns Ctrl+F into the map search: the window leaves it alone.
+		s = lab.dev("search_input", pi)
+		lab.check("Ctrl+F on a pinned window with no GUI open is the game's", not s.open and s.selected_tab == "overview_tab", s)
+		lab.dev("click", pi, "manager_pin_button")
 		s = lab.dev("search_input", pi)
 		lab.check("Ctrl+F on the Overview opens the Stations search field", s.open and s.visible and s.selected_tab == "stations_tab", s)
 		remote.call(D, "set_filter", pi, { query = "stn" })
 		lab.check("Esc in the search field is handled", lab.dev("cancel_search", pi) == true)
 		local h = remote.call(D, "header", pi)
 		lab.check("Esc clears and closes the search field", not h.stations_tab.search and remote.call(D, "state", pi).filters.terms == nil, h)
+		lab.dev("click", pi, "manager_pin_button")
 	end,
 
 	-- The filter row: hidden until toggled, kept open while one of its filters is set, and it costs rows.

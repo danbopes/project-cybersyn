@@ -748,7 +748,8 @@ local function render_header(player_data, cache)
 		elem.tooltip = stations and { tooltip_key or "cybersyn-gui.item-total-tooltip", format.number(value),
 			tostring(stations) } or nil
 	end
-	total("provided", "provided", t.provided, t.provided_stations)
+	-- Stock only; the Providers table also lists stations a loading train emptied, so its "n of m" can count more.
+	total("provided", "provided", t.provided, t.provided_stations, "cybersyn-gui.item-provided-tooltip")
 	total("in_transit", "in-transit", t.in_transit, t.in_transit_stations)
 	-- Active requests only (the Inventory's figure); the Requesters table also lists those below threshold and the
 	-- stops the dispatcher skips, so its "n of m" counts more stations. The tooltip says which.
@@ -787,7 +788,10 @@ local function get_cache(player_data, hash)
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass)
 	local cache = player_data.item_cache
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
-	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY)
+	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
+	-- does not (the Stations tab, filtered to the item, reads those records too).
+	local log = storage.manager.collect_log
+	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
 		return cache, true

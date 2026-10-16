@@ -41,6 +41,30 @@ local function settle()
 	dev("pane_escapes", PI, true)
 end
 
+--- The Overview's ack button of an Unserved row, and the row's wait caption (the cell before it).
+local function ack_button(row)
+	local w = window()
+	if not w then return nil end
+	local function find(e)
+		if e.type == "table" and e.name == "overview_unserved_table" then return e end
+		for _, c in pairs(e.children) do
+			local t = find(c)
+			if t then return t end
+		end
+	end
+	local tbl = find(w)
+	if not tbl then return nil end
+	local cells = tbl.children
+	for i, c in ipairs(cells) do
+		local t = c.tags
+		if c.type == "sprite-button" and c.style.name == "cybersyn_unserved_ack" and t.r_id == row.requester
+			and t.hash == row.item then
+			local wait = cells[i - 1]
+			return c, wait and wait.caption
+		end
+	end
+end
+
 local function an_unserved_row()
 	local rows = remote.call("cybersyn-query", "query_unserved", { limit = 1 })
 	return rows[1]
@@ -73,14 +97,16 @@ lab.suite("39_hardening", {
 		dev("explain_open", PI, row.requester, row.item)
 		lab.check("Explain opens over it", dev("explain_dump", PI).open == true)
 		escape()
+		lab.check("a pinned window's Escape closes nothing in its own tick (another GUI may be replacing the window)",
+			dev("explain_dump", PI).open == true and dev("item_dump", PI).open)
+		settle()
 		lab.check("Escape closes Explain first; the drill-down and the window stay",
 			dev("explain_dump", PI).open == false and dev("item_dump", PI).open and dev("state", PI).is_open)
-		settle()
 		lab.check("with an overlay left, the pinned window takes player.opened back", player().opened == window()
 			and pd_field("overlay_took") == true)
 		escape()
-		lab.check("the next Escape closes the drill-down", not dev("item_dump", PI).open and dev("state", PI).is_open)
 		settle()
+		lab.check("the next Escape closes the drill-down", not dev("item_dump", PI).open and dev("state", PI).is_open)
 		lab.check("with none left, the pinned window gives player.opened up", player().opened == nil
 			and pd_field("overlay_took") == nil, { player().opened, pd_field("overlay_took") })
 		escape()
@@ -94,16 +120,75 @@ lab.suite("39_hardening", {
 		dev("deselect_train", PI)
 		lab.check("closing it by its own control gives player.opened up", player().opened == nil
 			and pd_field("overlay_took") == nil)
-		-- A search field with the keyboard is the top overlay.
+		-- A search field with the keyboard is the top overlay. With no GUI open at all the client makes Ctrl+F the
+		-- map search, so the window leaves it; with an overlay holding player.opened, Ctrl+F is the window's.
 		dev("select_tab", PI, "stations")
 		dev("search_input", PI)
-		lab.check("Ctrl+F on a pinned window: the search takes player.opened", player().opened == window())
+		lab.check("Ctrl+F on a pinned window with no GUI open is left to the game", player().opened == nil
+			and pd_field("search_focused") == nil)
+		dev("explain_open", PI, row.requester, row.item)
+		dev("search_input", PI)
+		lab.check("Ctrl+F on a pinned window with an overlay: the search has the keyboard", player().opened == window()
+			and pd_field("search_focused") == true)
 		dev("set_filter", PI, { query = "stn-1" })
 		escape()
-		lab.check("Escape clears and closes the search, the window stays",
-			read("manager", "players", PI, "search_query") == nil and dev("state", PI).is_open)
 		settle()
-		lab.check("and the pinned window gives player.opened up again", player().opened == nil)
+		lab.check("Escape clears and closes the search, Explain and the window stay",
+			read("manager", "players", PI, "search_query") == nil and dev("state", PI).is_open
+			and dev("explain_dump", PI).open == true)
+		escape()
+		settle()
+		lab.check("and with Explain closed the pinned window gives player.opened up again", player().opened == nil
+			and dev("explain_dump", PI).open == false)
+	end,
+
+	-- A pinned window stays on screen through other GUIs and remote view (PLAN3 §1), its overlays with it: on_gui_closed
+	-- cannot tell Escape from a GUI replacing the window, so the overlay waits for a later tick.
+	function(ctx)
+		dev("select_tab", PI, "trains")
+		local tid = next(read("trains"))
+		ctx.tid = tid
+		dev("select_train", PI, tid)
+		lab.check("pinned + pane: the window holds player.opened", player().opened == window())
+		-- An entity clicked in the world: the engine closes the window, then opens the entity's GUI.
+		escape()
+		local station = next(read("stations"))
+		dev("stop_gui_opened", PI, station)
+		lab.check("a GUI replacing a pinned window keeps the pane and its train", read("manager", "players", PI, "selected_train")
+			== tid and dev("pane_dump", PI).visible and dev("state", PI).is_open, read("manager", "players", PI, "selected_train"))
+		lab.check("nothing waits any more", read("manager", "pane_escapes") == nil)
+		dev("relative_close", PI)
+		lab.check("the window waits to take player.opened back", pd_field("overlay_took") == nil
+			and read("manager", "players", PI, "restore_opened") ~= nil)
+		dev("tick", 1)
+		lab.check("with that GUI closed, the window holds player.opened for the pane again", player().opened == window()
+			and pd_field("overlay_took") == true, { player().opened and player().opened.name, pd_field("overlay_took") })
+		-- Remote view (M, or the pane's Locate) after the close.
+		escape()
+		dev("controller_changed", PI)
+		lab.check("remote view keeps a pinned window's pane", read("manager", "players", PI, "selected_train") == tid
+			and dev("pane_dump", PI).visible, read("manager", "players", PI, "selected_train"))
+		dev("tick", 1)
+		-- A search with the keyboard and a query: remote view takes the keyboard, the query stays.
+		dev("select_tab", PI, "stations")
+		dev("explain_open", PI, ctx.row.requester, ctx.row.item)
+		dev("search_input", PI)
+		dev("set_filter", PI, { query = "stn-2" })
+		lab.check("search focused with a query", pd_field("search_focused") == true)
+		escape()
+		dev("controller_changed", PI)
+		lab.check("remote view after a pinned window's close keeps the query, the field loses the keyboard",
+			read("manager", "players", PI, "search_query") ~= nil and pd_field("search_focused") == nil
+			and dev("explain_dump", PI).open == true, { read("manager", "players", PI, "search_query"), pd_field("search_focused") })
+		dev("explain_close", PI)
+		dev("clear_filters", PI)
+		dev("tick", 1)
+		dev("select_tab", PI, "trains")
+		dev("deselect_train", PI)
+		dev("select_tab", PI, "inventory")
+		dev("tick", 1)
+		lab.check("no overlay left: the pinned window gives player.opened up", player().opened == nil, player().opened and
+			player().opened.name)
 	end,
 
 	-- Unpinned: Escape peels the overlays, then closes the window.
@@ -390,6 +475,96 @@ lab.suite("39_hardening", {
 		dev("update", PI)
 		o = dev("overview_failing_oracle", PI)
 		lab.check("failing counts: switched back on, uncounted again", o.same and o.cached.disabled == before, o)
+	end,
+
+	-- An acknowledged Unserved row's "for another …" is a clock: it moves with the wait, not only when the row's
+	-- numbers or identity change. The wait itself is on the 10 s step, as the stop panel shows it.
+	function(ctx)
+		dev("open", PI)
+		lab.big_screen(PI)
+		dev("select_tab", PI, "overview")
+		local row = an_unserved_row()
+		if not row then
+			lab.skip("ack countdown", "no unserved row")
+			return
+		end
+		ctx.ack_row = row
+		remote.call("cybersyn", "write_global", true, "manager", "players", PI, "overview_show_acked")
+		dev("set_filter", PI, { item = row.item })
+		ctx.ack_until = dev("diag_ack", "request", row.requester, row.item, 3600 * 60, PI).until_tick
+		dev("update", PI, 2)
+		local b = ack_button(row)
+		ctx.ack_tip = b and serpent.line(b.tooltip)
+		lab.check("an acknowledged row shows its countdown", b ~= nil and b.toggled and ctx.ack_tip:find("unserved-ack-for", 1, true)
+			~= nil, ctx.ack_tip)
+		lab.wait(700)
+	end,
+	function(ctx)
+		local row = ctx.ack_row
+		if not row then return end
+		dev("update", PI, 1)
+		local b, wait = ack_button(row)
+		local tip = b and serpent.line(b.tooltip)
+		lab.check("700 ticks later the countdown has moved", tip ~= nil and tip ~= ctx.ack_tip, { ctx.ack_tip, tip })
+		local left = ctx.ack_until and (ctx.ack_until - game.tick)
+		lab.check("it reads the ack's remaining minutes", tip ~= nil and left ~= nil
+			and tip:find('"' .. math.floor(left / 3600) .. "m", 1, true) ~= nil, { tip, left })
+		lab.check("the wait caption is on the 10 s step", wait ~= nil and (wait:find("0s$") ~= nil or wait:find("m$") ~= nil
+			or wait:find("h$") ~= nil), wait)
+		dev("diag_unack", "request", row.requester, row.item, PI)
+		remote.call("cybersyn", "write_global", nil, "manager", "players", PI, "overview_show_acked")
+		dev("clear_filters", PI)
+		dev("close", PI)
+		lab.check("closing the window drops the Overview's per-player caches",
+			read("manager", "players", PI, "overview_failing") == nil
+			and read("manager", "players", PI, "gui_state", "overview_unserved_table", "content_sigs") == nil)
+		dev("open", PI)
+		lab.big_screen(PI)
+	end,
+
+	-- A removed station's findings leave the Problems side, its snapshot record's mask and the running lint pass at
+	-- once, so Problems and the Overview's misconfigured line count the same stations in between.
+	function(ctx)
+		local ok, case = pcall(function()
+			local c = cases.base("LINTGONE", { k = 75 }, { network = "signal-5" })
+			c.r = cases.station(c, { name = cases.sname(c, "r"), x = cases.X_R[1], bits = 2 })
+			return cases.finish(c)
+		end)
+		lab.check("lint removal scenario builds", ok, case)
+		if not ok then return end
+		ctx.lintgone = case
+		-- A request nobody on its network provides; the planner reads it on its next poll of the stop.
+		cases.set_signals(case.r, cases.request(case, -2000, 1000))
+		lab.wait(1200, 50)
+	end,
+	function(ctx)
+		local case = ctx.lintgone
+		if not case then return end
+		local id = case.r.id
+		dev("collect")
+		dev("lint_run")
+		local bits = dev("lint_bits", id)
+		if bits.mask == 0 then
+			lab.skip("lint removal", "the scenario station has no finding")
+			case.cleanup()
+			return
+		end
+		lab.check("the scenario station has findings and its record carries them", #dev("lint_findings", id) > 0
+			and bits.st_lint == bits.mask, bits)
+		-- A pass in flight that has examined the station, its trains still to come.
+		dev("lint_step", 1, 100000, 0)
+		local running = dev("lint_state").running
+		lab.check("a pass is in flight with the station examined", running ~= nil
+			and read("manager", "lint", "job", "bits", id) ~= nil, running)
+		case.cleanup()
+		lab.check("removed: its findings left the Problems side at once", #dev("lint_findings", id) == 0)
+		lab.check("removed: the snapshot record's mask is cleared", (read("manager", "snapshot", "stations", id, "lint") or 0) == 0)
+		lab.check("removed: the running pass forgot it", read("manager", "lint", "job", "bits", id) == nil)
+		local o = dev("overview_failing_oracle", PI)
+		lab.check("removed: the Overview's failing counts still equal a walk", o.same, o)
+		dev("lint_step", 1, 100000, 100000)
+		lab.check("the pass's commit does not bring it back", #dev("lint_findings", id) == 0
+			and dev("lint_state").running == nil)
 	end,
 
 	-- The growth sampler answers with every field the phase-7 growth gate reads.

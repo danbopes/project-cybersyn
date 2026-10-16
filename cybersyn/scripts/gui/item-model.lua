@@ -154,12 +154,27 @@ end
 --- @param snapshot {tick: uint?, stations: table, trains: table, inventory_all: table, item_stations: {[string]: uint[]}?}
 --- @param hash string
 --- @param priority_signal string
+--- @param changed uint[]? stations whose records changed since the index was built (the collector's change log)
 --- @return ItemModel
-function model.build(snapshot, hash, priority_signal)
+function model.build(snapshot, hash, priority_signal, changed)
 	local providers, requesters, trains = {}, {}, {}
 	local stations = snapshot.stations
 	-- The collector's per-item index (a complete pass) names the few stations to look at; without it, all of them.
 	local ids = snapshot.item_stations and (snapshot.item_stations[hash] or {})
+	if ids and changed and #changed > 0 then
+		local seen, merged = {}, {}
+		for _, id in ipairs(ids) do
+			seen[id] = true
+			merged[#merged + 1] = id
+		end
+		for _, id in ipairs(changed) do
+			if not seen[id] then
+				seen[id] = true
+				merged[#merged + 1] = id
+			end
+		end
+		ids = merged
+	end
 	local list
 	if not ids then
 		list = {}

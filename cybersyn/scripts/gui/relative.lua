@@ -30,8 +30,11 @@ local WIDTH = 300
 local PADDING = 12
 -- Inside the body's padding, leaving room for the scroll bar a tall panel gets (relative.fit).
 local INNER = WIDTH - 2 * PADDING - 12
--- An unserved row: item 28, the chip, stock and wait, 6 px apart; the chip takes what the numbers leave.
-local UNSERVED_STOCK, UNSERVED_WAIT, UNSERVED_GAP = 60, 52, 6
+-- An unserved row: item 28, the chip, stock and wait, 6 px apart; the chip takes what the numbers leave. The numbers
+-- are in the small font: "≥59m 50s" and "≥23h 59m" are 61-62 px in the default one, which would leave the chip too
+-- little for "Requester full" or "Train too small" (the tooltip repeats both numbers).
+local UNSERVED_STOCK, UNSERVED_WAIT, UNSERVED_GAP = 56, 56, 6
+local UNSERVED_FONT = "default-small"
 local UNSERVED_CHIP = INNER - 28 - UNSERVED_STOCK - UNSERVED_WAIT - 3 * UNSERVED_GAP
 -- One mount per window the panel sits beside: the stop's, the locomotive's (the docked train pane: a screen frame) and
 -- each wagon's own window (anchored to it).
@@ -52,8 +55,10 @@ local FLEET_TTL = 7200
 -- While no manager window keeps a snapshot, the stop is read again at most this often: a read of a big multi-requester
 -- (combinators and secondaries) is most of a refresh's cost, and the planner itself polls a stop less often.
 local LIVE_READ_TICKS = 120
--- Ring rows the "Last events" scan examines per refresh after the first (diag.last_for_step).
-local EVENT_SCAN_ROWS = 512
+-- Ring rows the "Last events" scan examines per refresh after the first (diag.last_for_step): about 0.31 µs each inside
+-- the real tick on pY 123's full rings, so 0.08 ms beside the rest of the panel's 0.06 ms. A stop with few events
+-- (most of a big base) is scanned through 20k rows in about 80 refreshes.
+local EVENT_SCAN_ROWS = 256
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
 relative.WIDTH = WIDTH
@@ -1004,8 +1009,9 @@ local function render_unserved(state, body, m, compact)
 						caption = utext.chip_caption(e.reason),
 						tooltip = tip,
 					},
-					label(stock, { name = "stock", style_mods = { width = UNSERVED_STOCK, horizontal_align = "right" } }),
-					label(wait, { name = "wait", style_mods = { width = UNSERVED_WAIT, horizontal_align = "right",
+					label(stock, { name = "stock", style_mods = { width = UNSERVED_STOCK, horizontal_align = "right",
+						font = UNSERVED_FONT } }),
+					label(wait, { name = "wait", style_mods = { width = UNSERVED_WAIT, horizontal_align = "right", font = UNSERVED_FONT,
 						font_color = { 0.7, 0.7, 0.7 } } }),
 				}
 				-- The expanded Effective config needs the room; the four lines stay in the chip's tooltip.
@@ -1264,7 +1270,7 @@ local function render_events(state, body, kind, id, shown)
 		state.cursor = cursor
 	end
 	-- The refresh that opens the panel scans diag.SCAN_ROWS at once (a one-off, like the fleet walk's burst); later
-	-- refreshes go on EVENT_SCAN_ROWS at a time, about 0.2 ms on pY's full rings (0.4 µs per row measured).
+	-- refreshes go on EVENT_SCAN_ROWS at a time.
 	local rows = diag.last_for_step(cursor, not first_scan and EVENT_SCAN_ROWS or nil)
 	local now = game.tick
 	shown = shown or EVENTS

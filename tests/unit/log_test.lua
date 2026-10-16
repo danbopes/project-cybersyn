@@ -528,6 +528,28 @@ test("message: cargo reads loaded 18k of 24k, edits name the player, acknowledge
 		{ "cybersyn-diag.msg-manual-action", { "cybersyn-diag.action-fix-priorities" }, { "cybersyn-diag.log-server" } })
 	assert_eq(model.message(g(DIAG_KIND_LINT, { code = DIAG_LINT_CLEARED, a = LINT_CAPACITY }), ctx),
 		{ "cybersyn-diag.msg-lint-cleared", { "cybersyn-diag.lint-capacity" } })
+	-- The plural is chosen on a plain number: "8,646" would print the raw __plural_for_parameter__ token.
+	assert_eq(model.message(g(DIAG_KIND_SERVED, { code = REASON_P_BELOW_THRESHOLD, a = 600, b = 8646 }), ctx),
+		{ "cybersyn-diag.msg-served", "10s", "8,646", { "chip", REASON_P_BELOW_THRESHOLD }, "8646" })
+end)
+
+test("locale: a plural parameter is never one the code fills with a grouped number", function()
+	-- Keys whose shown number is format.number's: the plural reads a later, plain parameter.
+	local plain = {
+		["msg-served"] = 4, ["log-summary-count-tooltip"] = 2, ["log-summary-status"] = 3, ["log-paused"] = 2,
+		["log-badge-tooltip"] = 2,
+	}
+	for _, lang in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+		local f = assert(io.open(H.mod_root .. "/locale/" .. lang .. "/manager.cfg", "r"))
+		for line in f:lines() do
+			local key = line:match("^([%w%-]+)=")
+			if key and plain[key] then
+				local n = tonumber(line:match("__plural_for_parameter__(%d+)__"))
+				assert_eq(n, plain[key], lang .. " " .. key)
+			end
+		end
+		f:close()
+	end
 end)
 
 test("chat tags: train by front stock unit number, stop by unit number, item, gps", function()

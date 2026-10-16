@@ -222,6 +222,11 @@ test("build: the collector's per-item index, and stations whose only link to the
 	assert_eq(pids, { "10:500:0", "11:0:300" }, "the outgoing delivery joins Providers with stock 0")
 	table.sort(rids)
 	assert_eq(rids, { "12:" .. m.NOT_REQUESTING, "13:" .. m.DISABLED }, "the incoming one joins Requesters")
+	-- A record the running pass refilled (the change log) joins, once, though the index does not name it.
+	r = m.build(snapshot, H_, PRIORITY, { 50, 10, 50 })
+	pids = {}
+	for i, x in ipairs(r.providers) do pids[i] = x.id .. ":" .. x.stock end
+	assert_eq(pids, { "10:500", "50:7", "11:0" }, "the changed station joins the index's")
 	-- Without the index every record is looked at.
 	snapshot.item_stations = nil
 	r = m.build(snapshot, H_, PRIORITY)

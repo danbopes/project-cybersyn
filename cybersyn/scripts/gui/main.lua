@@ -16,7 +16,8 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
---- @field pane_escapes {[uint]: {tick: uint, train: uint, controller: defines.controllers}}? Escapes that closed a Trains detail pane and wait to hand player.opened back to the window (manager.settle_pane_escapes)
+--- @field pane_escapes {[uint]: {tick: uint, train: uint?, controller: defines.controllers, kind: string, pinned: boolean?, peel: true?}}? Escapes of an overlay waiting for a later tick (manager.settle_pane_escapes): an unpinned window's overlay is already closed and the window waits to take player.opened back; a pinned window's (peel) closes then, unless another GUI or remote view replaced the window
+--- @field confirm_any true? some player may have a confirm button armed (repair.expire)
 --- @field item_order table<string, int>
 --- @field snapshot Snapshot last complete snapshot (scripts/gui/collector.lua)
 --- @field snapshot_build Snapshot? pass in progress, with transient ids/i/r_keys/p_keys
