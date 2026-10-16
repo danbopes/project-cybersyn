@@ -877,39 +877,57 @@ local function grab_all_settings()
 end
 local function register_tick()
 	script.on_nth_tick(nil)
-	--edge case catch to register both main and manager tick if they're scheduled to run on the same ticks
-	if mod_settings.manager_ups == mod_settings.tps and mod_settings.tps > DELTA then
-		local nth_tick = ceil(60 / mod_settings.tps) --[[@as uint]]
-		script.on_nth_tick(nth_tick, function()
-			fork_migrations.run_once()
+	-- One handler per nth: a second on_nth_tick for the same nth replaces the first.
+	local by_nth, order = {}, {}
+	local function add(nth, fn)
+		local list = by_nth[nth]
+		if not list then
+			list = {}
+			by_nth[nth] = list
+			order[#order + 1] = nth
+		end
+		list[#list + 1] = fn
+	end
+	if mod_settings.tps > DELTA then
+		add(ceil(60 / mod_settings.tps) --[[@as uint]], function()
 			tick(storage, mod_settings)
 			analytics.tick(storage)
+		end)
+	end
+	local manager_nth
+	if mod_settings.manager_ups > DELTA then
+		manager_nth = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
+		add(manager_nth, function()
 			manager.tick(storage)
 		end)
 	else
-		if mod_settings.tps > DELTA then
-			local nth_tick_main = ceil(60 / mod_settings.tps) --[[@as uint]]
-			script.on_nth_tick(nth_tick_main, function()
+		-- Without manager updates the world scan of /cybersyn-find-problems still runs in chunks, on a handler of its
+		-- own that only looks for a running scan.
+		add(WORLD_SCAN_NTH, function()
+			local m = storage.manager
+			if m and m.lint and m.lint.world_job then lint.world_tick() end
+		end)
+	end
+	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
+	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
+	-- tick is a manager tick.
+	local skip_nth = manager_nth and manager_nth > 1 and diag.EXPORT_NTH % manager_nth ~= 0 and manager_nth or nil
+	add(diag.EXPORT_NTH, function()
+		if skip_nth and game.tick % skip_nth == 0 then return end
+		manager.export_tick()
+	end)
+	for _, nth in ipairs(order) do
+		local list = by_nth[nth]
+		if #list == 1 then
+			local fn = list[1]
+			script.on_nth_tick(nth, function()
 				fork_migrations.run_once()
-				tick(storage, mod_settings)
-				analytics.tick(storage)
-			end)
-		end
-		if mod_settings.manager_ups > DELTA then
-			local nth_tick_manager = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
-			script.on_nth_tick(nth_tick_manager, function()
-				fork_migrations.run_once()
-				manager.tick(storage)
+				fn()
 			end)
 		else
-			-- Without manager updates the world scan of /cybersyn-find-problems still runs in chunks, on a handler of
-			-- its own that only looks for a running scan. Registered from a runtime-global setting, so every peer
-			-- registers the same handlers.
-			local nth = WORLD_SCAN_NTH
-			if mod_settings.tps > DELTA and ceil(60 / mod_settings.tps) == nth then nth = nth + 1 end
 			script.on_nth_tick(nth, function()
-				local m = storage.manager
-				if m and m.lint and m.lint.world_job then lint.world_tick() end
+				fork_migrations.run_once()
+				for _, fn in ipairs(list) do fn() end
 			end)
 		end
 	end

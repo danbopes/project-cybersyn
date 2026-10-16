@@ -425,6 +425,11 @@ function interface.tick(n)
 	end)
 end
 
+--- `n` runs of the fixed export tick (one export chunk each).
+function interface.export_tick(n)
+	for _ = 1, n or 1 do manager_gui.export_tick() end
+end
+
 --- One manager tick for player `pi`, its collector step and render timed separately, with the heap change (a drop
 --- means a garbage collection cycle finished inside it); flags a completed pass.
 function interface.tick_split(pi)
@@ -705,11 +710,26 @@ function interface.diag_state()
 		horizon_ticks = horizon,
 		interrupt_checks = verify and verify.checks or nil,
 		interrupt_mismatches = verify and verify.mismatches or nil,
-		export_jobs = d and #d.export_jobs or 0,
+		export_jobs = #diag.export_jobs(),
 		kinds = DIAG_KIND_NAMES,
 		tick = game.tick,
 	}
 	return out
+end
+
+--- Writes one ring event as a hook would (tests of the Log): kind and sev by name, the other columns from `f`.
+--- @return uint? seq
+function interface.diag_event(kind_name, sev_name, f)
+	local d = storage.diag
+	if not d then return nil end
+	local kind, sev
+	for k, name in ipairs(DIAG_KIND_NAMES) do if name == kind_name then kind = k end end
+	for k, name in ipairs(DIAG_SEV_NAMES) do if name == sev_name then sev = k end end
+	if not (kind and sev) then error("unknown kind or severity " .. tostring(kind_name) .. " " .. tostring(sev_name)) end
+	f = f or {}
+	local item = f.item and diag.intern(d, f.item) or 0
+	return diag.event(d, kind, sev, f.code or 0, f.delivery or 0, f.train or 0, f.station or 0, f.station2 or 0, item,
+		f.a or 0, f.b or 0)
 end
 
 function interface.diag_reset()
@@ -717,7 +737,7 @@ function interface.diag_reset()
 	return interface.diag_state()
 end
 
---- Exports both rings at once (the GUI's export runs in chunks on the manager tick) and returns the path under
+--- Exports the rings at once (the GUI's export runs in chunks on a fixed nth tick) and returns the path under
 --- script-output.
 function interface.diag_export(pi)
 	local player = pi and pi > 0 and game.get_player(pi)
@@ -1062,6 +1082,19 @@ end
 --- @param fns {[string]: function}
 function dev.extend(fns)
 	for name, fn in pairs(fns) do interface[name] = fn end
+end
+
+--- Tab modules add their own functions to the interface while they load (before dev.register runs).
+--- @param name string
+--- @param fn function
+function dev.register_function(name, fn)
+	interface[name] = fn
+end
+
+--- Calls an interface function from Lua (a tab module's dev function reusing another).
+--- @param name string
+function dev.call(name, ...)
+	return interface[name](...)
 end
 
 --- @return boolean

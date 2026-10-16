@@ -68,6 +68,14 @@ lab.suite("36_window", {
 				lab.check(string.format("%s %s: page size is the row count", screen[1], tab),
 					tab == "overview" or tab == "inventory" or r.page_size == r.computed, r)
 			end
+			-- The Log: its rows, or every row there is when the log holds fewer.
+			remote.call(D, "select_tab", pi, "log")
+			local lr = remote.call(D, "rows", pi, "log")
+			local ld = remote.call(D, "dump", pi, "log")
+			summary.log = lr.computed .. "/" .. tostring(lr.rendered)
+			lab.check(screen[1] .. " log: rows rendered == rows computed (or all there are)",
+				lr.rendered == #ld.groups and (#ld.groups == lr.computed or ld.complete) and lr.computed >= 3,
+				{ r = lr, groups = #ld.groups, complete = ld.complete })
 			local r = remote.call(D, "rows", pi, "overview")
 			lab.check(screen[1] .. ": window height within 85 % of the screen", r.window_height <= r.max_height, r)
 			lab.check(screen[1] .. ": window width = min(1440, 75 % of the screen)",

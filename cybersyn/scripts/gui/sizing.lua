@@ -31,6 +31,8 @@ sizing.TAB_CHROME = {
 	inventory_tab = 92,
 	-- subheader 36, column header 20, subfooter 36, frame borders
 	problems_tab = 96,
+	-- subheader 36, gap 12, caption strip 36, frame borders 4
+	log_tab = 88,
 }
 
 -- Row height per tab (PLAN3 §4.3): every row of a list tab has a fixed height (Stations 32, Trains 36, including the
@@ -41,6 +43,7 @@ sizing.ROW_HEIGHT = {
 	trains_tab = 36,
 	inventory_tab = 40,
 	problems_tab = 32,
+	log_tab = 28,
 }
 
 --- @class ManagerLayout

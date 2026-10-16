@@ -857,6 +857,7 @@ local function name_icon(view, tags, tooltip, i)
 		quality = icon.quality,
 		tooltip = tooltip,
 		tags = { kind = tags.kind, id = tags.id },
+		mouse_button_filter = { "left", "right" },
 		handler = { [defines.events.on_gui_click] = util.handle.link_click },
 	})
 end
@@ -897,7 +898,7 @@ local function name_cell(view, kind, id, width, tooltip, acked)
 			enabled = view ~= nil,
 			tooltip = tooltip,
 			tags = { kind = tags.kind, id = tags.id },
-			mouse_button_filter = { "left" },
+			mouse_button_filter = { "left", "right" },
 			handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		}),
 	}
@@ -1065,7 +1066,7 @@ local function row_entry(row, acked, ctx)
 						caption = lost and lost.text or "",
 						tooltip = l_tip,
 						tags = lost and { kind = "station", id = e.lost_to } or {},
-						mouse_button_filter = { "left" },
+						mouse_button_filter = { "left", "right" },
 						handler = link,
 					}),
 					hoverable({ type = "label", style = cell_style, caption = lost_caption, tooltip = l_tip }),
