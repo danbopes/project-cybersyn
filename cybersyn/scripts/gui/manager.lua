@@ -270,9 +270,12 @@ function manager.place_window(player, player_data)
 	if not (window and window.valid) then return end
 	local res = player.display_resolution
 	local layout = player_data.layout
-	local width_px = (layout and layout.width or sizing.MAX_WIDTH) * player.display_scale
-	local loc = player_data.location
-	if loc and sizing.location_visible(loc, res.width, res.height, width_px) then
+	local scale = player.display_scale
+	local width_px = (layout and layout.width or sizing.MAX_WIDTH) * scale
+	local height_px = (layout and layout.window_height or 0) * scale
+	local loc = sizing.fit_location(player_data.location, res.width, res.height, width_px, height_px)
+	if loc then
+		player_data.location = loc
 		window.location = loc
 	else
 		player_data.location = nil

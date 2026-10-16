@@ -99,4 +99,20 @@ function sizing.location_visible(location, res_w, res_h, width_px)
 	return x + width_px >= grip and x <= res_w - grip and y >= 0 and y <= res_h - 60
 end
 
+--- A stored position moved just enough that the whole window is on the screen (a larger UI scale makes the window
+--- larger than when the position was stored); nil when the position is unusable.
+--- @param location {x: number, y: number}?
+--- @param res_w number
+--- @param res_h number
+--- @param width_px number
+--- @param height_px number
+--- @return {x: int, y: int}?
+function sizing.fit_location(location, res_w, res_h, width_px, height_px)
+	if not sizing.location_visible(location, res_w, res_h, width_px) then return nil end
+	local x, y = location.x or location[1], location.y or location[2]
+	x = math.max(0, math.min(x, res_w - width_px))
+	y = math.max(0, math.min(y, res_h - height_px))
+	return { x = math.floor(x), y = math.floor(y) }
+end
+
 return sizing

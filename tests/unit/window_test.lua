@@ -84,6 +84,16 @@ test("location_visible: off-screen positions are refused, in physical pixels", f
 	assert_true(s.location_visible({ 10, 10 }, 1920, 1080, 1440))
 end)
 
+test("fit_location: a position kept after the window grew is moved back onto the screen", function()
+	local s = sizing()
+	-- Stored at UI scale 1.5 (2,160 px wide), restored at 2.0 (2,880 px wide).
+	assert_eq(s.fit_location({ x = 840, y = 96 }, 3840, 2160, 2880, 1784), { x = 840, y = 96 })
+	assert_eq(s.fit_location({ x = 1500, y = 96 }, 3840, 2160, 2880, 1784), { x = 960, y = 96 })
+	assert_eq(s.fit_location({ x = 100, y = 900 }, 3840, 2160, 2160, 1820), { x = 100, y = 340 })
+	assert_nil(s.fit_location({ x = 3800, y = 96 }, 3840, 2160, 2880, 1784))
+	assert_nil(s.fit_location(nil, 3840, 2160, 2880, 1784))
+end)
+
 -- ------------------------------------------------------------------ search
 
 local function util()
