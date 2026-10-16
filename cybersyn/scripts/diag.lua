@@ -438,6 +438,111 @@ function diag.last_for(kind, id, n)
 	return out
 end
 
+-- Rows one diag.last_for_step call examines at most. A rare entity's last rows can sit 70,000 rows back in a full
+-- ring, which a panel refreshed every update cannot scan in one go.
+diag.SCAN_ROWS = 4096
+
+--- Walks both rings backwards over the rows with stop_seq < seq < below, newest first, appending the rows that match
+--- `f` to `out` until it holds `n`, or `budget` rows were examined.
+--- @return int examined
+--- @return uint oldest seq of the oldest row examined (`below` when none)
+--- @return boolean exhausted no unexamined row is left in the range
+local function scan_back(d, f, below, stop_seq, budget, out, n)
+	local rb, rf = d.ring_basic, d.ring_full
+	local kb, kf = first_after(rb, below - 1) - 1, first_after(rf, below - 1) - 1
+	local examined, oldest = 0, below
+	while #out < n do
+		local ib = kb >= 0 and at(rb, kb) or nil
+		local iff = kf >= 0 and at(rf, kf) or nil
+		local r, i
+		if ib and (not iff or rb.seq[ib] > rf.seq[iff]) then
+			r, i = rb, ib
+		elseif iff then
+			r, i = rf, iff
+		else
+			return examined, oldest, true
+		end
+		local seq = r.seq[i]
+		if seq <= stop_seq then return examined, oldest, true end
+		if examined >= budget then return examined, oldest, false end
+		if r == rb then kb = kb - 1 else kf = kf - 1 end
+		examined = examined + 1
+		oldest = seq
+		if matches(r, i, f) then out[#out + 1] = row(r, i) end
+	end
+	return examined, oldest, false
+end
+
+--- @class DiagScanCursor diag.last_for as a resumable scan; plain data, kept per panel in storage
+--- @field kind "train"|"station"|"delivery"
+--- @field id uint
+--- @field n int
+--- @field rows table[] the newest matching rows found so far, newest first, at most n
+--- @field top uint every row with seq in (low, top] has been examined
+--- @field low uint
+--- @field done boolean rows holds the newest n matches of the whole log (or all of them)
+--- @field loaded_tick uint the diagnostics state the cursor read (a new state starts over)
+--- @field examined int rows examined by the last call
+
+--- @param kind "train"|"station"|"delivery"
+--- @param id uint
+--- @param n int
+--- @return DiagScanCursor
+function diag.scan_cursor(kind, id, n)
+	return { kind = kind, id = id, n = n, rows = {}, top = 0, low = 1, done = false, loaded_tick = -1, examined = 0 }
+end
+
+--- The last `n` events about one train, station or delivery, newest first, as diag.last_for returns them, but
+--- examining at most `budget` rows (diag.SCAN_ROWS) per call: rows written since the previous call first, then the
+--- backward scan continues where it stopped. The result is complete once `cursor.done` is true.
+--- @param cursor DiagScanCursor
+--- @param budget int?
+--- @return table[] rows
+function diag.last_for_step(cursor, budget)
+	local d = storage.diag
+	cursor.examined = 0
+	if not d then
+		cursor.rows, cursor.done, cursor.loaded_tick = {}, true, -1
+		return cursor.rows
+	end
+	if cursor.done and cursor.top == d.seq and cursor.loaded_tick == d.loaded_tick then return cursor.rows end
+	budget = budget or diag.SCAN_ROWS
+	local n = cursor.n
+	local f = { [cursor.kind] = cursor.id }
+	if cursor.loaded_tick ~= d.loaded_tick or d.seq < cursor.top then
+		cursor.rows, cursor.top, cursor.low, cursor.done, cursor.loaded_tick = {}, d.seq, d.seq + 1, false, d.loaded_tick
+	end
+	if d.seq > cursor.top then
+		if d.seq - cursor.top > budget then
+			-- More new rows than one call may examine: the newest are what matters, so start over from the head.
+			cursor.rows, cursor.top, cursor.low, cursor.done = {}, d.seq, d.seq + 1, false
+		else
+			local new = {}
+			local examined = scan_back(d, f, d.seq + 1, cursor.top, budget, new, n)
+			budget = budget - examined
+			cursor.examined = examined
+			if #new >= n then
+				cursor.rows, cursor.done, cursor.low = new, true, d.seq + 1
+			else
+				for _, ev in ipairs(cursor.rows) do
+					if #new >= n then break end
+					new[#new + 1] = ev
+				end
+				cursor.rows = new
+				if #new >= n then cursor.done = true end
+			end
+			cursor.top = d.seq
+		end
+	end
+	if not cursor.done and budget > 0 then
+		local examined, oldest, exhausted = scan_back(d, f, cursor.low, 0, budget, cursor.rows, n)
+		cursor.examined = cursor.examined + examined
+		cursor.low = oldest
+		if exhausted or #cursor.rows >= n then cursor.done = true end
+	end
+	return cursor.rows
+end
+
 --- How far back the log reaches: the tick of the oldest row (both rings), and the ticks since then.
 --- @return uint? oldest_tick
 --- @return uint ticks

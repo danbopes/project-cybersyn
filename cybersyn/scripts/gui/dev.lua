@@ -1057,6 +1057,13 @@ function interface.diag_coverage(min_wait, top)
 	return out
 end
 
+--- Modules that dev.lua must not require (they require it) add their own functions to the interface at load time,
+--- before dev.register publishes it.
+--- @param fns {[string]: function}
+function dev.extend(fns)
+	for name, fn in pairs(fns) do interface[name] = fn end
+end
+
 --- @return boolean
 function dev.enabled()
 	local setting = settings.startup["cybersyn-manager-dev-interface"]

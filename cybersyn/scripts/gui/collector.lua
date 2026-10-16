@@ -866,27 +866,28 @@ local function parsed_name(name)
 end
 
 --- @param id uint
---- @param station Station
-local function collect_station(b, id, station)
-	local stop = station.entity_stop
-	if not (stop and stop.valid) then return end
-	local comb1 = station.entity_comb1
-	if not (comb1 and comb1.valid) then return end
+--- @return SnapshotStation
+local function new_record(id)
+	return { id = id, provided = {}, requested = {}, deliveries = {}, control = {}, control2 = {}, thresholds = {}, wait = {} }
+end
 
-	local live = collector.get()
+--- Refills a station record from the station and its combinators. With `b`, also records the pass's provide and
+--- request keys (see classify).
+--- @param st SnapshotStation
+--- @param station Station
+--- @param stop LuaEntity
+--- @param comb1 LuaEntity
+--- @param b Snapshot?
+--- @param parse fun(name: string): RichNameParts
+local function fill_station(st, id, station, stop, comb1, b, parse)
 	local name = stop.backer_name
 	local default_item = station.r_threshold or mod_settings.r_threshold or 1
 	local default_fluid = station.r_fluid_threshold or (mod_settings.r_fluid_threshold and mod_settings.r_fluid_threshold > 0 and mod_settings.r_fluid_threshold) or nil
 
-	--- @type SnapshotStation
-	local st = live.stations[id]
-	if not st then
-		st = { id = id, provided = {}, requested = {}, deliveries = {}, control = {}, control2 = {}, thresholds = {}, wait = {} }
-	end
 	if st.name ~= name or not st.name_parts then
 		st.name = name
 		st.name_lower = helpers.multilingual_to_lower(name)
-		st.name_parts = parsed_name(name)
+		st.name_parts = parse(name)
 	end
 	st.surface_index = stop.surface_index
 	-- Collectable values are written only when they change: rewriting a table during a GC cycle queues it for the
@@ -1002,6 +1003,21 @@ local function collect_station(b, id, station)
 	sweep_signals(st.control)
 	sweep_signals(st.control2)
 	sweep_signals(st.thresholds)
+end
+
+--- @param id uint
+--- @param station Station
+local function collect_station(b, id, station)
+	local stop = station.entity_stop
+	if not (stop and stop.valid) then return end
+	local comb1 = station.entity_comb1
+	if not (comb1 and comb1.valid) then return end
+
+	local live = collector.get()
+	--- @type SnapshotStation
+	local st = live.stations[id] or new_record(id)
+	fill_station(st, id, station, stop, comb1, b, parsed_name)
+	local provided, requested = st.provided, st.requested
 
 	local inv = b.inventory_all
 
@@ -1056,6 +1072,27 @@ local function collect_station(b, id, station)
 	b.seen[id] = true
 	b.station_count = b.station_count + 1
 	if st.secondary then b.secondary_count = b.secondary_count + 1 end
+end
+
+local NO_STARVED = {}
+
+--- One station read on its own, outside any pass: the stop panel's live record while no manager window holds a
+--- snapshot. `st` is the caller's own record (never a snapshot record), refilled in place; the pass aggregates are not
+--- touched.
+--- @param id uint
+--- @param st SnapshotStation? reused when given
+--- @param starved {[string]: true}? "network:hash" keys nobody provides, for the status
+--- @return SnapshotStation?
+function collector.read_station(id, st, starved)
+	local station = storage.stations[id]
+	local stop = station and station.entity_stop
+	if not (stop and stop.valid) then return nil end
+	local comb1 = station.entity_comb1
+	if not (comb1 and comb1.valid) then return nil end
+	st = st or new_record(id)
+	fill_station(st, id, station, stop, comb1, nil, rich_name.parse)
+	st.status = collector.station_status(st, starved or NO_STARVED)
+	return st
 end
 
 local function same_keys(a, b)
