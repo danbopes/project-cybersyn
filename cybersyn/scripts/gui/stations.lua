@@ -1154,7 +1154,10 @@ function stations_tab.build(map_data, player_data)
 			warning.visible = true
 			refs.manager_stations_warning_label.caption = { "cybersyn-gui.stations-collecting" }
 		end
-		if summary and summary.valid then summary.caption = "" end
+		if summary and summary.valid then
+			summary.caption = ""
+			state.summary = nil
+		end
 		return
 	end
 
@@ -1355,6 +1358,7 @@ dev.register_dump(TAB, function(player_data)
 		sort_kind = player_data.stations_query and player_data.stations_query.sort_kind,
 		stripes_ok = stripes_ok,
 		widths = widths_for(player_data),
+		summary = player_data.refs.manager_stations_summary.caption,
 	}
 end)
 

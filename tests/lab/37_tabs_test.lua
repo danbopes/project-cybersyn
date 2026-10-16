@@ -553,6 +553,21 @@ lab.suite("37_tabs", {
 			end
 		end
 		lab.check("every Trains id, stop and depot cell is a tag button with the link handler (" .. n .. ")", links_ok and n > 0)
+
+		-- Reopened: the Stations summary line comes back with the rows after the "Collecting…" placeholder.
+		remote.call(D, "select_tab", pi, "stations")
+		remote.call(D, "close", pi)
+		remote.call(D, "open", pi, true)
+		remote.call(D, "select_tab", pi, "stations")
+		local s
+		for _ = 1, 12 do
+			remote.call(D, "tick", 1)
+			s = remote.call(D, "dump", pi, "stations")
+			if s.total > 0 and s.visible then break end
+		end
+		remote.call(D, "tick", 1)
+		s = remote.call(D, "dump", pi, "stations")
+		lab.check("after a reopen the Stations summary line is back", key_of(s.summary) == "cybersyn-gui.stations-summary", s.summary)
 		lab.set_status_filter(pi, nil)
 		lab.dev("set_setting", "cybersyn-enable-planner", ctx.planner)
 	end,
