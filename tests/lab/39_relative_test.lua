@@ -5,8 +5,8 @@
 -- train and a train Cybersyn does not know (hidden); and the R_LAYOUT scenario of cases.lua on row k = 60, whose
 -- requester's allow list no train matches. Checks: role, network and mask, status and the occupancy pair against
 -- Cybersyn's own tables and the stop entity; the Effective config numbers (threshold in stacks, largest eligible
--- capacity, mask match counts) against the snapshot's fleet capability and a count of read_global("trains"), with
--- and without a snapshot; the allow-list line; the Setup section against lint_bits; the unserved chip and the last
+-- capacity, mask match and eligible counts) against a train-by-train count of read_global("trains"), with and
+-- without a snapshot; the manager tick closing a panel whose vanilla window is gone; the allow-list line; the Setup section against lint_bits; the unserved chip and the last
 -- events against the diagnostics; the paused banner; dump twice identical with no section rebuilt; Open in manager.
 
 local DEV = "cybersyn-manager-dev"
@@ -55,16 +55,24 @@ local function oracle_matches(net, mask)
 	return n, nd
 end
 
---- The largest item capacity among the snapshot's layouts on `net` that share a bit with `mask` and the stop accepts.
-local function oracle_capacity(net, mask, station)
-	local cap = dev("fleet_capability").capability[net] or {}
-	local best = 0
-	for layout_id, c in pairs(cap) do
-		if bit32.band(c.mask_or, mask) ~= 0 and (station.allows_all_trains or (station.accepted_layouts or {})[layout_id]) then
-			if c.item_capacity > best then best = c.item_capacity end
+--- Cybersyn trains on `net` the stop can be sent, train by train: own mask shares a bit with `mask` and a layout the
+--- stop accepts; with the largest item capacity among them.
+local function oracle_eligible(net, mask, station)
+	local n, best = 0, 0
+	for _, t in pairs(read("trains")) do
+		local m
+		if t.network_name == "signal-each" then
+			m = type(t.network_mask) == "table" and t.network_mask[net] or nil
+		elseif t.network_name == net then
+			m = type(t.network_mask) == "number" and t.network_mask or 0
+		end
+		if m and bit32.band(m, mask) ~= 0 and
+			(station.allows_all_trains or (station.accepted_layouts or {})[t.layout_id]) then
+			n = n + 1
+			if (t.item_slot_capacity or 0) > best then best = t.item_slot_capacity end
 		end
 	end
-	return best
+	return n, best
 end
 
 local function stop_checks(label, id, want_p, want_r)
@@ -181,6 +189,19 @@ lab.suite("39_relative", {
 		local closed = dev("relative_close", PI)
 		lab.check("closing the window hides the panel and clears the state", closed.open == nil and
 			closed.mounts.train.visible == false and closed.mounts.stop.visible == false, closed)
+		-- A window gone without on_gui_closed: the manager tick finds player.opened is not the subject and closes.
+		dev("relative_open", PI, "train", tid)
+		dev("relative_emulated", PI, false)
+		dev("tick", 1)
+		local gone = dev("relative_dump", PI)
+		lab.check("no vanilla window open: the manager tick closes the train panel", gone.open == nil and
+			gone.mounts.train.visible == false, gone)
+		dev("relative_open", PI, "stop", rx.both)
+		dev("relative_emulated", PI, false)
+		dev("tick", 1)
+		gone = dev("relative_dump", PI)
+		lab.check("no vanilla window open: the manager tick closes the stop panel", gone.open == nil and
+			gone.mounts.stop.visible == false, gone)
 		rx.tid = tid
 
 		-- The R_LAYOUT requester: unserved chip, events, the allow-list line (no snapshot: the fleet walk).
@@ -206,6 +227,10 @@ lab.suite("39_relative", {
 		local n_trains, n_depots = oracle_matches(case.network, station.network_mask)
 		lab.check("effective (walk): mask matches n trains · n depots = read_global trains",
 			net and net.trains == n_trains and net.depots == n_depots and n_trains > 0, { net, n_trains, n_depots })
+		local n_eligible = oracle_eligible(case.network, station.network_mask, station)
+		lab.check("effective (walk): eligible trains = per-train oracle; capacity, allow-list and match lines agree",
+			net and net.eligible == n_eligible and net.allow_trains == net.eligible and net.eligible <= net.trains,
+			{ net, n_eligible })
 		lab.check("effective: allow list accepts layouts but no train matches (red line)",
 			net and net.accepted ~= false and net.allow_trains == 0 and
 			serpent.line(d.sections.effective.content):find("relative-eff-allow\"", 1, true) ~= nil, net)
@@ -223,9 +248,10 @@ lab.suite("39_relative", {
 		e = m.effective
 		net = e.nets[1]
 		lab.check("with a snapshot: the panel reads the snapshot record", m.source == "snapshot", m.source)
-		lab.check("effective (snapshot): largest eligible capacity = fleet_capability", net.item_capacity ==
-			oracle_capacity(case.network, station.network_mask, station) and e.capability_source == "snapshot",
-			{ net.item_capacity, oracle_capacity(case.network, station.network_mask, station) })
+		local _, r_cap = oracle_eligible(case.network, station.network_mask, station)
+		lab.check("effective (snapshot): largest eligible capacity = per-train oracle", net.item_capacity == r_cap,
+			{ net.item_capacity, r_cap })
+		lab.check("effective (snapshot): provider overrides known", e.overrides_known == true, e.overrides_known)
 		lab.check("effective (snapshot): match counts unchanged", net.trains == n_trains and net.depots == n_depots, net)
 		-- A save requester that accepts every layout: a capacity the fleet really has.
 		dev("relative_open", PI, "stop", rx.requester)
@@ -233,10 +259,12 @@ lab.suite("39_relative", {
 		local sd = dev("relative_dump", PI)
 		local sst = read("stations", rx.requester)
 		local snet = sd.model.effective and sd.model.effective.nets[1]
-		local scap = oracle_capacity(sst.network_name, sst.network_mask, sst)
+		local se, scap = oracle_eligible(sst.network_name, sst.network_mask, sst)
 		local sn, snd = oracle_matches(sst.network_name, sst.network_mask)
 		lab.check("effective (snapshot, save requester): largest eligible capacity and match counts", snet and scap > 0 and
-			snet.item_capacity == scap and snet.trains == sn and snet.depots == snd, { snet, scap, sn, snd })
+			snet.item_capacity == scap and snet.trains == sn and snet.depots == snd and snet.eligible == se and
+			snet.allow_trains == se, { snet, scap, sn, snd, se })
+		lab.check("effective open: the slot rows stay", sd.sections.slots.visible == true)
 		local sitem = sd.model.effective and sd.model.effective.items[1]
 		local sstack = sitem and prototypes.item[sitem.hash] and prototypes.item[sitem.hash].stack_size
 		lab.check("effective (save requester): stacks = ceil(threshold / stack size), spare = capacity - stacks",
@@ -291,6 +319,22 @@ lab.suite("39_relative", {
 			state.filters.terms and state.filters.terms[1] == "#" .. rx.tid, state.filters)
 		dev("close", PI)
 		dev("clear_filters", PI)
+		dev("relative_close", PI)
+
+		-- The 10 s age step rewrites the unserved row's wait in place instead of rebuilding the section.
+		dev("drop_snapshot")
+		local u = dev("relative_open", PI, "stop", rx.case.r_station)
+		rx.age = { rebuilt = (u.rebuilt or {}).unserved, wait = serpent.line(u.sections.unserved.content) }
+		lab.wait(1300, SPEED)
+	end,
+
+	function()
+		local u = dev("relative_dump", PI)
+		local m = u.model or {}
+		lab.check("age step: unserved wait rewritten in place, the section not rebuilt",
+			u.open and m.unserved and m.unserved[1] and m.unserved[1].reason == "R_LAYOUT" and
+			(u.rebuilt or {}).unserved == rx.age.rebuilt and serpent.line(u.sections.unserved.content) ~= rx.age.wait,
+			{ u.rebuilt, rx.age.rebuilt })
 		dev("relative_close", PI)
 	end,
 

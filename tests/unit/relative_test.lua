@@ -70,27 +70,59 @@ test("count_train: mask matches and distinct depots; capability per layout over 
 	assert_eq(b.trains, 1)
 	assert_eq(b.depots, 1)
 	assert_eq(b.capability[3].fluid_capacity, 50000)
+	assert_eq(a.matched[1], { count = 1, item_capacity = 40, fluid_capacity = 0 }, "layout 1: only the mask-1 train")
+	assert_eq(a.matched[2], { count = 1, item_capacity = 80, fluid_capacity = 0 })
 end)
 
-test("allow_list: accepted layouts, matching trains and the layouts no train has", function()
+--- A fleet count of one network from {mask, layout_id, items, fluid} trains against the stop's mask.
+local function fleet(t, stop_mask, trains)
+	local counts = { ["signal-A"] = t.new_fleet_count(stop_mask) }
+	for _, x in ipairs(trains) do
+		t.count_train(counts, { network_name = "signal-A", network_mask = x[1], depot_id = 1, layout_id = x[2],
+			item_slot_capacity = x[3], fluid_capacity = x[4] or 0 })
+	end
+	return counts["signal-A"]
+end
+
+test("eligible: trains counted one by one, never a layout's whole count by its OR-ed mask", function()
 	local t = rt()
-	local capability = {
-		[1] = { count = 2, mask_or = 1 },
-		[2] = { count = 3, mask_or = 2 },
-	}
-	local n, trains, missing = t.allow_list({ [1] = true, [5] = true, [4] = true }, false, capability, 1)
+	-- One layout, four trains with masks 1, 2, 4, 8; the stop's mask is 1.
+	local c = fleet(t, 1, { { 1, 7, 40 }, { 2, 7, 40 }, { 4, 7, 40 }, { 8, 7, 40 } })
+	assert_eq(c.trains, 1)
+	assert_eq(c.capability[7].count, 4)
+	local n, items = t.eligible(c, true, {})
+	assert_eq(n, 1, "matches the per-train count")
+	assert_eq(items, 40)
+	-- The largest capacity comes from a matching train only.
+	c = fleet(t, 1, { { 1, 3, 20 }, { 2, 3, 80 } })
+	n, items = t.eligible(c, true, {})
+	assert_eq({ n, items }, { 1, 20 }, "the 80-stack train shares no bit")
+	-- Accepted layouts filter the matched trains.
+	c = fleet(t, 3, { { 1, 1, 40 }, { 2, 2, 80 }, { 1, 2, 60 } })
+	n, items = t.eligible(c, false, { [1] = true })
+	assert_eq({ n, items }, { 1, 40 })
+	n, items = t.eligible(c, false, { [2] = true })
+	assert_eq({ n, items }, { 2, 80 })
+	assert_eq({ t.eligible(nil, true, {}) }, { 0, 0, 0 })
+end)
+
+test("allow_list: accepted layouts, eligible trains and the layouts no train has", function()
+	local t = rt()
+	local c = fleet(t, 1, { { 1, 1, 40 }, { 1, 1, 40 }, { 2, 2, 40 }, { 2, 2, 40 }, { 3, 2, 40 } })
+	local n, trains, missing = t.allow_list({ [1] = true, [5] = true, [4] = true }, false, c)
 	assert_eq(n, 3)
 	assert_eq(trains, 2)
 	assert_eq(missing, { 4, 5 })
-	n, trains, missing = t.allow_list({ [2] = true }, false, capability, 1)
-	assert_eq(trains, 0, "layout 2's trains share no bit with mask 1")
+	n, trains, missing = t.allow_list({ [2] = true }, false, c)
+	assert_eq(trains, 1, "only layout 2's mask-3 train shares bit 1")
 	assert_eq(missing, {})
-	n, trains, missing = t.allow_list({}, true, capability, 3)
+	n, trains = t.allow_list({}, true, c)
 	assert_false(n)
-	assert_eq(trains, 5)
-	n, trains = t.allow_list({ [1] = true }, false, nil, 1)
+	assert_eq(trains, 3)
+	n, trains, missing = t.allow_list({ [1] = true }, false, nil)
 	assert_eq(n, 1)
 	assert_eq(trains, 0)
+	assert_eq(missing, { 1 })
 end)
 
 test("layout_text: one letter per carriage", function()

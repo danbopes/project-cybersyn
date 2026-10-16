@@ -33,9 +33,14 @@ local SLOT_COLUMNS = 7
 local SLOT_ROWS = 3
 local UNSERVED_ROWS = 3
 local EFFECTIVE_ITEMS = 6
--- Trains of storage.trains the Effective config walk counts per refresh, and how long a finished count is used.
-local FLEET_CHUNK = 150
-local FLEET_TTL = 1800
+-- Trains of storage.trains the Effective config walk counts per refresh (about 2.5 µs each on pY 123), how many the
+-- render of a click or an opened window counts at once, and how long a finished count is used.
+local FLEET_CHUNK = 25
+local FLEET_BURST = 600
+local FLEET_TTL = 7200
+-- While no manager window keeps a snapshot, the stop is read again at most this often: a read of a big multi-requester
+-- (combinators and secondaries) is most of a refresh's cost, and the planner itself polls a stop less often.
+local LIVE_READ_TICKS = 120
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
 relative.WIDTH = WIDTH
@@ -224,6 +229,7 @@ function relative.build(parent, kind, id)
 		style_mods = { padding = 8, vertical_spacing = 8 },
 	}
 	for _, name in ipairs(sections) do
+		if name == "buttons" then break end
 		body[#body + 1] = {
 			type = "flow",
 			name = name,
@@ -271,6 +277,14 @@ function relative.build(parent, kind, id)
 			vertical_scroll_policy = "auto",
 			body,
 		},
+		-- Outside the scroll pane, so the buttons stay in view however far the body scrolls.
+		{
+			type = "flow",
+			name = "footer",
+			direction = "vertical",
+			style_mods = { left_padding = 8, right_padding = 8, top_padding = 4, bottom_padding = 8, maximal_width = WIDTH },
+			{ type = "flow", name = "buttons", direction = "vertical", visible = false, style_mods = { maximal_width = INNER } },
+		},
 	})
 	return panel
 end
@@ -291,7 +305,7 @@ end
 --- @field schedule {records: table[], tick: uint}?
 
 local function new_state(kind, id)
-	return { kind = kind, id = id, sigs = {}, rebuilds = 0, refreshes = 0, starved = {} }
+	return { kind = kind, id = id, sigs = {}, ages = {}, rebuilds = 0, refreshes = 0, starved = {} }
 end
 
 local function hidden() return nil end
@@ -325,10 +339,11 @@ end
 
 --- This station's active request keys nobody on its networks provides, from the planner's economy, which is complete
 --- only while it dispatches; between those ticks the last answer stands.
+--- @return boolean updated
 local function update_starved(state, st)
-	if storage.tick_state ~= STATE_DISPATCH or not st then return end
+	if storage.tick_state ~= STATE_DISPATCH or not st then return false end
 	local economy = storage.economy
-	if not economy then return end
+	if not economy then return false end
 	local r_stops, p_stops = economy.all_r_stops, economy.all_p_stops
 	local starved = {}
 	for _, net in ipairs(networks_of(st.network_name, st.network_mask)) do
@@ -340,6 +355,52 @@ local function update_starved(state, st)
 		end
 	end
 	state.starved = starved
+	return true
+end
+
+local function same_values(a, b)
+	for k, v in pairs(a) do
+		if b[k] ~= v then return false end
+	end
+	for k in pairs(b) do
+		if a[k] == nil then return false end
+	end
+	return true
+end
+
+local function same_requests(a, b)
+	for k, r in pairs(a) do
+		local o = b[k]
+		if not o or o.count ~= r.count or o.threshold ~= r.threshold or o.active ~= r.active then return false end
+	end
+	for k in pairs(b) do
+		if a[k] == nil then return false end
+	end
+	return true
+end
+
+--- Whether two live reads of one stop hold the same values for everything the panel shows.
+local function same_record(a, b)
+	if a.status ~= b.status or a.trains_limit ~= b.trains_limit or a.deliveries_total ~= b.deliveries_total or
+		a.network_name ~= b.network_name or a.is_p ~= b.is_p or a.is_r ~= b.is_r or a.is_stack ~= b.is_stack then
+		return false
+	end
+	local ma, mb = a.network_mask, b.network_mask
+	if type(ma) == "table" and type(mb) == "table" then
+		if not same_values(ma, mb) then return false end
+	elseif ma ~= mb then
+		return false
+	end
+	return same_values(a.provided, b.provided) and same_requests(a.requested, b.requested) and
+		same_values(a.deliveries, b.deliveries) and same_values(a.control, b.control) and
+		same_values(a.control2, b.control2) and same_values(a.thresholds, b.thresholds)
+end
+
+--- Whether this refresh rewrites the unserved rows' ages in place (render_unserved): the live read and a fleet walk
+--- chunk wait for the next refresh then, so no refresh pays for two of them.
+local function age_due(state, now)
+	local a = state.ages.unserved
+	return a ~= nil and a ~= math.floor(now / rtext.AGE_STEP)
 end
 
 --- The station record the panel shows: the manager snapshot's while one is live, else a live read of the stop.
@@ -349,12 +410,31 @@ local function station_record(state, id)
 	local snap = collector.get()
 	local st = snap.tick and snap.stations[id]
 	if st then
-		state.st = nil
+		state.st, state.spare, state.read = nil, nil, false
 		return st, "snapshot"
 	end
-	update_starved(state, state.st)
-	state.st = collector.read_station(id, state.st, state.starved)
-	return state.st, "live"
+	local cur = state.st
+	if cur and cur.id == id then
+		local age = game.tick - cur.read_tick
+		if age < LIVE_READ_TICKS or (age < 2 * LIVE_READ_TICKS and age_due(state, game.tick)) then
+			state.read = false
+			return cur, "live"
+		end
+	end
+	-- Two records take turns, so an unchanged read keeps the previous one's content key and every section's cached
+	-- signature (record_sig) still applies.
+	st = collector.read_station(id, state.spare, state.starved)
+	state.read = true
+	if not st then return nil, "live" end
+	if update_starved(state, st) then st.status = collector.station_status(st, state.starved) end
+	if cur and cur.id == id and cur.sig_key and same_record(cur, st) then
+		st.sig_key = cur.sig_key
+	else
+		state.live_version = (state.live_version or 0) + 1
+		st.sig_key = -state.live_version
+	end
+	state.spare, state.st = cur, st
+	return st, "live"
 end
 
 --- The stop's findings of the last lint pass, looked up again only when a pass completed.
@@ -369,11 +449,34 @@ local function lint_findings_of(state, id, pass)
 	return out
 end
 
---- Unserved entries of a requester, oldest first.
-local function unserved_rows(id)
+local NO_ROWS = {}
+
+--- Unserved entries of a requester, oldest first; sorted again only when the set of entries changed.
+local function unserved_rows(state, id)
 	local by_item = diag.unserved_for(id)
+	if not by_item then
+		state.urows = nil
+		return NO_ROWS
+	end
+	local n, first, ixs = 0, 0, 0
+	for ix, e in pairs(by_item) do
+		n, first, ixs = n + 1, first + e.first_tick, ixs + ix
+	end
+	local c = state.urows
+	if c and c.n == n and c.first == first and c.ixs == ixs then
+		local ok = true
+		for _, r in ipairs(c.rows) do
+			local e = by_item[r.ix]
+			if not e then
+				ok = false
+				break
+			end
+			r.e = e
+		end
+		if ok then return c.rows end
+	end
 	local rows = {}
-	if not by_item then return rows end
+	state.urows = { n = n, first = first, ixs = ixs, rows = rows }
 	for ix, e in pairs(by_item) do
 		local hash = diag.item_hash(ix)
 		if hash then rows[#rows + 1] = { ix = ix, hash = hash, e = e } end
@@ -403,10 +506,12 @@ local function record_sig(state, name, st, fn, arg)
 		cache = {}
 		state.rsig = cache
 	end
+	-- A snapshot record changes once per pass (read_tick); a live record carries its content key (station_record).
+	local key = st.sig_key or st.read_tick
 	local e = cache[name]
-	if e and e.tick == st.read_tick and e.id == st.id then return e.sig end
+	if e and e.tick == key and e.id == st.id and e.arg == arg then return e.sig end
 	local sig = fn(st, arg)
-	cache[name] = { tick = st.read_tick, id = st.id, sig = sig }
+	cache[name] = { tick = key, id = st.id, sig = sig, arg = arg }
 	return sig
 end
 
@@ -457,19 +562,20 @@ local function fleet_counts(state, nets, key)
 	if not f or f.key ~= key or (f.done_tick and now - f.done_tick >= FLEET_TTL) then
 		local ids = {}
 		for tid in pairs(storage.trains) do ids[#ids + 1] = tid end
-		table.sort(ids)
 		local counts = {}
 		for _, n in ipairs(nets) do counts[n.name] = rtext.new_fleet_count(n.mask) end
 		local result = f and f.key == key and f.result or nil
 		f = { key = key, ids = ids, i = 0, counts = counts, result = result }
 		state.fleet = f
 	end
-	if not f.done_tick then
+	if not f.done_tick and (state.burst or not (state.read or age_due(state, now))) then
+		state.walk_tick = now
 		local ids, trains = f.ids, storage.trains
-		local stop = math.min(#ids, f.i + FLEET_CHUNK)
+		local stop = math.min(#ids, f.i + (state.burst and FLEET_BURST or FLEET_CHUNK))
 		for i = f.i + 1, stop do
+			-- Only Cybersyn's own fields: a destroyed train leaves storage.trains in the event that destroys it.
 			local train = trains[ids[i]]
-			if train and train.entity and train.entity.valid then rtext.count_train(f.counts, train) end
+			if train then rtext.count_train(f.counts, train) end
 		end
 		f.i = stop
 		if stop >= #ids then
@@ -481,10 +587,10 @@ local function fleet_counts(state, nets, key)
 	return f.result, #(f.ids or {}) > 0 and f.i / #f.ids or 1
 end
 
---- The Effective config numbers (PLAN3 §4.9, A8 + B15).
+--- The Effective config numbers (PLAN3 §4.9, A8 + B15). The fleet numbers come from the panel's own walk, train by
+--- train: snapshot.fleet.capability ORs the masks of a layout's trains, which cannot tell how many of them match.
 local function build_effective(state, st, station, nets, counts, progress)
 	local snap = collector.get()
-	local live = snap.tick ~= nil
 	local control = st.control
 	local m = {
 		base_item = control[REQUEST_THRESHOLD] and math.abs(control[REQUEST_THRESHOLD]) or (mod_settings.r_threshold or 1),
@@ -495,7 +601,8 @@ local function build_effective(state, st, station, nets, counts, progress)
 		counting = counts == nil and progress or nil,
 		nets = {},
 		items = {},
-		capability_source = live and "snapshot" or "walk",
+		-- The providers' own item thresholds are a pass aggregate of the snapshot; a live read has none.
+		overrides_known = snap.tick ~= nil,
 	}
 	if control[REQUEST_FLUID_THRESHOLD] then
 		m.base_fluid, m.base_fluid_signal = math.abs(control[REQUEST_FLUID_THRESHOLD]), true
@@ -508,22 +615,21 @@ local function build_effective(state, st, station, nets, counts, progress)
 	local accepted = station.accepted_layouts or {}
 	local best_items, best_fluid = 0, 0
 	for _, net in ipairs(nets) do
-		local capability = live and snap.fleet.capability[net.name] or (counts and counts[net.name] and counts[net.name].capability)
 		local c = counts and counts[net.name]
-		local trains, ok, items, fluid = lint.eligible(capability, net.mask, allows_all, accepted)
-		local n_accepted, allow_trains, missing = rtext.allow_list(accepted, allows_all, capability, net.mask)
+		local eligible, items, fluid = rtext.eligible(c, allows_all, accepted)
+		local n_accepted, _, missing = rtext.allow_list(accepted, allows_all, c)
 		m.nets[#m.nets + 1] = {
 			name = net.name,
 			mask = net.mask,
 			trains = c and c.trains or nil,
 			depots = c and c.depots or nil,
-			eligible = trains,
+			eligible = eligible,
 			item_capacity = items,
 			fluid_capacity = fluid,
 			accepted = n_accepted,
-			allow_trains = allow_trains,
+			allow_trains = eligible,
 			missing = missing,
-			known = capability ~= nil,
+			known = c ~= nil,
 		}
 		if items > best_items then best_items = items end
 		if fluid > best_fluid then best_fluid = fluid end
@@ -531,7 +637,8 @@ local function build_effective(state, st, station, nets, counts, progress)
 	m.item_capacity, m.fluid_capacity = best_items, best_fluid
 	local entries = diag.unserved_for(st.id)
 	local list = util.hashes_in_item_order(st.requested)
-	for i = 1, math.min(#list, EFFECTIVE_ITEMS) do
+	local warned = 0
+	for i = 1, #list do
 		local hash = list[i]
 		local req = st.requested[hash]
 		local name = unhash_signal(hash)
@@ -545,24 +652,29 @@ local function build_effective(state, st, station, nets, counts, progress)
 		local stack = not is_fluid and (get_stack_size(nil, name) or 1) or nil
 		local need = is_fluid and effective or rtext.stacks(effective, stack)
 		local capacity = is_fluid and best_fluid or best_items
-		local e
-		local ix = entries and storage.diag and storage.diag.item_ix[hash]
-		if ix then e = entries[ix] end
-		m.items[#m.items + 1] = {
-			hash = hash,
-			threshold = req.threshold,
-			override = overridden and override or nil,
-			effective = effective,
-			is_fluid = is_fluid,
-			stack = stack,
-			need = need,
-			capacity = capacity,
-			gap = capacity - need,
-			warn = capacity > 0 and need >= capacity,
-			p_count = e and e.p_count or nil,
-			p_threshold = e and e.p_threshold or nil,
-		}
+		local warn = capacity > 0 and need >= capacity
+		if warn then warned = warned + 1 end
+		if i <= EFFECTIVE_ITEMS then
+			local e
+			local ix = entries and storage.diag and storage.diag.item_ix[hash]
+			if ix then e = entries[ix] end
+			m.items[#m.items + 1] = {
+				hash = hash,
+				threshold = req.threshold,
+				override = overridden and override or nil,
+				effective = effective,
+				is_fluid = is_fluid,
+				stack = stack,
+				need = need,
+				capacity = capacity,
+				gap = capacity - need,
+				warn = warn,
+				p_count = e and e.p_count or nil,
+				p_threshold = e and e.p_threshold or nil,
+			}
+		end
 	end
+	m.warned = warned
 	m.more_items = math.max(0, #list - EFFECTIVE_ITEMS)
 	return m
 end
@@ -641,7 +753,7 @@ local function stop_model(pd, state)
 		m.status = st.status
 		m.deliveries = st.deliveries_total
 		m.limit = st.trains_limit
-		m.unserved = unserved_rows(id)
+		m.unserved = unserved_rows(state, id)
 		m.st = st
 		m.display_state = station.display_state
 		if pd.relative_effective_open then m.effective = effective_model(state, st, station, m.nets, m.nets_key) end
@@ -652,6 +764,9 @@ local function stop_model(pd, state)
 	else
 		m.network_name = refueler.network_name
 		m.nets = networks_of(refueler.network_name, refueler.network_mask)
+		local parts = {}
+		for i, n in ipairs(m.nets) do parts[i] = n.name .. "=" .. n.mask end
+		m.nets_key = table.concat(parts, ",")
 		m.limit = stop.trains_limit
 		m.deliveries = refueler.trains_total or 0
 	end
@@ -682,10 +797,8 @@ local function finding_fix(f)
 end
 
 local function render_stop_head(state, body, m)
-	local nets_sig = {}
-	for i, n in ipairs(m.nets or {}) do nets_sig[i] = n.name .. "=" .. n.mask end
 	local sig = table.concat({ m.sub, tostring(m.is_p), tostring(m.is_r), tostring(m.is_stack), tostring(m.status),
-		table.concat(nets_sig, ","), m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
+		m.nets_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
 		tostring(m.parked) }, "|")
 	if state.sigs["head"] ~= sig then
 		section(state, body, "head", sig, function()
@@ -730,9 +843,7 @@ end
 
 local function render_slots(state, body, m)
 	local st = m.st
-	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
-	-- still fits a 1080p screen at scale 1.
-	if not st or m.effective then
+	if not st then
 		if state.sigs["slots"] ~= "" then section(state, body, "slots", "", hidden) end
 		return
 	end
@@ -768,54 +879,72 @@ local function surface_name(index)
 	return s and s.name or tostring(index)
 end
 
+--- The texts of an unserved row that move between reason changes: the four-line why (payload, evaluations, losses,
+--- wait), the stock and the wait, all on the 10 s age step.
+--- @return LocalisedString tip
+--- @return LocalisedString stock
+--- @return LocalisedString wait
+local function unserved_texts(m, r, now, inherit_before)
+	local e = r.e
+	local _, _, item_tooltip = util.item_sprite_and_tooltip(r.hash)
+	local st = m.st
+	local req = st and st.requested[r.hash]
+	local wait = rtext.age_step(now - e.first_tick)
+	local inherited = e.first_tick < inherit_before
+	local tip = utext.chip_tooltip({
+		item = item_tooltip or r.hash,
+		requested = req and -req.count or nil,
+		requester = m.name,
+		reason = e.reason,
+		a = e.a,
+		b = e.b,
+		network = m.network_name and network_rich(m.network_name) or nil,
+		rej = e.rej,
+		wait = wait,
+		inherited = inherited,
+		n = e.n,
+		surface_name = surface_name,
+	}, util.format_duration)
+	local stock = utext.stock_caption(e.reason, e.a, e.b)
+	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited, util.short_duration)
+end
+
 local function render_unserved(state, body, m, compact)
 	local rows = m.unserved
 	if not rows or #rows == 0 or not storage.diag then
+		state.ages.unserved = nil
 		if state.sigs["unserved"] ~= "" then section(state, body, "unserved", "", hidden) end
 		return
 	end
 	local now = game.tick
 	local d = storage.diag
 	local inherit_before = diag.inherit_threshold(d)
-	-- The payload, the evaluation count and the losses move with every planner cycle on a busy base; they are refreshed
-	-- with the 10 s age step, the reason and the provider at once.
+	-- The rows are rebuilt when an item, a reason, an ack or the provider changes; the texts that move with every
+	-- planner cycle on a busy base are rewritten in place on the 10 s age step (a rebuild cost a refresh 0.4 ms).
 	local a, b, c = 0, 0, 0
-	for i = 1, math.min(#rows, UNSERVED_ROWS) do
+	local n = math.min(#rows, UNSERVED_ROWS)
+	for i = 1, n do
 		local r, e = rows[i], rows[i].e
 		local w = util.item_rank(r.hash) * i
 		a = a + w * e.reason + (diag.is_acked("request", state.id, r.hash) and w or 0)
 		b = b + w * e.first_tick
 		c = c + w * (e.p_station_id or 0)
 	end
-	local unserved_sig = content_sig(#rows, a, b, c) .. ":" .. math.floor(now / rtext.AGE_STEP) .. (compact and "c" or "")
+	local unserved_sig = content_sig(#rows, a, b, c) .. (compact and "c" or "")
+	local step = math.floor(now / rtext.AGE_STEP)
+	local ages = state.ages
 	if state.sigs["unserved"] ~= unserved_sig then
+		ages.unserved = step
 		section(state, body, "unserved", unserved_sig, function()
-			local st = m.st
 			local out = { heading({ "cybersyn-gui.relative-unserved", tostring(#rows) }) }
-			for i = 1, math.min(#rows, UNSERVED_ROWS) do
+			for i = 1, n do
 				local r, e = rows[i], rows[i].e
-				local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(r.hash)
-				local req = st and st.requested[r.hash]
-				local wait = now - e.first_tick
-				local inherited = e.first_tick < inherit_before
-				local tip = utext.chip_tooltip({
-					item = item_tooltip or r.hash,
-					requested = req and -req.count or nil,
-					requester = m.name,
-					reason = e.reason,
-					a = e.a,
-					b = e.b,
-					network = m.network_name and network_rich(m.network_name) or nil,
-					rej = e.rej,
-					wait = wait,
-					inherited = inherited,
-					n = e.n,
-					surface_name = surface_name,
-				}, util.format_duration)
+				local sprite, quality = util.item_sprite_and_tooltip(r.hash)
+				local tip, stock, wait = unserved_texts(m, r, now, inherit_before)
 				local acked = diag.is_acked("request", state.id, r.hash) ~= nil
-				local stock = utext.stock_caption(e.reason, e.a, e.b)
-				local row = {
+				out[#out + 1] = {
 					type = "flow",
+					name = "row" .. i,
 					direction = "horizontal",
 					style_mods = { vertical_align = "center", horizontal_spacing = 6 },
 					sprite and {
@@ -830,31 +959,45 @@ local function render_unserved(state, body, m, compact)
 					} or label(r.hash),
 					{
 						type = "button",
+						name = "chip",
 						style = acked and "cybersyn_chip_grey" or utext.chip_style(e.reason),
 						caption = utext.chip_caption(e.reason),
 						tooltip = tip,
 					},
-					label(stock ~= utext.NO_VALUE and stock or ""),
-					label(utext.wait_caption(rtext.age_step(wait), inherited, util.short_duration),
-						{ style_mods = { font_color = { 0.7, 0.7, 0.7 } } }),
+					label(stock, { name = "stock" }),
+					label(wait, { name = "wait", style_mods = { font_color = { 0.7, 0.7, 0.7 } } }),
 				}
-				out[#out + 1] = row
 				-- The expanded Effective config needs the room; the four lines stay in the chip's tooltip.
-				if i == 1 and not compact then out[#out + 1] = line(tip) end
+				if i == 1 and not compact then
+					local why = line(tip)
+					why.name = "why"
+					out[#out + 1] = why
+				end
 			end
 			if #rows > UNSERVED_ROWS then
 				out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(#rows - UNSERVED_ROWS) })
 			end
 			return out
 		end)
+	elseif ages.unserved ~= step then
+		ages.unserved = step
+		local flow = body.unserved
+		for i = 1, n do
+			local row = flow and flow["row" .. i]
+			if row then
+				local tip, stock, wait = unserved_texts(m, rows[i], now, inherit_before)
+				row.chip.tooltip = tip
+				row.stock.caption = stock
+				row.wait.caption = wait
+				if i == 1 and flow.why then flow.why.caption = tip end
+			end
+		end
 	end
 end
 
 local function render_deliveries(state, body, m)
 	local st = m.st
-	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
-	-- still fits a 1080p screen at scale 1.
-	if not st or m.effective then
+	if not st then
 		if state.sigs["deliveries"] ~= "" then section(state, body, "deliveries", "", hidden) end
 		return
 	end
@@ -880,9 +1023,7 @@ end
 
 local function render_control(state, body, m)
 	local st = m.st
-	-- The expanded Effective config replaces the slot rows (it lists the requests with their thresholds), so the panel
-	-- still fits a 1080p screen at scale 1.
-	if not st or m.effective then
+	if not st then
 		if state.sigs["control"] ~= "" then section(state, body, "control", "", hidden) end
 		return
 	end
@@ -928,7 +1069,7 @@ local function render_effective(state, body, m)
 	end
 	if not e.sig then
 		local parts = { e.base_item, tostring(e.base_item_signal), e.base_fluid, e.limit, e.priority, e.s_colour,
-			e.item_capacity, e.fluid_capacity, e.more_items }
+			e.item_capacity, e.fluid_capacity, e.more_items, e.warned, tostring(e.overrides_known) }
 		for _, n in ipairs(e.nets) do
 			parts[#parts + 1] = table.concat({ n.name, n.mask, tostring(n.trains), tostring(n.depots), n.item_capacity,
 				n.fluid_capacity, tostring(n.accepted), n.allow_trains, table.concat(n.missing, "/"), tostring(n.known) }, ":")
@@ -966,7 +1107,6 @@ local function render_effective(state, body, m)
 					cell({ "cybersyn-gui.relative-eff-col-gap" }, { "cybersyn-gui.relative-eff-col-gap-tooltip" }),
 				}
 				for i = 2, 4 do tbl[i].style_mods.font = "default-semibold" end
-				local warned = 0
 				for _, it in ipairs(e.items) do
 					local sprite, quality = util.item_sprite_and_tooltip(it.hash)
 					local tip = { "", { "cybersyn-gui.relative-eff-item-tooltip", format.number(it.threshold),
@@ -980,7 +1120,6 @@ local function render_effective(state, body, m)
 						tip[#tip + 1] = { "cybersyn-gui.relative-eff-provider", format.number(it.p_count),
 							format.number(it.p_threshold or 0) }
 					end
-					if it.warn then warned = warned + 1 end
 					local color = it.warn and RED or nil
 					tbl[#tbl + 1] = sprite and {
 						type = "sprite-button",
@@ -996,10 +1135,13 @@ local function render_effective(state, body, m)
 						nil, color)
 				end
 				out[#out + 1] = tbl
-				if warned > 0 then
-					out[#out + 1] = line({ "cybersyn-gui.relative-eff-warn", tostring(warned), tostring(e.item_capacity),
-						format.number(e.fluid_capacity) }, nil, RED)
+				if not e.overrides_known then
+					out[#out + 1] = note({ "cybersyn-gui.relative-eff-overrides-unknown" })
 				end
+			end
+			if e.warned > 0 then
+				out[#out + 1] = line({ "cybersyn-gui.relative-eff-warn", tostring(e.warned), tostring(e.item_capacity),
+					format.number(e.fluid_capacity) }, nil, { 1, 0.45, 0.4 })
 			end
 			if e.more_items > 0 then out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(e.more_items) }) end
 			out[#out + 1] = line({ "cybersyn-gui.relative-eff-limit", e.limit >= rtext.UNLIMITED and "∞" or tostring(e.limit),
@@ -1039,10 +1181,22 @@ local function render_effective(state, body, m)
 	end
 end
 
-local function event_rows_sig(rows, now)
-	local parts = { math.floor(now / rtext.AGE_STEP) }
-	for i, ev in ipairs(rows) do parts[i + 1] = ev.seq end
+local function event_rows_sig(rows)
+	local parts = {}
+	for i, ev in ipairs(rows) do parts[i] = ev.seq end
 	return table.concat(parts, ",")
+end
+
+local function event_caption(ev, now, d)
+	local caption = rtext.event_row(ev, now, util.short_duration)
+	local hash = ev.item ~= 0 and d and d.item_hash[ev.item] or nil
+	local _, _, item_tooltip = hash and util.item_sprite_and_tooltip(hash)
+	if item_tooltip then caption = { "", caption, "  ", item_tooltip } end
+	return caption
+end
+
+local function event_age(ev, now)
+	return util.short_duration(rtext.age_step(now - ev.tick))
 end
 
 local function render_events(state, body, kind, id, shown)
@@ -1059,18 +1213,25 @@ local function render_events(state, body, kind, id, shown)
 	local rows = diag.last_for_step(cursor)
 	local now = game.tick
 	shown = shown or EVENTS
-	-- The rows change only when the cursor's newest row or its first row does; the ages only every AGE_STEP.
-	local step = math.floor(now / rtext.AGE_STEP)
+	-- The rows change only when the cursor's newest row or its first row does; their ages are rewritten in place
+	-- every AGE_STEP.
 	local first = rows[1] and rows[1].seq or 0
 	local ec = state.events_sig
 	local events_sig
-	if ec and ec.first == first and ec.n == #rows and ec.step == step and ec.done == cursor.done and ec.shown == shown then
+	if ec and ec.first == first and ec.n == #rows and ec.done == cursor.done and ec.shown == shown then
 		events_sig = ec.sig
 	else
-		events_sig = event_rows_sig(rows, now) .. (cursor.done and "" or "+") .. shown
-		state.events_sig = { first = first, n = #rows, step = step, done = cursor.done, shown = shown, sig = events_sig }
+		events_sig = event_rows_sig(rows) .. (cursor.done and "" or "+") .. shown
+		state.events_sig = { first = first, n = #rows, done = cursor.done, shown = shown, sig = events_sig }
 	end
+	-- Half a step after the unserved rows', so the two in-place rewrites fall on different refreshes.
+	local step = math.floor((now + rtext.AGE_STEP / 2) / rtext.AGE_STEP)
+	local ages = state.ages
+	local d = storage.diag
 	if state.sigs["events"] ~= events_sig then
+		ages.events = step
+		local shown_ages = {}
+		state.event_ages = shown_ages
 		section(state, body, "events", events_sig, function()
 			local out = { heading({ "cybersyn-gui.relative-events" }) }
 			if #rows == 0 then
@@ -1078,18 +1239,31 @@ local function render_events(state, body, kind, id, shown)
 					or "cybersyn-gui.relative-events-none" } or { "cybersyn-gui.relative-events-scanning" })
 				return out
 			end
-			local d = storage.diag
 			for i, ev in ipairs(rows) do
 				if i > shown then break end
-				local caption = rtext.event_row(ev, now, util.short_duration)
-				local hash = ev.item ~= 0 and d and d.item_hash[ev.item] or nil
-				local _, _, item_tooltip = hash and util.item_sprite_and_tooltip(hash)
-				if item_tooltip then caption = { "", caption, "  ", item_tooltip } end
-				out[#out + 1] = line(caption, { "cybersyn-gui.relative-event-tooltip", util.format_duration(now - ev.tick),
-					tostring(ev.seq) }, sev_color(ev.sev))
+				shown_ages[i] = event_age(ev, now)
+				local row = line(event_caption(ev, now, d), { "cybersyn-gui.relative-event-tooltip",
+					util.format_duration(ev.tick), tostring(ev.seq) }, sev_color(ev.sev))
+				row.name = "ev" .. i
+				out[#out + 1] = row
 			end
 			return out
 		end)
+	elseif ages.events ~= step then
+		ages.events = step
+		local flow = body.events
+		local shown_ages = state.event_ages or {}
+		state.event_ages = shown_ages
+		-- An age past the hour reads in minutes, so most of an old stop's rows keep their caption.
+		for i, ev in ipairs(rows) do
+			if i > shown then break end
+			local age = event_age(ev, now)
+			local row = shown_ages[i] ~= age and flow and flow["ev" .. i]
+			if row then
+				shown_ages[i] = age
+				row.caption = event_caption(ev, now, d)
+			end
+		end
 	end
 end
 
@@ -1202,9 +1376,23 @@ local function render_train_head(state, body, m)
 	local now = game.tick
 	local since = m.state_since and rtext.age_step(now - m.state_since) or -1
 	local kind, target = status_target(m)
-	local sig = table.concat({ m.status or -1, tostring(m.state), since, kind, tostring(target),
-		tostring(target and stop_name(kind, target)) }, "|")
-	if state.sigs["head"] ~= sig then
+	local sig = table.concat({ m.status or -1, kind, tostring(target), tostring(target and stop_name(kind, target)) }, "|")
+	-- A moving train changes state at every signal: the state chip and its age are rewritten in place.
+	local ages = state.ages
+	local state_key = m.state and (m.state * 1e9 + since) or since
+	if state.sigs["head"] == sig then
+		if ages.head ~= state_key then
+			ages.head = state_key
+			local row = body.head and body.head.state_row
+			if row then
+				row.state_chip.style = STATE_CHIP[m.state] or "cybersyn_chip_grey"
+				row.state_chip.caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") }
+				row.in_state.caption = since >= 0 and { "cybersyn-gui.relative-in-state", util.short_duration(since) } or ""
+				row.in_state.tooltip = m.state_since and util.format_duration(now - m.state_since) or ""
+			end
+		end
+	else
+		ages.head = state_key
 		section(state, body, "head", sig, function()
 			local key = TRAIN_STATUS_KEY[m.status]
 			local status = key and { key } or { "cybersyn-gui.trains-custom-status", tostring(m.status) }
@@ -1219,16 +1407,18 @@ local function render_train_head(state, body, m)
 			}
 			out[#out + 1] = {
 				type = "flow",
+				name = "state_row",
 				direction = "horizontal",
 				style_mods = { vertical_align = "center", horizontal_spacing = 8 },
 				{
 					type = "button",
+					name = "state_chip",
 					style = STATE_CHIP[m.state] or "cybersyn_chip_grey",
 					caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") },
 					tooltip = { "cybersyn-gui.relative-state-tooltip" },
 				},
 				label(since >= 0 and { "cybersyn-gui.relative-in-state", util.short_duration(since) } or "",
-					{ tooltip = m.state_since and util.format_duration(now - m.state_since) or nil }),
+					{ name = "in_state", tooltip = m.state_since and util.format_duration(now - m.state_since) or nil }),
 			}
 			return out
 		end)
@@ -1262,8 +1452,21 @@ local function render_route(state, body, m)
 	local sig = table.concat({ m.status or -1, tostring(m.p_station_id), tostring(m.r_station_id), tostring(m.depot_id),
 		tostring(m.p_station_id and stop_name("station", m.p_station_id)),
 		tostring(m.r_station_id and stop_name("station", m.r_station_id)),
-		tostring(m.depot_id and stop_name("depot", m.depot_id)), dispatched, refuel }, "|")
-	if state.sigs["route"] ~= sig then
+		tostring(m.depot_id and stop_name("depot", m.depot_id)), tostring(dispatched >= 0), tostring(refuel >= 0) }, "|")
+	local ages = state.ages
+	if state.sigs["route"] == sig then
+		if ages.route ~= dispatched or ages.refuel ~= refuel then
+			ages.route, ages.refuel = dispatched, refuel
+			local flow = body.route
+			if flow and flow.dispatched and dispatched >= 0 then
+				flow.dispatched.caption = { "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) }
+			end
+			if flow and flow.refuel and refuel >= 0 then
+				flow.refuel.caption = { "cybersyn-gui.relative-refuel", { "cybersyn-gui.time-ago", util.short_duration(refuel) } }
+			end
+		end
+	else
+		ages.route, ages.refuel = dispatched, refuel
 		section(state, body, "route", sig, function()
 			local out = {}
 			local s = m.status
@@ -1277,18 +1480,25 @@ local function render_route(state, body, m)
 					stop_link("station", m.r_station_id, math.floor((INNER - 24) / 2)),
 				}
 			end
-			out[#out + 1] = {
-				type = "flow",
-				direction = "horizontal",
-				style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-				label({ "cybersyn-gui.relative-depot" }),
-				stop_link("depot", m.depot_id, INNER - 80),
-			}
-			if dispatched >= 0 then
-				out[#out + 1] = line({ "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) })
+			-- The head already links the depot while the train is parked there or heading back.
+			if status_target(m) ~= "depot" then
+				out[#out + 1] = {
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+					label({ "cybersyn-gui.relative-depot" }),
+					stop_link("depot", m.depot_id, INNER - 80),
+				}
 			end
-			out[#out + 1] = line({ "cybersyn-gui.relative-refuel",
+			if dispatched >= 0 then
+				local row = line({ "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) })
+				row.name = "dispatched"
+				out[#out + 1] = row
+			end
+			local row = line({ "cybersyn-gui.relative-refuel",
 				refuel >= 0 and { "cybersyn-gui.time-ago", util.short_duration(refuel) } or { "cybersyn-gui.never" } })
+			row.name = "refuel"
+			out[#out + 1] = row
 			return out
 		end)
 	end
@@ -1430,7 +1640,7 @@ function relative.render(pd, state, panel)
 		else
 			if state.sigs["events"] ~= "" then section(state, body, "events", "", hidden) end
 		end
-		render_stop_buttons(state, body, m)
+		render_stop_buttons(state, panel.footer, m)
 		return m
 	end
 	local m = train_model(pd, state)
@@ -1442,7 +1652,7 @@ function relative.render(pd, state, panel)
 	render_schedule(state, body, m)
 	render_signal(state, body, m)
 	render_events(state, body, "train", state.id)
-	render_train_buttons(state, body, m)
+	render_train_buttons(state, panel.footer, m)
 	return m
 end
 
@@ -1459,8 +1669,12 @@ local ANCHORS = {
 local TRAIN_PANE_RIGHT = 451
 local TRAIN_PANE_TOP = 40
 local GAP = 8
--- Logical px of the screen height the panel leaves free: the title bars above it and the subheader inside it.
+-- Logical px of the screen height the train panel leaves free: the title bars above it and the subheader inside it.
 local SCREEN_MARGIN = 120
+-- The stop panel's body height, in logical px: an anchored panel taller than the train-stop window (767 px at 1080p
+-- scale 1) stretches that window up under the remote view's title bar. Body + subheader + footer + paddings stay below it.
+local STOP_BODY_MAX = 600
+local STOP_SCREEN_MARGIN = 300
 
 --- @param player LuaPlayer
 --- @param kind "stop"|"train"
@@ -1504,7 +1718,13 @@ end
 --- @param player LuaPlayer
 --- @param panel LuaGuiElement a relative.build result
 function relative.fit(player, panel)
-	local height = math.floor(player.display_resolution.height / player.display_scale) - SCREEN_MARGIN
+	local screen = math.floor(player.display_resolution.height / player.display_scale)
+	local height
+	if panel.tags.kind == "stop" then
+		height = math.min(STOP_BODY_MAX, screen - STOP_SCREEN_MARGIN)
+	else
+		height = screen - SCREEN_MARGIN
+	end
 	local scroll = panel.scroll
 	if scroll.style.maximal_height ~= height then scroll.style.maximal_height = height end
 end
@@ -1543,7 +1763,10 @@ function relative.open(player, pd, kind, id)
 	if kind == "train" then place_train(player, frame) end
 	relative.fit(player, panel)
 	frame.visible = true
-	if not relative.render(pd, state, panel) then relative.close(player, pd) end
+	state.burst = true
+	local alive = relative.render(pd, state, panel)
+	state.burst = nil
+	if not alive then relative.close(player, pd) end
 end
 
 --- What a vanilla window shows, as a relative panel subject: a Cybersyn stop or train, else nil.
@@ -1593,7 +1816,28 @@ function relative.on_gui_closed(e)
 	relative.close(game.get_player(e.player_index), pd)
 end
 
---- The manager tick: refreshes every open panel.
+--- Whether the player still has the vanilla window of the panel's subject open. A window can close without an
+--- on_gui_closed (a save loaded with it open opens no entity GUI), and the train panel is a screen frame nothing else
+--- hides. `open.emulated` marks a panel the dev interface opened for a player that cannot have player.opened.
+--- @param player LuaPlayer
+--- @param open {kind: "stop"|"train", id: uint, emulated: true?}
+--- @return boolean
+local function window_open(player, open)
+	if open.emulated then return true end
+	if player.opened_gui_type ~= defines.gui_type.entity then return false end
+	local entity = player.opened
+	if not (entity and entity.valid and entity.object_name == "LuaEntity") then return false end
+	if open.kind == "stop" then return entity.type == "train-stop" and entity.unit_number == open.id end
+	if not ROLLING_STOCK[entity.type] then return false end
+	local train = entity.train
+	return train ~= nil and train.valid and train.id == open.id
+end
+
+-- Per-refresh profilers of relative.tick, kept only while the dev interface's relative_samples recording is on
+-- (storage.manager.relative_samples). The profilers are not game state and are never read back into it.
+local samples = {}
+
+--- The manager tick: refreshes every open panel, and closes one whose vanilla window is gone.
 --- @param manager_data Manager
 function relative.tick(manager_data)
 	for i, pd in pairs(manager_data.players) do
@@ -1606,10 +1850,44 @@ function relative.tick(manager_data)
 			if not (panel and state) then
 				pd.relative_open = nil
 				pd.relative = nil
-			elseif not relative.render(pd, state, panel) then
+			elseif not window_open(player, open) then
 				relative.close(player, pd)
+			else
+				local p = manager_data.relative_samples and game.create_profiler()
+				local alive = relative.render(pd, state, panel)
+				if p then
+					p.stop()
+					samples[#samples + 1] = { p = p, read = state.read == true, walk = state.walk_tick == game.tick,
+						kind = open.kind, tick = game.tick, rebuilds = state.rebuilds }
+				end
+				if not alive then relative.close(player, pd) end
 			end
 		end
+	end
+end
+
+--- A display scale or resolution change: the train panel's place and the body's height cap follow it.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+function relative.on_display_changed(player, pd)
+	local open = pd.relative_open
+	if not open then return end
+	local frame = mount_of(player, open.kind)
+	local panel = frame and frame[PANEL]
+	if not panel then return end
+	if open.kind == "train" then place_train(player, frame) end
+	relative.fit(player, panel)
+end
+
+--- Drops a player's mounts and panel state (a mod update may change the panel's skeleton; mount() reuses a mount).
+--- @param player LuaPlayer
+--- @param pd PlayerData
+function relative.reset(player, pd)
+	pd.relative_open = nil
+	pd.relative = nil
+	for kind in pairs(MOUNT) do
+		local frame = mount_of(player, kind)
+		if frame then frame.destroy() end
 	end
 end
 
@@ -1618,12 +1896,18 @@ end
 function relative.on_train_schedule_changed(e)
 	local manager_data = storage.manager
 	if not manager_data then return end
-	local train = e.train
-	if not (train and train.valid) then return end
-	local id = train.id
+	-- Cybersyn changes a schedule on every dispatch: read the train only when some train panel is open.
+	local id
 	for _, pd in pairs(manager_data.players) do
 		local state = pd.relative
-		if state and state.kind == "train" and state.id == id then state.schedule = nil end
+		if state and state.kind == "train" then
+			if not id then
+				local train = e.train
+				if not (train and train.valid) then return end
+				id = train.id
+			end
+			if state.id == id then state.schedule = nil end
+		end
 	end
 end
 
@@ -1642,7 +1926,12 @@ local function rerender(player, pd)
 	if not open then return end
 	local frame = mount_of(player, open.kind)
 	local panel = frame and frame[PANEL]
-	if panel and pd.relative then relative.render(pd, pd.relative, panel) end
+	local state = pd.relative
+	if panel and state then
+		state.burst = true
+		relative.render(pd, state, panel)
+		state.burst = nil
+	end
 end
 
 --- @param player LuaPlayer
@@ -1813,6 +2102,8 @@ function dev_fns.relative_open(pi, kind, id)
 	if not entity then return "no entity for " .. tostring(kind) .. " " .. tostring(id) end
 	relative.on_gui_opened({ name = defines.events.on_gui_opened, player_index = pi, gui_type = defines.gui_type.entity,
 		entity = entity, tick = game.tick })
+	local _, pd = dev_context(pi)
+	if pd.relative_open then pd.relative_open.emulated = true end
 	return dev_fns.relative_dump(pi)
 end
 
@@ -1851,6 +2142,8 @@ function dev_fns.relative_dump(pi)
 	for _, s in ipairs(panel.scroll.body.children) do
 		out.sections[s.name] = { visible = s.visible, content = s.visible and element_view(s).children or nil }
 	end
+	local b = panel.footer.buttons
+	out.sections.buttons = { visible = b.visible, content = b.visible and element_view(b).children or nil }
 	if open.kind == "stop" then
 		out.model = strip_model(stop_model(pd, state))
 	else
@@ -1914,8 +2207,31 @@ function dev_fns.relative_profile(pi)
 	step("setup", function() render_setup(state, body, m) end)
 	step("effective", function() render_effective(state, body, m) end)
 	step("events", function() render_events(state, body, "station", state.id, compact and EVENTS_COMPACT or EVENTS) end)
-	step("buttons", function() render_stop_buttons(state, body, m) end)
+	step("buttons", function() render_stop_buttons(state, panel.footer, m) end)
 	return out
+end
+
+--- Starts (true) or stops recording every relative.tick refresh with a profiler; `print` returns the recorded samples
+--- as LocalisedStrings "<read|cached> <walk|-> <kind> <tick> <rebuilds so far> <duration>" and clears them.
+function dev_fns.relative_samples(on, print)
+	storage.manager.relative_samples = on or nil
+	local out = {}
+	if print then
+		for i, x in ipairs(samples) do
+			out[i] = { "", x.read and "read " or "cached ", x.walk and "walk " or "- ", x.kind, " ", x.tick, " ",
+				x.rebuilds, " ", x.p }
+		end
+		samples = {}
+	end
+	if not on then samples = {} end
+	return out
+end
+
+--- Whether the open panel skips the vanilla-window check (relative_open sets it; false lets the next tick apply it).
+function dev_fns.relative_emulated(pi, on)
+	local _, pd = dev_context(pi)
+	if pd.relative_open then pd.relative_open.emulated = on or nil end
+	return pd.relative_open ~= nil
 end
 
 function dev_fns.relative_toggle_effective(pi)

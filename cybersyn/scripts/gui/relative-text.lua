@@ -79,11 +79,13 @@ end
 --- @field depot_set {[uint]: true}
 --- @field capability {[uint]: {count: int, item_capacity: int, fluid_capacity: int, mask_or: int}} per layout, every
 ---   train on the network (the shape of snapshot.fleet.capability[network])
+--- @field matched {[uint]: {count: int, item_capacity: int, fluid_capacity: int}} per layout, only the trains whose
+---   own mask shares a bit with the stop's: a layout's OR-ed mask cannot tell which of its trains match
 
 --- @param mask int
 --- @return RelativeFleetCount
 function text.new_fleet_count(mask)
-	return { mask = mask, trains = 0, depots = 0, depot_set = {}, capability = {} }
+	return { mask = mask, trains = 0, depots = 0, depot_set = {}, capability = {}, matched = {} }
 end
 
 --- Adds one Cybersyn train to a stop's per-network counts.
@@ -106,6 +108,14 @@ function text.count_train(counts, train)
 			cap.mask_or = bor(cap.mask_or, m)
 			if band(m, c.mask) ~= 0 then
 				c.trains = c.trains + 1
+				local hit = c.matched[layout_id]
+				if not hit then
+					hit = { count = 0, item_capacity = 0, fluid_capacity = 0 }
+					c.matched[layout_id] = hit
+				end
+				hit.count = hit.count + 1
+				if items > hit.item_capacity then hit.item_capacity = items end
+				if fluid > hit.fluid_capacity then hit.fluid_capacity = fluid end
 				local depot = train.depot_id
 				if depot and not c.depot_set[depot] then
 					c.depot_set[depot] = true
@@ -128,22 +138,39 @@ function text.layout_text(layout)
 	return table.concat(out)
 end
 
---- The allow-list line: how many layouts the stop accepts, how many mask-eligible trains on the network have one of
---- them, and the accepted layouts no train on the network has at all.
+--- The trains a stop on one network can be sent: mask match (train by train) and a layout the stop accepts, with
+--- the largest capacities among them. The one count the Effective config section shows wherever it says "trains match".
+--- @param c RelativeFleetCount?
+--- @param allows_all boolean
+--- @param accepted {[uint]: true?}
+--- @return int trains
+--- @return int item_capacity
+--- @return int fluid_capacity
+function text.eligible(c, allows_all, accepted)
+	local trains, items, fluid = 0, 0, 0
+	if not c then return 0, 0, 0 end
+	for layout_id, l in pairs(c.matched) do
+		if allows_all or accepted[layout_id] then
+			trains = trains + l.count
+			if l.item_capacity > items then items = l.item_capacity end
+			if l.fluid_capacity > fluid then fluid = l.fluid_capacity end
+		end
+	end
+	return trains, items, fluid
+end
+
+--- The allow-list line: how many layouts the stop accepts, how many trains it can be sent (text.eligible), and the
+--- accepted layouts no train on the network has at all.
 --- @param accepted {[uint]: true?}
 --- @param allows_all boolean
---- @param capability {[uint]: {count: int, mask_or: int}}? per layout on the network
---- @param mask int the stop's mask on the network
+--- @param c RelativeFleetCount?
 --- @return int|false layouts accepted, false = every layout
---- @return int trains matching trains with an accepted layout
+--- @return int trains eligible trains
 --- @return uint[] missing accepted layout ids no train on the network has, ascending
-function text.allow_list(accepted, allows_all, capability, mask)
-	capability = capability or {}
-	local trains = 0
-	for layout_id, c in pairs(capability) do
-		if band(c.mask_or, mask) ~= 0 and (allows_all or accepted[layout_id]) then trains = trains + c.count end
-	end
+function text.allow_list(accepted, allows_all, c)
+	local trains = text.eligible(c, allows_all, accepted)
 	if allows_all then return false, trains, {} end
+	local capability = c and c.capability or {}
 	local n, missing = 0, {}
 	for layout_id in pairs(accepted) do
 		n = n + 1

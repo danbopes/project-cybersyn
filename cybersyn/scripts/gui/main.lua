@@ -379,7 +379,10 @@ end
 function manager_gui.on_display_changed(e)
 	local player_data = storage.manager and storage.manager.players[e.player_index]
 	local player = game.get_player(e.player_index)
-	if player and player_data then manager.relayout(player, player_data) end
+	if player and player_data then
+		manager.relayout(player, player_data)
+		relative.on_display_changed(player, player_data)
+	end
 end
 
 --- on_player_controller_changed.
@@ -401,6 +404,7 @@ function manager_gui.reset_player(i, v)
 			v.refs.manager_window.destroy()
 		end
 		v.refs = manager.create(player)
+		relative.reset(player, v)
 		v.is_manager_open = false
 		v.gui_state = {}
 		player.set_shortcut_toggled("cybersyn-toggle-gui", false)
