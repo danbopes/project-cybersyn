@@ -1,5 +1,6 @@
 local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
+local dev = require("scripts.gui.dev")
 
 -- Try to load the factorio-charts library for interaction support
 local charts_available, charts = pcall(require, "__factorio-charts__.charts")
@@ -142,9 +143,21 @@ end
 ---@param delivery table Delivery data
 ---@param phase_stats table? Optional phase statistics
 ---@return string tooltip Formatted tooltip text
+--- The name of the reason the dispatcher recorded for a stuck request (diagnostics reason codes), or "unknown"
+--- when none was recorded (a provider-side failure with diagnostics off).
+--- @param reason int?
+--- @return LocalisedString
+local function failure_label(reason)
+	local key = reason and REASON_KEYS[reason]
+	if not key then return { "cybersyn-gui.unserved-unknown-reason" } end
+	return { "cybersyn-diag.reason-" .. key }
+end
+
 local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_stats)
 	local label = PHASE_LABELS[phase] or phase
 	local fmt_time = charts and charts.format_time_detailed or function(d) return string.format("%.1fs", d) end
+	-- A stuck request's bar is labelled with the reason the dispatcher recorded for it (PLAN3 §11.5).
+	local reason_label = HATCHED_PHASES[phase] and failure_label(delivery.reason) or nil
 
 	local lines = {}
 
@@ -159,7 +172,13 @@ local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_sta
 		end
 	end
 
-	lines[#lines + 1] = label
+	local head
+	if reason_label then
+		head = table.concat(lines, "\n")
+		lines = {}
+	else
+		lines[#lines + 1] = label
+	end
 	lines[#lines + 1] = "Duration: " .. fmt_time(duration)
 
 	local stats = phase_stats and phase_stats[phase]
@@ -172,6 +191,9 @@ local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_sta
 		lines[#lines + 1] = string.format("StdDev: %s", fmt_time(stats.stddev))
 	end
 
+	if reason_label then
+		return { "", head, head ~= "" and "\n" or "", reason_label, "\n", table.concat(lines, "\n") }
+	end
 	return table.concat(lines, "\n")
 end
 
@@ -367,6 +389,7 @@ local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
 	local count_fail_capacity, count_fail_layout = 0, 0
 	local fail_count = 0
 	local delivery_count = 0
+	local fail_by_reason, fail_reasons = {}, {}
 
 	for item_hash, deliveries in pairs(data.completed_deliveries) do
 		local include = true
@@ -428,7 +451,17 @@ local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
 				end
 
 				-- Add individual bar for this stuck request
-				local bar = { complete_tick = failure.last_tick }
+				local reason = failure.reason or -1
+				local by = fail_by_reason[reason]
+				if not by then
+					by = { reason = failure.reason, count = 0, max = 0 }
+					fail_by_reason[reason] = by
+					fail_reasons[#fail_reasons + 1] = by
+				end
+				by.count = by.count + 1
+				if duration > by.max then by.max = duration end
+
+				local bar = { complete_tick = failure.last_tick, reason = failure.reason }
 				if failure.failure_reason == FAILURE_REASON_NO_PROVIDER_STOCK then
 					bar.fail_no_stock = duration
 				elseif failure.failure_reason == FAILURE_REASON_NO_TRAIN_AVAILABLE then
@@ -474,6 +507,7 @@ local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
 		count_fail_capacity = count_fail_capacity,
 		count_fail_layout = count_fail_layout,
 		fail_count = fail_count,
+		fail_reasons = fail_reasons,
 	}
 end
 
@@ -677,26 +711,23 @@ function delivery_breakdown_tab.build(map_data, player_data)
 			lines[#lines + 1] = string.format("Avg unload: %s", charts.format_time_detailed(stats.total_unloading / delivery_count))
 		end
 
+		local caption = table.concat(lines, "\n")
 		if fail_count > 0 then
-			if delivery_count > 0 then
-				lines[#lines + 1] = ""  -- Blank line separator
-			end
-			lines[#lines + 1] = string.format("Stuck: %d", fail_count)
-			if stats.count_fail_no_stock > 0 then
-				lines[#lines + 1] = string.format("  No stock: %s (%d)", charts.format_time_detailed(stats.max_fail_no_stock), stats.count_fail_no_stock)
-			end
-			if stats.count_fail_no_train > 0 then
-				lines[#lines + 1] = string.format("  No train: %s (%d)", charts.format_time_detailed(stats.max_fail_no_train), stats.count_fail_no_train)
-			end
-			if stats.count_fail_capacity > 0 then
-				lines[#lines + 1] = string.format("  Capacity: %s (%d)", charts.format_time_detailed(stats.max_fail_capacity), stats.count_fail_capacity)
-			end
-			if stats.count_fail_layout > 0 then
-				lines[#lines + 1] = string.format("  Layout: %s (%d)", charts.format_time_detailed(stats.max_fail_layout), stats.count_fail_layout)
+			caption = { "", caption, delivery_count > 0 and "\n\n" or "", string.format("Stuck: %d", fail_count) }
+			-- One line per reason code the dispatcher recorded, longest-waiting first; nested so no LocalisedString
+			-- exceeds the engine's 20 parameters.
+			local reasons = stats.fail_reasons or {}
+			table.sort(reasons, function(a, b)
+				if a.max ~= b.max then return a.max > b.max end
+				return (a.reason or -1) < (b.reason or -1)
+			end)
+			for _, by in ipairs(reasons) do
+				caption = { "", caption, "\n  ", failure_label(by.reason), ": ",
+					string.format("%s (%d)", charts.format_time_detailed(by.max), by.count) }
 			end
 		end
 
-		refs.breakdown_stats_label.caption = table.concat(lines, "\n")
+		refs.breakdown_stats_label.caption = caption
 	end
 end
 
@@ -775,5 +806,33 @@ function delivery_breakdown_tab.handle.on_breakdown_interval_click(player, playe
 end
 
 gui.add_handlers(delivery_breakdown_tab.handle, delivery_breakdown_tab.wrapper)
+
+--- Dev: the labels the tab gives stuck requests (bar tooltips and the stats lines), for the given failures of one
+--- item, computed on a scratch analytics table (the lab has no factorio-charts, so the tab itself cannot show).
+dev.add("breakdown_failure_labels", function(item_name, failures)
+	local active = {}
+	for _, f in ipairs(failures or {}) do
+		active[f.item_hash .. ":" .. f.r_station_id] = { item_hash = f.item_hash, r_station_id = f.r_station_id,
+			request_start_tick = game.tick - 600, last_tick = game.tick, failure_reason = f.failure_reason,
+			reason = f.reason }
+	end
+	local data = { completed_deliveries = {}, active_failures = active }
+	local filtered, stats = gather_filter_and_stats({ analytics = data }, data, game.tick, item_name)
+	local bars = {}
+	for _, bar in ipairs(filtered) do
+		for _, phase in ipairs({ "fail_no_stock", "fail_no_train", "fail_capacity", "fail_layout" }) do
+			if bar[phase] then
+				bars[#bars + 1] = { phase = phase, reason = bar.reason, label = failure_label(bar.reason),
+					tooltip = get_segment_tooltip(1, phase, bar[phase], bar, nil) }
+			end
+		end
+	end
+	local reasons = {}
+	for _, by in ipairs(stats.fail_reasons or {}) do
+		reasons[#reasons + 1] = { reason = by.reason, count = by.count, label = failure_label(by.reason) }
+	end
+	return { bars = bars, reasons = reasons, fail_count = stats.fail_count }
+end)
+
 
 return delivery_breakdown_tab

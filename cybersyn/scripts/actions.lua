@@ -46,18 +46,23 @@ function actions.check(player, what)
 	return actions.refuse(player, what)
 end
 
---- Records an action that changed game state.
+--- Records an action that changed game state (or a read-only one audited the same way, Test path).
 --- @param action int ACTION_*
 --- @param target uint? the entity or train it applied to; nil = all of them
 --- @param player LuaPlayer?
---- @param what string the command or action, as the player typed or saw it
-function actions.audit(action, target, player, what)
+--- @param what LocalisedString the command or action, as the player typed or saw it
+--- @param line LocalisedString? the force-chat line; default "<player> ran <what>"
+--- @param train_id uint? the train it applied to, for the event's train column
+--- @param station_id uint? the stop it applied to, for the event's station column
+function actions.audit(action, target, player, what, line, train_id, station_id)
 	local index = player and player.valid and player.index or 0
 	local name = player and player.valid and player.name or "server"
-	diag.manual_action(action, target, index)
+	diag.manual_action(action, target, index, train_id, station_id)
 	log({ "", "Cybersyn: ", name, " ran ", what, " (", ACTION_NAMES[action] or tostring(action), ", target ",
 		tostring(target or "all"), ")" })
-	local text = { "cybersyn-messages.action-audit", name, what }
+	local text = line or { "cybersyn-messages.action-audit", name, what }
+	-- Read only by the dev interface (the lab cannot read chat); never part of game state.
+	actions.last_line = text
 	if player and player.valid then player.force.print(text) else game.print(text) end
 end
 

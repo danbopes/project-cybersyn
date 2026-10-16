@@ -10,6 +10,7 @@ local dev = require("scripts.gui.dev")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local text = require("scripts.gui.unserved-text")
+local explain = require("scripts.gui.explain")
 
 --- @class PlayerData
 --- @field overview_period int? minutes covered by the Throughput tile and the headroom minimum: 10, 60 or 1440
@@ -1003,6 +1004,8 @@ local function row_entry(row, acked, ctx)
 			read_age = read_age,
 			surface_name = surface_name,
 		}, util.format_duration)
+		chip[#chip + 1] = "\n"
+		chip[#chip + 1] = { "cybersyn-gui.unserved-explain-hint" }
 		local r_tip = station_tooltip(requester, read)
 		local p_tip = station_tooltip(provider, nil)
 		local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) }) or ""
@@ -1051,6 +1054,8 @@ local function row_entry(row, acked, ctx)
 					style_mods = { width = W.why },
 					caption = text.chip_caption(reason),
 					tooltip = chip,
+					tags = { r_id = r_id, hash = hash },
+					handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_explain_click },
 				}),
 				name_cell(provider, "station", p_id, widths.provider, p_tip, acked),
 				hoverable({ type = "label", style = value_style, style_mods = { width = W.stock }, caption = stock }),
@@ -1390,6 +1395,15 @@ end
 
 --- Acknowledge (PLAN3 §4.13): click = 24 h, shift-click = 1 h, control-click = until the reason changes; a click
 --- on an acknowledged row ends it. Display state only; diag.ack writes the event and removes the stop's alerts.
+--- The Why chip: Explain for that row (scripts/gui/explain.lua), a second click closes it.
+--- @param e EventData.on_gui_click
+function overview_tab.handle.overview_explain_click(player, player_data, refs, e)
+	util.touch_hover(e)
+	local tags = e.element.tags
+	if not (tags.r_id and tags.hash) then return end
+	explain.open(player, player_data, tags.r_id, tags.hash)
+end
+
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
 	local tags = e.element.tags

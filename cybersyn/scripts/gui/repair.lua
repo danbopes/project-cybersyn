@@ -1,0 +1,517 @@
+-- Repair actions of PLAN3 §4.14 (phase 10): the manager's first buttons that change dispatcher or train state. Each
+-- runs an existing code path for one entity per click, behind the `cybersyn-manager-actions` rule (checked in the
+-- click handler, never trusted from a disabled button), a confirm step, and the audit trail of actions.audit.
+--   Fail delivery and send home   interface.fail_delivery + the depot schedule (train panel)
+--   Rescan station                the combinator re-read the planner applies at tick_init (stop panel)
+--   Recalculate train sizes       retrigger_train_calculation, every train at once (dialog)
+--   Refresh allow-lists           update_train_layout per train, JOB_CHUNK trains per manager update (dialog)
+
+local gui = require("__flib__.gui")
+
+local util = require("scripts.gui.util")
+local logic = require("scripts.gui.extras-logic")
+local actions = require("scripts.actions")
+local dev = require("scripts.gui.dev")
+
+--- @class PlayerData
+--- @field confirm ConfirmState? the one armed action button of this player
+--- @field action_dialog string? "recalc"|"allow" while the dialog is open
+
+--- @class RepairJob
+--- @field ids uint[] train ids at the start, in storage order
+--- @field i int done so far
+--- @field player_index uint 0 = the console
+--- @field started uint tick
+--- @field refreshed int
+
+local repair = {}
+repair.handle = {}
+
+local DIALOG = "cybersyn_action_dialog"
+--- Trains per job chunk; nil = logic.JOB_CHUNK. Only the dev interface changes it, to test the chunking on a small save.
+--- @type int?
+repair.chunk = nil
+local DELIVERY_STATUSES = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
+
+--- @param id uint
+--- @return Train?
+local function train_record(id)
+	local train = storage.trains[id]
+	if train and train.entity and train.entity.valid then return train end
+	return nil
+end
+
+--- Whether the Fail delivery button has something to act on: a train on a delivery.
+--- @param id uint
+--- @return boolean
+function repair.can_fail(id)
+	local train = train_record(id)
+	return train ~= nil and train.manifest ~= nil and DELIVERY_STATUSES[train.status] == true
+end
+
+--- @param id uint
+--- @return boolean
+function repair.can_rescan(id)
+	return storage.stations[id] ~= nil or storage.refuelers[id] ~= nil
+end
+
+-- ---------------------------------------------------------------- the actions
+
+--- Ends the train's delivery (interface.fail_delivery: manifests off both stations, wagon filters cleared, the
+--- failure logged) and sends it to its depot, as a train coming back from a requester does.
+--- @param train_id uint
+--- @return boolean done
+--- @return LocalisedString? why not
+function repair.fail_delivery(train_id)
+	local train = train_record(train_id)
+	if not (train and repair.can_fail(train_id)) then return false, { "cybersyn-gui.action-no-delivery" } end
+	local depot = train.depot_id and storage.depots[train.depot_id]
+	local depot_stop = depot and depot.entity_stop
+	if not (depot_stop and depot_stop.valid) then return false, { "cybersyn-gui.action-no-depot" } end
+	local old_status = train.status
+	remote.call("cybersyn", "fail_delivery", train_id)
+	set_depot_schedule(train.entity, depot_stop.backer_name)
+	train.status = STATUS_TO_D
+	interface_raise_train_status_changed(train_id, old_status, STATUS_TO_D)
+	return true
+end
+
+--- Re-reads a station's (or refueler's) combinators the way a combinator change does: a station is queued for the
+--- planner's tick_init re-read, a refueler is read at once; an automatic allow-list is rebuilt from the rails.
+--- @param stop_id uint
+--- @return boolean done
+function repair.rescan(stop_id)
+	local station = storage.stations[stop_id]
+	if station then
+		queue_station_for_combinator_update(storage, stop_id)
+		if not station.allows_all_trains then reset_stop_layout(storage, station, true) end
+		return true
+	end
+	local refueler = storage.refuelers[stop_id]
+	if refueler and refueler.entity_comb and refueler.entity_comb.valid then
+		local pre = refueler.allows_all_trains
+		set_refueler_from_comb(storage, mod_settings, stop_id, refueler)
+		if refueler.allows_all_trains ~= pre or not refueler.allows_all_trains then
+			update_stop_if_auto(storage, refueler, false)
+		end
+		return true
+	end
+	return false
+end
+
+--- @param player LuaPlayer?
+function repair.start_allow_job(player)
+	local ids = {}
+	for id in pairs(storage.trains) do ids[#ids + 1] = id end
+	storage.manager.repair_job = { ids = ids, i = 0, player_index = player and player.index or 0, started = game.tick,
+		refreshed = 0 }
+end
+
+--- One chunk of the Refresh allow-lists job (manager tick, or the world-scan tick while manager updates are off).
+function repair.job_tick()
+	local m = storage.manager
+	local job = m and m.repair_job
+	if not job then return end
+	local first, last, done = logic.job_range(job.i, #job.ids, repair.chunk)
+	for k = first, last do
+		local id = job.ids[k]
+		if train_record(id) then
+			remote.call("cybersyn", "update_train_layout", id)
+			job.refreshed = job.refreshed + 1
+		end
+	end
+	job.i = last
+	job.chunks = (job.chunks or 0) + 1
+	if done then
+		m.repair_job = nil
+		m.repair_job_last = { refreshed = job.refreshed, chunks = job.chunks, ticks = game.tick - job.started }
+		local player = job.player_index > 0 and game.get_player(job.player_index) or nil
+		local text = { "cybersyn-messages.audit-allow-lists-done", tostring(job.refreshed) }
+		log({ "", "Cybersyn: refreshed the allow-lists of ", tostring(job.refreshed), " trains" })
+		if player and player.valid then player.force.print(text) else game.print(text) end
+	end
+end
+
+-- ---------------------------------------------------------------- confirm buttons
+
+--- The button for a one-entity action: "Confirm?" in red while armed, disabled with "Admin only" for a player
+--- without the right, disabled when there is nothing to act on.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param name string element name
+--- @param key string confirm key
+--- @param caption LocalisedString
+--- @param tooltip LocalisedString
+--- @param handler function
+--- @param applicable boolean
+--- @param idle_tooltip LocalisedString? tooltip when not applicable
+--- @return flib.GuiElemDef
+function repair.confirm_button(player, pd, name, key, caption, tooltip, handler, applicable, idle_tooltip)
+	local allowed = actions.may_act(player)
+	local armed = allowed and applicable and logic.confirm_armed(pd.confirm, key, game.tick)
+	return {
+		type = "button",
+		name = name,
+		style = armed and "red_button" or "button",
+		style_mods = { minimal_width = 0, left_padding = 8, right_padding = 8 },
+		caption = armed and { "cybersyn-gui.action-confirm" } or caption,
+		tooltip = not allowed and { "cybersyn-gui.action-admin-only" } or (not applicable and idle_tooltip)
+			or (armed and { "cybersyn-gui.action-confirm-tooltip" }) or tooltip,
+		enabled = allowed and applicable,
+		tags = { action_key = key },
+		handler = { [defines.events.on_gui_click] = handler },
+	}
+end
+
+--- A tool button that opens a dialog for an action on many entities.
+local function dialog_tool(player, name, sprite, tooltip, handler)
+	local allowed = actions.may_act(player)
+	return {
+		type = "sprite-button",
+		name = name,
+		style = "tool_button",
+		sprite = sprite,
+		tooltip = allowed and tooltip or { "cybersyn-gui.action-admin-only" },
+		enabled = allowed,
+		handler = { [defines.events.on_gui_click] = handler },
+	}
+end
+
+--- Second footer row of the train panel: Send home, then `tools` (read-only, extras.lua), then the two dialogs.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param train_id uint
+--- @param tools flib.GuiElemDef[]?
+--- @return flib.GuiElemDef
+function repair.train_row(player, pd, train_id, tools)
+	local row = {
+		type = "flow",
+		name = "actions",
+		direction = "horizontal",
+		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+		repair.confirm_button(player, pd, "fail_delivery", "fail:" .. train_id, { "cybersyn-gui.action-fail-delivery" },
+			{ "cybersyn-gui.action-fail-delivery-tooltip" }, repair.handle.repair_fail_click, repair.can_fail(train_id),
+			{ "cybersyn-gui.action-no-delivery" }),
+		{ type = "empty-widget", style = "flib_horizontal_pusher" },
+	}
+	for _, def in ipairs(tools or {}) do row[#row + 1] = def end
+	row[#row + 1] = { type = "empty-widget", style_mods = { width = 8 } }
+	row[#row + 1] = dialog_tool(player, "recalc", "utility/reset", { "cybersyn-gui.action-recalc-tooltip" },
+		repair.handle.repair_recalc_click)
+	row[#row + 1] = dialog_tool(player, "allow_lists", "utility/refresh", { "cybersyn-gui.action-allow-tooltip" },
+		repair.handle.repair_allow_click)
+	return row
+end
+
+--- Second footer row of the stop panel (stations and refuelers; a depot caches nothing to re-read).
+--- @return flib.GuiElemDef?
+function repair.stop_row(player, pd, stop_id)
+	if not repair.can_rescan(stop_id) then return nil end
+	return {
+		type = "flow",
+		name = "actions",
+		direction = "horizontal",
+		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+		repair.confirm_button(player, pd, "rescan", "rescan:" .. stop_id, { "cybersyn-gui.action-rescan" },
+			{ "cybersyn-gui.action-rescan-tooltip" }, repair.handle.repair_rescan_click, true),
+	}
+end
+
+--- The part of a panel footer's signature these rows depend on.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param kind string
+--- @param id uint
+--- @return string
+function repair.sig(player, pd, kind, id)
+	local key = kind == "train" and ("fail:" .. id) or ("rescan:" .. id)
+	local armed = logic.confirm_armed(pd.confirm, key, game.tick)
+	local applicable = kind == "train" and repair.can_fail(id) or kind ~= "train"
+	return (actions.may_act(player) and "a" or "n") .. (armed and "c" or "") .. (applicable and "y" or "")
+end
+
+--- A click on a confirm button: arms it, or on the second click checks the right again and runs `run`.
+--- @return boolean fired
+local function confirm_click(player, pd, e, what, run)
+	local key = e.element.tags.action_key
+	if not key then return false end
+	if not actions.check(player, what) then
+		pd.confirm = nil
+		return false
+	end
+	local state, fire = logic.confirm_click(pd.confirm, key, game.tick)
+	pd.confirm = state
+	if fire then run() end
+	if repair.on_change then repair.on_change(player, pd) end
+	return fire
+end
+repair.confirm_click = confirm_click
+
+function repair.handle.repair_fail_click(player, pd, e)
+	local kind, id = repair.subject(e.element)
+	if kind ~= "train" then return end
+	confirm_click(player, pd, e, "fail delivery", function()
+		local train = train_record(id)
+		local front = train and train.entity.front_stock
+		local tag = front and ("[train=" .. front.unit_number .. "]") or ("train " .. id)
+		local ok, why = repair.fail_delivery(id)
+		if not ok then
+			util.error_flying_text(player, why)
+			return
+		end
+		actions.audit(ACTION_FAIL_DELIVERY, id, player, { "cybersyn-gui.action-fail-delivery" },
+			{ "cybersyn-messages.audit-fail-delivery", player.name, tag }, id, nil)
+	end)
+end
+
+function repair.handle.repair_rescan_click(player, pd, e)
+	local kind, id = repair.subject(e.element)
+	if kind ~= "stop" then return end
+	confirm_click(player, pd, e, "rescan station", function()
+		local stop = storage.stations[id] and storage.stations[id].entity_stop
+			or storage.refuelers[id] and storage.refuelers[id].entity_stop
+		if not repair.rescan(id) then
+			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
+			return
+		end
+		local tag = stop and stop.valid and ("[train-stop=" .. stop.unit_number .. "]") or tostring(id)
+		actions.audit(ACTION_RESCAN_STATION, id, player, { "cybersyn-gui.action-rescan" },
+			{ "cybersyn-messages.audit-rescan", player.name, tag }, nil, id)
+	end)
+end
+
+-- ---------------------------------------------------------------- dialog (actions on many entities)
+
+--- @param player LuaPlayer
+function repair.close_dialog(player, pd)
+	local frame = player.gui.screen[DIALOG]
+	if frame and frame.valid then frame.destroy() end
+	if pd then pd.action_dialog = nil end
+end
+
+local function train_count()
+	local n = 0
+	for _, train in pairs(storage.trains) do
+		if train.entity and train.entity.valid then n = n + 1 end
+	end
+	return n
+end
+
+--- The style-guide confirmation dialog: title bar, the consequence in plain words, Back on the left and Confirm on
+--- the right.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param which "recalc"|"allow"
+function repair.open_dialog(player, pd, which)
+	repair.close_dialog(player, pd)
+	local n = train_count()
+	local running = which == "allow" and storage.manager.repair_job ~= nil
+	local _, frame = gui.add(player.gui.screen, {
+		type = "frame",
+		name = DIALOG,
+		direction = "vertical",
+		tags = { which = which },
+		{
+			type = "flow",
+			style = "flib_titlebar_flow",
+			drag_target = DIALOG,
+			{ type = "label", style = "frame_title", caption = { "cybersyn-gui.action-dialog-" .. which .. "-title" },
+				ignored_by_interaction = true },
+			{ type = "empty-widget", style = "flib_dialog_titlebar_drag_handle", ignored_by_interaction = true },
+		},
+		{
+			type = "frame",
+			style = "inside_shallow_frame_with_padding",
+			direction = "vertical",
+			{
+				type = "label",
+				name = "message",
+				caption = running and { "cybersyn-gui.action-dialog-allow-running" }
+					or { "cybersyn-gui.action-dialog-" .. which .. "-text", tostring(n) },
+				style_mods = { single_line = false, maximal_width = 400 },
+			},
+		},
+		{
+			type = "flow",
+			style = "dialog_buttons_horizontal_flow",
+			{
+				type = "button",
+				name = "back",
+				style = "back_button",
+				caption = { "cybersyn-gui.action-back" },
+				handler = { [defines.events.on_gui_click] = repair.handle.repair_dialog_back },
+			},
+			{ type = "empty-widget", name = "drag", style = "flib_dialog_footer_drag_handle" },
+			{
+				type = "button",
+				name = "confirm",
+				style = "confirm_button",
+				caption = { "cybersyn-gui.action-confirm-button" },
+				enabled = not running,
+				handler = { [defines.events.on_gui_click] = repair.handle.repair_dialog_confirm },
+			},
+		},
+	})
+	frame.children[1].drag_target = frame
+	frame.children[3].drag.drag_target = frame
+	frame.force_auto_center()
+	pd.action_dialog = which
+end
+
+function repair.handle.repair_recalc_click(player, pd)
+	if not actions.check(player, "recalculate train sizes") then return end
+	repair.open_dialog(player, pd, "recalc")
+end
+
+function repair.handle.repair_allow_click(player, pd)
+	if not actions.check(player, "refresh allow-lists") then return end
+	repair.open_dialog(player, pd, "allow")
+end
+
+function repair.handle.repair_dialog_back(player, pd)
+	repair.close_dialog(player, pd)
+end
+
+--- Runs the dialog's action; the right is checked again here, in the handler that changes state.
+function repair.dialog_confirm(player, pd)
+	local which = pd.action_dialog
+	repair.close_dialog(player, pd)
+	if which == "recalc" then
+		if not actions.check(player, "recalculate train sizes") then return false end
+		retrigger_train_calculation(false)
+		actions.audit(ACTION_RECALCULATE_TRAIN_SIZE, nil, player, { "cybersyn-diag.action-recalculate-train-size" },
+			{ "cybersyn-messages.audit-recalc", player.name, tostring(train_count()) })
+		return true
+	elseif which == "allow" then
+		if not actions.check(player, "refresh allow-lists") then return false end
+		if storage.manager.repair_job then return false end
+		repair.start_allow_job(player)
+		actions.audit(ACTION_REFRESH_ALLOW_LISTS, nil, player, { "cybersyn-diag.action-refresh-allow-lists" },
+			{ "cybersyn-messages.audit-allow-lists", player.name, tostring(#storage.manager.repair_job.ids) })
+		return true
+	end
+	return false
+end
+
+function repair.handle.repair_dialog_confirm(player, pd)
+	repair.dialog_confirm(player, pd)
+end
+
+-- ---------------------------------------------------------------- tick, wiring
+
+--- Manager tick: armed buttons expire (the panels re-render on the same tick), and the allow-list job advances.
+--- @param manager_data Manager
+function repair.tick(manager_data)
+	local now = game.tick
+	for _, pd in pairs(manager_data.players) do
+		if logic.confirm_expired(pd.confirm, now) then pd.confirm = nil end
+	end
+	repair.job_tick()
+end
+
+--- The panel subject of a clicked element; set by extras (relative.build's frame tags).
+--- @type fun(elem: LuaGuiElement): string?, uint?
+repair.subject = function() return nil, nil end
+
+function repair.wrapper(e, handler)
+	local player = game.get_player(e.player_index)
+	local pd = storage.manager and storage.manager.players[e.player_index]
+	if not (player and pd) then return end
+	handler(player, pd, e)
+end
+
+gui.add_handlers(repair.handle, repair.wrapper, "cybersyn_repair")
+
+-- ---------------------------------------------------------------- dev interface
+
+local function dev_context(pi)
+	local player = game.get_player(pi)
+	if not player then error("no player " .. tostring(pi)) end
+	local pd = storage.manager.players[pi]
+	if not pd then error("no manager data for player " .. tostring(pi)) end
+	return player, pd
+end
+
+--- A click on a confirm button of the relative panel the player has open, through the real handler.
+local function click_named(pi, name, force)
+	local player, pd = dev_context(pi)
+	local open = pd.relative_open
+	if not open then return { error = "no panel open" } end
+	local mount = open.kind == "train" and player.gui.screen.cybersyn_relative_train or player.gui.relative.cybersyn_relative_stop
+	local panel = mount and mount.cybersyn_relative_panel
+	if not panel then return { error = "no panel" } end
+	local found
+	local function walk(elem)
+		if found then return end
+		if elem.name == name then
+			found = elem
+			return
+		end
+		for _, c in ipairs(elem.children) do walk(c) end
+	end
+	walk(panel)
+	if not found then return { error = "no element " .. name } end
+	local before = { caption = found.caption, enabled = found.enabled, style = found.style.name, tooltip = found.tooltip }
+	-- force: click a disabled button too, as a modified client could; the handler must refuse on its own.
+	if found.enabled or force then
+		gui.dispatch({ name = defines.events.on_gui_click, element = found, player_index = pi, tick = game.tick,
+			button = defines.mouse_button_type.left, shift = false, control = false, alt = false })
+	end
+	return { before = before, confirm = pd.confirm }
+end
+
+dev.extend({
+	action_click = click_named,
+	--- The state of a named action element in the open panel: caption, style, enabled, tooltip.
+	action_button = function(pi, name)
+		local player, pd = dev_context(pi)
+		local open = pd.relative_open
+		if not open then return nil end
+		local mount = open.kind == "train" and player.gui.screen.cybersyn_relative_train or player.gui.relative.cybersyn_relative_stop
+		local found
+		local function walk(elem)
+			if found then return end
+			if elem.name == name then found = elem return end
+			for _, c in ipairs(elem.children) do walk(c) end
+		end
+		if mount then walk(mount) end
+		if not found then return nil end
+		return { caption = found.caption, enabled = found.enabled, style = found.style.name, tooltip = found.tooltip }
+	end,
+	action_dialog = function(pi, which, confirm)
+		local player, pd = dev_context(pi)
+		if which then
+			if not actions.check(player, which) then return { refused = true } end
+			repair.open_dialog(player, pd, which)
+		end
+		local frame = player.gui.screen[DIALOG]
+		local out = { open = frame ~= nil and frame.valid, which = pd.action_dialog }
+		if frame and frame.valid then
+			out.buttons = { frame.children[3].children[1].name, frame.children[3].children[3].name }
+			out.text = frame.children[2].message.caption
+		end
+		if confirm then out.ran = repair.dialog_confirm(player, pd) end
+		return out
+	end,
+	repair_job_chunk = function(n)
+		repair.chunk = n
+	end,
+	repair_job = function(step)
+		if step then repair.job_tick() end
+		local job = storage.manager.repair_job
+		return { running = job ~= nil, i = job and job.i, total = job and #job.ids, last = storage.manager.repair_job_last }
+	end,
+	set_admin = function(pi, admin)
+		local player = game.get_player(pi)
+		player.admin = admin
+		return player.admin
+	end,
+	may_act = function(pi)
+		return actions.may_act(game.get_player(pi))
+	end,
+	last_audit = function()
+		return actions.last_line
+	end,
+})
+
+return repair

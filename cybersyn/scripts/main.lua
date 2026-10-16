@@ -906,12 +906,15 @@ local function register_tick()
 		add(WORLD_SCAN_NTH, function()
 			local m = storage.manager
 			if m and m.lint and m.lint.world_job then lint.world_tick() end
+			if m and m.repair_job then manager.job_tick() end
 		end)
 	end
 	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
 	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
 	-- tick is a manager tick.
 	local skip_nth = manager_nth and manager_nth > 1 and diag.EXPORT_NTH % manager_nth ~= 0 and manager_nth or nil
+	-- The opt-in HUD line refreshes on its own cadence; a no-op loop over the players when nobody has it on.
+	add(manager.HUD_TICKS, manager.hud_tick)
 	add(diag.EXPORT_NTH, function()
 		if skip_nth and game.tick % skip_nth == 0 then return end
 		manager.export_tick()

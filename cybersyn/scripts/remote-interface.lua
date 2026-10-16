@@ -379,7 +379,206 @@ interface.send_alert_refueler_of_train_broken = send_alert_refueler_of_train_bro
 interface.send_alert_station_of_train_broken = send_alert_station_of_train_broken
 interface.send_alert_train_at_incorrect_station = send_alert_train_at_incorrect_station
 
+------------------------------------------------------------------
+--[[manager window (PLAN3 §14 Tier C, phase 10)]]
+------------------------------------------------------------------
+
+--- Whether the player has the Cybersyn manager window open.
+---@param player_index uint
+---@return boolean
+function interface.is_gui_open(player_index)
+	local m = storage.manager
+	local pd = m and m.players[player_index]
+	return pd ~= nil and pd.is_manager_open == true
+end
+
+--- Opens the manager for the player, or closes it when it is open (the same as the shortcut).
+---@param player_index uint
+---@return boolean open after the call
+function interface.toggle_gui(player_index)
+	if cybersyn_manager_toggle then cybersyn_manager_toggle(player_index) end
+	return interface.is_gui_open(player_index)
+end
+
 remote.add_interface("cybersyn", interface)
+
+------------------------------------------------------------------
+--[[read-only queries for HUD and overlay mods (phase 10)]]
+------------------------------------------------------------------
+-- Plain tables only (copies, never references into storage), so a caller can keep or change what it receives. The
+-- unserved data needs `cybersyn-diagnostics` on (basic or full); the counters work either way.
+
+local query_diag = require("scripts.diag")
+local query_stats = require("scripts.stats")
+local query_lint = require("scripts.lint")
+local query_extras = require("scripts.gui.extras")
+
+local QUERY_STATUS = {
+	[STATUS_D] = "depot", [STATUS_TO_P] = "to_provider", [STATUS_P] = "at_provider", [STATUS_TO_R] = "to_requester",
+	[STATUS_R] = "at_requester", [STATUS_TO_D] = "to_depot", [STATUS_TO_D_BYPASS] = "to_depot_bypass",
+	[STATUS_TO_F] = "to_refueler", [STATUS_F] = "at_refueler",
+}
+local QUERY_LIMIT = 100
+
+local function query_stop_name(id)
+	local record = storage.stations[id] or storage.depots[id] or storage.refuelers[id]
+	local stop = record and record.entity_stop
+	return stop and stop.valid and stop.backer_name or nil
+end
+
+local function query_network(name, mask)
+	if name == NETWORK_EACH then
+		local out = {}
+		if type(mask) == "table" then
+			for n, m in pairs(mask) do out[n] = m end
+		end
+		return { each = true, masks = out }
+	end
+	return { name = name, mask = type(mask) == "number" and mask or nil }
+end
+
+local function query_reason(filter_reason)
+	if type(filter_reason) == "string" then
+		for code, name in pairs(REASON_NAMES) do
+			if name == filter_reason or string.lower(name) == filter_reason then return code end
+		end
+		return -1
+	end
+	return filter_reason
+end
+
+local function query_row(row)
+	local e = row.entry
+	local now = game.tick
+	return {
+		requester = row.r_station_id,
+		requester_name = query_stop_name(row.r_station_id),
+		item = row.hash,
+		reason = REASON_NAMES[e.reason],
+		reason_code = e.reason,
+		a = e.a,
+		b = e.b,
+		first_tick = e.first_tick,
+		wait_ticks = now - e.first_tick,
+		evaluations = e.n,
+		provider = e.p_station_id,
+		lost_to = e.lost_to,
+		acknowledged = query_diag.is_acked("request", row.r_station_id, row.hash) ~= nil,
+	}
+end
+
+local query = {}
+
+--- The longest-waiting unserved requests (oldest first), at most `filter.limit` (default 20, at most 100).
+---@param filter {item: string?, reason: (int|string)?, requester: uint?, limit: int?}?
+---@return table[]
+function query.query_unserved(filter)
+	filter = filter or {}
+	local limit = math.min(math.max(tonumber(filter.limit) or 20, 1), QUERY_LIMIT)
+	local want_r = filter.requester
+	local rows = query_diag.unserved_rows({ item = filter.item, reason = query_reason(filter.reason),
+		limit = want_r and 4096 or limit })
+	local out = {}
+	for _, row in ipairs(rows) do
+		if not want_r or row.r_station_id == want_r then
+			out[#out + 1] = query_row(row)
+			if #out >= limit then break end
+		end
+	end
+	return out
+end
+
+--- Totals: unserved entries per reason, available trains per network and the headroom (fewest available).
+---@return table
+function query.query_counts()
+	local d = storage.diag
+	local by_reason, total = {}, 0
+	for code, n in pairs(query_diag.counts_by_reason()) do
+		by_reason[REASON_NAMES[code] or tostring(code)] = n
+		total = total + n
+	end
+	local s = query_stats.get()
+	local available = {}
+	for name, n in pairs(s and s.available_count or {}) do available[name] = n end
+	-- The same headroom as the HUD line and the Overview's "Now".
+	local _, _, v = query_extras.hud_text()
+	local headroom, worst = v.headroom, v.network
+	return {
+		diagnostics = d and d.mode or "off",
+		unserved = total,
+		by_reason = by_reason,
+		available = available,
+		headroom = headroom,
+		headroom_network = worst,
+		tick = game.tick,
+	}
+end
+
+--- One station, depot or refueler by its stop's unit number; nil when Cybersyn does not know it.
+---@param id uint
+---@return table?
+function query.query_station(id)
+	local record, kind = storage.stations[id], "station"
+	if not record then record, kind = storage.depots[id], "depot" end
+	if not record then record, kind = storage.refuelers[id], "refueler" end
+	if not record then return nil end
+	local stop = record.entity_stop
+	local out = {
+		id = id,
+		kind = kind,
+		name = stop and stop.valid and stop.backer_name or nil,
+		position = stop and stop.valid and { x = stop.position.x, y = stop.position.y } or nil,
+		surface = stop and stop.valid and stop.surface.name or nil,
+		network = query_network(record.network_name, record.network_mask),
+	}
+	if kind == "station" then
+		out.provider = record.is_p == true
+		out.requester = record.is_r == true
+		out.priority = record.priority
+		out.deliveries = record.deliveries_total
+		out.trains_limit = record.trains_limit
+		out.unserved = query.query_unserved({ requester = id, limit = QUERY_LIMIT })
+	end
+	local lint_findings = {}
+	local bits = query_lint.bits_of(id)
+	if bits and bits ~= 0 then
+		for check, name in pairs(LINT_NAMES) do
+			if query_lint.has(bits, check) then lint_findings[#lint_findings + 1] = name end
+		end
+		table.sort(lint_findings)
+	end
+	out.setup_findings = lint_findings
+	return out
+end
+
+--- One Cybersyn train by its LuaTrain id; nil when Cybersyn does not know it.
+---@param id uint
+---@return table?
+function query.query_train(id)
+	local train = storage.trains[id]
+	if not train then return nil end
+	local manifest = {}
+	for i, item in ipairs(train.manifest or {}) do
+		manifest[i] = { type = item.type, name = item.name, quality = item.quality, count = item.count }
+	end
+	return {
+		id = id,
+		status = QUERY_STATUS[train.status] or tostring(train.status),
+		status_code = train.status,
+		network = query_network(train.network_name, train.network_mask),
+		depot = train.depot_id and query_stop_name(train.depot_id) or nil,
+		depot_id = train.depot_id,
+		provider = train.p_station_id,
+		requester = train.r_station_id,
+		manifest = manifest,
+		layout_id = train.layout_id,
+		item_slot_capacity = train.item_slot_capacity,
+		fluid_capacity = train.fluid_capacity,
+		available = train.is_available == true,
+	}
+end
+
+remote.add_interface("cybersyn-query", query)
 
 ------------------------------------------------------------------
 --[[internal event calls]]

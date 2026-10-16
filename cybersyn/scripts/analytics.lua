@@ -454,6 +454,7 @@ function analytics.get_active_failures(map_data, oldest_tick)
 				item_hash = failure.item_hash,
 				r_station_id = failure.r_station_id,
 				failure_reason = failure.failure_reason,
+				reason = failure.reason,
 				duration = duration_seconds,
 				request_start_tick = start,
 				last_tick = failure.last_tick,

@@ -1555,11 +1555,12 @@ function diag.lint(check, subject, id, appeared)
 end
 
 --- A state-changing command or manager action (PLAN3 §4.14): `a` = ACTION_*, `b` = target id (0 = all),
---- station2 = player index (0 = the server console).
-function diag.manual_action(action, target, player_index)
+--- station2 = player index (0 = the server console); train / station = the train or stop it applied to, if any.
+function diag.manual_action(action, target, player_index, train_id, station_id)
 	local d = storage.diag
 	if not d then return end
-	diag.event(d, DIAG_KIND_MANUAL_ACTION, DIAG_SEV_INFO, action, 0, 0, 0, player_index or 0, 0, action, target or 0)
+	diag.event(d, DIAG_KIND_MANUAL_ACTION, DIAG_SEV_INFO, action, 0, train_id or 0, station_id or 0, player_index or 0, 0,
+		action, target or 0)
 end
 
 -- ---------------------------------------------------------------- export
