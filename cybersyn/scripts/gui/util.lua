@@ -557,7 +557,10 @@ function util.note_click(e)
 	local manager_data = storage.manager
 	local player_data = manager_data and manager_data.players[e.player_index]
 	if not (player_data and player_data.search_focused) then return end
-	if not string.find(elem.name, "_search_field$") then player_data.search_focused = nil end
+	if not string.find(elem.name, "_search_field$") then
+		player_data.search_focused = nil
+		util.overlay_closed(game.get_player(e.player_index), player_data)
+	end
 end
 
 --- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
@@ -1200,6 +1203,13 @@ local function pin_for_map(player, player_data)
 	if not player_data.is_manager_open or player_data.pinning then return end
 	player_data.pinning = true
 	player_data.auto_pinned = true
+	-- A player whose own view is the remote one (on a space platform) never leaves remote view: Back returns them to
+	-- where they looked from.
+	if player.controller_type == defines.controllers.remote then
+		player_data.map_from = { position = player.position, surface = player.surface_index }
+	else
+		player_data.map_from = nil
+	end
 	local window = player_data.refs and player_data.refs.manager_window
 	-- Releasing player.opened raises on_gui_closed, which a pinned window ignores.
 	if window and window.valid and player.opened == window then player.opened = nil end

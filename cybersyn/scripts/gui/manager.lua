@@ -718,10 +718,12 @@ end
 --- goes past the window. Open question for Daniel in DECISIONS.md (phase 7); this flag is the whole answer.
 manager.PINNED_OVERLAYS_TAKE_OPENED = true
 
---- The overlay Escape closes next, or nil.
+--- The overlay Escape closes next, or nil. A search field that has the keyboard counts as the top one: Escape
+--- clears and closes it.
 --- @param player_data PlayerData
---- @return "explain"|"item"|"pane"|nil
+--- @return "search"|"explain"|"item"|"pane"|nil
 function manager.top_overlay(player_data)
+	if player_data.search_focused then return "search" end
 	if player_data.explain then return "explain" end
 	if player_data.item_view then return "item" end
 	if trains_tab.pane_shown(player_data) then return "pane" end
@@ -765,7 +767,9 @@ util.set_overlay_fns({ opened = manager.overlay_opened, closed = manager.overlay
 --- @return uint?
 local function peel_overlay(player, player_data)
 	local kind = manager.top_overlay(player_data)
-	if kind == "explain" then
+	if kind == "search" then
+		manager.cancel_search(player, player_data)
+	elseif kind == "explain" then
 		explain.close(player, player_data)
 	elseif kind == "item" then
 		item.close(player, player_data, true)
@@ -941,7 +945,15 @@ end
 function manager.on_controller_changed(player, player_data)
 	manager.interrupt_pane_escape(player, player_data)
 	if not player_data.auto_pinned or player.controller_type == defines.controllers.remote then return end
+	manager.unpin_after_map(player, player_data)
+end
+
+--- The window "show on map" pinned is unpinned and takes player.opened again.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.unpin_after_map(player, player_data)
 	player_data.auto_pinned = nil
+	player_data.map_from = nil
 	player_data.pinning = false
 	manager.refresh_toggles(player_data)
 	local window = player_data.refs and player_data.refs.manager_window
@@ -954,6 +966,14 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_back(player, player_data, refs)
+	local from = player_data.map_from
+	if from and player.controller_type == defines.controllers.remote then
+		-- A platform's own view is remote: no controller change follows, so the window is unpinned here.
+		local surface = game.get_surface(from.surface)
+		if surface then player.set_controller({ type = defines.controllers.remote, position = from.position, surface = surface }) end
+		if player_data.auto_pinned then manager.unpin_after_map(player, player_data) end
+		return
+	end
 	if player.controller_type == defines.controllers.remote then
 		player.exit_remote_view()
 	end
@@ -1046,6 +1066,7 @@ function manager.focus_search(player, player_data)
 		field.focus()
 		field.select_all()
 		player_data.search_focused = true
+		manager.overlay_opened(player, player_data)
 	end
 	manager.render(player, player_data)
 end
@@ -1074,6 +1095,10 @@ function manager.on_search_input(e)
 	if not (player_data and player_data.is_manager_open) then return end
 	local player = game.get_player(e.player_index)
 	if not player then return end
+	-- The input is linked to the game's focus-search, which the GUI in front gets too: a pinned window behind another
+	-- GUI (a chest, the train window) leaves Ctrl+F to that GUI instead of taking the keyboard from it.
+	local window = player_data.refs and player_data.refs.manager_window
+	if player.opened_gui_type ~= defines.gui_type.none and player.opened ~= window then return end
 	manager.focus_search(player, player_data)
 end
 
@@ -1091,11 +1116,13 @@ end
 --- @param e EventData.on_gui_click
 function manager.handle.manager_search_click(player, player_data, refs, e)
 	player_data.search_focused = true
+	manager.overlay_opened(player, player_data)
 end
 
 --- @param e EventData.on_gui_confirmed
 function manager.handle.manager_search_confirmed(player, player_data, refs, e)
 	player_data.search_focused = nil
+	manager.overlay_closed(player, player_data)
 end
 
 --- Escape while the search field has the keyboard: the text goes, the field closes, the window stays.

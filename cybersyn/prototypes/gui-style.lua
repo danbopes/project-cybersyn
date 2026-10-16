@@ -475,6 +475,15 @@ data:extend({
 		linked_game_control = "focus-search",
 		action = "lua",
 	},
+	{
+		-- A click in the world (the game's open-gui button) takes the keyboard from a focused search field without any
+		-- GUI event: the manager forgets the focus, so the next Escape closes instead of clearing the search.
+		type = "custom-input",
+		name = "cybersyn-manager-world-click",
+		key_sequence = "",
+		linked_game_control = "open-gui",
+		action = "lua",
+	},
 })
 
 styles.cybersyn_tab_subheader = {
@@ -832,6 +841,13 @@ styles.cybersyn_unserved_icon_flow = {
 	vertical_align = "center",
 	horizontal_spacing = 2,
 	width = 64,
+}
+
+-- Icons after a name's text: only as wide as the icons it shows.
+styles.cybersyn_name_tail_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 2,
 }
 
 styles.cybersyn_unserved_ack = {

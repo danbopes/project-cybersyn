@@ -303,11 +303,8 @@ function interface.pane_escapes(pi, settle)
 	local pending = storage.manager.pane_escapes
 	if settle and pending and pending[pi] then
 		pending[pi].tick = game.tick - 1
-		local _, pd = context(pi)
-		local pinning = pd.pinning
-		pd.pinning = false
+		-- The entry carries whether the window was pinned when Escape came (dev escape emulates an unpinned one).
 		manager.settle_pane_escapes()
-		pd.pinning = pinning
 	end
 	pending = storage.manager.pane_escapes
 	return pending and pending[pi] or nil

@@ -125,6 +125,7 @@ end
 function manager_gui.on_lua_shortcut(e)
 	if e.prototype_name == "cybersyn-toggle-gui" or e.input_name == "cybersyn-toggle-gui" or e.element then
 		if e.element then
+			if not e.element.valid then return end
 			if e.element.name == "manager_window" then
 				if e.name == defines.events.on_gui_closed then
 					manager.wrapper(e, manager.handle.manager_closed_by_game)
@@ -151,8 +152,9 @@ end
 --- @param e EventData.on_gui_closed
 function manager_gui.on_gui_closed(e)
 	relative.on_gui_closed(e)
-	repair.on_gui_closed(e)
 	manager_gui.on_lua_shortcut(e)
+	-- Last: it destroys the dialog, the element of this event.
+	repair.on_gui_closed(e)
 	-- Closing the GUI a link opened hands player.opened back at once when nothing else holds it, so a second Escape
 	-- closes the manager instead of opening the game menu. restore_opened stays set: the engine may still close the
 	-- window again in this tick (locomotive GUI) or force-close it without an event while it switches to another GUI,
@@ -486,6 +488,16 @@ end
 
 --- The cybersyn-manager-search custom input (linked to the game's focus-search).
 manager_gui.on_search_input = manager.on_search_input
+
+--- The cybersyn-manager-world-click custom input (linked to the game's open-gui click).
+--- @param e EventData.CustomInputEvent
+function manager_gui.on_world_click(e)
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	if player_data and player_data.search_focused then
+		player_data.search_focused = nil
+		manager.overlay_closed(game.get_player(e.player_index), player_data)
+	end
+end
 
 ---@param i string|uint
 ---@param v LuaPlayer

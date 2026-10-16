@@ -35,6 +35,8 @@ local TABLE_COLUMNS = 8
 local W = { item = 32, why = 132, provider = 272, stock = 110, lost = 96, wait = 72, ack = 28 }
 local BASE_CONTENT_WIDTH = 1392
 local REQUESTER_MIN, PROVIDER_MIN = 160, 120
+-- The Throughput tile's "Recorded so far" note needs a tile at least this wide beside its caption.
+local NOTE_TILE_WIDTH = 330
 local TABLE_PADDING = 4 + 10
 local TABLE_SPACING = 8
 local FRAME_BORDER = 4
@@ -708,13 +710,17 @@ local function render_failing_tile(refs, cache, model)
 	set_tooltip(cache, refs.overview_tile_failing, sig, tooltip)
 end
 
-local function render_throughput_tile(refs, cache, model)
+local function render_throughput_tile(refs, cache, model, tile_width)
 	local t = model.throughput
 	local period = tostring(model.period)
 	set_caption(cache, refs.overview_throughput_caption, period,
 		{ "", { "cybersyn-gui.overview-tile-throughput" }, " · ", { "cybersyn-gui.overview-scope-short-" .. period } })
 	local recorded = t.recorded and util.short_duration(t.recorded) or ""
-	set_caption(cache, refs.overview_throughput_note, recorded, t.recorded and { "cybersyn-gui.overview-period-recorded", recorded } or "")
+	-- "Recorded so far" beside the caption only where the tile has the room (the 1,440 px window); a narrower tile
+	-- keeps the caption whole and says it in the tooltip's first line.
+	local wide = tile_width >= NOTE_TILE_WIDTH
+	set_caption(cache, refs.overview_throughput_note, wide and recorded or "",
+		(wide and t.recorded) and { "cybersyn-gui.overview-period-recorded", recorded } or "")
 	set_caption(cache, refs.overview_throughput_headline, tostring(t.deliveries), format.number(t.deliveries))
 	local trip = t.trip and util.short_duration(t.trip * 60) or NO_VALUE
 	local wait_avg = t.wait_avg and util.short_duration(t.wait_avg) or NO_VALUE
@@ -723,9 +729,12 @@ local function render_throughput_tile(refs, cache, model)
 	set_line(refs, cache, "throughput", 2, "wavg", { "cybersyn-gui.overview-throughput-wait-avg" }, wait_avg)
 	set_line(refs, cache, "throughput", 3, "wmax", { "cybersyn-gui.overview-throughput-wait-max" }, wait_max)
 	local per_cycle = t.cycle_ticks > 0 and string.format("%.1f", t.cycle_dispatches) or ""
-	local sig = table.concat({ t.amount, t.dispatches, tostring(model.tracking), t.cycle_ticks, per_cycle, period }, "|")
+	local narrow_note = not wide and t.recorded and recorded or ""
+	local sig = table.concat({ t.amount, t.dispatches, tostring(model.tracking), t.cycle_ticks, per_cycle, period,
+		narrow_note }, "|")
 	local tooltip = {
-		"", { "cybersyn-gui.overview-tile-throughput-tooltip", { "cybersyn-gui.overview-scope-" .. period } },
+		"", narrow_note ~= "" and { "", { "cybersyn-gui.overview-period-recorded", recorded }, "\n" } or "",
+		{ "cybersyn-gui.overview-tile-throughput-tooltip", { "cybersyn-gui.overview-scope-" .. period } },
 		"\n", { "cybersyn-gui.overview-throughput-items", format.number(t.amount) },
 		"\n", { "cybersyn-gui.overview-throughput-dispatches", format.number(t.dispatches) },
 	}
@@ -748,7 +757,8 @@ local function render_tiles(player_data, model)
 	render_unserved_tile(refs, cache, model)
 	render_fleet_tile(refs, cache, model)
 	render_failing_tile(refs, cache, model)
-	render_throughput_tile(refs, cache, model)
+	local widths = player_data.overview_widths
+	render_throughput_tile(refs, cache, model, widths and widths.tile or 339)
 
 	local dropdown = refs.overview_period_dropdown
 	if dropdown and dropdown.valid then
@@ -964,7 +974,8 @@ local surface_name = util.surface_name
 local function row_entry(row, acked, ctx)
 	local hash, e, r_id = row.hash, row.e, row.r_id
 	local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(hash)
-	if not sprite then return nil end
+	-- An item a mod change removed still has its entry: a question mark, never a row less than the caption counts.
+	if not sprite then sprite, quality, item_tooltip = "utility/questionmark", nil, hash end
 	local now = ctx.now
 	local requester, r_st = station_view(r_id, ctx.snapshot)
 	local reason = e.reason

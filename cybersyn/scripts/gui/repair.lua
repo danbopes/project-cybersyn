@@ -572,6 +572,12 @@ dev.extend({
 		if not found then return nil end
 		return { caption = found.caption, enabled = found.enabled, style = found.style.name, tooltip = found.tooltip }
 	end,
+	--- The dialog's Back button through its handler.
+	action_dialog_back = function(pi)
+		local player, pd = dev_context(pi)
+		repair.handle.repair_dialog_back(player, pd)
+		return pd.action_dialog == nil
+	end,
 	action_dialog = function(pi, which, confirm)
 		local player, pd = dev_context(pi)
 		if which then

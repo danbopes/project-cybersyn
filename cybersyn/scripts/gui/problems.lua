@@ -524,7 +524,7 @@ local function create_slot(body, index, pos, widths)
 	end
 	local button = subject.add({ type = "button", style = "cybersyn_link_button", raise_hover_events = true, tags = link,
 		mouse_button_filter = { "left" } })
-	local tail = subject.add({ type = "flow", direction = "horizontal", style = "cybersyn_unserved_icon_flow" })
+	local tail = subject.add({ type = "flow", direction = "horizontal", style = "cybersyn_name_tail_flow" })
 	for _ = 1, NAME_ICONS do
 		tail.add({ type = "sprite-button", style = "cybersyn_name_icon", visible = false, raise_hover_events = true,
 			tags = link })
@@ -619,6 +619,7 @@ end
 
 local NO_ICONS = {}
 local ICON_STEP = 22
+local LEAD_ROW = 64
 
 --- Writes one side's icon buttons of a subject cell; returns what they show now (count, qualities).
 --- @param buttons LuaGuiElement[]
@@ -711,7 +712,8 @@ local function bind_row(elem, c, line, key, odd, ctx)
 		relayout = true
 	end
 	if relayout then
-		link.style.maximal_width = math.max(widths.subject - (n_lead + n_tail) * ICON_STEP - 4, 24)
+		-- The lead icons sit in a fixed 64 px column (names line up), the tail icons take what they need.
+		link.style.maximal_width = math.max(widths.subject - LEAD_ROW - n_tail * ICON_STEP - 4, 24)
 	end
 	if c.w ~= ctx.wsig then
 		cell.style.width = widths.subject
