@@ -162,8 +162,8 @@ lab.suite("39_extras", {
 			or before.controller == defines.controllers.character or before.controller == defines.controllers.god, before)
 		dev("link_click", PI, "train", ctx.trace_train, { control = true, shift = true })
 		pin = dev("last_pin", PI)
-		lab.check("ctrl+shift on a train link pins 'Train <id>'",
-			pin and pin.kind == "train" and pin.label == "Train " .. ctx.trace_train, pin)
+		lab.check("ctrl+shift on a train link pins '#<id>' (no English word in a plain-string label)",
+			pin and pin.kind == "train" and pin.label == "#" .. ctx.trace_train, pin)
 		dev("action_click", PI, "pin")
 		pin = dev("last_pin", PI)
 		lab.check("train panel pin tool", pin and pin.kind == "train" and pin.id == ctx.trace_train, pin)
@@ -398,9 +398,11 @@ lab.suite("39_extras", {
 		local b = dev("action_button", PI, "rescan")
 		lab.check("the armed button expired after 180 ticks (manager tick)", b and key_of(b.caption) == "cybersyn-gui.action-rescan"
 			and b.style == "button", b)
+		lab.check("no confirm left: the expiry walk is off again", read("manager", "confirm_any") == nil)
 		local seq = seq_now()
 		dev("action_click", PI, "rescan")
-		lab.check("a click after the expiry arms again instead of running", #actions_after(seq, ACTION_RESCAN) == 0)
+		lab.check("a click after the expiry and its grace arms again instead of running", #actions_after(seq, ACTION_RESCAN) == 0)
+		lab.check("an armed button turns the expiry walk on", read("manager", "confirm_any") == true)
 		dev("relative_close", PI)
 
 		-- Fail delivery and send home: refused under nobody, then run as an admin under admins.

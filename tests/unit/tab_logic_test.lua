@@ -38,22 +38,25 @@ end)
 test("table_width: the detail pane and its gap come off the content width", function()
 	local l = logic()
 	assert_eq(l.table_width(1392, false), 1392)
-	assert_eq(l.table_width(1392, true), 1392 - 332)
-	assert_eq(l.PANE_WIDTH + l.PANE_GAP, 332)
+	assert_eq(l.table_width(1392, true), 1392 - 336)
+	assert_eq(l.PANE_WIDTH + l.PANE_GAP, 336)
 end)
 
-test("train_widths: closed, the table takes the content width and keeps every column", function()
+test("train_widths: closed, the table takes the content width; narrow windows drop columns, never the status", function()
 	local l = logic()
-	for _, cw in ipairs({ 912, 1392, 2000 }) do
+	for _, cw in ipairs({ 862, 912, 1104, 1392, 2000 }) do
 		local w = l.train_widths(cw, {}, false)
 		assert_eq(w.cw, cw)
-		assert_eq(next(w.dropped), nil, "nothing dropped at " .. cw)
-		assert_true(w.shipment ~= nil and w.shipment % 32 == 0, "shipment in whole slots at " .. cw)
+		if cw >= 1104 then assert_eq(next(w.dropped), nil, "nothing dropped at " .. cw) end
+		assert_true(w.dropped.shipment == nil and w.shipment ~= nil and w.shipment % 32 == 0,
+			"shipment kept in whole slots at " .. cw)
 		assert_true(l.train_columns_total(w) <= cw, "columns fit at " .. cw)
-		-- Under 1,100 px the closed table squeezes the status below its minimum (the phase 7 window floors).
-		assert_true(cw < 1100 or w.train_status >= l.TRAIN_STATUS_MIN, "status keeps its minimum at " .. cw)
+		-- Phase 7: the closed table drops columns (pane order) rather than squeeze the status below its minimum.
+		assert_true(w.train_status >= l.TRAIN_STATUS_MIN, "status keeps its minimum at " .. cw)
 		assert_true(w.group_comps and w.group_bypass and w.group_name >= 120, "group row whole at " .. cw)
 	end
+	local w = l.train_widths(912, {}, false)
+	assert_true(w.dropped.last_refuel == true, "the first column to go is Last refuel")
 	-- Unchanged from before the pane: 1392 gives Shipment its six slots.
 	assert_eq(l.train_widths(1392, {}, false).shipment, 192)
 end)
@@ -66,7 +69,7 @@ test("train_widths: with the pane, Shipment goes and the columns fit down to the
 		for _, hidden in ipairs({ {}, { network = true, layout = true, depot = true }, { fuel = true, last_refuel = true } }) do
 			local w = l.train_widths(cw, hidden, true)
 			local at = cw .. " " .. tostring(next(hidden))
-			assert_eq(w.cw, cw - 332, at)
+			assert_eq(w.cw, cw - 336, at)
 			assert_eq(w.shipment, nil, "Shipment dropped at " .. at)
 			assert_true(w.dropped.shipment, at)
 			assert_true(l.train_columns_total(w) <= w.cw, "columns fit at " .. at .. ": " .. l.train_columns_total(w))
@@ -101,12 +104,12 @@ end)
 test("pane_split: the body keeps its minimum, the camera shrinks and then goes", function()
 	local l = logic()
 	-- 4K/1.5: 27 rows.
-	assert_eq({ l.pane_split(36 + 27 * 36) }, { 180, 1008 - 104 - 190 })
+	assert_eq({ l.pane_split(36 + 27 * 36) }, { 180, 1008 - 108 - 192 })
 	-- 1080p/1.5 without strips: 10 rows.
-	assert_eq({ l.pane_split(36 + 10 * 36) }, { 162, 120 })
+	assert_eq({ l.pane_split(36 + 10 * 36) }, { 156, 120 })
 	-- 1080p/2.0: 5 rows, and the 3-row floor.
-	assert_eq({ l.pane_split(216) }, { 0, 112 })
-	assert_eq({ l.pane_split(144) }, { 0, 40 })
+	assert_eq({ l.pane_split(216) }, { 0, 108 })
+	assert_eq({ l.pane_split(144) }, { 0, 36 })
 	for h = 144, 1100, 4 do
 		local camera, body = l.pane_split(h)
 		local used = l.PANE_FIXED + (camera > 0 and camera + l.PANE_CAMERA_GAP or 0) + body
@@ -301,4 +304,20 @@ test("unrequested: provide keys without a request key on the same network", func
 	assert_eq(l.unrequested(p, r, "B"), { iron = true, ["copper|rare"] = true })
 	assert_eq(l.unrequested(p, r, "A"), { coal = true })
 	assert_eq(l.unrequested({}, r), {})
+end)
+
+test("chip_change_tick: the first tick at which time alone changes a train's In trouble or Not refuelled chip", function()
+	local l = logic()
+	-- A signal wait turns into trouble WAIT_SIGNAL_MIN after it began.
+	assert_eq(l.chip_change_tick(1000, "wait_signal", 900, nil, 1, false), 900 + l.WAIT_SIGNAL_MIN)
+	assert_nil(l.chip_change_tick(2000, "wait_signal", 900, nil, 1, false), "already in trouble")
+	assert_nil(l.chip_change_tick(1000, "on_the_path", 900, nil, 1, false))
+	-- Not refuelled: the tick after `hours` have passed since the last refuel, only where a refueler exists.
+	assert_eq(l.chip_change_tick(1000, "on_the_path", 900, 500, 1, true), 500 + 216000 + 1)
+	assert_nil(l.chip_change_tick(1000, "on_the_path", 900, 500, 1, false))
+	assert_eq(l.chip_change_tick(1000, "wait_signal", 900, 500, 1, true), 900 + l.WAIT_SIGNAL_MIN, "the earlier one")
+	-- Consistent with not_refuelled: false at the tick before, true at the tick returned.
+	local at = l.chip_change_tick(1000, nil, nil, 500, 0.25, true)
+	assert_false(l.not_refuelled(at - 1, 500, 0.25, nil))
+	assert_true(l.not_refuelled(at, 500, 0.25, nil))
 end)

@@ -142,14 +142,21 @@ lab.suite("36_window", {
 		local before = count()
 		lab.check("a station without a lint finding exists to mark by hand", id ~= nil, { flagged = before })
 		if not id then return end
-		remote.call("cybersyn", "write_global", 5, "manager", "snapshot", "stations", id, "lint")
+		-- As lint writes a mask (set_station_lint): the record, then the collector's change log the per-player counts
+		-- follow.
+		local function mark(mask)
+			remote.call("cybersyn", "write_global", mask, "manager", "snapshot", "stations", id, "lint")
+			local ids = lab.read("manager").collect_log.ids
+			remote.call("cybersyn", "write_global", id, "manager", "collect_log", "ids", #ids + 1)
+		end
+		mark(5)
 		local d = overview()
 		local n = count()
 		lab.check("misconfigured == stations with st.lint ~= 0", d.tiles.failing.misconfigured == n and n == before + 1,
 			{ tile = d.tiles.failing.misconfigured, lint = n, before = before })
 		local tip = serpent.line(d.rendered_tiles.failing.tooltip, { comment = false })
-		lab.check("failing tooltip splits misconfigured by check", string.find(tip, "overview-failing-lint-bit", 1, true) ~= nil, tip)
-		remote.call("cybersyn", "write_global", 0, "manager", "snapshot", "stations", id, "lint")
+		lab.check("failing tooltip splits misconfigured by check, named by the check caption", string.find(tip, "overview-failing-lint-check", 1, true) ~= nil and string.find(tip, "cybersyn-diag.lint-", 1, true) ~= nil, tip)
+		mark(0)
 		d = overview()
 		lab.check("misconfigured back to the lint job's own count once the hand-written finding is cleared",
 			d.tiles.failing.misconfigured == before and count() == before, { tile = d.tiles.failing, before = before })
@@ -188,7 +195,7 @@ lab.suite("36_window", {
 		local rendered = d.lists.unserved.rendered
 		local last = rendered[#rendered]
 		lab.check("with the toggle on the acknowledged row is greyed at the bottom", #rendered < d.rows and last.acked == true
-			and last.requester_id .. "|" .. last.item == key and last.chip_style == "cybersyn_chip_grey"
+			and last.requester_id .. "|" .. last.item == key and last.chip_style == "cybersyn_chip_acked"
 			and #rendered == d.lists.unserved.total + 1, { rows = #rendered, last = last })
 		remote.call(D, "set_filter", pi, { item = false })
 		-- Expiry: the acknowledgement's time is up.
@@ -445,12 +452,17 @@ lab.suite("36_window", {
 		lab.check("Ctrl+F does nothing while the manager is closed", not s.open and not remote.call(D, "state", pi).is_open, s)
 		remote.call(D, "open", pi)
 		remote.call(D, "select_tab", pi, "overview")
+		-- Pinned with no GUI open, the client turns Ctrl+F into the map search: the window leaves it alone.
+		s = lab.dev("search_input", pi)
+		lab.check("Ctrl+F on a pinned window with no GUI open is the game's", not s.open and s.selected_tab == "overview_tab", s)
+		lab.dev("click", pi, "manager_pin_button")
 		s = lab.dev("search_input", pi)
 		lab.check("Ctrl+F on the Overview opens the Stations search field", s.open and s.visible and s.selected_tab == "stations_tab", s)
 		remote.call(D, "set_filter", pi, { query = "stn" })
 		lab.check("Esc in the search field is handled", lab.dev("cancel_search", pi) == true)
 		local h = remote.call(D, "header", pi)
 		lab.check("Esc clears and closes the search field", not h.stations_tab.search and remote.call(D, "state", pi).filters.terms == nil, h)
+		lab.dev("click", pi, "manager_pin_button")
 	end,
 
 	-- The filter row: hidden until toggled, kept open while one of its filters is set, and it costs rows.

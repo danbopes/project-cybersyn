@@ -34,6 +34,9 @@ local TABLE_COLUMNS = 8
 -- Logical px at the 1,392 px content width of a 1,440 px window (PLAN3 §4.7); the requester column takes the rest.
 local W = { item = 32, why = 132, provider = 272, stock = 110, lost = 96, wait = 72, ack = 28 }
 local BASE_CONTENT_WIDTH = 1392
+local REQUESTER_MIN, PROVIDER_MIN = 160, 120
+-- The Throughput tile's "Recorded so far" note needs a tile at least this wide beside its caption.
+local NOTE_TILE_WIDTH = 330
 local TABLE_PADDING = 4 + 10
 local TABLE_SPACING = 8
 local FRAME_BORDER = 4
@@ -275,6 +278,11 @@ function overview_tab.apply_layout(player_data, layout)
 	local provider = math.floor(W.provider * math.min(cw, BASE_CONTENT_WIDTH) / BASE_CONTENT_WIDTH)
 	local fixed = W.item + W.why + provider + W.stock + W.lost + W.wait + W.ack
 	local requester = cw - FRAME_BORDER - TABLE_PADDING - (TABLE_COLUMNS - 1) * TABLE_SPACING - fixed
+	-- Windows below 960 px (screens narrower than that): the provider gives way so the requester keeps its name.
+	if requester < REQUESTER_MIN then
+		local give = math.max(0, math.min(provider - PROVIDER_MIN, REQUESTER_MIN - requester))
+		provider, requester = provider - give, requester + give
+	end
 	local widths = { tile = tile, requester = requester, provider = provider, rows = rows }
 	for _, t in ipairs(TILES) do
 		local button = refs["overview_tile_" .. t.name]
@@ -406,35 +414,91 @@ local function unserved_model(d, item, rows, threshold, now)
 	return out
 end
 
+local F_NO_POWER, F_DISABLED, F_THROTTLING = 1, 2, 4
+
+--- One station's part of the Stations failing tile: status flags and lint mask, or nil when it does not count.
+--- @return int? flags
+--- @return int lint
+local function failing_part(st, item)
+	if not st then return nil, 0 end
+	local status = st.status
+	local lint = st.lint or 0
+	local flags = (status == "no_power" and F_NO_POWER or 0) + (status == "disabled" and F_DISABLED or 0)
+		+ (st.throttling == true and F_THROTTLING or 0)
+	if flags == 0 and lint == 0 then return nil, 0 end
+	if item and not station_has_item(st, item) then return nil, 0 end
+	return flags, lint
+end
+
+--- @param c table the counts
+--- @param flags int
+--- @param lint int
+--- @param sign int 1 adds the station, -1 takes it out
+local function failing_add(c, flags, lint, sign)
+	c.total = c.total + sign
+	if bit32.btest(flags, F_NO_POWER) then c.no_power = c.no_power + sign end
+	if bit32.btest(flags, F_DISABLED) then c.disabled = c.disabled + sign end
+	if bit32.btest(flags, F_THROTTLING) then c.throttling = c.throttling + sign end
+	if lint ~= 0 then
+		c.misconfigured = c.misconfigured + sign
+		local bits = c.lint_bits
+		local bit = 0
+		while lint ~= 0 and bit < 32 do
+			if bit32.btest(lint, 1) then
+				local n = (bits[bit] or 0) + sign
+				bits[bit] = n ~= 0 and n or nil
+			end
+			lint = bit32.rshift(lint, 1)
+			bit = bit + 1
+		end
+	end
+end
+
 --- Stations failing: status, throttling and lint bits from the records as they are now, the same fields the
---- Stations chips count. Only flagged records reach the item check.
+--- Stations chips count. Walking 2,030 records cost 0.85 ms per update on pY 123, so the counts are kept per player
+--- and updated from the collector's change log (the records it replaced or reclassified and the lint masks written
+--- since), as the Stations tab's classification is; a filter change or a log reset walks them again.
+--- @param player_data PlayerData
 --- @param snapshot Snapshot
 --- @param item string?
 --- @return table
-local function failing_model(snapshot, item)
-	local out = { no_power = 0, disabled = 0, throttling = 0, misconfigured = 0, total = 0, lint_bits = {} }
-	local bits = out.lint_bits
-	for _, st in pairs(snapshot.stations) do
-		local status = st.status
-		local lint = st.lint or 0
-		local np, dis, thr = status == "no_power", status == "disabled", st.throttling == true
-		if (np or dis or thr or lint ~= 0) and (not item or station_has_item(st, item)) then
-			out.total = out.total + 1
-			if np then out.no_power = out.no_power + 1 end
-			if dis then out.disabled = out.disabled + 1 end
-			if thr then out.throttling = out.throttling + 1 end
-			if lint ~= 0 then
-				out.misconfigured = out.misconfigured + 1
-				local bit = 0
-				while lint ~= 0 and bit < 32 do
-					if bit32.btest(lint, 1) then bits[bit] = (bits[bit] or 0) + 1 end
-					lint = bit32.rshift(lint, 1)
-					bit = bit + 1
-				end
+local function failing_model(player_data, snapshot, item)
+	local cache = player_data.overview_failing
+	local epoch, pos = collector.log_position()
+	local ids, first, last
+	if cache and cache.item == item then ids, first, last = collector.changed_since(cache.epoch, cache.pos) end
+	local stations = snapshot.stations
+	if ids then
+		local parts, lints, c = cache.parts, cache.lints, cache.counts
+		local seen = {}
+		for i = first, last do
+			local id = ids[i]
+			if not seen[id] then
+				seen[id] = true
+				local old = parts[id]
+				if old then failing_add(c, old, lints[id] or 0, -1) end
+				local flags, lint = failing_part(stations[id], item)
+				parts[id] = flags
+				lints[id] = flags and lint ~= 0 and lint or nil
+				if flags then failing_add(c, flags, lint, 1) end
 			end
 		end
+	else
+		local c = { no_power = 0, disabled = 0, throttling = 0, misconfigured = 0, total = 0, lint_bits = {} }
+		local parts, lints = {}, {}
+		for id, st in pairs(stations) do
+			local flags, lint = failing_part(st, item)
+			if flags then
+				parts[id] = flags
+				if lint ~= 0 then lints[id] = lint end
+				failing_add(c, flags, lint, 1)
+			end
+		end
+		cache = { item = item, parts = parts, lints = lints, counts = c }
+		player_data.overview_failing = cache
 	end
-	return out
+	cache.epoch, cache.pos = epoch, pos
+	return cache.counts
 end
 
 --- Fleet headroom: the network whose fewest available trains over the period is lowest.
@@ -444,19 +508,28 @@ local function fleet_model(window)
 	local mins = window.min_available_by_network
 	local now = stats.get().available_count
 	-- The counters only know networks that had a train available at some point; a network whose trains are all
-	-- busy or stuck since the load is the worst of all, at 0.
-	local seen = {}
-	for _, train in pairs(storage.trains) do
-		local net = train.network_name
-		if net == NETWORK_EACH then
-			local mask = train.network_mask
-			if type(mask) == "table" then
-				for n in pairs(mask) do seen[n] = true end
+	-- busy or stuck since the load is the worst of all, at 0. The networks the fleet uses are listed once a minute
+	-- for every window (in storage, so a joining peer reads the same set), not per player and update.
+	local m = storage.manager
+	local minute = math.floor(game.tick / 3600)
+	local cached = m.fleet_networks
+	if not (cached and cached.minute == minute) then
+		local set = {}
+		for _, train in pairs(storage.trains) do
+			local net = train.network_name
+			if net == NETWORK_EACH then
+				local mask = train.network_mask
+				if type(mask) == "table" then
+					for n in pairs(mask) do set[n] = true end
+				end
+			elseif net then
+				set[net] = true
 			end
-		elseif net then
-			seen[net] = true
 		end
+		cached = { minute = minute, set = set }
+		m.fleet_networks = cached
 	end
+	local seen = cached.set
 	for name in pairs(seen) do
 		if mins[name] == nil then mins[name] = 0 end
 	end
@@ -497,11 +570,11 @@ function overview_tab.model(player_data)
 	local layout = player_data.layout
 	local rows = layout and layout.rows_by_tab[TAB] or 10
 	local tracking = mod_settings.track_request_wait_times == true
-	local window = stats.aggregate(period)
+	local window = stats.aggregate(period, true)
 	local d = storage.diag
 	local collecting = snapshot.tick == nil
 	local unserved = d and unserved_model(d, item, rows, minutes * 3600, now) or nil
-	local failing = not collecting and failing_model(snapshot, item) or nil
+	local failing = not collecting and failing_model(player_data, snapshot, item) or nil
 	local cycle = stats.get().cycle
 	return {
 		now = now,
@@ -545,6 +618,15 @@ local function set_caption(cache, elem, sig, caption)
 	if cache[key] == sig then return end
 	cache[key] = sig
 	elem.caption = caption
+end
+
+--- Whether set_tooltip would write `sig` (so the tooltip is built only then).
+--- @param cache table
+--- @param elem LuaGuiElement?
+--- @param sig string
+--- @return boolean
+local function tooltip_due(cache, elem, sig)
+	return elem ~= nil and elem.valid and cache[elem.name .. "#tooltip"] ~= sig
 end
 
 --- @param cache table
@@ -623,6 +705,7 @@ local function render_unserved_tile(refs, cache, model)
 	local parts = {}
 	for i, entry in ipairs(sorted) do parts[i] = entry[1] .. ":" .. entry[2] end
 	local sig = table.concat(parts, ",") .. "|" .. u.old_acked .. "|" .. model.minutes
+	if not tooltip_due(cache, refs.overview_tile_unserved, sig) then return end
 	local tooltip = { "", { "cybersyn-gui.overview-tile-unserved-tooltip", minutes } }
 	for i, entry in ipairs(sorted) do
 		if i > 18 then break end
@@ -648,6 +731,7 @@ local function render_fleet_tile(refs, cache, model)
 	for i, name in ipairs(f.names) do parts[i] = name .. ":" .. f.mins[name] .. ":" .. (f.current[name] or 0) end
 	local busy = f.busy and string.format("%.1f", f.busy) or "-"
 	local sig = table.concat(parts, ",") .. "|" .. busy .. "|" .. model.period
+	if not tooltip_due(cache, refs.overview_tile_fleet, sig) then return end
 	local tooltip = { "", { "cybersyn-gui.overview-tile-fleet-tooltip", { "cybersyn-gui.overview-scope-" .. model.period } } }
 	for i, name in ipairs(f.names) do
 		if i > MAX_TOOLTIP_NETWORKS then
@@ -688,24 +772,32 @@ local function render_failing_tile(refs, cache, model)
 	local parts = {}
 	for i, bit in ipairs(bits) do parts[i] = bit .. ":" .. f.lint_bits[bit] end
 	local sig = table.concat(parts, ",")
+	if not tooltip_due(cache, refs.overview_tile_failing, sig) then return end
 	local tooltip = { "", { "cybersyn-gui.overview-tile-failing-tooltip" } }
 	if #bits > 0 then
 		tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-failing-lint-header" } }
 		for i, bit in ipairs(bits) do
 			if i > 16 then break end
-			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-failing-lint-bit", tostring(bit), format.number(f.lint_bits[bit]) } }
+			-- Bit b is check b + 1 (LINT_BIT); named by the check's caption, as the Problems tab names it.
+			local key = LINT_KEYS[bit + 1]
+			local caption = key and { "cybersyn-diag.lint-" .. key } or tostring(bit)
+			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-failing-lint-check", caption, format.number(f.lint_bits[bit]) } }
 		end
 	end
 	set_tooltip(cache, refs.overview_tile_failing, sig, tooltip)
 end
 
-local function render_throughput_tile(refs, cache, model)
+local function render_throughput_tile(refs, cache, model, tile_width)
 	local t = model.throughput
 	local period = tostring(model.period)
 	set_caption(cache, refs.overview_throughput_caption, period,
 		{ "", { "cybersyn-gui.overview-tile-throughput" }, " · ", { "cybersyn-gui.overview-scope-short-" .. period } })
 	local recorded = t.recorded and util.short_duration(t.recorded) or ""
-	set_caption(cache, refs.overview_throughput_note, recorded, t.recorded and { "cybersyn-gui.overview-period-recorded", recorded } or "")
+	-- "Recorded so far" beside the caption only where the tile has the room (the 1,440 px window); a narrower tile
+	-- keeps the caption whole and says it in the tooltip's first line.
+	local wide = tile_width >= NOTE_TILE_WIDTH
+	set_caption(cache, refs.overview_throughput_note, wide and recorded or "",
+		(wide and t.recorded) and { "cybersyn-gui.overview-period-recorded", recorded } or "")
 	set_caption(cache, refs.overview_throughput_headline, tostring(t.deliveries), format.number(t.deliveries))
 	local trip = t.trip and util.short_duration(t.trip * 60) or NO_VALUE
 	local wait_avg = t.wait_avg and util.short_duration(t.wait_avg) or NO_VALUE
@@ -714,9 +806,13 @@ local function render_throughput_tile(refs, cache, model)
 	set_line(refs, cache, "throughput", 2, "wavg", { "cybersyn-gui.overview-throughput-wait-avg" }, wait_avg)
 	set_line(refs, cache, "throughput", 3, "wmax", { "cybersyn-gui.overview-throughput-wait-max" }, wait_max)
 	local per_cycle = t.cycle_ticks > 0 and string.format("%.1f", t.cycle_dispatches) or ""
-	local sig = table.concat({ t.amount, t.dispatches, tostring(model.tracking), t.cycle_ticks, per_cycle, period }, "|")
+	local narrow_note = not wide and t.recorded and recorded or ""
+	local sig = table.concat({ t.amount, t.dispatches, tostring(model.tracking), t.cycle_ticks, per_cycle, period,
+		narrow_note }, "|")
+	if not tooltip_due(cache, refs.overview_tile_throughput, sig) then return end
 	local tooltip = {
-		"", { "cybersyn-gui.overview-tile-throughput-tooltip", { "cybersyn-gui.overview-scope-" .. period } },
+		"", narrow_note ~= "" and { "", { "cybersyn-gui.overview-period-recorded", recorded }, "\n" } or "",
+		{ "cybersyn-gui.overview-tile-throughput-tooltip", { "cybersyn-gui.overview-scope-" .. period } },
 		"\n", { "cybersyn-gui.overview-throughput-items", format.number(t.amount) },
 		"\n", { "cybersyn-gui.overview-throughput-dispatches", format.number(t.dispatches) },
 	}
@@ -739,7 +835,8 @@ local function render_tiles(player_data, model)
 	render_unserved_tile(refs, cache, model)
 	render_fleet_tile(refs, cache, model)
 	render_failing_tile(refs, cache, model)
-	render_throughput_tile(refs, cache, model)
+	local widths = player_data.overview_widths
+	render_throughput_tile(refs, cache, model, widths and widths.tile or 339)
 
 	local dropdown = refs.overview_period_dropdown
 	if dropdown and dropdown.valid then
@@ -955,7 +1052,8 @@ local surface_name = util.surface_name
 local function row_entry(row, acked, ctx)
 	local hash, e, r_id = row.hash, row.e, row.r_id
 	local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(hash)
-	if not sprite then return nil end
+	-- An item a mod change removed still has its entry: a question mark, never a row less than the caption counts.
+	if not sprite then sprite, quality, item_tooltip = "utility/questionmark", nil, hash end
 	local now = ctx.now
 	local requester, r_st = station_view(r_id, ctx.snapshot)
 	local reason = e.reason
@@ -963,21 +1061,41 @@ local function row_entry(row, acked, ctx)
 	local provider = p_id and station_view(p_id, ctx.snapshot) or nil
 	local lost = e.lost_n > 0 and e.lost_to and station_view(e.lost_to, ctx.snapshot) or nil
 	local wait = now - e.first_tick
+	-- On the 10 s step, as the stop panel shows the same entry, whichever update last wrote the row.
+	local wait_shown = wait - wait % text.READ_STEP
 	local inherited = e.first_tick < ctx.inherit_before
-	local wait_caption = text.wait_caption(wait, inherited, util.short_duration)
+	local wait_caption = text.wait_caption(wait_shown, inherited, util.short_duration)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
 	local requested
 	if r_st then
 		local req = r_st.requested[hash]
 		if req then requested = -req.count end
 	end
-	local sig = table.concat({
-		reason, e.a, e.b, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to), e.lost_n, e.n,
-		acked and "a" or "", inherited and "i" or "", math.floor(wait / text.READ_STEP), text.read_step(read_age), tostring(requested),
+	-- Everything but the clocks; the clocks (wait, read age) move every 10 s and then only their cells are written.
+	-- The numbers (stock, evaluations, lost count, request) change on most updates of a large base while the rest
+	-- stays, so a change of only them writes only their cells too.
+	local ident_sig = table.concat({
+		reason, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to),
+		acked and "a" or "", inherited and "i" or "",
 	}, "|")
+	local content_sig = ident_sig .. "#" .. table.concat({ e.a, e.b, e.lost_n, e.n, tostring(requested) }, "|")
+	local sig = content_sig .. "|" .. math.floor(wait / text.READ_STEP) .. "|" .. text.read_step(read_age)
+	local content_sigs = ctx.content_sigs
 	local widths = ctx.widths
 	local key = r_id .. "|" .. hash
-	local function tooltips()
+	--- The ack's "for another …" is a clock too: the clocks-only path writes it with the wait.
+	--- @return LocalisedString
+	--- @return boolean counting
+	local function ack_tooltip()
+		if not acked then return { "cybersyn-gui.unserved-ack-tooltip" }, false end
+		local a = diag.is_acked("request", r_id, hash)
+		local who = a and a.player_index and game.get_player(a.player_index)
+		local until_text = a and a.until_tick and util.format_duration(a.until_tick - now) or nil
+		return { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
+			until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.unserved-ack-reason" } },
+			until_text ~= nil
+	end
+	local function tooltips(clocks_only)
 		local read = read_age and text.read_ago(read_age, util.format_duration) or nil
 		local chip = text.chip_tooltip({
 			item = item_tooltip,
@@ -988,7 +1106,7 @@ local function row_entry(row, acked, ctx)
 			b = e.b,
 			network = network_text(r_st and r_st.network_name),
 			rej = e.rej,
-			wait = wait,
+			wait = wait_shown,
 			inherited = inherited,
 			n = e.n,
 			read_age = read_age,
@@ -997,20 +1115,11 @@ local function row_entry(row, acked, ctx)
 		chip[#chip + 1] = "\n"
 		chip[#chip + 1] = { "cybersyn-gui.unserved-explain-hint" }
 		local r_tip = station_tooltip(requester, read)
+		if clocks_only then return chip, r_tip end
 		local p_tip = station_tooltip(provider, nil)
 		local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) }) or ""
-		local ack
-		if acked then
-			local a = diag.is_acked("request", r_id, hash)
-			local who = a and a.player_index and game.get_player(a.player_index)
-			local until_text = a and a.until_tick and util.format_duration(a.until_tick - now) or nil
-			ack = { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
-				until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.unserved-ack-reason" } }
-		else
-			ack = { "cybersyn-gui.unserved-ack-tooltip" }
-		end
 		local item_tip = { "", { "cybersyn-gui.item-click-hint" } }
-		return chip, r_tip, p_tip, l_tip, ack, item_tip
+		return chip, r_tip, p_tip, l_tip, ack_tooltip(), item_tip
 	end
 	local stock = text.stock_caption(reason, e.a, e.b)
 	local value_style = acked and "cybersyn_unserved_value_acked" or "cybersyn_unserved_value"
@@ -1023,6 +1132,7 @@ local function row_entry(row, acked, ctx)
 		row = row,
 		acked = acked,
 		build = function()
+			content_sigs[key] = content_sig
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
 			local link = { [defines.events.on_gui_click] = util.handle.link_click }
 			return {
@@ -1040,7 +1150,7 @@ local function row_entry(row, acked, ctx)
 				name_cell(requester, "station", r_id, widths.requester, r_tip, acked),
 				hoverable({
 					type = "button",
-					style = acked and "cybersyn_chip_grey" or text.chip_style(reason),
+					style = acked and "cybersyn_chip_acked" or text.chip_style(reason),
 					style_mods = { width = W.why },
 					caption = text.chip_caption(reason),
 					tooltip = chip,
@@ -1078,11 +1188,57 @@ local function row_entry(row, acked, ctx)
 				}),
 			}
 		end,
+		-- A row of another key reused at this position (util.sync_table_rows): the key's own cells first, then
+		-- every other cell as an update writes them.
+		rebind = function(cells, entry)
+			local item = cells[1]
+			item.sprite = sprite
+			item.quality = quality
+			item.elem_tooltip = util.elem_tooltip(hash)
+			local t = item.tags
+			t.kind, t.id = "item", hash
+			item.tags = t
+			for _, c in ipairs({ cells[3], cells[8] }) do
+				local ct = c.tags
+				ct.r_id, ct.hash = r_id, hash
+				c.tags = ct
+			end
+			content_sigs[key] = nil
+			entry.update(cells)
+		end,
 		update = function(cells)
+			local last = content_sigs[key]
+			local numbers = last ~= content_sig and last ~= nil and #last > #ident_sig
+				and string.sub(last, 1, #ident_sig + 1) == ident_sig .. "#"
+			if last == content_sig or numbers then
+				-- Only the clocks moved: the wait, and the tooltips that carry the wait and the read age.
+				local chip, r_tip = tooltips(true)
+				cells[7].caption = wait_caption
+				cells[3].tooltip = chip
+				local requester_cell = cells[2]
+				for _, icon in ipairs(requester_cell.children[1].children) do icon.tooltip = r_tip end
+				requester_cell.children[2].tooltip = r_tip
+				if acked then
+					local ack, counting = ack_tooltip()
+					if counting then cells[8].tooltip = ack end
+				end
+				if numbers then
+					content_sigs[key] = content_sig
+					cells[5].caption = stock
+					local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) })
+						or ""
+					local lost_button, lost_label = cells[6].children[1], cells[6].children[2]
+					lost_button.tooltip = l_tip
+					lost_label.caption = lost_caption
+					lost_label.tooltip = l_tip
+				end
+				return
+			end
+			content_sigs[key] = content_sig
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
 			cells[1].tooltip = item_tip
 			update_name_cell(cells[2], requester, "station", r_id, r_tip, acked)
-			local chip_style = acked and "cybersyn_chip_grey" or text.chip_style(reason)
+			local chip_style = acked and "cybersyn_chip_acked" or text.chip_style(reason)
 			if cells[3].style.name ~= chip_style then
 				cells[3].style = chip_style
 				cells[3].style.width = W.why
@@ -1130,7 +1286,15 @@ local function render_table(player_data, model)
 	local entries = {}
 	local shown_total = 0
 	if u and not model.collecting then
-		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths }
+		local state = util.gui_state(player_data, TABLE)
+		local content_sigs = state.content_sigs
+		-- Keys that left the table leave their entry behind; dropped wholesale now and then.
+		if not content_sigs or table_size(content_sigs) > 4 * model.rows + 64 then
+			content_sigs = {}
+			state.content_sigs = content_sigs
+		end
+		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths,
+			content_sigs = content_sigs }
 		local rows = model.rows
 		for _, row in ipairs(u.open) do
 			if #entries >= rows then break end
@@ -1414,6 +1578,48 @@ function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
 	end
 	util.rerender(player, player_data)
 end
+
+--- One Overview render of player `pi` timed by part: the three tile models, the whole model, the tiles and the table.
+dev.add("overview_profile", function(pi)
+	local player_data = storage.manager.players[pi]
+	local d = storage.diag
+	local snapshot = collector.get()
+	local item = player_data.search_item
+	local rows = player_data.layout and player_data.layout.rows_by_tab[TAB] or 10
+	local p_unserved = game.create_profiler()
+	if d then unserved_model(d, item, rows, unserved_minutes(player_data) * 3600, game.tick) end
+	p_unserved.stop()
+	local p_failing = game.create_profiler()
+	if snapshot.tick then failing_model(player_data, snapshot, item) end
+	p_failing.stop()
+	local p_fleet = game.create_profiler()
+	fleet_model(stats.aggregate(get_period(player_data), true))
+	p_fleet.stop()
+	local p_model = game.create_profiler()
+	local model = overview_tab.model(player_data)
+	p_model.stop()
+	local p_tiles = game.create_profiler()
+	render_tiles(player_data, model)
+	p_tiles.stop()
+	local p_table = game.create_profiler()
+	render_table(player_data, model)
+	p_table.stop()
+	return { "", "unserved ", p_unserved, " | failing ", p_failing, " | fleet+aggregate ", p_fleet, " | model ", p_model,
+		" | tiles ", p_tiles, " | table ", p_table, " | rows ", player_data.overview_rendered or 0 }
+end)
+
+--- The Stations failing counts as player `pi`'s cache has them after its update, and as a walk of every record has them.
+dev.add("overview_failing_oracle", function(pi)
+	local player_data = storage.manager.players[pi]
+	local snapshot = collector.get()
+	local item = player_data.search_item
+	local cached = table.deepcopy(failing_model(player_data, snapshot, item))
+	local kept = player_data.overview_failing
+	player_data.overview_failing = nil
+	local fresh = failing_model(player_data, snapshot, item)
+	player_data.overview_failing = kept
+	return { cached = cached, fresh = fresh, same = serpent.line(cached, { sortkeys = true }) == serpent.line(fresh, { sortkeys = true }) }
+end)
 
 gui.add_handlers(overview_tab.handle, overview_tab.wrapper)
 

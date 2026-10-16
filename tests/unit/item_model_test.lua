@@ -66,7 +66,11 @@ test("requester_group: in the order the poll and the dispatcher test them", func
 		m.BELOW_THRESHOLD)
 	assert_eq(m.requester_group({ status = "ok", deliveries_total = 2, trains_limit = 2, deliveries = { x = -5 } }, active, "x"),
 		m.AT_LIMIT)
-	assert_eq(m.requester_group({ status = "disabled", deliveries_total = 0, trains_limit = 0 }, active, "x"), m.AT_LIMIT)
+	-- Phase 7: a switched-off stop (train limit 0) is its own group, not "at train limit".
+	assert_eq(m.requester_group({ status = "disabled", deliveries_total = 0, trains_limit = 0 }, active, "x"), m.DISABLED)
+	assert_true(m.AT_LIMIT < m.DISABLED and m.DISABLED < m.PROVIDING, "listed right after the busy stops")
+	assert_eq(m.GROUP_KEYS[m.DISABLED], "disabled")
+	assert_eq(m.GROUP_KEYS[m.NOT_REQUESTING], "not-requesting")
 	assert_eq(m.requester_group({ status = "ok", deliveries_total = 1, trains_limit = 2, deliveries = { x = -5 } }, active, "x"),
 		m.PROVIDING)
 	assert_eq(m.requester_group({ status = "ok", deliveries_total = 1, trains_limit = 2, deliveries = { x = 5 } }, active, "x"),
@@ -182,6 +186,51 @@ test("build: providers by stock, requesters in dispatch order, trains by amount,
 	assert_eq(#r.trains, 2)
 	assert_eq(r.trains[1], { id = 2, status = 3, amount = 4000, to = 21, from = 10 })
 	assert_eq(r.trains[2].id, 1)
+end)
+
+test("build: the collector's per-item index, and stations whose only link to the item is a delivery", function()
+	local m = model()
+	local H_ = "iron-plate"
+	local function station(f)
+		local st = { provided = {}, requested = {}, deliveries = {}, status = "ok", deliveries_total = 0, trains_limit = 5 }
+		for k, v in pairs(f) do st[k] = v end
+		return st
+	end
+	local snapshot = {
+		tick = 1,
+		stations = {
+			[10] = station({ provided = { [H_] = 500 } }),
+			-- a pickup under way, nothing provided any more
+			[11] = station({ deliveries = { [H_] = -300 } }),
+			-- a delivery on its way in, no request any more
+			[12] = station({ deliveries = { [H_] = 200 } }),
+			-- switched off: train limit 0
+			[13] = station({ requested = { [H_] = { count = -900, threshold = 100, active = true } }, trains_limit = 0 }),
+			-- in the index but not in the records (removed since the pass): skipped
+			[99] = nil,
+			-- not in the index: never looked at
+			[50] = station({ provided = { [H_] = 7 } }),
+		},
+		trains = {},
+		inventory_all = { provided = {}, requested = {}, in_transit = {} },
+		item_stations = { [H_] = { 10, 11, 12, 13, 99 } },
+	}
+	local r = m.build(snapshot, H_, PRIORITY)
+	local pids, rids = {}, {}
+	for i, x in ipairs(r.providers) do pids[i] = x.id .. ":" .. x.stock .. ":" .. x.out end
+	for i, x in ipairs(r.requesters) do rids[i] = x.id .. ":" .. x.group end
+	assert_eq(pids, { "10:500:0", "11:0:300" }, "the outgoing delivery joins Providers with stock 0")
+	table.sort(rids)
+	assert_eq(rids, { "12:" .. m.NOT_REQUESTING, "13:" .. m.DISABLED }, "the incoming one joins Requesters")
+	-- A record the running pass refilled (the change log) joins, once, though the index does not name it.
+	r = m.build(snapshot, H_, PRIORITY, { 50, 10, 50 })
+	pids = {}
+	for i, x in ipairs(r.providers) do pids[i] = x.id .. ":" .. x.stock end
+	assert_eq(pids, { "10:500", "50:7", "11:0" }, "the changed station joins the index's")
+	-- Without the index every record is looked at.
+	snapshot.item_stations = nil
+	r = m.build(snapshot, H_, PRIORITY)
+	assert_eq(#r.providers, 3)
 end)
 
 test("build: an item nobody handles gives empty tables and zero totals", function()

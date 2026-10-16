@@ -504,36 +504,59 @@ function diag.last_for(kind, id, n)
 end
 
 -- Rows one diag.last_for_step call examines at most. A rare entity's last rows can sit 70,000 rows back in a full
--- ring, which a panel refreshed every update cannot scan in one go.
+-- ring, which a panel refreshed every update cannot scan in one go. Measured on pY 123 with both rings full: about
+-- 0.31 µs per row inside the real tick, so a 4,096-row call is about 1.3 ms; panels pass a smaller budget after their
+-- first.
 diag.SCAN_ROWS = 4096
 
 --- Walks both rings backwards over the rows with stop_seq < seq < below, newest first, appending the rows that match
---- `f` to `out` until it holds `n`, or `budget` rows were examined.
+--- `f` (one subject: {station|train|delivery = id}) to `out` until it holds `n`, or `budget` rows were examined. The
+--- columns are read straight from the ring arrays: through ring_at and diag.matches a row cost about 1 µs inside the
+--- real tick on pY's full rings, which kept the stop panel over its 0.2 ms refresh budget.
 --- @return int examined
 --- @return uint oldest seq of the oldest row examined (`below` when none)
 --- @return boolean exhausted no unexamined row is left in the range
 local function scan_back(d, f, below, stop_seq, budget, out, n)
+	local key, id = next(f)
 	local rb, rf = d.ring_basic, d.ring_full
 	local kb, kf = first_after(rb, below - 1) - 1, first_after(rf, below - 1) - 1
-	local examined, oldest = 0, below
-	while #out < n do
-		local ib = kb >= 0 and at(rb, kb) or nil
-		local iff = kf >= 0 and at(rf, kf) or nil
-		local r, i
-		if ib and (not iff or rb.seq[ib] > rf.seq[iff]) then
-			r, i = rb, ib
+	local ib = kb >= 0 and at(rb, kb) or nil
+	local iff = kf >= 0 and at(rf, kf) or nil
+	local seq_b, seq_f = rb.seq, rf.seq
+	local col_b, col_f = rb[key], rf[key]
+	local is_station = key == "station"
+	local st2_b, st2_f = rb.station2, rf.station2
+	local kind_b, kind_f = rb.kind, rf.kind
+	local size_b, size_f = rb.size, rf.size
+	local examined, oldest, found = 0, below, #out
+	while found < n do
+		if ib and (not iff or seq_b[ib] > seq_f[iff]) then
+			local seq = seq_b[ib]
+			if seq <= stop_seq then return examined, oldest, true end
+			if examined >= budget then return examined, oldest, false end
+			examined = examined + 1
+			oldest = seq
+			if col_b[ib] == id or (is_station and st2_b[ib] == id and STATION2_IS_STATION[kind_b[ib]]) then
+				found = found + 1
+				out[found] = row(rb, ib)
+			end
+			kb = kb - 1
+			if kb < 0 then ib = nil elseif ib == 1 then ib = size_b else ib = ib - 1 end
 		elseif iff then
-			r, i = rf, iff
+			local seq = seq_f[iff]
+			if seq <= stop_seq then return examined, oldest, true end
+			if examined >= budget then return examined, oldest, false end
+			examined = examined + 1
+			oldest = seq
+			if col_f[iff] == id or (is_station and st2_f[iff] == id and STATION2_IS_STATION[kind_f[iff]]) then
+				found = found + 1
+				out[found] = row(rf, iff)
+			end
+			kf = kf - 1
+			if kf < 0 then iff = nil elseif iff == 1 then iff = size_f else iff = iff - 1 end
 		else
 			return examined, oldest, true
 		end
-		local seq = r.seq[i]
-		if seq <= stop_seq then return examined, oldest, true end
-		if examined >= budget then return examined, oldest, false end
-		if r == rb then kb = kb - 1 else kf = kf - 1 end
-		examined = examined + 1
-		oldest = seq
-		if matches(r, i, f) then out[#out + 1] = row(r, i) end
 	end
 	return examined, oldest, false
 end
@@ -1723,6 +1746,17 @@ function diag.export_step()
 	end
 	local job = list and list[1]
 	if not job then return nil end
+	-- The player who asked for the file left: the rest would be written to a machine that is gone, so the export
+	-- starts over on the server and says so in the server log and on the Log tab's note.
+	if job.player_index ~= 0 then
+		local player = game.get_player(job.player_index)
+		if not (player and player.connected) then
+			log({ "", "Cybersyn diagnostics: export ", job.path, " for player ", player and player.name or "?",
+				" continues on the server (the player left)" })
+			job.player_index, job.server = 0, true
+			job.next_seq, job.started, job.rows, job.chunks = job.start_seq, false, 0, 0
+		end
+	end
 	local d = storage.diag
 	local rb, rf = job.rb, job.rf
 	-- A job queued before jobs kept their rings reads the live ones.

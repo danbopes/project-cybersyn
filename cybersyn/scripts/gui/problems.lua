@@ -35,7 +35,6 @@ local CELLS = 6
 -- The subject takes this share of the stretching width, the fix line the rest.
 local SUBJECT_SHARE = 0.42
 local NAME_ICONS = 3
-local ICON_ROW = 3 * 22
 local SEVERITIES = { DIAG_SEV_ERROR, DIAG_SEV_WARNING, DIAG_SEV_INFO }
 
 --- @param player_data PlayerData
@@ -55,7 +54,7 @@ local function lint_state()
 	return manager and manager.lint
 end
 
---- True once the setup lint finished a pass or a world scan finished: the tab shows only then.
+--- True once the setup lint finished a pass or a world scan finished: the tab lists findings only then.
 --- @return boolean
 function problems_tab.has_result()
 	local s = lint_state()
@@ -72,10 +71,16 @@ function problems_tab.model(player_data)
 	-- diag counts every change to the lint acknowledgements, whoever or whatever made it (a click in any window, the
 	-- cap, an expiry, a removed station).
 	local acks = storage.acks
-	local sig = s.pass .. ":" .. tostring(world and world.tick) .. ":" .. (acks and acks.lint_version or 0)
+	local ack_version = acks and acks.lint_version or 0
+	local wtick = world and world.tick or -1
+	-- Removed stops and combinators leave the world scan's findings at once (not at the next scan).
+	local pruned = lint.prune_world() or 0
 	local cache = player_data.problems_model
 	local now = game.tick
-	if cache and cache.sig == sig and not (cache.m.next_expiry and cache.m.next_expiry <= now) then
+	-- Compared field by field: a steady render allocates nothing here.
+	local removed = s.removed or 0
+	if cache and cache.pass == s.pass and cache.wtick == wtick and cache.acks == ack_version and cache.pruned == pruned
+		and cache.removed == removed and not (cache.m.next_expiry and cache.m.next_expiry <= now) then
 		return cache.m, cache.built
 	end
 	local lists = { s.findings }
@@ -83,7 +88,8 @@ function problems_tab.model(player_data)
 	local m = pm.build(lists, lint.subject_key, function(key, check) return diag.is_acked("lint", key, check) end)
 	-- A counter, not the tick: two rebuilds in one tick (two clicks) must still re-render.
 	local built = (cache and cache.built or 0) + 1
-	player_data.problems_model = { sig = sig, built = built, m = m }
+	player_data.problems_model = { pass = s.pass, wtick = wtick, acks = ack_version, pruned = pruned, removed = removed,
+		built = built, m = m }
 	return m, built
 end
 
@@ -143,7 +149,6 @@ function problems_tab.create()
 			name = "manager_problems_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.problems" },
-			visible = false,
 		},
 		content = {
 			name = "manager_problems_content_frame",
@@ -243,23 +248,34 @@ end
 --- @field text LocalisedString
 --- @field tip LocalisedString the full name (rich text) for the tooltip
 --- @field name string plain text for the sig
---- @field icons {sprite: string, quality: string?}[]
+--- @field icons {sprite: string, quality: string?}[] lead icons
+--- @field tail {sprite: string, quality: string?}[]? icons after the text ("Requestor for [item]")
 
---- @param name string
 --- @param parts RichNameParts?
+--- @param side "lead"|"tail"
 --- @return {sprite: string, quality: string?}[]
---- @return string
-local function name_icons(name, parts)
+local function side_icons(parts, side)
 	local icons = {}
-	local lead = parts and parts.lead
-	if lead then
-		for i = 1, math.min(#lead, NAME_ICONS) do
-			icons[i] = { sprite = lead[i], quality = parts.lead_quality and parts.lead_quality[i] or nil }
+	local list = parts and parts[side]
+	if list then
+		local quality = parts[side .. "_quality"]
+		for i = 1, math.min(#list, NAME_ICONS) do
+			icons[i] = { sprite = list[i], quality = quality and quality[i] or nil }
 		end
 	end
+	return icons
+end
+
+--- The name's icons before and after its text, and the text, as the Stations tab's name cell shows them.
+--- @param name string
+--- @param parts RichNameParts?
+--- @return {sprite: string, quality: string?}[] lead
+--- @return string text
+--- @return {sprite: string, quality: string?}[] tail
+local function name_icons(name, parts)
 	local text = parts and parts.text
 	if text == nil or text == "" then text = name end
-	return icons, text
+	return side_icons(parts, "lead"), text, side_icons(parts, "tail")
 end
 
 local KIND_OF = {
@@ -297,8 +313,8 @@ local function subject_of(f, snapshot)
 	end
 	local st = kind == "station" and snapshot.stations[id] or nil
 	if st then
-		local icons, text = name_icons(st.name, st.name_parts)
-		return { kind = kind, id = id, text = text, tip = st.name, name = st.name, icons = icons }
+		local icons, text, tail = name_icons(st.name, st.name_parts)
+		return { kind = kind, id = id, text = text, tip = st.name, name = st.name, icons = icons, tail = tail }
 	end
 	local stop
 	if kind == "entity" then
@@ -312,8 +328,8 @@ local function subject_of(f, snapshot)
 		return { id = id, name = "-" .. id, icons = {}, text = gone, tip = gone }
 	end
 	local name = stop.backer_name
-	local icons, text = name_icons(name, parse_name(name))
-	return { kind = kind, id = id, text = text, tip = name, name = name, icons = icons }
+	local icons, text, tail = name_icons(name, parse_name(name))
+	return { kind = kind, id = id, text = text, tip = name, name = name, icons = icons, tail = tail }
 end
 
 --- @param hash string?
@@ -434,6 +450,8 @@ local GROUP_STYLE = "cybersyn_problems_group_row"
 -- Slots created per update while the pool is short of the page, then lines bound per update until the page is.
 local PREWARM = 6
 local PREBIND = 6
+-- Slots created at most per render of the tab itself (a window rebuilt while the tab was selected).
+local CREATE_PER_RENDER = 12
 
 --- @class ProblemsSlot
 --- @field key string? the line bound to it; nil while hidden
@@ -506,10 +524,15 @@ local function create_slot(body, index, pos, widths)
 	end
 	local button = subject.add({ type = "button", style = "cybersyn_link_button", raise_hover_events = true, tags = link,
 		mouse_button_filter = { "left" } })
+	local tail = subject.add({ type = "flow", direction = "horizontal", style = "cybersyn_name_tail_flow" })
+	for _ = 1, NAME_ICONS do
+		tail.add({ type = "sprite-button", style = "cybersyn_name_icon", visible = false, raise_hover_events = true,
+			tags = link })
+	end
 	frame.add({ type = "label", style = "cybersyn_problems_detail", raise_hover_events = true, tags = link })
 	local fix = frame.add({ type = "label", style = "cybersyn_problems_fix", raise_hover_events = true, tags = link })
 	if widths then
-		button.style.maximal_width = widths.subject - ICON_ROW - 4
+		button.style.maximal_width = widths.subject - 4
 		fix.style.width = widths.fix
 	end
 	frame.add({ type = "sprite-button", style = "cybersyn_unserved_ack", sprite = "utility/check_mark",
@@ -518,13 +541,14 @@ local function create_slot(body, index, pos, widths)
 	frame.add({ type = "label", style = "cybersyn_subheader_note", visible = false })
 	return frame, { kind = "r", vis = false, style = ROW_STYLE[odd], chip_style = "cybersyn_chip_grey",
 		w = widths and widths_sig(widths),
-		link_style = "cybersyn_link_button", detail_style = "cybersyn_problems_detail", n_icons = 0, iq = "" }
+		link_style = "cybersyn_link_button", detail_style = "cybersyn_problems_detail", n_icons = 0, iq = "",
+		n_tail = 0, tq = "" }
 end
 
 --- The slot pool of the rows area, reset when the area was rebuilt (a new window).
 --- @param player_data PlayerData
 --- @param body LuaGuiElement
---- @return {slots: ProblemsSlot[], n: int, body: uint?, render_sig: string?, dirty: true?}
+--- @return {slots: ProblemsSlot[], n: int, body: uint?, r: table?, dirty: true?, footer: string?}
 local function pool_of(player_data, body)
 	local state = util.gui_state(player_data, ROWS)
 	if state.body ~= body.index or not state.slots then
@@ -532,7 +556,8 @@ local function pool_of(player_data, body)
 		state.body = body.index
 		state.slots = {}
 		state.n = 0
-		state.render_sig = nil
+		state.r = nil
+		state.footer = nil
 		state.dirty = nil
 	end
 	return state
@@ -592,6 +617,35 @@ local function bind_group(elem, c, line, key)
 	c.lk, c.lid, c.ak, c.ck = nil, nil, nil, nil
 end
 
+local NO_ICONS = {}
+local ICON_STEP = 22
+local LEAD_ROW = 64
+
+--- Writes one side's icon buttons of a subject cell; returns what they show now (count, qualities).
+--- @param buttons LuaGuiElement[]
+--- @param icons {sprite: string, quality: string?}[]
+--- @param tip LocalisedString
+--- @param shown int icons visible before
+--- @param shown_q string qualities written before
+--- @return int
+--- @return string
+local function bind_icons(buttons, icons, tip, shown, shown_q)
+	local n = math.min(#icons, NAME_ICONS)
+	local iq = ""
+	for i = 1, n do
+		local icon = icons[i]
+		local b = buttons[i]
+		b.sprite = sprite_or_unknown(icon.sprite)
+		b.tooltip = tip
+		iq = iq .. (icon.quality or "") .. ","
+	end
+	if iq ~= shown_q then
+		for i = 1, n do buttons[i].quality = icons[i].quality end
+	end
+	for i = math.min(n, shown) + 1, math.max(n, shown) do buttons[i].visible = i <= n end
+	return n, iq
+end
+
 --- @param elem LuaGuiElement
 --- @param c ProblemsSlot
 --- @param line ProblemsLine
@@ -630,7 +684,7 @@ local function bind_row(elem, c, line, key, odd, ctx)
 
 	local t = texts(f.check, role)
 	local chip = ch[C_CHIP]
-	local chip_style = acked and "cybersyn_chip_grey" or pm.CHIP_STYLE[row.sev]
+	local chip_style = acked and "cybersyn_chip_acked" or pm.CHIP_STYLE[row.sev]
 	if c.chip_style ~= chip_style then
 		chip.style = chip_style
 		-- A style write drops the element's own width.
@@ -649,14 +703,17 @@ local function bind_row(elem, c, line, key, odd, ctx)
 	local link = sub[2]
 	local widths = ctx.widths
 	local link_style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button"
-	local relayout = c.w ~= ctx.wsig
+	local n_lead = math.min(#subject.icons, NAME_ICONS)
+	local n_tail = subject.tail and math.min(#subject.tail, NAME_ICONS) or 0
+	local relayout = c.w ~= ctx.wsig or c.n_icons ~= n_lead or c.n_tail ~= n_tail
 	if c.link_style ~= link_style then
 		link.style = link_style
 		c.link_style = link_style
 		relayout = true
 	end
 	if relayout then
-		link.style.maximal_width = widths.subject - ICON_ROW - 4
+		-- The lead icons sit in a fixed 64 px column (names line up), the tail icons take what they need.
+		link.style.maximal_width = math.max(widths.subject - LEAD_ROW - n_tail * ICON_STEP - 4, 24)
 	end
 	if c.w ~= ctx.wsig then
 		cell.style.width = widths.subject
@@ -669,23 +726,8 @@ local function bind_row(elem, c, line, key, odd, ctx)
 		link.caption = subject.text
 		link.tooltip = tip
 		if link.enabled ~= (kind ~= nil) then link.enabled = kind ~= nil end
-		local icons = subject.icons
-		local buttons = sub[1].children
-		local n = math.min(#icons, NAME_ICONS)
-		local iq = ""
-		for i = 1, n do
-			local icon = icons[i]
-			local b = buttons[i]
-			b.sprite = sprite_or_unknown(icon.sprite)
-			b.tooltip = tip
-			iq = iq .. (icon.quality or "") .. ","
-		end
-		if iq ~= c.iq then
-			for i = 1, n do buttons[i].quality = icons[i].quality end
-			c.iq = iq
-		end
-		for i = math.min(n, c.n_icons) + 1, math.max(n, c.n_icons) do buttons[i].visible = i <= n end
-		c.n_icons = n
+		c.n_icons, c.iq = bind_icons(sub[1].children, subject.icons, tip, c.n_icons, c.iq)
+		c.n_tail, c.tq = bind_icons(sub[3].children, subject.tail or NO_ICONS, tip, c.n_tail, c.tq)
 		c.subject = subject_sig
 	end
 
@@ -845,16 +887,28 @@ end
 --- The scan note: progress while a world scan runs, then its age.
 --- @param refs table
 --- @param s LintState
-local function render_scan(refs, s)
+local function render_scan(player_data, refs, s)
 	local progress = lint.world_progress()
 	local button = refs.problems_scan_button
 	if button and button.valid and button.enabled ~= (progress == nil) then button.enabled = progress == nil end
 	local note = refs.problems_scan_note
 	if not (note and note.valid) then return end
+	local sig, arg
 	if progress then
-		note.caption = { "cybersyn-gui.problems-scanning", tostring(math.floor(progress * 100)) }
+		arg = tostring(math.floor(progress * 100))
+		sig = "p" .. arg
 	elseif s.world then
-		note.caption = { "cybersyn-gui.problems-scanned-ago", util.format_duration(game.tick - s.world.tick) }
+		arg = util.format_duration(game.tick - s.world.tick)
+		sig = "w" .. arg
+	else
+		sig = "n"
+	end
+	if player_data.problems_scan_sig == sig then return end
+	player_data.problems_scan_sig = sig
+	if progress then
+		note.caption = { "cybersyn-gui.problems-scanning", arg }
+	elseif s.world then
+		note.caption = { "cybersyn-gui.problems-scanned-ago", arg }
 	else
 		note.caption = { "cybersyn-gui.problems-never-scanned" }
 	end
@@ -895,6 +949,31 @@ local function render_pager(refs, pg)
 	refs[TAB .. "_pager_last"].enabled = forward
 end
 
+--- Before the first lint pass or world scan has finished: the progress of the running pass, rows and pager hidden.
+--- @param player_data PlayerData
+--- @param refs table
+--- @param s LintState
+local function render_pending(player_data, refs, s)
+	local body, empty_flow = refs[ROWS], refs.problems_empty_flow
+	if body.visible then body.visible = false end
+	if not empty_flow.visible then empty_flow.visible = true end
+	local pager = refs[TAB .. "_pager"]
+	if pager and pager.valid and pager.visible then pager.visible = false end
+	local job = s.job
+	local caption
+	if job then
+		local n = #job.sids + #(job.dids or {}) + #(job.fids or {}) + (job.tids and #job.tids or 0)
+		local done = (job.i or 0) + (job.ti or 0)
+		caption = { "cybersyn-gui.problems-pending-progress", math.floor(100 * done / math.max(n, 1)) }
+	else
+		caption = { "cybersyn-gui.problems-pending" }
+	end
+	set_caption(refs.problems_empty, caption)
+	set_caption(refs.problems_footer, "")
+	-- The first result renders in full, whatever the pool showed before the result went away.
+	pool_of(player_data, body).r = nil
+end
+
 --- The current page of the player's view.
 --- @param player_data PlayerData
 --- @param m ProblemsModel
@@ -920,25 +999,43 @@ function problems_tab.build(map_data, player_data, limit)
 	local widths = player_data.problems_widths
 	if not widths then return end
 	local s = lint.state()
-	render_scan(refs, s)
+	render_scan(player_data, refs, s)
+	if not problems_tab.has_result() then
+		render_pending(player_data, refs, s)
+		return
+	end
 	local m, built = problems_tab.model(player_data)
 	local filter = filter_of(player_data)
-	local pg, rows = current_page(player_data, m)
 	local now = game.tick
-	local fsig = (filter.sev[1] == false and "e" or "") .. (filter.sev[2] == false and "w" or "") ..
-		(filter.sev[3] == false and "i" or "") .. (filter.acked and "a" or "")
-	local render_sig = table.concat({ built, fsig, rows, pg.page, widths.subject, widths.fix,
-		m.acked > 0 and filter.acked and math.floor(now / 3600) or "" }, "|")
-	local pass_age = s.tick and util.format_duration(now - s.tick) or "-"
-	set_caption(refs.problems_footer, { "cybersyn-gui.problems-footer", format.number(m.total), format.number(m.acked),
-		pass_age })
 	local state = pool_of(player_data, body)
-	if state.render_sig == render_sig and not state.dirty then return end
+	local pass_age = s.tick and util.format_duration(now - s.tick) or "-"
+	local footer_sig = m.total .. "|" .. m.acked .. "|" .. pass_age
+	if state.footer ~= footer_sig then
+		set_caption(refs.problems_footer, { "cybersyn-gui.problems-footer", format.number(m.total),
+			format.number(m.acked), pass_age })
+		state.footer = footer_sig
+	end
+	-- Everything the page and its rows depend on, compared before the page is split (which allocates).
+	local fbits = (filter.sev[1] == false and 1 or 0) + (filter.sev[2] == false and 2 or 0)
+		+ (filter.sev[3] == false and 4 or 0) + (filter.acked and 8 or 0)
+	local layout = player_data.layout
+	local want_rows = math.min(layout and layout.rows_by_tab[TAB] or 3, util.page_size(player_data))
+	local hour = m.acked > 0 and filter.acked and math.floor(now / 3600) or -1
+	local page_no = player_data.page and player_data.page[TAB]
+	local r = state.r
+	if r and not state.dirty and r.built == built and r.fbits == fbits and r.rows == want_rows and r.page == page_no
+		and r.ws == widths.subject and r.wf == widths.fix and r.hour == hour then
+		return
+	end
+	local pg, rows = current_page(player_data, m)
 
 	render_toggles(refs, m, filter)
 	render_pager(refs, pg)
 	local ctx = { snapshot = collector.get(), widths = widths, now = now, wsig = widths_sig(widths) }
 	local lines = pg.lines
+	-- A window rebuilt while this tab is selected has no prewarmed pool: the page fills over a few renders rather
+	-- than creating every slot in one.
+	if #state.slots < #lines then limit = math.min(limit or #lines, #state.slots + CREATE_PER_RENDER) end
 	if limit and limit < #lines then
 		local part = {}
 		for i = 1, limit do part[i] = lines[i] end
@@ -948,7 +1045,8 @@ function problems_tab.build(map_data, player_data, limit)
 		state.dirty = true
 	else
 		state.dirty = nil
-		state.render_sig = render_sig
+		state.r = { built = built, fbits = fbits, rows = rows, page = pg.page, ws = widths.subject, wf = widths.fix,
+			hour = hour }
 	end
 
 	local empty_flow = refs.problems_empty_flow
@@ -961,17 +1059,20 @@ function problems_tab.build(map_data, player_data, limit)
 	end
 end
 
---- Tab visibility and badge, on every render whichever tab is selected (PLAN3 §4.6: errors not acknowledged).
+--- The badge, on every render whichever tab is selected (PLAN3 §4.6: errors not acknowledged). The tab itself is
+--- always shown: a tab whose `visible` flips while the window opens is drawn in the Overview's place for one frame
+--- (the tab-strip transient of phases 4-10), so before the first lint result it shows the pass's progress instead.
 --- @param player_data PlayerData
 function problems_tab.refresh_tab(player_data)
 	local tab = player_data.refs.manager_problems_tab
 	if not (tab and tab.valid) then return end
 	local created = problems_tab.prewarm(player_data)
-	local has = problems_tab.has_result()
-	if tab.visible ~= has then tab.visible = has end
-	if not has then
-		if player_data.selected_tab == TAB then util.select_tab(player_data, "overview_tab") end
-		player_data.problems_badge = nil
+	if not problems_tab.has_result() then
+		if player_data.problems_badge ~= 0 then
+			player_data.problems_badge = 0
+			tab.badge_text = ""
+			tab.tooltip = ""
+		end
 		return
 	end
 	if created == 0 and player_data.selected_tab ~= TAB then problems_tab.prebind(player_data) end
@@ -1014,7 +1115,7 @@ function problems_tab.prebind(player_data)
 	local layout = player_data.layout
 	if not (body and body.valid and layout) then return end
 	local state = pool_of(player_data, body)
-	if state.render_sig then return end
+	if state.r then return end
 	local rows = math.min(layout.rows_by_tab[TAB] or 3, util.page_size(player_data))
 	if #state.slots < rows then return end
 	problems_tab.build(nil, player_data, state.n + PREBIND)
@@ -1265,7 +1366,7 @@ dev.add("problems_pool_step", function(pi)
 		problems_tab.prebind(player_data)
 	end
 	local state = util.gui_state(player_data, ROWS)
-	return { slots = state.slots and #state.slots or 0, bound = state.n or 0, done = state.render_sig ~= nil }
+	return { slots = state.slots and #state.slots or 0, bound = state.n or 0, done = state.r ~= nil }
 end)
 
 dev.add("problems_dump", function(pi, all)

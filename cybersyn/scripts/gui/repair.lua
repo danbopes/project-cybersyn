@@ -252,6 +252,7 @@ local function confirm_click(player, pd, e, what, run)
 	end
 	local state, fire = logic.confirm_click(pd.confirm, key, game.tick)
 	pd.confirm = state
+	if state then storage.manager.confirm_any = true end
 	if fire then run() end
 	if repair.on_change then repair.on_change(player, pd) end
 	return fire
@@ -293,11 +294,69 @@ end
 
 -- ---------------------------------------------------------------- dialog (actions on many entities)
 
+--- Gives player.opened back to what the dialog replaced (the manager window or the train's window).
 --- @param player LuaPlayer
-function repair.close_dialog(player, pd)
+--- @param ret {window: true?, entity: LuaEntity?}?
+local function hand_back(player, pd, ret)
+	if not ret or player.opened_gui_type ~= defines.gui_type.none then return end
+	if ret.entity then
+		if ret.entity.valid then player.opened = ret.entity end
+	elseif ret.window then
+		local window = pd.refs and pd.refs.manager_window
+		if pd.is_manager_open and window and window.valid then player.opened = window end
+	end
+end
+
+--- @param player LuaPlayer
+--- @param pd PlayerData?
+--- @param restore boolean? give player.opened back to what the dialog replaced (Back, Confirm)
+function repair.close_dialog(player, pd, restore)
 	local frame = player.gui.screen[DIALOG]
+	local ret = pd and pd.dialog_return
+	if pd then
+		pd.action_dialog = nil
+		pd.dialog_return = nil
+	end
+	-- Cleared before the frame goes: destroying the opened element must find no dialog in on_gui_closed.
 	if frame and frame.valid then frame.destroy() end
-	if pd then pd.action_dialog = nil end
+	if restore and pd then hand_back(player, pd, ret) end
+end
+
+--- on_gui_closed of the dialog: Escape, or another GUI replacing it. The dialog closes; what it replaced gets
+--- player.opened back on a later tick unless another GUI opened meanwhile (repair.settle).
+--- @param e EventData.on_gui_closed
+function repair.on_gui_closed(e)
+	local elem = e.element
+	if not (elem and elem.valid and elem.name == DIALOG) then return end
+	local manager_data = storage.manager
+	local pd = manager_data and manager_data.players[e.player_index]
+	local player = game.get_player(e.player_index)
+	if not (pd and player and pd.action_dialog) then return end
+	local ret = pd.dialog_return
+	repair.close_dialog(player, pd, false)
+	if ret then
+		local pending = manager_data.dialog_escapes or {}
+		manager_data.dialog_escapes = pending
+		pending[e.player_index] = { tick = game.tick, ret = ret, controller = player.controller_type }
+	end
+end
+
+--- Hands player.opened back after an Escape closed a dialog in an earlier tick (scripts/main.lua: the planner's tick,
+--- the manager tick and the export tick).
+function repair.settle()
+	local manager_data = storage.manager
+	local pending = manager_data and manager_data.dialog_escapes
+	if not pending then return end
+	local tick = game.tick
+	for pi, p in pairs(pending) do
+		if p.tick ~= tick then
+			pending[pi] = nil
+			local player = game.get_player(pi)
+			local pd = manager_data.players[pi]
+			if player and pd and player.controller_type == p.controller then hand_back(player, pd, p.ret) end
+		end
+	end
+	if not next(pending) then manager_data.dialog_escapes = nil end
 end
 
 local function train_count()
@@ -367,6 +426,19 @@ function repair.open_dialog(player, pd, which)
 	frame.children[3].drag.drag_target = frame
 	frame.force_auto_center()
 	pd.action_dialog = which
+	-- Modal, as the style guide's dialogs are: player.opened, so Escape closes it; what it replaces gets player.opened
+	-- back when it closes. The window's own on_gui_closed ignores this switch (dialog_opening).
+	local opened = player.opened
+	local window = pd.refs and pd.refs.manager_window
+	local ret
+	if window and window.valid and opened == window then
+		ret = { window = true }
+	elseif player.opened_gui_type == defines.gui_type.entity and opened and opened.valid then
+		ret = { entity = opened }
+	end
+	pd.dialog_return = ret
+	pd.dialog_opening = game.tick
+	player.opened = frame
 end
 
 function repair.handle.repair_recalc_click(player, pd)
@@ -380,13 +452,13 @@ function repair.handle.repair_allow_click(player, pd)
 end
 
 function repair.handle.repair_dialog_back(player, pd)
-	repair.close_dialog(player, pd)
+	repair.close_dialog(player, pd, true)
 end
 
 --- Runs the dialog's action; the right is checked again here, in the handler that changes state.
 function repair.dialog_confirm(player, pd)
 	local which = pd.action_dialog
-	repair.close_dialog(player, pd)
+	repair.close_dialog(player, pd, true)
 	if which == "recalc" then
 		if not actions.check(player, "recalculate train sizes") then return false end
 		retrigger_train_calculation(false)
@@ -413,11 +485,34 @@ end
 --- Manager tick: armed buttons expire (the panels re-render on the same tick), and the allow-list job advances.
 --- @param manager_data Manager
 function repair.tick(manager_data)
-	local now = game.tick
-	for _, pd in pairs(manager_data.players) do
-		if logic.confirm_expired(pd.confirm, now) then pd.confirm = nil end
-	end
+	repair.expire(manager_data)
 	repair.job_tick()
+end
+
+--- Redraws expired confirm buttons, and drops their state once the click grace (logic.CONFIRM_GRACE) is over too. Also
+--- called on the fixed export tick, so a "Confirm?" goes back within a few ticks of its expiry whatever the manager's
+--- update rate (with updates at 0 too); free while no player has a button armed.
+--- @param manager_data Manager
+function repair.expire(manager_data)
+	if not manager_data.confirm_any then return end
+	local now = game.tick
+	local any
+	for i, pd in pairs(manager_data.players) do
+		local cur = pd.confirm
+		if cur then
+			if logic.confirm_gone(cur, now) then
+				pd.confirm = nil
+			else
+				any = true
+				if not cur.redrawn and logic.confirm_expired(cur, now) then
+					cur.redrawn = true
+					local player = repair.on_change and game.get_player(i)
+					if player then repair.on_change(player, pd) end
+				end
+			end
+		end
+	end
+	manager_data.confirm_any = any
 end
 
 --- The panel subject of a clicked element; set by extras (relative.build's frame tags).
@@ -489,6 +584,12 @@ dev.extend({
 		if not found then return nil end
 		return { caption = found.caption, enabled = found.enabled, style = found.style.name, tooltip = found.tooltip }
 	end,
+	--- The dialog's Back button through its handler.
+	action_dialog_back = function(pi)
+		local player, pd = dev_context(pi)
+		repair.handle.repair_dialog_back(player, pd)
+		return pd.action_dialog == nil
+	end,
 	action_dialog = function(pi, which, confirm)
 		local player, pd = dev_context(pi)
 		if which then
@@ -545,8 +646,11 @@ dev.extend({
 	may_act = function(pi)
 		return actions.may_act(game.get_player(pi))
 	end,
-	last_audit = function()
-		return actions.last_line
+	--- The last audit line; `clear` forgets it (to see that a later action writes one).
+	last_audit = function(clear)
+		local line = actions.last_line
+		if clear then actions.last_line = nil end
+		return line
 	end,
 })
 

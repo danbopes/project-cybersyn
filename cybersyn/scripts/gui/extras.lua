@@ -183,7 +183,7 @@ end
 
 -- ---------------------------------------------------------------- pins (§11.2)
 
---- Pins a stop (backer name) or a train ("Train <id>", on its front stock) on the player's map.
+--- Pins a stop (backer name) or a train ("#<id>", on its front stock) on the player's map.
 --- @param player LuaPlayer
 --- @param kind string "station"|"depot"|"refueler"|"stop"|"train"
 --- @param id uint
@@ -193,7 +193,9 @@ function extras.add_pin(player, kind, id)
 	if kind == "train" then
 		local train = lua_train(id)
 		entity = train and train.front_stock
-		label = "Train " .. tostring(id)
+		-- A pin's label is a plain string (no LocalisedString), so not a word of any language: "#<id>", the form the
+		-- Trains tab's search takes for a train id.
+		label = "#" .. tostring(id)
 	else
 		entity = stop_record(id)
 		label = entity and entity.backer_name
@@ -211,6 +213,9 @@ function extras.add_pin(player, kind, id)
 end
 
 -- ---------------------------------------------------------------- Test path (§11.7)
+
+extras.TEST_PATH_TICKS = 60
+extras.TEST_PATH_REPEAT = 3600
 
 --- Whether a train's network can serve a station's, loosely: only to rank the pathfinder's subject.
 local function network_match(station, train)
@@ -273,7 +278,10 @@ function extras.test_path(player, pd, stop_id, named_train)
 		util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 		return nil
 	end
-	local seq = ((pd.test_path and pd.test_path.seq) or 0) + 1
+	-- One pathfinder request per player per TEST_PATH_TICKS: a click in between gets the last answer again.
+	local last = pd.test_path
+	if last and game.tick - last.tick < extras.TEST_PATH_TICKS then return last end
+	local seq = ((last and last.seq) or 0) + 1
 	local train_id = named_train and lua_train(named_train) and named_train
 		or logic.pick_train(path_candidates(record, stop))
 	local result = { stop_id = stop_id, train_id = train_id, found = false, seq = seq, tick = game.tick }
@@ -295,10 +303,18 @@ function extras.test_path(player, pd, stop_id, named_train)
 		result.found = res.found_path == true
 		if result.found then result.length = res.total_length end
 	end
+	-- The same answer about the same stop and train within a minute is one audit entry, not one per click.
+	local same = last and last.stop_id == stop_id and last.train_id == train_id and last.found == result.found
+		and last.no_rail == result.no_rail and last.audit_tick and game.tick - last.audit_tick < extras.TEST_PATH_REPEAT
 	pd.test_path = result
-	actions.audit(ACTION_TEST_PATH, stop_id, player, { "cybersyn-gui.audit-test-path" },
-		{ "cybersyn-messages.audit-test-path", player.name, "[train-stop=" .. stop.unit_number .. "]",
-			extras.path_caption(result) }, train_id, stop_id, true)
+	if same then
+		result.audit_tick = last.audit_tick
+	else
+		result.audit_tick = game.tick
+		actions.audit(ACTION_TEST_PATH, stop_id, player, { "cybersyn-gui.audit-test-path" },
+			{ "cybersyn-messages.audit-test-path", player.name, "[train-stop=" .. stop.unit_number .. "]",
+				extras.path_caption(result) }, train_id, stop_id, true)
+	end
 	return result
 end
 
@@ -685,12 +701,14 @@ dev.extend({
 		local _, pd = dev_context(pi)
 		return pd.last_pin
 	end,
-	test_path = function(pi, stop_id, train_id)
+	--- `limited`: keep the once-per-TEST_PATH_TICKS rule a click has (tests otherwise ask several stops in one tick).
+	test_path = function(pi, stop_id, train_id, limited)
 		local player, pd = dev_context(pi)
+		if pd.test_path and not limited then pd.test_path.tick = -extras.TEST_PATH_TICKS end
 		local r = extras.test_path(player, pd, stop_id, train_id)
 		if not r then return nil end
 		return { stop_id = r.stop_id, train_id = r.train_id, found = r.found, no_rail = r.no_rail, length = r.length,
-			depot = r.depot, caption = extras.path_caption(r) }
+			depot = r.depot, caption = extras.path_caption(r), seq = r.seq, tick = r.tick }
 	end,
 	--- Emulates the click on the trains-window button (an offline player cannot open the vanilla trains window).
 	trains_gui_button = function(pi)

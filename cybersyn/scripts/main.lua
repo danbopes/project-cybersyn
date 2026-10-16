@@ -194,6 +194,7 @@ function on_station_broken(map_data, station_id, station)
 	end
 	clear_all_request_tracking(station)
 	diag.station_removed(station_id)
+	lint.station_removed(station_id)
 	map_data.stations[station_id] = nil
 	interface_raise_station_removed(station_id, station)
 end
@@ -892,6 +893,7 @@ local function register_tick()
 		add(ceil(60 / mod_settings.tps) --[[@as uint]], function()
 			tick(storage, mod_settings)
 			analytics.tick(storage)
+			manager.settle()
 		end)
 	end
 	local manager_nth
@@ -1091,6 +1093,7 @@ local function main()
 	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)
+	script.on_event("cybersyn-manager-world-click", manager.on_world_click)
 	script.on_event({
 		defines.events.on_player_display_resolution_changed,
 		defines.events.on_player_display_scale_changed,

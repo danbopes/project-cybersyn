@@ -991,10 +991,20 @@ function inventory_tab.build(map_data, player_data)
 					-- Once a minute, not on each of the renders a refresh is spread over.
 					delivered = util.delivered_items(player_data, 60)
 				end
-				local ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
-					delivered, dim)
+				-- A refresh spread over renders builds its entries once and works through them on the next renders
+				-- (rebuilding every entry on each of them put the renders after a pass at the 5 ms edge on pY).
+				local pending = state.pending
+				local ctx, entries
+				if pending and pending.sig == render_sig and pending.version == version then
+					ctx, entries = pending.ctx, pending.entries
+					ctx.budget, ctx.deferred, ctx.now = budget and { n = BACKGROUND_UPDATE_BUDGET } or nil, nil, now
+				else
+					ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
+						delivered, dim)
+				end
 				local result = render_grid(player_data, grid, table_elem, state, ctx, entries)
 				state.render_sig = (result ~= "held" and not ctx.deferred) and render_sig or nil
+				state.pending = ctx.deferred and { sig = render_sig, version = version, ctx = ctx, entries = entries } or nil
 			end
 		end
 	end

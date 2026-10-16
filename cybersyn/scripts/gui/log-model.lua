@@ -331,6 +331,7 @@ model.epoch = epoch
 --- @field item int
 --- @field a int
 --- @field b int
+--- @field full true? its events are in the full ring
 
 --- @param r DiagRing
 --- @param i int
@@ -444,7 +445,9 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 				g.n = g.n + 1
 				g.seq, g.tick, g.sev, g.a, g.b, g.delivery = r.seq[i], r.tick[i], r.sev[i], r.a[i], r.b[i], r.delivery[i]
 			else
-				table.insert(groups, 1, new_group(r, i))
+				local g = new_group(r, i)
+				if r == rf then g.full = true end
+				table.insert(groups, 1, g)
 			end
 		end)
 		used = n
@@ -463,6 +466,30 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 			changed = true
 		end
 	end
+	-- Rows whose newest event its ring has since overwritten: the event can no longer be found (a click, Print), so
+	-- the row goes, and the backward scan refills from the other ring's older rows.
+	if follow then
+		local oldest_b = rb.count > 0 and rb.seq[at(rb, 0)] or math.huge
+		local oldest_f = rf and rf.count > 0 and rf.seq[at(rf, 0)] or math.huge
+		local trimmed = false
+		-- A full row can be gone while an older basic row below it is not, so every row is looked at; the bottom row
+		-- holds the oldest seq, so nothing is gone while it is not (the usual case, one comparison).
+		local last = groups[#groups]
+		if last and last.seq < math.max(oldest_b == math.huge and 0 or oldest_b, oldest_f == math.huge and 0 or oldest_f) then
+			local kept = {}
+			for _, g in ipairs(groups) do
+				if g.seq >= (g.full and oldest_f or oldest_b) then kept[#kept + 1] = g else trimmed = true end
+			end
+			if trimmed then
+				for k = 1, #groups do groups[k] = kept[k] end
+			end
+		end
+		if trimmed then
+			changed = true
+			local last = groups[#groups]
+			rs.below = last and last.first or (rs.top + 1)
+		end
+	end
 	if rs.below and used < budget then
 		local ended, below, n = scan_back(rb, rf, rs.below, cf, budget - used, function(r, i)
 			if not sevs[r.sev[i]] then return false end
@@ -473,7 +500,9 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 				return false
 			end
 			if #groups >= limit then return true end
-			groups[#groups + 1] = new_group(r, i)
+			local g = new_group(r, i)
+			if r == rf then g.full = true end
+			groups[#groups + 1] = g
 			changed = true
 			return false
 		end)
@@ -486,7 +515,32 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 		end
 		changed = true
 	end
+	-- Paused: the events newer than the anchor that the filter would show ("Paused · n newer"), counted forward with
+	-- what is left of the budget.
+	if not follow and rs.anchor then
+		if rs.newer_sig ~= sig then rs.newer_sig, rs.newer_hi, rs.newer_n = sig, rs.anchor, 0 end
+		if head > rs.newer_hi and used < budget then
+			local n, min_tick = rs.newer_n, cf.min_tick
+			local reached, _, k = scan_fwd(rb, rf, rs.newer_hi, budget - used, function(r, i)
+				if sevs[r.sev[i]] and match(r, i, cf) and not (min_tick and r.tick[i] < min_tick) then n = n + 1 end
+			end)
+			rs.newer_hi, rs.newer_n = reached, n
+			used = used + k
+		end
+	else
+		rs.newer_sig, rs.newer_hi, rs.newer_n = nil, nil, nil
+	end
 	return changed, used
+end
+
+--- While paused: how many events newer than the frozen rows the filter selects, and whether that count is complete.
+--- @param rs LogRowsState
+--- @param d DiagState
+--- @return int n
+--- @return boolean complete
+function model.newer(rs, d)
+	if not rs.newer_hi then return 0, true end
+	return rs.newer_n, rs.newer_hi >= d.seq
 end
 
 -- ---------------------------------------------------------------- severity counts
@@ -615,27 +669,30 @@ function model.seen_seq(seen, d)
 end
 
 --- Counts error rows newer than `seen` (the newest seq the player had on screen in the Log), at most `budget` new rows
---- per call.
+--- per call. Rows written before `since_tick` do not count: the first planner cycles after diagnostics start record
+--- every request that was already failing, which is the state of the base, not news.
 --- @param bs LogBadgeState
 --- @param d DiagState
 --- @param seen uint? a seq of this diagnostics state (model.seen_seq)
 --- @param budget int
+--- @param since_tick uint? diag.inherit_threshold(d); nil = every row
 --- @return int unread
-function model.update_badge(bs, d, seen, budget)
+function model.update_badge(bs, d, seen, budget, since_tick)
 	local e = epoch(d)
+	since_tick = since_tick or 0
 	if bs.epoch ~= e then
 		bs.epoch, bs.hi, bs.n, bs.seen = e, 0, 0, nil
 	end
 	seen = seen or 0
 	if seen > d.seq then seen = 0 end
-	if seen ~= bs.seen then
-		bs.seen, bs.hi, bs.n = seen, seen, 0
+	if seen ~= bs.seen or since_tick ~= bs.since then
+		bs.seen, bs.hi, bs.n, bs.since = seen, seen, 0, since_tick
 	end
 	local rb, rf = rings(d)
 	if d.seq > bs.hi then
 		local n = bs.n
 		bs.hi = scan_fwd(rb, rf, bs.hi, budget, function(r, i)
-			if r.sev[i] == DIAG_SEV_ERROR then n = n + 1 end
+			if r.sev[i] == DIAG_SEV_ERROR and r.tick[i] >= since_tick then n = n + 1 end
 		end)
 		bs.n = n
 	end
@@ -815,7 +872,8 @@ function model.message(g, ctx)
 		if stock == "–" then return { msg .. "-plain", ctx.chip(code) } end
 		return { msg, ctx.chip(code), stock }
 	elseif kind == DIAG_KIND_SERVED then
-		return { msg, ctx.duration(a), format.number(b), ctx.chip(code) }
+		-- The plural takes the plain number: a grouped one ("8,646") is not a number to the locale engine.
+		return { msg, ctx.duration(a), format.number(b), ctx.chip(code), tostring(b) }
 	elseif kind == DIAG_KIND_FLAPPING then
 		return { msg, format.number(b), ctx.chip(code) }
 	elseif kind == DIAG_KIND_DISPATCH_FAILED then

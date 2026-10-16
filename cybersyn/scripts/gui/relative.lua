@@ -19,6 +19,7 @@ local lint = require("scripts.lint")
 local utext = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
 local pm = require("scripts.gui.problems-model")
+local item_model = require("scripts.gui.item-model")
 local problems_tab = require("scripts.gui.problems")
 local extras = require("scripts.gui.extras")
 local repair = require("scripts.gui.repair")
@@ -26,9 +27,18 @@ local repair = require("scripts.gui.repair")
 local relative = {}
 
 local WIDTH = 300
--- Inside the body's 8 px padding, leaving room for the scroll bar a tall panel gets (relative.fit).
-local INNER = WIDTH - 28
-local MOUNT = { stop = "cybersyn_relative_stop", train = "cybersyn_relative_train" }
+local PADDING = 12
+-- Inside the body's padding, leaving room for the scroll bar a tall panel gets (relative.fit).
+local INNER = WIDTH - 2 * PADDING - 12
+-- An unserved row: item 28, the chip, stock and wait, 6 px apart; the chip takes what the numbers leave. The numbers
+-- are in the small font: "≥59m 50s" and "≥23h 59m" are 61-62 px in the default one, which would leave the chip too
+-- little for "Requester full" or "Train too small" (the tooltip repeats both numbers).
+local UNSERVED_STOCK, UNSERVED_WAIT, UNSERVED_GAP = 56, 56, 6
+local UNSERVED_FONT = "default-small"
+local UNSERVED_CHIP = INNER - 28 - UNSERVED_STOCK - UNSERVED_WAIT - 3 * UNSERVED_GAP
+-- One mount per window the panel sits beside: the stop's, the locomotive's (the docked train pane: a screen frame) and
+-- each wagon's own window (anchored to it).
+local MOUNT = { stop = "cybersyn_relative_stop", train = "cybersyn_relative_train", cargo = "cybersyn_relative_cargo" }
 local PANEL = "cybersyn_relative_panel"
 local EVENTS = 10
 -- Rows of the stop's event list while the Effective config is expanded, so the panel fits a 1080p screen at scale 1.
@@ -39,12 +49,18 @@ local UNSERVED_ROWS = 3
 local EFFECTIVE_ITEMS = 6
 -- Trains of storage.trains the Effective config walk counts per refresh (about 2.5 µs each on pY 123), how many the
 -- render of a click or an opened window counts at once, and how long a finished count is used.
-local FLEET_CHUNK = 25
+local FLEET_CHUNK = 15
 local FLEET_BURST = 600
 local FLEET_TTL = 7200
 -- While no manager window keeps a snapshot, the stop is read again at most this often: a read of a big multi-requester
 -- (combinators and secondaries) is most of a refresh's cost, and the planner itself polls a stop less often.
 local LIVE_READ_TICKS = 120
+-- Ring rows the "Last events" scan examines per refresh after the first (diag.last_for_step): about 0.31 µs each inside
+-- the real tick on pY 123's full rings, so 0.05 ms beside the rest of the panel's 0.06-0.09 ms (live reads with the
+-- window closed, when the scan takes half). At 256 the p90 of a refresh was 0.21-0.30 ms. A stop with few events (most
+-- of a big base) is scanned through both full rings (20k rows) in about 125 refreshes (250 with the window closed),
+-- "Scanning…" until then.
+local EVENT_SCAN_ROWS = 160
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
 relative.WIDTH = WIDTH
@@ -230,7 +246,7 @@ function relative.build(parent, kind, id)
 		type = "flow",
 		name = "body",
 		direction = "vertical",
-		style_mods = { padding = 8, vertical_spacing = 8 },
+		style_mods = { padding = PADDING, vertical_spacing = 8 },
 	}
 	for _, name in ipairs(sections) do
 		if name == "buttons" then break end
@@ -286,7 +302,8 @@ function relative.build(parent, kind, id)
 			type = "flow",
 			name = "footer",
 			direction = "vertical",
-			style_mods = { left_padding = 8, right_padding = 8, top_padding = 4, bottom_padding = 8, maximal_width = WIDTH },
+			style_mods = { left_padding = PADDING, right_padding = PADDING, top_padding = 4, bottom_padding = PADDING,
+				maximal_width = WIDTH },
 			{ type = "flow", name = "buttons", direction = "vertical", visible = false, style_mods = { maximal_width = INNER } },
 		},
 	})
@@ -341,11 +358,33 @@ end
 
 -- ---------------------------------------------------------------- stop model
 
---- This station's active request keys nobody on its networks provides, from the planner's economy, which is complete
---- only while it dispatches; between those ticks the last answer stands.
+--- This station's active request keys nobody on its networks provides. With diagnostics on, from the reason the
+--- dispatcher recorded (NO_PROVIDER), which holds between cycles; else from the planner's economy, which is complete
+--- only while it dispatches (between those ticks the last answer stands).
 --- @return boolean updated
 local function update_starved(state, st)
-	if storage.tick_state ~= STATE_DISPATCH or not st then return false end
+	if not st then return false end
+	local d = storage.diag
+	if d then
+		local starved = {}
+		local by_item = d.unserved[st.id]
+		if by_item then
+			local nets
+			for ix, e in pairs(by_item) do
+				if e.reason == REASON_NO_PROVIDER then
+					local hash = d.item_hash[ix]
+					local req = hash and st.requested[hash]
+					if req and req.active then
+						nets = nets or networks_of(st.network_name, st.network_mask)
+						for _, net in ipairs(nets) do starved[net.name .. ":" .. hash] = true end
+					end
+				end
+			end
+		end
+		state.starved = starved
+		return true
+	end
+	if storage.tick_state ~= STATE_DISPATCH then return false end
 	local economy = storage.economy
 	if not economy then return false end
 	local r_stops, p_stops = economy.all_r_stops, economy.all_p_stops
@@ -642,6 +681,8 @@ local function build_effective(state, st, station, nets, counts, progress)
 	local entries = diag.unserved_for(st.id)
 	local list = util.hashes_in_item_order(st.requested)
 	local warned = 0
+	-- Items with a threshold of their own on the control combinator take its priority signal, as tick_dispatch does.
+	local item_priorities, n_item_priorities = {}, 0
 	for i = 1, #list do
 		local hash = list[i]
 		local req = st.requested[hash]
@@ -658,6 +699,11 @@ local function build_effective(state, st, station, nets, counts, progress)
 		local capacity = is_fluid and best_fluid or best_items
 		local warn = capacity > 0 and need >= capacity
 		if warn then warned = warned + 1 end
+		local prior = item_model.effective_priority(st, hash, SIGNAL_PRIORITY)
+		if prior ~= (st.priority or 0) and n_item_priorities < EFFECTIVE_ITEMS then
+			n_item_priorities = n_item_priorities + 1
+			item_priorities[n_item_priorities] = { hash = hash, priority = prior }
+		end
 		if i <= EFFECTIVE_ITEMS then
 			local e
 			local ix = entries and storage.diag and storage.diag.item_ix[hash]
@@ -680,6 +726,7 @@ local function build_effective(state, st, station, nets, counts, progress)
 	end
 	m.warned = warned
 	m.more_items = math.max(0, #list - EFFECTIVE_ITEMS)
+	m.item_priorities = item_priorities
 	return m
 end
 
@@ -945,7 +992,7 @@ local function render_unserved(state, body, m, compact)
 					type = "flow",
 					name = "row" .. i,
 					direction = "horizontal",
-					style_mods = { vertical_align = "center", horizontal_spacing = 6 },
+					style_mods = { vertical_align = "center", horizontal_spacing = UNSERVED_GAP, maximal_width = INNER },
 					sprite and {
 						type = "sprite-button",
 						style = "cybersyn_unserved_item",
@@ -959,12 +1006,15 @@ local function render_unserved(state, body, m, compact)
 					{
 						type = "button",
 						name = "chip",
-						style = acked and "cybersyn_chip_grey" or utext.chip_style(e.reason),
+						style = acked and "cybersyn_chip_acked" or utext.chip_style(e.reason),
+						style_mods = { maximal_width = UNSERVED_CHIP },
 						caption = utext.chip_caption(e.reason),
 						tooltip = tip,
 					},
-					label(stock, { name = "stock" }),
-					label(wait, { name = "wait", style_mods = { font_color = { 0.7, 0.7, 0.7 } } }),
+					label(stock, { name = "stock", style_mods = { width = UNSERVED_STOCK, horizontal_align = "right",
+						font = UNSERVED_FONT } }),
+					label(wait, { name = "wait", style_mods = { width = UNSERVED_WAIT, horizontal_align = "right", font = UNSERVED_FONT,
+						font_color = { 0.7, 0.7, 0.7 } } }),
 				}
 				-- The expanded Effective config needs the room; the four lines stay in the chip's tooltip.
 				if i == 1 and not compact then
@@ -1078,6 +1128,7 @@ local function render_effective(state, body, m)
 		for _, it in ipairs(e.items) do
 			parts[#parts + 1] = table.concat({ it.hash, it.threshold, tostring(it.override), it.need, it.capacity }, ":")
 		end
+		for _, ip in ipairs(e.item_priorities or {}) do parts[#parts + 1] = "p" .. ip.hash .. ":" .. ip.priority end
 		e.sig = table.concat(parts, "|")
 	end
 	local sig = e.sig
@@ -1147,6 +1198,14 @@ local function render_effective(state, body, m)
 			if e.more_items > 0 then out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(e.more_items) }) end
 			out[#out + 1] = line({ "cybersyn-gui.relative-eff-limit", e.limit >= rtext.UNLIMITED and "∞" or tostring(e.limit),
 				tostring(e.priority) })
+			local ips = e.item_priorities
+			if ips and #ips > 0 then
+				local list = { "" }
+				for k, ip in ipairs(ips) do
+					list[#list + 1] = (k > 1 and ", " or "") .. problems_tab.ENV.item(ip.hash) .. " " .. ip.priority
+				end
+				out[#out + 1] = line({ "cybersyn-gui.relative-eff-item-priority", list })
+			end
 			if e.counting then
 				out[#out + 1] = note({ "cybersyn-gui.relative-eff-counting", tostring(math.floor(e.counting * 100)) })
 			end
@@ -1207,11 +1266,15 @@ local function render_events(state, body, kind, id, shown)
 		return
 	end
 	local cursor = state.cursor
+	local first_scan = not cursor
 	if not cursor then
 		cursor = diag.scan_cursor(kind, id, EVENTS)
 		state.cursor = cursor
 	end
-	local rows = diag.last_for_step(cursor)
+	-- The refresh that opens the panel scans diag.SCAN_ROWS at once (a one-off, like the fleet walk's burst); later
+	-- refreshes go on EVENT_SCAN_ROWS at a time.
+	-- A stop panel without a manager snapshot (state.st: live reads of the stop) spends more per refresh: half the rows.
+	local rows = diag.last_for_step(cursor, not first_scan and (state.st and EVENT_SCAN_ROWS / 2 or EVENT_SCAN_ROWS) or nil)
 	local now = game.tick
 	shown = shown or EVENTS
 	-- The rows change only when the cursor's newest row or its first row does; their ages are rewritten in place
@@ -1368,10 +1431,19 @@ local function train_model(pd, state)
 	local train = storage.trains[state.id]
 	local entity = train and train.entity
 	if not (entity and entity.valid) then return nil end
-	if not state.schedule then read_schedule(state, entity) end
-	local now = game.tick
-	local current = entity.get_schedule().current
 	local state_now = entity.state
+	-- The current record moves when the train leaves a stop, i.e. with a state change; a schedule edit or an
+	-- interrupt raises on_train_schedule_changed, which drops state.schedule. Anything else reads nothing.
+	if not state.schedule then
+		read_schedule(state, entity)
+		state.current = nil
+	end
+	if state.current == nil or state.current_state ~= state_now then
+		state.current = entity.get_schedule().current
+		state.current_state = state_now
+	end
+	local now = game.tick
+	local current = state.current
 	local m = {
 		kind = "train",
 		id = state.id,
@@ -1408,25 +1480,29 @@ end
 
 local function render_train_head(state, body, m)
 	local now = game.tick
-	local since = m.state_since and rtext.age_step(now - m.state_since) or -1
+	-- Time in state as the Trains row beside the pane shows it (util.short_duration of the exact age): one rule.
+	local since = m.state_since and (now - m.state_since) or -1
+	local since_caption = since >= 0 and util.short_duration(since) or ""
 	local kind, target = status_target(m)
 	local sig = table.concat({ m.status or -1, kind, tostring(target), tostring(target and stop_name(kind, target)) }, "|")
 	-- A moving train changes state at every signal: the state chip and its age are rewritten in place.
 	local ages = state.ages
-	local state_key = m.state and (m.state * 1e9 + since) or since
+	local state_now = m.state or -1
 	if state.sigs["head"] == sig then
-		if ages.head ~= state_key then
-			ages.head = state_key
+		if ages.head ~= state_now or ages.head_since ~= since_caption then
 			local row = body.head and body.head.state_row
 			if row then
-				row.state_chip.style = STATE_CHIP[m.state] or "cybersyn_chip_grey"
-				row.state_chip.caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") }
-				row.in_state.caption = since >= 0 and { "cybersyn-gui.relative-in-state", util.short_duration(since) } or ""
-				row.in_state.tooltip = m.state_since and util.format_duration(now - m.state_since) or ""
+				if ages.head ~= state_now then
+					row.state_chip.style = STATE_CHIP[m.state] or "cybersyn_chip_grey"
+					row.state_chip.caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") }
+				end
+				row.in_state.caption = since >= 0 and { "cybersyn-gui.relative-in-state", since_caption } or ""
+				row.in_state.tooltip = m.state_since and util.format_duration(since) or ""
 			end
+			ages.head, ages.head_since = state_now, since_caption
 		end
 	else
-		ages.head = state_key
+		ages.head, ages.head_since = state_now, since_caption
 		section(state, body, "head", sig, function()
 			local key = TRAIN_STATUS_KEY[m.status]
 			local status = key and { key } or { "cybersyn-gui.trains-custom-status", tostring(m.status) }
@@ -1451,8 +1527,8 @@ local function render_train_head(state, body, m)
 					caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") },
 					tooltip = { "cybersyn-gui.relative-state-tooltip" },
 				},
-				label(since >= 0 and { "cybersyn-gui.relative-in-state", util.short_duration(since) } or "",
-					{ name = "in_state", tooltip = m.state_since and util.format_duration(now - m.state_since) or nil }),
+				label(since >= 0 and { "cybersyn-gui.relative-in-state", since_caption } or "",
+					{ name = "in_state", tooltip = m.state_since and util.format_duration(since) or nil }),
 			}
 			return out
 		end)
@@ -1701,7 +1777,13 @@ end
 -- on 3840x2160 and 1.0 on 1920x1080.
 local ANCHORS = {
 	stop = { gui = defines.relative_gui_type.train_stop_gui, position = defines.relative_gui_position.right, type = "train-stop" },
+	-- A wagon opens its own window (in the middle of the screen), not the docked pane: the panel anchors to it.
+	-- 2.0 has no wagon GUI types: a cargo wagon's window is a container_gui (checked with a client at 4K/1.5). A fluid
+	-- or artillery wagon could not be opened by script in the lab, so they keep the docked-pane frame until checked.
+	cargo = { gui = defines.relative_gui_type.container_gui, position = defines.relative_gui_position.right, type = "cargo-wagon" },
 }
+-- The mount for a rolling stock window of its own; anything else (a locomotive) uses the screen frame.
+local WAGON_MOUNT = { ["cargo-wagon"] = "cargo" }
 local TRAIN_PANE_RIGHT = 451
 local TRAIN_PANE_TOP = 40
 local GAP = 8
@@ -1713,10 +1795,17 @@ local STOP_BODY_MAX = 600
 local STOP_SCREEN_MARGIN = 300
 
 --- @param player LuaPlayer
---- @param kind "stop"|"train"
+--- @param key string a MOUNT key
 --- @return LuaGuiElement root
-local function root_of(player, kind)
-	return kind == "train" and player.gui.screen or player.gui.relative
+local function root_of(player, key)
+	return key == "train" and player.gui.screen or player.gui.relative
+end
+
+--- The mount key of an open panel: its own, or its kind.
+--- @param open {kind: string, mount: string?}
+--- @return string
+local function mount_key(open)
+	return open.mount or open.kind
 end
 
 --- The mount of `kind` if it exists.
@@ -1731,11 +1820,12 @@ end
 --- @param kind "stop"|"train"
 --- @return LuaGuiElement mount
 --- @return LuaGuiElement panel
-local function mount(player, kind)
-	local frame = mount_of(player, kind)
+local function mount(player, kind, key)
+	key = key or kind
+	local frame = mount_of(player, key)
 	if frame and frame[PANEL] then return frame, frame[PANEL] end
 	if frame then frame.destroy() end
-	frame = root_of(player, kind).add({ type = "frame", name = MOUNT[kind], direction = "vertical", anchor = ANCHORS[kind],
+	frame = root_of(player, key).add({ type = "frame", name = MOUNT[key], direction = "vertical", anchor = ANCHORS[key],
 		visible = false })
 	frame.style.padding = 8
 	return frame, relative.build(frame, kind, nil)
@@ -1786,18 +1876,21 @@ end
 --- @param pd PlayerData
 --- @param kind "stop"|"train"
 --- @param id uint
-function relative.open(player, pd, kind, id)
+--- @param key string? the mount (WAGON_MOUNT for a wagon's window); default `kind`
+function relative.open(player, pd, kind, id, key)
 	extras.on_selection(pd, kind, id)
 	hide_all(player)
-	local frame, panel = mount(player, kind)
+	key = key or kind
+	local frame, panel = mount(player, kind, key)
 	local state = pd.relative
 	if not (state and state.kind == kind and state.id == id) then
 		state = new_state(kind, id)
 		pd.relative = state
 	end
 	panel.tags = { kind = kind, id = id }
-	pd.relative_open = { kind = kind, id = id }
-	if kind == "train" then place_train(player, frame) end
+	pd.relative_open = { kind = kind, id = id, mount = key ~= kind and key or nil }
+	storage.manager.relative_any = true
+	if key == "train" then place_train(player, frame) end
 	relative.fit(player, panel)
 	frame.visible = true
 	state.burst = true
@@ -1840,6 +1933,7 @@ function relative.mount(pd, parent, kind, id, body_height)
 	local scroll = panel.scroll
 	if body_height and scroll.style.maximal_height ~= body_height then scroll.style.maximal_height = body_height end
 	pd.relative_pane_open = { kind = kind, id = id, panel = panel }
+	storage.manager.relative_any = true
 	state.burst = true
 	local alive = relative.render(pd, state, panel)
 	state.burst = nil
@@ -1894,7 +1988,7 @@ function relative.on_gui_opened(e)
 		relative.close(player, pd)
 		return
 	end
-	relative.open(player, pd, kind, id)
+	relative.open(player, pd, kind, id, WAGON_MOUNT[entity.type])
 end
 
 --- on_gui_closed of any entity GUI hides the panels.
@@ -1967,12 +2061,19 @@ end
 --- The manager tick: refreshes every open panel, and closes one whose vanilla window is gone.
 --- @param manager_data Manager
 function relative.tick(manager_data)
+	-- Set whenever a panel opens and cleared here once none is open, so a tick without panels walks no players.
+	if not manager_data.relative_any then return end
+	local any = false
 	for i, pd in pairs(manager_data.players) do
-		if pd.relative_pane_open then tick_pane(manager_data, i, pd) end
+		if pd.relative_pane_open then
+			any = true
+			tick_pane(manager_data, i, pd)
+		end
 		local open = pd.relative_open
 		if open then
+			any = true
 			local player = game.get_player(i)
-			local frame = player and mount_of(player, open.kind)
+			local frame = player and mount_of(player, mount_key(open))
 			local panel = frame and frame[PANEL]
 			local state = pd.relative
 			if not (panel and state) then
@@ -1992,6 +2093,7 @@ function relative.tick(manager_data)
 			end
 		end
 	end
+	if not any then manager_data.relative_any = nil end
 end
 
 --- A display scale or resolution change: the train panel's place and the body's height cap follow it.
@@ -2000,10 +2102,10 @@ end
 function relative.on_display_changed(player, pd)
 	local open = pd.relative_open
 	if not open then return end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	local panel = frame and frame[PANEL]
 	if not panel then return end
-	if open.kind == "train" then place_train(player, frame) end
+	if mount_key(open) == "train" then place_train(player, frame) end
 	relative.fit(player, panel)
 end
 
@@ -2073,7 +2175,7 @@ end
 local function rerender(player, pd)
 	local open = pd.relative_open
 	if not open then return end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	local panel = frame and frame[PANEL]
 	local state = pd.relative
 	if panel and state then
@@ -2307,7 +2409,7 @@ function dev_fns.relative_dump(pi)
 	local open = pd.relative_open
 	local state = pd.relative
 	if not (open and state) then return out end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	relative.view(frame[PANEL], state, out)
 	if open.kind == "stop" then
 		out.model = strip_model(stop_model(pd, state))
@@ -2326,7 +2428,7 @@ function dev_fns.relative_refresh_ms(pi, n, rebuild)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
-	local frame = mount_of(player, open.kind)
+	local frame = mount_of(player, mount_key(open))
 	local panel = frame[PANEL]
 	n = n or 1
 	local total = game.create_profiler()
@@ -2410,7 +2512,7 @@ function dev_fns.relative_click(pi, name)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
-	local panel = mount_of(player, open.kind)[PANEL]
+	local panel = mount_of(player, mount_key(open))[PANEL]
 	local function find(elem)
 		if elem.name == name then return elem end
 		for _, c in ipairs(elem.children) do

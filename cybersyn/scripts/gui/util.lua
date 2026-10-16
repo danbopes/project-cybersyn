@@ -557,7 +557,10 @@ function util.note_click(e)
 	local manager_data = storage.manager
 	local player_data = manager_data and manager_data.players[e.player_index]
 	if not (player_data and player_data.search_focused) then return end
-	if not string.find(elem.name, "_search_field$") then player_data.search_focused = nil end
+	if not string.find(elem.name, "_search_field$") then
+		player_data.search_focused = nil
+		util.overlay_closed(game.get_player(e.player_index), player_data)
+	end
 end
 
 --- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
@@ -869,6 +872,28 @@ function util.rerender(player, player_data)
 	if rerender_fn then rerender_fn(player, player_data) end
 end
 
+local overlay_fns
+
+--- Lets manager.lua own the overlay rule (manager.overlay_opened / overlay_closed) without a require cycle.
+--- @param fns {opened: fun(player: LuaPlayer, player_data: PlayerData), closed: fun(player: LuaPlayer, player_data: PlayerData)}
+function util.set_overlay_fns(fns)
+	overlay_fns = fns
+end
+
+--- An overlay of the manager window opened (the item drill-down, the Trains pane, Explain): manager.overlay_opened.
+--- @param player LuaPlayer?
+--- @param player_data PlayerData
+function util.overlay_opened(player, player_data)
+	if player and overlay_fns then overlay_fns.opened(player, player_data) end
+end
+
+--- An overlay closed by its own button or a tab switch (not by Escape): manager.overlay_closed.
+--- @param player LuaPlayer?
+--- @param player_data PlayerData
+function util.overlay_closed(player, player_data)
+	if player and overlay_fns then overlay_fns.closed(player, player_data) end
+end
+
 --- Switches the tabbed pane and keeps `player_data.selected_tab` in sync (setting the index raises no event).
 --- @param player_data PlayerData
 --- @param tab string e.g. "stations_tab"
@@ -987,7 +1012,7 @@ local function slot_button(hash, count, color, tooltip_tail)
 		style = "ltnm_small_slot_button_" .. color,
 		tooltip = tooltip,
 		elem_tooltip = util.elem_tooltip(hash),
-		tags = { item_hash = hash },
+		tags = { kind = "item", id = hash },
 		children = {
 			{
 				type = "label",
@@ -1178,6 +1203,13 @@ local function pin_for_map(player, player_data)
 	if not player_data.is_manager_open or player_data.pinning then return end
 	player_data.pinning = true
 	player_data.auto_pinned = true
+	-- A player whose own view is the remote one (on a space platform) never leaves remote view: Back returns them to
+	-- where they looked from.
+	if player.controller_type == defines.controllers.remote then
+		player_data.map_from = { position = player.position, surface = player.surface_index }
+	else
+		player_data.map_from = nil
+	end
 	local window = player_data.refs and player_data.refs.manager_window
 	-- Releasing player.opened raises on_gui_closed, which a pinned window ignores.
 	if window and window.valid and player.opened == window then player.opened = nil end
@@ -1381,6 +1413,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.stations_query = nil
 	player_data.trains_query = nil
 	player_data.overview_cache = nil
+	player_data.overview_failing = nil
 	player_data.stations_order = nil
 	-- Render signatures and row memos only skip redundant updates, and the memos reference snapshot records, so
 	-- they are not worth keeping in the save while closed; a container without them updates every child once on
@@ -1390,6 +1423,7 @@ function util.close_manager_window(player, player_data, refs, force)
 		for _, state in pairs(states) do
 			state.sigs = nil
 			state.cells = nil
+			state.content_sigs = nil
 		end
 	end
 
@@ -1413,20 +1447,54 @@ end
 --- @return "updated"|"held"|"rebuilt"
 function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 	local n = #entries
-	local keys = {}
-	for i = 1, n do
-		keys[i] = entries[i].key
-	end
-	local children = tbl.children
 	local old = state.keys
-	if old and first + #old * columns ~= #children then
-		old = nil
-	end
 	local sigs = state.sigs
 	if not old or not sigs then
+		old = nil
 		sigs = {}
 		state.sigs = sigs
 	end
+	-- Unchanged keys and sigs (the common render) read no element: `tbl.children` wraps every cell of the table.
+	local same = old ~= nil and #old == n
+	if same then
+		for i = 1, n do
+			if old[i] ~= entries[i].key then
+				same = false
+				break
+			end
+		end
+	end
+	local children
+	if same then
+		for i = 1, n do
+			local entry = entries[i]
+			local fn = entry.update
+			local sig = entry.sig
+			if fn and (sig == nil or sigs[entry.key] ~= sig) then
+				if not children then
+					children = tbl.children
+					-- Someone else changed the table: rebuild instead of writing into the wrong cells.
+					if first + n * columns ~= #children then
+						same = false
+						break
+					end
+				end
+				if sig ~= nil then sigs[entry.key] = sig end
+				local cells = {}
+				local base = first + (i - 1) * columns
+				for c = 1, columns do cells[c] = children[base + c] end
+				fn(cells, entry, i)
+			end
+		end
+		if same then
+			state.dirty = nil
+			return "updated"
+		end
+	end
+	children = children or tbl.children
+	if old and first + #old * columns ~= #children then old = nil end
+	local keys = {}
+	for i = 1, n do keys[i] = entries[i].key end
 
 	local function update(entry, row, index)
 		local fn = entry.update
@@ -1450,13 +1518,6 @@ function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 		while prefix < m and old[prefix + 1] == keys[prefix + 1] do
 			prefix = prefix + 1
 		end
-		if prefix == n and #old == n then
-			for i = 1, n do
-				update(entries[i], i, i)
-			end
-			state.dirty = nil
-			return "updated"
-		end
 		if hold then
 			local index_of = {}
 			for i = 1, n do
@@ -1476,7 +1537,19 @@ function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 	for i = 1, prefix do
 		update(entries[i], i, i)
 	end
-	for j = #children, first + prefix * columns + 1, -1 do
+	-- Rows past the common prefix are rebound in place when their entries can (`rebind` rewrites every cell, tags
+	-- included): removing one row then rewrites the rows below it instead of destroying and building them again.
+	local reuse = prefix
+	local old_n = old and #old or 0
+	while reuse < math.min(old_n, n) and entries[reuse + 1].rebind do reuse = reuse + 1 end
+	for i = prefix + 1, reuse do
+		local entry = entries[i]
+		local cells = {}
+		local base = first + (i - 1) * columns
+		for c = 1, columns do cells[c] = children[base + c] end
+		entry.rebind(cells, entry, i)
+	end
+	for j = #children, first + reuse * columns + 1, -1 do
 		children[j].destroy()
 	end
 	local new_sigs = {}
@@ -1484,7 +1557,11 @@ function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 		local key = keys[i]
 		new_sigs[key] = sigs[key]
 	end
-	for i = prefix + 1, n do
+	for i = prefix + 1, reuse do
+		local entry = entries[i]
+		if entry.sig ~= nil then new_sigs[entry.key] = entry.sig end
+	end
+	for i = reuse + 1, n do
 		local entry = entries[i]
 		for _, def in ipairs(entry.build()) do
 			gui.add(tbl, def)

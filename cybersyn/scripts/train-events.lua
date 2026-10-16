@@ -20,6 +20,9 @@ local function is_fuel_manifest(manifest)
 	return false
 end
 
+-- One filter table for every count of check_cargo (the engine reads it during the call and keeps nothing).
+local COUNT_FILTER = { name = "", quality = "normal" }
+
 --- Cargo against the manifest as the train leaves its provider (`at_r` false) or requester. The P side also drives
 --- the unexpected-cargo alert, so the log keeps one row for it (the unexpected_cargo event, not an alert event).
 --- @param map_data MapData
@@ -51,7 +54,9 @@ local function check_cargo(map_data, train_id, train, station, at_r)
 				end
 				fluid = fluid + n
 			else
-				local n = entity.get_item_count({ name = m.name, quality = m.quality or "normal" })
+				local q = COUNT_FILTER
+				q.name, q.quality = m.name, m.quality or "normal"
+				local n = entity.get_item_count(q)
 				if n < m.count then
 					clean = false
 					break

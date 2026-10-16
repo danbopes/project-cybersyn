@@ -664,11 +664,13 @@ end
 --- filtered item highlighted rather than hidden.
 local function decorate_slots(defs, item)
 	for _, def in pairs(defs) do
-		local hash = def.tags and def.tags.item_hash
+		local tags = def.tags
+		local hash = tags and tags.kind == "item" and tags.id or nil
 		if hash then
 			def.enabled = true
 			def.mouse_button_filter = { "left", "right" }
-			def.handler = { [defines.events.on_gui_click] = stations_tab.handle.on_item_click }
+			-- The one item click of every view (util.handle_link_click -> util.item_button_click).
+			def.handler = { [defines.events.on_gui_click] = util.handle.link_click }
 			util.hoverable(def, SCROLL)
 			def.tooltip = { "", def.tooltip, "\n", { "cybersyn-gui.item-click-hint" } }
 		end
@@ -712,7 +714,7 @@ end
 
 local function slot_key(def)
 	if def.type == "label" then return "+" end
-	return def.tags and def.tags.item_hash or def.sprite
+	return def.tags and def.tags.kind == "item" and def.tags.id or def.sprite
 end
 
 --- Flattens a LocalisedString so the slot sig follows exact amounts that the abbreviated caption hides.
@@ -1292,15 +1294,19 @@ function stations_tab.measured_rows(player_data, content_name, list_name)
 			avail = avail - h
 		end
 	end
+	-- Every shown row counts, not just those that fit: rows past the space (more rows than computed, or rows
+	-- taller than their style says) make the result negative, so dev.rows reports over-rendering.
 	local n, used = 0, 0
 	for _, row in ipairs(list.children) do
-		local style = row.style
-		local h = style.maximal_height
-		if not h or h <= 0 or style.minimal_height ~= h then break end
-		if used + h > avail then break end
-		used = used + h
-		n = n + 1
+		if row.visible then
+			local style = row.style
+			local h = style.maximal_height
+			if not h or h <= 0 or style.minimal_height ~= h then return -1 end
+			used = used + h
+			n = n + 1
+		end
 	end
+	if used > avail then return -n end
 	return n
 end
 
@@ -1370,12 +1376,6 @@ function stations_tab.wrapper(e, handler)
 	if not player then return end
 	local player_data = storage.manager.players[e.player_index]
 	handler(player, player_data, player_data.refs, e)
-end
-
---- @param e EventData.on_gui_click
-function stations_tab.handle.on_item_click(player, player_data, refs, e)
-	local hash = e.element.tags.item_hash
-	if hash then util.item_button_click(player, player_data, e, hash) end
 end
 
 --- @param e EventData.on_gui_click

@@ -475,6 +475,15 @@ data:extend({
 		linked_game_control = "focus-search",
 		action = "lua",
 	},
+	{
+		-- A click in the world (the game's open-gui button) takes the keyboard from a focused search field without any
+		-- GUI event: the manager forgets the focus, so the next Escape closes instead of clearing the search.
+		type = "custom-input",
+		name = "cybersyn-manager-world-click",
+		key_sequence = "",
+		linked_game_control = "open-gui",
+		action = "lua",
+	},
 })
 
 styles.cybersyn_tab_subheader = {
@@ -597,6 +606,11 @@ end
 styles.cybersyn_chip_red = chip({ 1, 0.5, 0.45 })
 styles.cybersyn_chip_orange = chip({ 1, 0.78, 0.45 })
 styles.cybersyn_chip_grey = chip(nil)
+-- An acknowledged reason or finding: darker than an info chip, so the two never read alike.
+styles.cybersyn_chip_acked = chip({ 0.55, 0.55, 0.55 })
+styles.cybersyn_chip_acked.default_font_color = { 0.22, 0.22, 0.22 }
+styles.cybersyn_chip_acked.hovered_font_color = { 0.22, 0.22, 0.22 }
+styles.cybersyn_chip_acked.clicked_font_color = { 0.22, 0.22, 0.22 }
 
 -- A link cell: text that opens what it names (scripts/gui/util.lua util.handle_link_click).
 styles.cybersyn_link_button = {
@@ -829,6 +843,13 @@ styles.cybersyn_unserved_icon_flow = {
 	width = 64,
 }
 
+-- Icons after a name's text: only as wide as the icons it shows.
+styles.cybersyn_name_tail_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 2,
+}
+
 styles.cybersyn_unserved_ack = {
 	type = "button_style",
 	parent = "tool_button",
@@ -917,8 +938,9 @@ styles.cybersyn_list_header = {
 	type = "frame_style",
 	parent = "subheader_frame",
 	height = 36,
-	left_padding = 6,
-	right_padding = 6,
+	-- As the rows' padding, so a header cell starts where its column's cells do.
+	left_padding = 4,
+	right_padding = 4,
 	horizontally_stretchable = "on",
 	horizontal_flow_style = {
 		type = "horizontal_flow_style",

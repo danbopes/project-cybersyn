@@ -191,8 +191,9 @@ local pr = {}
 lab.pr = pr
 
 lab.suite("37_problems", {
-	-- Hidden while the lint job has no result (a fresh save, or a manager never opened): no error, and a selected
-	-- Problems tab hands over to the Overview.
+	-- Shown even while the lint job has no result (a fresh save, or a manager never opened): the progress of the
+	-- running pass instead of rows, no badge, and the selection stays (phase 7: a tab whose visibility flips while the
+	-- window opens was drawn in the Overview's place for one frame).
 	function()
 		pr.planner = settings.global["cybersyn-enable-planner"].value
 		lab.dev("set_setting", "cybersyn-enable-planner", false)
@@ -205,9 +206,12 @@ lab.suite("37_problems", {
 		remote.call(D, "select_tab", pi, "problems")
 		local st = dev("state", pi)
 		d = dev("problems_dump", pi)
-		lab.check("hidden without a lint result (a save whose manager never ran the lint job)", d.visible == false
-			and d.has_result == false, d.visible)
-		lab.check("a hidden Problems tab hands the selection back to the Overview", st.selected_tab == "overview_tab",
+		lab.check("still shown without a lint result (a save whose manager never ran the lint job)", d.visible == true
+			and d.has_result == false and d.badge == "", { visible = d.visible, badge = d.badge })
+		lab.check("without a result the tab shows the pass progress, no rows",
+			type(d.empty) == "table" and (d.empty[1] == "cybersyn-gui.problems-pending"
+				or d.empty[1] == "cybersyn-gui.problems-pending-progress") and #d.rendered == 0, d.empty)
+		lab.check("a selected Problems tab stays selected without a result", st.selected_tab == "problems_tab",
 			st.selected_tab)
 		-- Back: the next pass shows the tab again.
 		dev("lint_run")
@@ -486,7 +490,7 @@ lab.suite("37_problems", {
 			if r.key == row.key then rendered = r end
 		end
 		lab.check("with Show acknowledged on: greyed at the bottom of its group", last and last.key == row.key
-			and last.acked == true and rendered and rendered.chip_style == "cybersyn_chip_grey" and rendered.acked == true
+			and last.acked == true and rendered and rendered.chip_style == "cybersyn_chip_acked" and rendered.acked == true
 			and rendered.dot == "flib_indicator_white", { last = last and last.key, rendered = rendered })
 		pr.shot_state = true
 		-- Expiry: an acknowledgement whose time runs out puts the row back without a new lint pass.

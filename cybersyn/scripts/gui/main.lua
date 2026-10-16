@@ -16,7 +16,8 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
---- @field pane_escapes {[uint]: {tick: uint, train: uint, controller: defines.controllers}}? Escapes that closed a Trains detail pane and wait to hand player.opened back to the window (manager.settle_pane_escapes)
+--- @field pane_escapes {[uint]: {tick: uint, train: uint?, controller: defines.controllers, kind: string, pinned: boolean?, peel: true?}}? Escapes of an overlay waiting for a later tick (manager.settle_pane_escapes): an unpinned window's overlay is already closed and the window waits to take player.opened back; a pinned window's (peel) closes then, unless another GUI or remote view replaced the window
+--- @field confirm_any true? some player may have a confirm button armed (repair.expire)
 --- @field item_order table<string, int>
 --- @field snapshot Snapshot last complete snapshot (scripts/gui/collector.lua)
 --- @field snapshot_build Snapshot? pass in progress, with transient ids/i/r_keys/p_keys
@@ -45,6 +46,9 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field return_to {entity: LuaEntity, tick: uint, controller: defines.controllers}? entity GUI a manager link opened, see util.open_entity
 --- @field restore_opened {entity: LuaEntity, controller: defines.controllers}? player.opened goes back to the unpinned manager once no other GUI holds it
 --- @field handed_back_tick uint? game tick on_gui_closed last handed player.opened back, see manager.handle.manager_closed_by_game
+--- @field overlay_took true? the pinned window took player.opened for its overlays (manager.PINNED_OVERLAYS_TAKE_OPENED)
+--- @field dialog_return {window: true?, entity: LuaEntity?}? what the action dialog took player.opened from
+--- @field dialog_opening uint? the tick the action dialog took player.opened (the window's on_gui_closed ignores it)
 --- @field selected_tab string? "overview_tab"|"inventory_tab"|"stations_tab"|"trains_tab"|"utilization_tab"|"delivery_breakdown_tab"
 --- @field previous_tab string?
 --- @field delivery_times_interval uint?
@@ -122,6 +126,7 @@ end
 function manager_gui.on_lua_shortcut(e)
 	if e.prototype_name == "cybersyn-toggle-gui" or e.input_name == "cybersyn-toggle-gui" or e.element then
 		if e.element then
+			if not e.element.valid then return end
 			if e.element.name == "manager_window" then
 				if e.name == defines.events.on_gui_closed then
 					manager.wrapper(e, manager.handle.manager_closed_by_game)
@@ -149,6 +154,8 @@ end
 function manager_gui.on_gui_closed(e)
 	relative.on_gui_closed(e)
 	manager_gui.on_lua_shortcut(e)
+	-- Last: it destroys the dialog, the element of this event.
+	repair.on_gui_closed(e)
 	-- Closing the GUI a link opened hands player.opened back at once when nothing else holds it, so a second Escape
 	-- closes the manager instead of opening the game menu. restore_opened stays set: the engine may still close the
 	-- window again in this tick (locomotive GUI) or force-close it without an event while it switches to another GUI,
@@ -407,7 +414,7 @@ end
 function manager_gui.tick(storage)
 	local manager_data = storage.manager
 	if not manager_data then return end
-	manager.settle_pane_escapes()
+	manager_gui.settle()
 	collector.tick()
 	local surface_count
 	for i, v in pairs(manager_data.players) do
@@ -439,6 +446,16 @@ function manager_gui.tick(storage)
 	relative.tick(manager_data)
 end
 
+--- Escapes that closed an overlay or the action dialog hand player.opened back on a later tick (manager.lua,
+--- repair.lua). Called from the planner's own tick too (scripts/main.lua), so the hand-back is a tick or two away
+--- and a second Escape reaches the window instead of the game menu.
+function manager_gui.settle()
+	local manager_data = storage.manager
+	if not (manager_data and (manager_data.pane_escapes or manager_data.dialog_escapes)) then return end
+	manager.settle_pane_escapes()
+	repair.settle()
+end
+
 --- Every extras.HUD_TICKS, whatever the manager's update rate (scripts/main.lua).
 manager_gui.hud_tick = extras.hud_tick
 manager_gui.HUD_TICKS = extras.HUD_TICKS
@@ -448,8 +465,9 @@ manager_gui.job_tick = repair.job_tick
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
-	manager.settle_pane_escapes()
+	manager_gui.settle()
 	manager.log_tab.export_tick()
+	if storage.manager then repair.expire(storage.manager) end
 end
 
 --- on_player_display_resolution_changed / on_player_display_scale_changed.
@@ -471,6 +489,16 @@ end
 
 --- The cybersyn-manager-search custom input (linked to the game's focus-search).
 manager_gui.on_search_input = manager.on_search_input
+
+--- The cybersyn-manager-world-click custom input (linked to the game's open-gui click).
+--- @param e EventData.CustomInputEvent
+function manager_gui.on_world_click(e)
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	if player_data and player_data.search_focused then
+		player_data.search_focused = nil
+		manager.overlay_closed(game.get_player(e.player_index), player_data)
+	end
+end
 
 ---@param i string|uint
 ---@param v LuaPlayer

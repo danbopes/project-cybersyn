@@ -140,6 +140,13 @@ lab.suite("39_relative", {
 		lab.check("provider: read live while no manager window keeps a snapshot", d.model.source == "live", d.model.source)
 		local st = read("stations", rx.provider)
 		lab.check("provider: status from the ladder", d.model.status ~= nil, d.model.status)
+		-- Phase 7: the live read and a manager pass put the same stop on the same rung of the one status ladder.
+		dev("open", PI)
+		dev("collect")
+		local snap_status = read("manager", "snapshot", "stations", rx.provider, "status")
+		dev("close", PI)
+		lab.check("provider: the live status equals the snapshot's", snap_status ~= nil and d.model.status == snap_status,
+			{ live = d.model.status, snapshot = snap_status })
 		-- Phase 10 replaced the disabled placeholders: Test path and Pin are tools in the first row, Rescan station is
 		-- the action row below (enabled only with the right; 39_extras covers the permission matrix).
 		lab.check("provider: comb1, Test path and Pin enabled, Rescan station in the action row", (function()

@@ -504,6 +504,7 @@ test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk
 		diag.event(d, DIAG_KIND_UNSERVED_REASON, DIAG_SEV_WARNING, REASON_CAPACITY, 0, 0, 7, 8, 1, 50, 40)
 	end
 	diag.event(d, DIAG_KIND_TRAIN_STATE, DIAG_SEV_ERROR, defines.train_state.no_path, 3, 4, 0, 0, 0, 0, 0)
+	game.players[1] = { index = 1, name = "a", connected = true }
 	local path = diag.export(1, nil)
 	assert_eq(path, "cybersyn/diag-50.csv")
 	local job = d.export_jobs[1]
@@ -545,6 +546,34 @@ test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk
 		'1,2,alert,error,stuck,0,3,0,0,"odd,""name""",0,0\n')
 	diag.set_export_listener(nil)
 	helpers.write_file = function() end
+	game.players[1] = nil
+end)
+
+test("export: a player who leaves mid-export gets the file written on the server instead, from the start", function()
+	at(50)
+	local d = setup("basic")
+	local writes = {}
+	helpers.write_file = function(path, data, append, player) writes[#writes + 1] = { path, append, player, #data } end
+	for _ = 1, 2500 do
+		diag.event(d, DIAG_KIND_UNSERVED_REASON, DIAG_SEV_WARNING, REASON_CAPACITY, 0, 0, 7, 8, 0, 50, 40)
+	end
+	local player = { index = 3, name = "c", connected = true }
+	game.players[3] = player
+	local ended = {}
+	diag.set_export_listener(function(j, cause) ended[#ended + 1] = { j.rows, j.server, cause } end)
+	diag.export(3, nil)
+	diag.export_tick()
+	assert_eq({ writes[1][2], writes[1][3] }, { false, 3 })
+	player.connected = false
+	diag.export_tick()
+	assert_eq({ writes[2][2], writes[2][3] }, { false, 0 }, "a fresh file on the server, header again")
+	diag.export_tick()
+	diag.export_tick()
+	assert_eq(#d.export_jobs, 0)
+	assert_eq(ended, { { 2500, true, "done" } }, "every row, on the server")
+	diag.set_export_listener(nil)
+	helpers.write_file = function() end
+	game.players[3] = nil
 end)
 
 test("export: a selective filter is scanned in bounded steps", function()
@@ -614,6 +643,7 @@ test("export: turning diagnostics off keeps a queued export draining one chunk p
 	for i = 1, 2500 do
 		diag.event(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, 0, 0, 0, 1, 0, 0, 1, 2)
 	end
+	game.players[4] = { index = 4, name = "d", connected = true }
 	diag.export(4, nil)
 	diag.export_tick()
 	local ended = {}
@@ -637,6 +667,7 @@ test("export: turning diagnostics off keeps a queued export draining one chunk p
 	assert_eq(n, 2501)
 	diag.set_export_listener(nil)
 	helpers.write_file = function() end
+	game.players[4] = nil
 end)
 
 test("export and events after full -> basic: the full session's rows are gone from every reader", function()

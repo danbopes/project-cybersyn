@@ -262,7 +262,7 @@ lab.suite("39_item", {
 		dev("select_tab", PI, "trains")
 		local trains = find_named(window(), "manager_trains_tab_scroll_pane")
 		local tpath = trains and path_to(trains, function(e)
-			return e.type == "sprite-button" and e.tags and e.tags.item_hash ~= nil
+			return e.type == "sprite-button" and e.tags and e.tags.kind == "item" and e.tags.id ~= nil
 		end)
 		if tpath then
 			local tslot = trains
@@ -270,7 +270,7 @@ lab.suite("39_item", {
 			dev("click", PI, "manager_trains_tab_scroll_pane", tpath)
 			local td = dev("item_dump", PI)
 			lab.check("left-click on a Trains shipment slot opens the drill-down from Trains", td.open and
-				td.hash == tslot.tags.item_hash and td.from_tab == "trains_tab", td.from_tab)
+				td.hash == tslot.tags.id and td.from_tab == "trains_tab", td.from_tab)
 			dev("close_item", PI)
 			lab.check("back returns to Trains", dev("state", PI).selected_tab == "trains_tab" and trains.visible)
 		else
@@ -301,14 +301,21 @@ lab.suite("39_item", {
 		-- Escape: on a pinned window it closes only the drill-down.
 		dev("open_item", PI, hash)
 		local e = dev("item_escape", PI)
-		lab.check("Escape on the pinned window closes the drill-down, the window stays", e.before and not e.open and e.manager_open,
-			e)
-		-- Unpinned: Escape closes the window (and the drill-down with it).
+		lab.check("Escape on the pinned window waits for a later tick (another GUI may have replaced the window)",
+			e.before and e.open and e.manager_open, e)
+		dev("pane_escapes", PI, true)
+		lab.check("then closes the drill-down, the window stays", not dev("item_dump", PI).open and dev("state", PI).is_open)
+		-- Unpinned: one rule for every overlay since phase 7 (manager.top_overlay): Escape closes the drill-down and
+		-- the window stays, as it does for the Trains pane; the next Escape closes the window. (Phase 8 closed the
+		-- window with the drill-down here.)
 		dev("click", PI, "manager_pin_button")
 		dev("open_item", PI, hash)
 		e = dev("item_escape", PI)
-		lab.check("Escape on an unpinned window closes the window and the drill-down", e.before and not e.open and
-			not e.manager_open, e)
+		lab.check("Escape on an unpinned window closes the drill-down, the window stays", e.before and not e.open and
+			e.manager_open, e)
+		dev("pane_escapes", PI, true)
+		e = dev("item_escape", PI)
+		lab.check("the next Escape on the unpinned window closes the window", not e.before and not e.manager_open, e)
 		dev("open", PI)
 		lab.big_screen(PI)
 	end,

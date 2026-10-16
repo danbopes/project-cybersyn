@@ -148,7 +148,11 @@ test("detail: the numbers behind each check", function()
 	assert_eq(d(LINT_CAPACITY, 50, 40, { item = "iron-plate" }), { K .. "capacity", "[item=iron-plate]", "50", "40" })
 	assert_eq(d(LINT_CAPACITY, 30000, 25000, { item = "water" }),
 		{ K .. "capacity-fluid", "[item=water]", "30,000", "25,000" })
+	assert_eq(d(LINT_CAPACITY, 50, 40, { item = "iron-plate", c = 5000 }),
+		{ K .. "capacity-threshold", "[item=iron-plate]", "5,000", "50", "40" }, "the typed threshold first")
 	assert_eq(d(LINT_LAYOUT, 1, 2, { network = "signal-A" }), { K .. "layout", "1", "2", "[virtual-signal=signal-A]" })
+	assert_eq(d(LINT_LAYOUT, 1, 2, { network = "signal-A", item = "coal" }),
+		{ K .. "layout-item", "[item=coal]", "1", "2", "[virtual-signal=signal-A]" }, "the capacity path names its item")
 	assert_eq(d(LINT_MASK, 1, 6, { item = "coal" }), { K .. "mask", "1", "6", "[item=coal]" })
 	assert_eq(d(LINT_MASK, 0, 6, { network = "signal-B" }), { K .. "mask-zero", "[virtual-signal=signal-B]" })
 	assert_eq(d(LINT_NO_PROVIDER, 0, 0, { item = "coal", network = "signal-A" }),
@@ -201,7 +205,7 @@ test("locale: every lint caption, fix and detail key, and the tab's keys, in eve
 		keys[#keys + 1] = "lint-fix-" .. LINT_KEYS[check]
 		keys[#keys + 1] = "lint-chip-" .. LINT_KEYS[check]
 	end
-	for _, k in ipairs({ "capacity", "capacity-fluid", "layout", "mask", "mask-zero", "no-provider", "limit-zero",
+	for _, k in ipairs({ "capacity", "capacity-fluid", "capacity-threshold", "layout", "layout-item", "mask", "mask-zero", "no-provider", "limit-zero",
 		"same-item-static", "same-item-out", "same-item-in", "occupancy", "phantom", "depot-limit", "depot-limit-none",
 		"depot-shared-name", "refueler-mask", "never-refuelled", "in-group", "missing-stop", "capacity-drift",
 		"train-mask", "no-train" }) do
@@ -220,7 +224,7 @@ test("locale: every lint caption, fix and detail key, and the tab's keys, in eve
 		"problems-group-continued", "problems-group-acked", "problems-empty", "problems-empty-filtered",
 		"problems-train", "problems-combinator", "problems-gone", "problems-predicts", "problems-predicts-none",
 		"problems-chip-tooltip", "problems-ack-tooltip", "problems-ack-until-clear", "problems-badge-tooltip",
-		"problems-footer" }) do
+		"problems-footer", "problems-pending", "problems-pending-progress" }) do
 		keys[#keys + 1] = k
 	end
 	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do

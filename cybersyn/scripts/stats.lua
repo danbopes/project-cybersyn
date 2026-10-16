@@ -428,8 +428,9 @@ end
 --- are cached until the current bucket rolls over; the scalar sums are redone every call in ring order, so floating
 --- point totals come out bit for bit the same as an uncached pass.
 --- @param minutes int 10, 60 or 1440
+--- @param summary boolean? only the sums (no per-item map, no slowest list)
 --- @return StatsWindow
-function stats.aggregate(minutes)
+function stats.aggregate(minutes, summary)
 	local s = get()
 	local tick = game.tick
 	local ring, width, count
@@ -456,8 +457,11 @@ function stats.aggregate(minutes)
 		no_train_failures = 0,
 	}
 	local items = out.items
-	for hash, n in pairs(closed_items_of(s, minutes, ring, oldest, current)) do
-		items[hash] = n
+	-- The Overview reads the sums only: no per-item map and no slowest list for it (`summary`).
+	if not summary then
+		for hash, n in pairs(closed_items_of(s, minutes, ring, oldest, current)) do
+			items[hash] = n
+		end
 	end
 	local amount, cycle_sum, wait_sum, wait_max = 0, 0, 0, nil
 	for _, b in pairs(ring) do
@@ -465,7 +469,7 @@ function stats.aggregate(minutes)
 			out.deliveries = out.deliveries + b.deliveries
 			out.dispatches = out.dispatches + b.dispatches
 			if b.no_train_failures then out.no_train_failures = out.no_train_failures + b.no_train_failures end
-			local live = b.start_tick >= current
+			local live = not summary and b.start_tick >= current
 			for hash, n in pairs(b.items) do
 				if live then items[hash] = (items[hash] or 0) + n end
 				amount = amount + n
@@ -478,13 +482,13 @@ function stats.aggregate(minutes)
 				wait_sum = wait_sum + b.wait_sum
 				out.wait_n = out.wait_n + b.wait_n
 				if not wait_max or b.wait_max > wait_max then wait_max = b.wait_max end
-				out.slowest[#out.slowest + 1] = b
+				if not summary then out.slowest[#out.slowest + 1] = b end
 			end
 		end
 	end
 	-- The current hour holds a single maximum until it closes, so a longer period would list fewer of the recent
 	-- slow requests than a shorter one; its minute buckets stand in for it in the list (not in the sums).
-	if ring == s.hour then
+	if ring == s.hour and not summary then
 		local hour_start = tick - tick % HOUR
 		local slowest, minutes = {}, out.slowest_minutes
 		for _, b in ipairs(out.slowest) do
