@@ -218,7 +218,7 @@ function problems_tab.apply_layout(player_data, layout)
 	if not old or old.subject ~= widths.subject or old.fix ~= widths.fix then
 		if body and body.valid then body.clear() end
 		local state = util.gui_state(player_data, ROWS)
-		state.keys, state.sigs, state.render_sig = nil, nil, nil
+		state.keys, state.sigs, state.render_sig, state.contents = nil, nil, nil, nil
 	end
 end
 
@@ -347,15 +347,31 @@ end
 local ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.format_duration }
 problems_tab.ENV = ENV
 
+-- Captions and tooltips that depend only on the check (and whether the subject is a station): built once per Lua
+-- state. A pure function of its key, so a cache that differs between states cannot desync anything.
+local check_text = {}
+
 --- @param check int
---- @param subject int
---- @return LocalisedString
-local function chip_tooltip(check, subject)
-	local role_code = subject == LINT_SUBJECT_STATION and lint.predicts(check, "r") or nil
-	local predicts = role_code and { "cybersyn-gui.problems-predicts", { "cybersyn-diag.chip-" .. REASON_KEYS[role_code] } }
+--- @param station boolean
+--- @return {caption: LocalisedString, chip: LocalisedString, fix: LocalisedString, tooltip: LocalisedString, linked: LocalisedString}
+local function texts(check, station)
+	local key = station and check or -check
+	local t = check_text[key]
+	if t then return t end
+	local code = station and lint.predicts(check, "r") or nil
+	local predicts = code and { "cybersyn-gui.problems-predicts", { "cybersyn-diag.chip-" .. REASON_KEYS[code] } }
 		or { "cybersyn-gui.problems-predicts-none" }
-	return { "cybersyn-gui.problems-chip-tooltip", pm.caption(check), predicts, pm.fix(check),
+	local tooltip = { "cybersyn-gui.problems-chip-tooltip", pm.caption(check), predicts, pm.fix(check),
 		{ "cybersyn-diag.sev-" .. DIAG_SEV_NAMES[LINT_SEVERITY[check] or DIAG_SEV_WARNING] } }
+	t = {
+		caption = pm.caption(check),
+		chip = pm.chip(check),
+		fix = pm.fix(check),
+		tooltip = tooltip,
+		linked = { "", tooltip, "\n", util.LINK_FOOTER },
+	}
+	check_text[key] = t
+	return t
 end
 
 --- @param row ProblemRow
@@ -370,99 +386,124 @@ local function ack_tooltip(row, now)
 		until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.problems-ack-until-clear" } }
 end
 
---- @param def flib.GuiElemDef
---- @return flib.GuiElemDef
-local function hoverable(def)
-	return util.hoverable(def, ROWS)
+-- Row cells carry their handlers in the tags they are created with (flib's format, built once): flib's handler
+-- field would read and rewrite every element's tags once more, which was most of the cost of building a page.
+local HANDLER_TAG, LINK_HANDLERS, ACK_HANDLERS
+
+--- Tags of an interactive cell: a link to `kind`/`id` (or the acknowledge button with `ack`), in the rows' hover hold.
+--- @return Tags
+local function cell_tags(kind, id, ack)
+	if not HANDLER_TAG then
+		local link = gui.format_handlers(util.with_hover({ [defines.events.on_gui_click] = util.handle.link_click }))
+		HANDLER_TAG, LINK_HANDLERS = next(link)
+		ACK_HANDLERS = gui.format_handlers(util.with_hover({
+			[defines.events.on_gui_click] = problems_tab.handle.problems_ack_click }))[HANDLER_TAG]
+	end
+	local tags = ack or { kind = kind, id = id }
+	tags.hover_scope = ROWS
+	tags[HANDLER_TAG] = ack and ACK_HANDLERS or LINK_HANDLERS
+	return tags
+end
+
+local valid_sprite = {}
+
+--- @param sprite string
+--- @return string
+local function sprite_or_unknown(sprite)
+	local ok = valid_sprite[sprite]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(sprite)
+		valid_sprite[sprite] = ok
+	end
+	return ok and sprite or "utility/questionmark"
 end
 
 --- The six cells of a finding row.
 --- @param line ProblemsLine
 --- @param ctx {snapshot: Snapshot, widths: {subject: int, fix: int}, now: uint}
+--- @param subject ProblemsSubject
 --- @return flib.GuiElemDef[]
 local function finding_cells(line, ctx, subject)
 	local row = line.row
 	local f = row.f
 	local acked = line.acked
-	local link = { [defines.events.on_gui_click] = util.handle.link_click }
-	local tags = subject.kind and { kind = subject.kind, id = subject.id } or {}
-	local footer = subject.kind and { "", "\n", util.LINK_FOOTER } or ""
+	local kind, id = subject.kind, subject.id
+	local t = texts(f.check, f.subject == LINT_SUBJECT_STATION)
 	local detail = pm.detail(f, ENV)
-	local fix = pm.fix(f.check)
-	local subject_tip = { "", "[font=default-semibold]", subject.text, "[/font]", footer }
+	local subject_tip = kind and { "", "[font=default-semibold]", subject.text, "[/font]\n", util.LINK_FOOTER }
+		or subject.text
 	local icons = {
 		type = "flow",
 		direction = "horizontal",
 		style = "cybersyn_unserved_icon_flow",
 	}
 	for i, icon in ipairs(subject.icons) do
-		icons[i] = hoverable({
+		icons[i] = {
 			type = "sprite-button",
 			style = "cybersyn_name_icon",
-			sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
+			sprite = sprite_or_unknown(icon.sprite),
 			quality = icon.quality,
 			tooltip = subject_tip,
-			tags = { kind = tags.kind, id = tags.id },
-			handler = link,
-		})
+			raise_hover_events = true,
+			tags = cell_tags(kind, id),
+		}
 	end
 	return {
 		{ type = "sprite", style = "cybersyn_problems_dot", sprite = acked and pm.ACKED_DOT or pm.DOT[row.sev] },
-		hoverable({
+		{
 			type = "button",
 			style = acked and "cybersyn_chip_grey" or pm.CHIP_STYLE[row.sev],
 			style_mods = { width = W.chip },
-			caption = pm.chip(f.check),
-			tooltip = { "", chip_tooltip(f.check, f.subject), footer },
-			tags = { kind = tags.kind, id = tags.id },
+			caption = t.chip,
+			tooltip = kind and t.linked or t.tooltip,
+			raise_hover_events = true,
+			tags = cell_tags(kind, id),
 			mouse_button_filter = { "left" },
-			handler = link,
-		}),
+		},
 		{
 			type = "flow",
 			direction = "horizontal",
 			style = "cybersyn_unserved_cell_flow",
 			style_mods = { width = ctx.widths.subject },
 			icons,
-			hoverable({
+			{
 				type = "button",
 				style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button",
 				style_mods = { maximal_width = ctx.widths.subject - ICON_ROW - 4 },
 				caption = subject.text,
-				enabled = subject.kind ~= nil,
+				enabled = kind ~= nil,
 				tooltip = subject_tip,
-				tags = { kind = tags.kind, id = tags.id },
+				raise_hover_events = true,
+				tags = cell_tags(kind, id),
 				mouse_button_filter = { "left" },
-				handler = link,
-			}),
+			},
 		},
-		hoverable({
+		{
 			type = "label",
 			style = acked and "cybersyn_problems_detail_acked" or "cybersyn_problems_detail",
 			style_mods = { width = W.detail },
 			caption = detail,
-			tooltip = { "", detail, footer },
-			tags = { kind = tags.kind, id = tags.id },
-			handler = link,
-		}),
-		hoverable({
+			tooltip = detail,
+			raise_hover_events = true,
+			tags = cell_tags(kind, id),
+		},
+		{
 			type = "label",
 			style = "cybersyn_problems_fix",
 			style_mods = { width = ctx.widths.fix },
-			caption = fix,
-			tooltip = { "", fix, footer },
-			tags = { kind = tags.kind, id = tags.id },
-			handler = link,
-		}),
-		hoverable({
+			caption = t.fix,
+			raise_hover_events = true,
+			tags = cell_tags(kind, id),
+		},
+		{
 			type = "sprite-button",
 			style = "cybersyn_unserved_ack",
 			sprite = "utility/check_mark",
 			toggled = acked == true,
 			tooltip = ack_tooltip(row, ctx.now),
-			tags = { ack_key = row.ack_key, check = f.check },
-			handler = { [defines.events.on_gui_click] = problems_tab.handle.problems_ack_click },
-		}),
+			raise_hover_events = true,
+			tags = cell_tags(nil, nil, { ack_key = row.ack_key, check = f.check }),
+		},
 	}
 end
 
@@ -520,12 +561,15 @@ local function entries_of(lines, ctx)
 			local odd = i % 2 == 1
 			local a = row.ack
 			local style = odd and "cybersyn_problems_row_odd" or "cybersyn_problems_row"
+			local content = table.concat({ line.acked and "a" or "", subject.name, tostring(subject.kind),
+				pm.detail_sig(f), a and tostring(a.until_tick) or "", a and tostring(a.player_index) or "",
+				a and a.until_tick and math.floor((a.until_tick - ctx.now) / 3600) or "" }, "|")
+			local contents = ctx.contents
 			entries[i] = {
 				key = row.key,
-				sig = table.concat({ odd and "o" or "e", line.acked and "a" or "", subject.name, tostring(subject.kind),
-					pm.detail_sig(f), a and tostring(a.until_tick) or "", a and tostring(a.player_index) or "",
-					a and a.until_tick and math.floor((a.until_tick - ctx.now) / 3600) or "" }, "|"),
+				sig = (odd and "o" or "e") .. content,
 				build = function()
+					contents[row.key] = content
 					local def = {
 						type = "frame",
 						style = style,
@@ -535,9 +579,12 @@ local function entries_of(lines, ctx)
 					for c, cell in ipairs(finding_cells(line, ctx, subject)) do def[c] = cell end
 					return def
 				end,
+				-- A row that only moved needs its stripe; one whose content changed gets new cells.
 				update = function(elem)
+					if elem.style.name ~= style then elem.style = style end
+					if contents[row.key] == content then return end
+					contents[row.key] = content
 					elem.clear()
-					elem.style = style
 					for _, cell in ipairs(finding_cells(line, ctx, subject)) do gui.add(elem, cell) end
 				end,
 			}
@@ -649,8 +696,15 @@ function problems_tab.build(map_data, player_data)
 	render_toggles(refs, m, filter)
 	render_pager(refs, pg)
 	local snapshot = collector.get()
-	local ctx = { snapshot = snapshot, widths = widths, now = now }
-	local result = util.sync_children(body, entries_of(pg.lines, ctx), state, util.hold_active(player_data, ROWS))
+	if not (state.keys and state.contents) then state.contents = {} end
+	local ctx = { snapshot = snapshot, widths = widths, now = now, contents = state.contents }
+	-- Movable: a finding that appears or clears moves the rows after it instead of rebuilding them.
+	local result = util.sync_children(body, entries_of(pg.lines, ctx), state, util.hold_active(player_data, ROWS), true)
+	if result == "rebuilt" then
+		local keep = {}
+		for _, key in ipairs(state.keys) do keep[key] = state.contents[key] end
+		state.contents = keep
+	end
 	if result ~= "held" then state.render_sig = render_sig end
 
 	local empty_flow = refs.problems_empty_flow
