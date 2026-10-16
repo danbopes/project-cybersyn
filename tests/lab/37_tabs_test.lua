@@ -166,19 +166,21 @@ lab.suite("37_tabs", {
 		local d = trains_dump()
 		lab.check("Trains: All lists every train", d.total == n and #d.ids == n, { total = d.total, trains = n })
 
-		-- In trouble from the train states: no path, destination full, manual control, a signal wait of 10 s.
+		-- In trouble from the train states (every red or orange state chip) and Cybersyn's alerts.
 		local trouble = 0
 		local names = {}
 		for name, v in pairs(defines.train_state) do names[v] = name end
-		for _, tr in pairs(snap.trains) do
+		local alerted = {}
+		for _, a in ipairs(snap.alerts or {}) do alerted[a.train_id] = true end
+		for id, tr in pairs(snap.trains) do
 			local s = names[tr.state]
 			local waited = game.tick - (tr.state_since or game.tick)
-			if s == "no_path" or s == "destination_full" or s == "manual_control" or s == "manual_control_stop"
-				or (s == "wait_signal" and waited >= 600) then
+			if alerted[id] or s == "no_path" or s == "path_lost" or s == "no_schedule" or s == "destination_full"
+				or s == "manual_control" or s == "manual_control_stop" or (s == "wait_signal" and waited >= 600) then
 				trouble = trouble + 1
 			end
 		end
-		lab.check("In trouble chip == trains in no path / destination full / manual / signal wait >= 10 s", counts.trouble == trouble,
+		lab.check("In trouble chip == trains with a red/orange state or an alert", counts.trouble == trouble,
 			{ chip = counts.trouble, oracle = trouble })
 
 		-- Hidden columns: one distinct value over the listed trains.
@@ -217,6 +219,14 @@ lab.suite("37_tabs", {
 				if hidden[column] and not find_key(dd.status_tooltip, "cybersyn-gui.trains-hidden-" .. column) then tip_ok = false end
 			end
 			lab.check(label .. ": the Status header tooltip names every hidden column's value", tip_ok, dd.status_tooltip)
+			if hidden.network then
+				local t = find_key(dd.status_tooltip, "cybersyn-gui.trains-hidden-network")
+				local _, tr = next(list)
+				local m = tr.network_mask
+				local want_net = type(m) == "number" and (tr.network_name .. " · " .. m) or nil
+				lab.check(label .. ": the hidden network names the signal and its mask", t and (want_net == nil or t[2] == want_net),
+					{ tip = t, want = want_net })
+			end
 			if hidden.layout then
 				local t = find_key(dd.status_tooltip, "cybersyn-gui.trains-hidden-layout")
 				lab.check(label .. ": the hidden layout is a composition string", t and type(t[2]) == "string" and t[2]:find("^L") ~= nil, t)
@@ -272,8 +282,10 @@ lab.suite("37_tabs", {
 		local function chip()
 			return trains_dump().counts.not_refuelled
 		end
+		-- The collector's rule: a never-refuelled train is measured from its refuel_from (lint.refuel_from).
 		local function oracle(hours)
 			local n = 0
+			local snap_trains = snapshot().trains
 			for id, t in pairs(lab.read("trains")) do
 				local m = t.network_mask
 				local on = t.network_name == "signal-A" or (type(m) == "table" and m["signal-A"])
@@ -282,18 +294,40 @@ lab.suite("37_tabs", {
 						if t.network_name == net then on = true end
 					end
 				end
-				if on and (not t.refuel_tick or game.tick - t.refuel_tick > hours * HOUR) then n = n + 1 end
+				local since = t.refuel_tick or (snap_trains[id] and snap_trains[id].refuel_from)
+				if on and (not since or game.tick - since > hours * HOUR) then n = n + 1 end
 			end
 			return n
 		end
 		lab.dev("set_player_setting", pi, "cybersyn-manager-refuel-hours", 1)
 		local one = chip()
-		lab.check("Not refuelled > 1 h: every signal-A train but the one refuelled 30 min ago", one == oracle(1) and one == #on_a - 1,
+		lab.check("Not refuelled > 1 h == the collector's rule (refuel_tick, else refuel_from)", one == oracle(1),
 			{ chip = one, oracle = oracle(1), trains = #on_a })
+		remote.call(DT, "set_chip", pi, "not_refuelled")
+		local listed = {}
+		for _, id in ipairs(trains_dump().ids) do listed[id] = true end
+		lab.check("the train refuelled 30 min ago is not listed at 1 h", not listed[on_a[1]], trains_dump().ids)
+		remote.call(DT, "set_chip", pi, "all")
+
+		-- A never-refuelled train still inside its grace (registered just now) does not count yet.
+		local fresh = on_a[2]
+		ctx.fresh, ctx.fresh_seen = fresh, lab.read("trains", fresh, "seen_tick")
+		remote.call("cybersyn", "write_global", nil, "trains", fresh, "refuel_tick")
+		remote.call("cybersyn", "write_global", game.tick, "trains", fresh, "seen_tick")
+		lab.dev("collect")
+		local graced = chip()
+		remote.call(DT, "set_chip", pi, "not_refuelled")
+		listed = {}
+		for _, id in ipairs(trains_dump().ids) do listed[id] = true end
+		remote.call(DT, "set_chip", pi, "all")
+		lab.check("a never-refuelled train inside its grace is not counted (as not_refuelled_count)",
+			graced == oracle(1) and not listed[fresh], { chip = graced, oracle = oracle(1), fresh = fresh })
+		remote.call("cybersyn", "write_global", ctx.fresh_seen, "trains", fresh, "seen_tick")
+		lab.dev("collect")
 		lab.dev("set_player_setting", pi, "cybersyn-manager-refuel-hours", 0.25)
 		local quarter = chip()
-		lab.check("Not refuelled > 0.25 h counts that train too (the per-user setting)", quarter == oracle(0.25) and quarter == #on_a,
-			{ chip = quarter, oracle = oracle(0.25) })
+		lab.check("Not refuelled > 0.25 h counts that train too (the per-user setting)", quarter == oracle(0.25) and quarter >= 1
+			and quarter >= one, { chip = quarter, oracle = oracle(0.25), one = one })
 		remote.call(DT, "set_chip", pi, "not_refuelled")
 		local d = trains_dump()
 		lab.check("Not refuelled chip shows its count", d.total == quarter and #d.ids == quarter, { total = d.total, chip = quarter })
@@ -322,19 +356,34 @@ lab.suite("37_tabs", {
 		for i, n in ipairs(names) do want[i] = n end
 		lab.check("group rows: one per depot name, in name order (" .. #names .. ")", lab.same_list(shown, want)
 			or (refuelers and lab.same_list({ table.unpack(shown, 1, #names) }, want)), { shown = shown, want = want })
-		local nums_ok = true
+		-- Parked, inbound and bound count the trains listed under the group (refuelling ones go to the refuelers),
+		-- so they agree with the expanded members and the Parked chip; the limit is the depots' own.
+		local oracle = {}
+		for _, tr in pairs(snapshot().trains) do
+			if tr.status ~= 7 and tr.status ~= 8 then
+				local o = oracle[tr.depot_name] or { parked = 0, inbound = 0, bound = 0 }
+				oracle[tr.depot_name] = o
+				o.bound = o.bound + 1
+				if tr.status == 0 then o.parked = o.parked + 1 end
+				if tr.status == 5 or tr.status == 6 then o.inbound = o.inbound + 1 end
+			end
+		end
+		local nums_ok, checked = true, 0
 		for _, g in ipairs(d.groups) do
 			local e = by_name[g.name]
 			if e then
+				local o = oracle[g.name] or { parked = 0, inbound = 0, bound = 0 }
 				local parked, inbound, bound = g.captions[1], g.captions[2], g.captions[3]
 				local limit = e.limit >= 2000000000 and "∞" or tostring(e.limit)
-				if not (key_of(parked) == "cybersyn-gui.trains-group-parked" and parked[2] == tostring(e.parked) and parked[3] == limit
-						and inbound[2] == tostring(e.inbound) and bound[2] == tostring(e.trains_bound)) then
+				if not (key_of(parked) == "cybersyn-gui.trains-group-parked" and parked[2] == tostring(o.parked) and parked[3] == limit
+						and inbound[2] == tostring(o.inbound) and bound[2] == tostring(o.bound)) then
 					nums_ok = false
 				end
+				checked = checked + 1
 			end
 		end
-		lab.check("group rows: parked / limit, inbound and trains bound from depots_by_name", nums_ok, { groups = d.groups, by_name = by_name })
+		lab.check("group rows: parked (residue included) / limit, inbound and trains from the listed trains (" .. checked .. ")",
+			nums_ok and checked > 0, { groups = d.groups, oracle = oracle })
 		lab.check("collapsed groups list no trains", #d.ids == 0, d.ids)
 		local pager = d.pager
 		lab.check("the pager counts the group rows", key_of(pager) == "cybersyn-gui.pager-range" and pager[4] == tostring(#d.groups), pager)
@@ -347,6 +396,12 @@ lab.suite("37_tabs", {
 			if tr.depot_name == first and tr.status ~= 7 and tr.status ~= 8 then members = members + 1 end
 		end
 		lab.check("an expanded group lists its trains under it", #e.ids == members and members > 0, { ids = e.ids, members = members })
+		local head
+		for _, g in ipairs(e.groups) do
+			if g.name == first then head = g end
+		end
+		lab.check("the expanded group's Trains number == the trains listed under it", head ~= nil
+			and head.captions[3][2] == tostring(members), { head = head, members = members })
 		lab.check("the pager counts group rows and the expanded trains", e.pager[4] == tostring(#e.groups + members), e.pager)
 		lab.check("rows rendered == rows computed while grouped",
 			remote.call(D, "rows", pi, "trains").rendered == math.min(#e.groups + members, remote.call(D, "rows", pi, "trains").computed))
@@ -364,14 +419,55 @@ lab.suite("37_tabs", {
 		local d = dump()
 		local r = d.requested
 		local ok, why = lab.ordered(r.keys, #r.hashes, false)
-		local oracle_ok = true
+		-- Per network: requested - incoming - (provider signals + outgoing deliveries), at least 0, summed. A station
+		-- on several networks offers its stock on each and counts its requests on the first by name.
+		local nets = {}
+		local function bucket(n)
+			local b = nets[n] or { r = {}, t = {}, s = {} }
+			nets[n] = b
+			return b
+		end
+		for _, st in pairs(snapshot().stations) do
+			local list = { st.network_name or "" }
+			if st.network_name == "signal-each" and type(st.network_mask) == "table" then
+				list = {}
+				for n in pairs(st.network_mask) do list[#list + 1] = n end
+				table.sort(list)
+			end
+			local first = bucket(list[1])
+			for _, n in ipairs(list) do
+				local b = bucket(n)
+				for hash, count in pairs(st.provided) do b.s[hash] = (b.s[hash] or 0) + count end
+				for hash, count in pairs(st.deliveries) do
+					if count < 0 then b.s[hash] = (b.s[hash] or 0) + count end
+				end
+			end
+			for hash, req in pairs(st.requested) do
+				if req.active then first.r[hash] = (first.r[hash] or 0) - req.count end
+			end
+			for hash, count in pairs(st.deliveries) do
+				if count > 0 then first.t[hash] = (first.t[hash] or 0) + count end
+			end
+		end
+		local want = {}
+		for _, b in pairs(nets) do
+			for hash, req in pairs(b.r) do
+				local short = req - (b.t[hash] or 0) - math.max(b.s[hash] or 0, 0)
+				if short > 0 then want[hash] = (want[hash] or 0) + short end
+			end
+		end
+		local oracle_ok, tip_ok, short_items = true, true, 0
 		for i, hash in ipairs(r.hashes) do
-			local req, p, t = inv.requested[hash], inv.provided[hash], inv.in_transit[hash]
-			local want = math.abs(req.count) - (p and p.count or 0) - (t and t.count or 0)
-			if r.keys[i] ~= want then oracle_ok = false end
+			local w = want[hash] or 0
+			if r.keys[i] ~= w then oracle_ok = false end
+			if w > 0 then short_items = short_items + 1 end
+			local line = find_key(r.tooltips[i], "cybersyn-gui.inventory-deficit")
+			if (line ~= nil) ~= (w > 0) then tip_ok = false end
 		end
 		lab.check("Requested by deficit: largest shortage first", ok and r.column == "deficit", why)
-		lab.check("deficit = requested - provided - in transit, from inventory_all", oracle_ok, { keys = r.keys, hashes = r.hashes })
+		lab.check("deficit per network from the station records, never below 0 (" .. short_items .. " short)", oracle_ok,
+			{ keys = r.keys, hashes = r.hashes, want = want })
+		lab.check("the 'Short by' line only on items that are short", tip_ok)
 		lab.check("the other grids keep their own sort", d.provided.column == "item_order" and d.in_transit.column == "item_order")
 
 		remote.call(DI, "set_grid_sort", pi, "provided", "amount")
@@ -463,6 +559,26 @@ lab.suite("37_tabs", {
 		lab.check("'Delivered · last hour' in every slot tooltip matches stats.aggregate (" .. seen .. " slots)", delivered_ok and seen > 0)
 	end,
 
+	-- Two seconds later only the clock cells move: no row's dispatch part is written again (planner frozen, manager
+	-- updates off while the clock runs, so the one render after the wait sees the whole change).
+	function(ctx)
+		remote.call(D, "select_tab", pi, "trains")
+		remote.call(D, "update", pi, 2)
+		ctx.updates = settings.global["cybersyn-manager-updates-per-second"].value
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", 0)
+		ctx.before = trains_dump()
+		lab.wait(150)
+	end,
+	function(ctx)
+		remote.call(D, "update", pi, 1)
+		local after, before = trains_dump(), ctx.before
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", ctx.updates)
+		lab.check("a render 2.5 s later rewrites no row, only the time-in-state captions moved", after.last_rewrites == 0
+			and after.last_result == "updated" and #after.in_state == #before.in_state and #after.in_state > 0
+			and not lab.same_list(after.in_state, before.in_state), { before = before.in_state, after = after.in_state,
+			rewrites = after.last_rewrites, result = after.last_result })
+	end,
+
 	-- Tile jumps land on the chip they promise, and link cells are tag buttons with the link handler.
 	function(ctx)
 		remote.call(D, "select_tab", pi, "overview")
@@ -475,6 +591,16 @@ lab.suite("37_tabs", {
 		d = remote.call(D, "dump", pi, "stations")
 		lab.check("the Unserved tile toggles the Unserved chip, longest wait first", d.chip == "unserved" and d.column == "wait"
 			and d.ascending == false and d.total == d.chip_counts.unserved, { chip = d.chip, column = d.column })
+		lab.set_status_filter(pi, nil)
+		-- A toggled status chip must not survive a tile jump: one chip at a time.
+		for _, tile in ipairs({ "failing", "unserved" }) do
+			remote.call(DS, "set_chip", pi, "ok")
+			remote.call(D, "select_tab", pi, "overview")
+			lab.dev("click", pi, "overview_tile_" .. tile)
+			d = remote.call(D, "dump", pi, "stations")
+			lab.check("the " .. tile .. " tile clears a toggled status chip and lands on its own", d.chip == tile
+				and d.total == d.chip_counts[tile], { chip = d.chip, total = d.total, counts = d.chip_counts })
+		end
 		lab.set_status_filter(pi, nil)
 		lab.dev("click", pi, "overview_tile_fleet")
 		local t = remote.call(D, "dump", pi, "trains")
@@ -555,8 +681,14 @@ lab.suite("37_tabs", {
 		lab.check("every Trains id, stop and depot cell is a tag button with the link handler (" .. n .. ")", links_ok and n > 0)
 
 		-- Reopened: the Stations summary line comes back with the rows after the "Collecting…" placeholder.
+		remote.call(D, "select_tab", pi, "trains")
+		remote.call(D, "update", pi, 1)
+		lab.check("the Trains query cache exists while open", lab.read("manager", "players", pi, "trains_query") ~= nil)
+
 		remote.call(D, "select_tab", pi, "stations")
 		remote.call(D, "close", pi)
+		lab.check("closing drops the Trains query cache (it holds snapshot train records)",
+			lab.read("manager", "players", pi, "trains_query") == nil)
 		remote.call(D, "open", pi, true)
 		remote.call(D, "select_tab", pi, "stations")
 		local s

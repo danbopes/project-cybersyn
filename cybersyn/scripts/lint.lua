@@ -741,13 +741,21 @@ local function prune(s)
 end
 
 --- Writes a station's committed mask into the snapshot records the views read (the one being collected too, whose
---- records copied the old mask).
+--- records copied the old mask), and enters the station in the collector's change log so per-player caches built
+--- from the records (the Stations Setup and Failing chips) pick the new mask up on their next render.
 local function set_station_lint(id, mask)
 	local manager = storage.manager
+	local changed = false
 	for _, snap in pairs({ manager.snapshot, manager.snapshot_build }) do
 		local st = snap.stations and snap.stations[id]
-		if st and st.lint ~= mask then st.lint = mask end
+		if st and st.lint ~= mask then
+			st.lint = mask
+			changed = true
+		end
 	end
+	-- The log is the collector's (collector.changed_since); it requires this module, so it is appended to directly.
+	local log = changed and manager.collect_log
+	if log then log.ids[#log.ids + 1] = id end
 end
 
 --- Ends the acknowledgements of setup findings that cleared with this pass (the world-scan checks are the world

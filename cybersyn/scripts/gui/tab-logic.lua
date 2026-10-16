@@ -103,16 +103,15 @@ function logic.state_chip(state, waited, residue)
 	return state, STATE_STYLE[state] or "grey"
 end
 
---- The Trains tab's In trouble chip: no path, destination full, manual control, or a signal wait of at least
---- WAIT_SIGNAL_MIN.
+--- The Trains tab's In trouble chip: every state whose chip is red or orange (no path, path lost, no schedule,
+--- destination full, manual control, a signal wait of at least WAIT_SIGNAL_MIN), so a red row is always counted.
 --- @param state string?
 --- @param waited number
 --- @return boolean
 function logic.in_trouble(state, waited)
-	if state == "no_path" or state == "destination_full" or state == "manual_control" or state == "manual_control_stop" then
-		return true
-	end
-	return state == "wait_signal" and (waited or 0) >= logic.WAIT_SIGNAL_MIN
+	if not state or QUIET[state] then return false end
+	local _, style = logic.state_chip(state, waited, false)
+	return style == "red" or style == "orange"
 end
 
 --- Composition string of a Cybersyn layout (0 = locomotive or any other carriage, 1 = cargo wagon, 2 = fluid wagon):
@@ -155,15 +154,18 @@ function logic.age(now, tick)
 	return d > 0 and d or 0
 end
 
---- Whether a train counts for the Not refuelled > N h chip: never seen at a refueler, or not for longer than the
---- per-user hours.
+--- Whether a train counts for the Not refuelled > N h chip: not seen at a refueler for longer than the per-user
+--- hours. A train never seen at one gets the same time from `refuel_from` (lint.refuel_from: since Cybersyn first
+--- saw it, or since refuels are tracked), the grace the collector's not_refuelled_count and the lint give it.
 --- @param now number
 --- @param refuel_tick number?
 --- @param hours number
+--- @param refuel_from number?
 --- @return boolean
-function logic.not_refuelled(now, refuel_tick, hours)
-	if not refuel_tick then return true end
-	return now - refuel_tick > hours * 216000
+function logic.not_refuelled(now, refuel_tick, hours, refuel_from)
+	local since = refuel_tick or refuel_from
+	if not since then return true end
+	return now - since > hours * 216000
 end
 
 --- A duration caption with "never" for no tick: the Last refuel and Last delivery cells.
@@ -210,6 +212,29 @@ function logic.group_rows(names, members, expanded)
 		end
 	end
 	return out
+end
+
+--- The Trains chips in subheader order; "all" clears the chip.
+logic.TRAIN_CHIPS = { "all", "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
+	"not_refuelled", "in_group", "trouble" }
+
+--- The locale key of a Trains chip caption: compact captions use the -short key, except All, which is short already.
+--- @param key string one of TRAIN_CHIPS
+--- @param compact boolean
+--- @return string
+function logic.train_chip_locale(key, compact)
+	local base = "cybersyn-gui.trains-chip-" .. string.gsub(key, "_", "-")
+	if compact and key ~= "all" then return base .. "-short" end
+	return base
+end
+
+--- The hours of the Not refuelled chip as the caption and the tooltip show them: "1", "0.25", "2.75", "12.5".
+--- @param hours number
+--- @return string
+function logic.hours_caption(hours)
+	local s = string.format("%.2f", hours)
+	s = string.gsub(s, "0+$", "")
+	return (string.gsub(s, "%.$", ""))
 end
 
 -- ---------------------------------------------------------------- stations
@@ -266,14 +291,16 @@ end
 
 -- ---------------------------------------------------------------- inventory
 
---- requested − provided − in transit, all as magnitudes: what the network is still short of once everything on its
---- way has arrived. Positive = short.
---- @param requested number? (the requested grid's count is negative)
---- @param provided number?
+--- What one network is still short of: requested − in transit − the providers' stock not yet promised to a delivery
+--- (their signals plus their negative, outgoing deliveries). Stock already promised is in transit too, so it is
+--- subtracted once. Never below 0: a surplus on one network covers nothing on another.
+--- @param requested number? magnitude or the requested grid's negative count
 --- @param in_transit number?
+--- @param stock number? provider signals plus outgoing (negative) deliveries
 --- @return number
-function logic.deficit(requested, provided, in_transit)
-	return math.abs(requested or 0) - (provided or 0) - (in_transit or 0)
+function logic.deficit(requested, in_transit, stock)
+	local short = math.abs(requested or 0) - (in_transit or 0) - math.max(stock or 0, 0)
+	return short > 0 and short or 0
 end
 
 --- Provided items that no requester on the same network asks for: the provide keys ("network:hash") without a

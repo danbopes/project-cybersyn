@@ -58,8 +58,18 @@ test("state_chip: quiet states show none, trouble states are coloured, residue w
 	assert_eq({ l.state_chip(nil, 0, false) }, { nil, nil })
 end)
 
-test("in_trouble: no path, destination full, manual control, signal wait from 10 s", function()
+test("in_trouble: every state with a red or orange chip, signal wait from 10 s", function()
 	local l = logic()
+	assert_true(l.in_trouble("path_lost", 0))
+	assert_true(l.in_trouble("no_schedule", 0))
+	assert_false(l.in_trouble(nil, 0))
+	for _, state in ipairs({ "no_path", "path_lost", "no_schedule", "destination_full", "manual_control",
+		"manual_control_stop", "arrive_signal", "wait_signal", "on_the_path", "wait_station" }) do
+		for _, waited in ipairs({ 0, 599, 600 }) do
+			local _, style = l.state_chip(state, waited, false)
+			assert_eq(l.in_trouble(state, waited), style == "red" or style == "orange", state .. " " .. waited)
+		end
+	end
 	assert_true(l.in_trouble("no_path", 0))
 	assert_true(l.in_trouble("destination_full", 0))
 	assert_true(l.in_trouble("manual_control", 0))
@@ -89,6 +99,11 @@ test("age, not_refuelled and age_caption", function()
 	assert_true(l.not_refuelled(216002, 1, 1))
 	assert_false(l.not_refuelled(216002, 1, 2))
 	assert_true(l.not_refuelled(54001, 0, 0.25))
+	-- Never refuelled: the grace runs from refuel_from, as in the collector's not_refuelled_count and the lint.
+	assert_false(l.not_refuelled(216000, nil, 1, 1), "inside its grace")
+	assert_true(l.not_refuelled(216002, nil, 1, 1), "past its grace")
+	assert_false(l.not_refuelled(300000, nil, 1, 100000), "a train registered late gets its own hour")
+	assert_true(l.not_refuelled(300000, 1, 1, 299999), "a refuel tick wins over refuel_from")
 	local fmt = function(t) return t .. "t" end
 	assert_eq({ l.age_caption(1000, nil, fmt) }, { nil, nil })
 	assert_eq({ l.age_caption(1000, 100, fmt) }, { "900t", 900 })
@@ -137,12 +152,44 @@ test("chip_mode: names when they fit, else compact", function()
 	assert_eq(l.chip_mode(800, 900), "compact")
 end)
 
-test("deficit: requested minus provided minus in transit, as magnitudes", function()
+test("deficit: requested minus in transit minus unpromised stock, never below 0", function()
 	local l = logic()
-	assert_eq(l.deficit(-1000, 200, 300), 500)
-	assert_eq(l.deficit(-100, 200, nil), -100)
-	assert_eq(l.deficit(nil, 50, 0), -50)
+	assert_eq(l.deficit(-1000, 300, 200), 500)
+	assert_eq(l.deficit(1000, 300, 200), 500, "a magnitude works too")
+	assert_eq(l.deficit(-100, nil, 200), 0, "a surplus is no shortage")
+	assert_eq(l.deficit(nil, 0, 50), 0)
 	assert_eq(l.deficit(-10, nil, nil), 10)
+	assert_eq(l.deficit(-1000, 400, -400), 600, "stock all promised (negative) counts as none")
+end)
+
+test("train chips: every caption key, full and compact, in every manager.cfg", function()
+	local l = logic()
+	local keys = {}
+	for _, key in ipairs(l.TRAIN_CHIPS) do
+		for _, compact in ipairs({ false, true }) do
+			keys[#keys + 1] = l.train_chip_locale(key, compact):gsub("^cybersyn%-gui%.", "")
+		end
+		if key ~= "all" then keys[#keys + 1] = "trains-chip-" .. key:gsub("_", "-") .. "-tooltip" end
+	end
+	assert_eq(l.train_chip_locale("all", true), "cybersyn-gui.trains-chip-all")
+	assert_eq(l.train_chip_locale("to_p", true), "cybersyn-gui.trains-chip-to-p-short")
+	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
+		local text = f:read("*a")
+		f:close()
+		for _, k in ipairs(keys) do
+			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
+		end
+	end
+end)
+
+test("hours_caption: the setting's value without rounding", function()
+	local l = logic()
+	assert_eq(l.hours_caption(1), "1")
+	assert_eq(l.hours_caption(0.25), "0.25")
+	assert_eq(l.hours_caption(2.75), "2.75")
+	assert_eq(l.hours_caption(12.5), "12.5")
+	assert_eq(l.hours_caption(24), "24")
 end)
 
 test("unrequested: provide keys without a request key on the same network", function()

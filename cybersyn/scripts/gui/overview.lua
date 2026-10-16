@@ -1339,6 +1339,8 @@ end
 --- Stations tab with the Unserved chip (phase 4), longest wait first.
 --- @param player_data PlayerData
 local function jump_unserved(player_data)
+	-- A toggled status chip would win over the flag chip (stations.lua active_chip): one chip at a time.
+	player_data.stations_status_filter = nil
 	player_data.stations_chip = "unserved"
 	util.set_sort(player_data, "stations_tab", "wait", false)
 	util.select_tab(player_data, "stations_tab")
@@ -1360,6 +1362,7 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 		local manager = overview_tab.manager
 		if manager then manager.restore_filter_widgets(player_data) end
 	elseif tile == "failing" then
+		player_data.stations_status_filter = nil
 		player_data.stations_chip = "failing"
 		util.set_sort(player_data, "stations_tab", "station_status", true)
 		util.select_tab(player_data, "stations_tab")

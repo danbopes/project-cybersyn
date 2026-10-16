@@ -14,6 +14,7 @@ local inventory_tab = {}
 --- @field inventory_sorts {[string]: string}? per grid the column its sort buttons chose; a grid without one follows
 ---   the tab's sort (util.get_sort), which the Overview's Throughput tile and the dev interface set
 --- @field inventory_dim true? Provided dims the items nobody on the same network requests
+--- @field inventory_delivered {minute: int, items: {[string]: int}}? items delivered in the last hour, per game minute
 
 local TAB = "inventory_tab"
 local GRIDS = { "provided", "in_transit", "requested" }
@@ -285,8 +286,49 @@ local function accumulate(bucket, top_bucket, hash, count, mag, st)
 	return agg
 end
 
+--- The per-network sums the deficit is computed from: r = requested, t = incoming deliveries, s = provider stock
+--- not yet promised (provider signals plus their negative, outgoing deliveries).
+--- @param nets table
+--- @param name string
+local function net_bucket(nets, name)
+	local nb = nets[name]
+	if not nb then
+		nb = { r = {}, t = {}, s = {} }
+		nets[name] = nb
+	end
+	return nb
+end
+
+--- The networks a station's numbers count on: the filter's network, its own, or for a station on several networks
+--- each of them for its stock (it can supply any) and the first by name for its requests (counted once).
+--- @param nets table
+--- @param st SnapshotStation
+--- @param network string? the network filter
+--- @return table request_bucket
+--- @return table[]? stock_buckets nil = the request bucket alone
+local function station_buckets(nets, st, network)
+	if network then return net_bucket(nets, network), nil end
+	local name = st.network_name
+	if name ~= NETWORK_EACH or type(st.network_mask) ~= "table" then return net_bucket(nets, name or ""), nil end
+	local names = {}
+	for n in pairs(st.network_mask) do names[#names + 1] = n end
+	if #names == 0 then return net_bucket(nets, ""), nil end
+	table.sort(names)
+	local stock = {}
+	for i, n in ipairs(names) do stock[i] = net_bucket(nets, n) end
+	return stock[1], stock
+end
+
+--- @param buckets table[]
+--- @param hash string
+--- @param count number
+local function add_stock(buckets, hash, count)
+	for _, nb in ipairs(buckets) do nb.s[hash] = (nb.s[hash] or 0) + count end
+end
+
 --- One pass over the snapshot producing the per-grid totals and each item's top stations together, so a
---- tooltip's top list always agrees with the totals shown next to it.
+--- tooltip's top list always agrees with the totals shown next to it. The deficit per item is the sum over the
+--- networks of what each is short (logic.deficit), so stock on one network never offsets a shortage on another.
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
 local function aggregate_with_top(snapshot, f)
@@ -294,15 +336,20 @@ local function aggregate_with_top(snapshot, f)
 	local inv = { provided = {}, requested = {}, in_transit = {} }
 	local top = { provided = {}, requested = {}, in_transit = {} }
 	local has_wait = false
+	local nets = {}
 	for _, st in pairs(snapshot.stations) do
 		if not filtered or util.station_passes(st, f, true) then
+			local nb, stock = station_buckets(nets, st, f.network)
+			local r, t, s = nb.r, nb.t, nb.s
 			for hash, count in pairs(st.provided) do
 				accumulate(inv.provided, top.provided, hash, count, count, st)
+				if stock then add_stock(stock, hash, count) else s[hash] = (s[hash] or 0) + count end
 			end
 			local wait = st.wait
 			for hash, req in pairs(st.requested) do
 				if req.active then
 					local agg = accumulate(inv.requested, top.requested, hash, req.count, -req.count, st)
+					r[hash] = (r[hash] or 0) - req.count
 					local start = wait and wait[hash]
 					if start and (not agg.earliest_wait_start or start < agg.earliest_wait_start) then
 						agg.earliest_wait_start = start
@@ -313,10 +360,25 @@ local function aggregate_with_top(snapshot, f)
 			for hash, count in pairs(st.deliveries) do
 				if count > 0 then
 					accumulate(inv.in_transit, top.in_transit, hash, count, count, st)
+					t[hash] = (t[hash] or 0) + count
+				elseif stock then
+					add_stock(stock, hash, count)
+				else
+					s[hash] = (s[hash] or 0) + count
 				end
 			end
 		end
 	end
+	local deficit = {}
+	local short = logic.deficit
+	for _, nb in pairs(nets) do
+		local t, s = nb.t, nb.s
+		for hash, requested in pairs(nb.r) do
+			local d = short(requested, t[hash], s[hash])
+			if d > 0 then deficit[hash] = (deficit[hash] or 0) + d end
+		end
+	end
+	inv.deficit = deficit
 	return inv, top, has_wait
 end
 
@@ -346,12 +408,6 @@ local function get_cache(player_data, snapshot, f)
 		return cache
 	end
 	local inv, top, has_wait = aggregate_with_top(snapshot, f)
-	local profiler = dev.enabled() and game.create_profiler() or nil
-	local unrequested = logic.unrequested(snapshot.provider_masks or {}, snapshot.request_keys or {}, f.network)
-	if profiler then
-		profiler.stop()
-		inventory_tab.dim_profile = profiler
-	end
 	-- Kept outside the cache, which is dropped on close, so a grid's render signature can never repeat a stale one.
 	local version = (player_data.inventory_version or 0) + 1
 	player_data.inventory_version = version
@@ -362,7 +418,8 @@ local function get_cache(player_data, snapshot, f)
 		inv = inv,
 		top = top,
 		has_wait = has_wait,
-		unrequested = unrequested,
+		-- Computed by unrequested_of on the first render that dims, not on every pass.
+		unrequested = nil,
 		order = {},
 		version = version,
 		-- A refresh nobody asked for, on a base big enough to be worth spreading over renders.
@@ -382,11 +439,8 @@ end
 --- @return fun(hash: string): number?
 local function key_fn(column, grid, bucket, has_wait, inv)
 	if column == "deficit" and grid == "requested" and inv then
-		local provided, transit = inv.provided, inv.in_transit
-		return column, function(hash)
-			local p, t = provided[hash], transit[hash]
-			return logic.deficit(bucket[hash].count, p and p.count, t and t.count)
-		end
+		local deficit = inv.deficit or {}
+		return column, function(hash) return deficit[hash] or 0 end
 	elseif column == "amount" then
 		return column, function(hash) return math.abs(bucket[hash].count) end
 	elseif column == "stations" then
@@ -492,7 +546,7 @@ local function entry_tooltip(ctx, entry)
 	if entry.dim then
 		tail = { "", tail, "\n[color=0.6,0.6,0.6]", { "cybersyn-gui.inventory-unrequested" }, "[/color]" }
 	end
-	if ctx.is_requested and entry.deficit then
+	if ctx.is_requested and entry.deficit and entry.deficit > 0 then
 		tail = { "", tail, "\n", { "cybersyn-gui.inventory-deficit", format.number(entry.deficit) } }
 	end
 	local item_top = ctx.top_bucket[hash]
@@ -747,6 +801,25 @@ local COLOR_CODE = { green = 1, blue = 2, red = 3, orange = 4, pink = 5, grey = 
 --- @param budget {n: integer}? shared by the grids of one render; nil = unlimited
 --- @return table ctx
 --- @return table[] entries
+--- The provided items nobody on the same network requests, for the cache's pass and filters; computed only while
+--- Dim unrequested is on.
+--- @param cache table
+--- @param snapshot Snapshot
+--- @param f ManagerFilters
+--- @return {[string]: true}
+local function unrequested_of(cache, snapshot, f)
+	local set = cache.unrequested
+	if set then return set end
+	local profiler = dev.enabled() and game.create_profiler() or nil
+	set = logic.unrequested(snapshot.provider_masks or {}, snapshot.request_keys or {}, f.network)
+	if profiler then
+		profiler.stop()
+		inventory_tab.dim_profile = profiler
+	end
+	cache.unrequested = set
+	return set
+end
+
 local function build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget, delivered, dim)
 	local inv = cache.inv
 	local bucket = inv[grid]
@@ -772,8 +845,8 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 		budget = budget,
 	}
 	local in_transit = inv.in_transit
-	local provided = inv.provided
-	local unrequested = dim and grid == "provided" and cache.unrequested or nil
+	local inv_deficit = inv.deficit or {}
+	local unrequested = dim and grid == "provided" and unrequested_of(cache, snapshot, f) or nil
 	local entries = {}
 	for i, hash in ipairs(hashes) do
 		local agg = bucket[hash]
@@ -783,8 +856,7 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 			transit = in_transit[hash]
 			starved = is_starved(snapshot, f, hash)
 			color = starved and "pink" or transit and "orange" or "red"
-			local p = provided[hash]
-			deficit = logic.deficit(agg.count, p and p.count, transit and transit.count)
+			deficit = inv_deficit[hash] or 0
 			local start = agg.earliest_wait_start
 			sig_extra = mix(mix(start and math.floor((now - start) / WAIT_SIG_TICKS) + 1 or 0, transit and transit.count % DIGEST_MOD or -1), starved and 1 or 0)
 			sig_extra = mix(sig_extra, deficit % DIGEST_MOD)
@@ -915,7 +987,15 @@ function inventory_tab.build(map_data, player_data)
 			local render_sig = version .. "|" .. column .. "|" .. tostring(ascending) .. "|" .. (selected or "") .. "|"
 				.. table_elem.index .. "|" .. wait_bucket .. "|" .. minute .. "|" .. (dim and grid == "provided" and "d" or "")
 			if state.render_sig ~= render_sig or state.dirty or not state.keys then
-				delivered = delivered or stats.aggregate(60).items
+				if not delivered then
+					-- Once a minute, not on each of the renders a refresh is spread over.
+					local d = player_data.inventory_delivered
+					if not (d and d.minute == minute) then
+						d = { minute = minute, items = stats.aggregate(60).items }
+						player_data.inventory_delivered = d
+					end
+					delivered = d.items
+				end
 				local ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
 					delivered, dim)
 				local result = render_grid(player_data, grid, table_elem, state, ctx, entries)

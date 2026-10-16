@@ -1290,7 +1290,9 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.handed_back_tick = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
+	player_data.inventory_delivered = nil
 	player_data.stations_query = nil
+	player_data.trains_query = nil
 	player_data.overview_cache = nil
 	player_data.stations_order = nil
 	-- Render signatures and row memos only skip redundant updates, and the memos reference snapshot records, so

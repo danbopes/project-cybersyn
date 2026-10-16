@@ -2580,15 +2580,15 @@
      "requested": {
       "column": "deficit",
       "hashes": [
-       "steam",
-       "heavy-oil",
-       "lubricant",
        "water",
+       "steam",
        "crude-oil",
        "sulfuric-acid",
        "assembling-machine-2",
        "petroleum-gas",
        "light-oil",
+       "heavy-oil",
+       "lubricant",
        "arithmetic-combinator",
        "efficiency-module-3",
        "electric-mining-drill",
@@ -2630,13 +2630,13 @@
        "artillery-turret"
       ],
       "keys": [
-       -5572,
-       -4584,
-       -4506,
-       -520,
-       -520,
-       -520,
+       0,
+       0,
+       0,
+       0,
        80,
+       520,
+       520,
        520,
        520,
        1520,
@@ -2841,13 +2841,13 @@
        "arithmetic-combinator",
        "petroleum-gas",
        "light-oil",
+       "heavy-oil",
+       "lubricant",
        "assembling-machine-2",
        "water",
+       "steam",
        "crude-oil",
-       "sulfuric-acid",
-       "lubricant",
-       "heavy-oil",
-       "steam"
+       "sulfuric-acid"
       ],
       "keys": [
        161050,
@@ -2891,13 +2891,13 @@
        1520,
        520,
        520,
+       520,
+       520,
        80,
-       -520,
-       -520,
-       -520,
-       -4506,
-       -4584,
-       -5572
+       0,
+       0,
+       0,
+       0
       ],
       "stale": 0
      }
