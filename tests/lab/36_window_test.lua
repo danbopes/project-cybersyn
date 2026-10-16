@@ -117,27 +117,34 @@ lab.suite("36_window", {
 		lab.check("unserved table dump identical across a render in the same tick (sig-guarded)", a == b)
 	end,
 
-	-- Misconfigured == stations whose st.lint is not 0 (phase 2b writes it; here one record is set by hand).
-	function(ctx)
-		local snap = lab.read("manager").snapshot
-		local id
-		for sid in pairs(snap.stations) do
-			if not id or sid < id then id = sid end
+	-- Misconfigured == stations whose st.lint is not 0. The lint job (phase 2b) fills most of them on this save; one
+	-- clean record is set by hand on top of that and the tile must follow it up and back down.
+	function()
+		local function count()
+			local n = 0
+			for _, st in pairs(lab.read("manager").snapshot.stations) do
+				if (st.lint or 0) ~= 0 then n = n + 1 end
+			end
+			return n
 		end
-		ctx.lint_id = id
+		local id
+		for sid, st in pairs(lab.read("manager").snapshot.stations) do
+			if (st.lint or 0) == 0 and (not id or sid < id) then id = sid end
+		end
+		local before = count()
+		lab.check("a station without a lint finding exists to mark by hand", id ~= nil, { flagged = before })
+		if not id then return end
 		remote.call("cybersyn", "write_global", 5, "manager", "snapshot", "stations", id, "lint")
 		local d = overview()
-		local n = 0
-		for _, st in pairs(lab.read("manager").snapshot.stations) do
-			if (st.lint or 0) ~= 0 then n = n + 1 end
-		end
-		lab.check("misconfigured == stations with st.lint ~= 0", d.tiles.failing.misconfigured == n and n == 1,
-			{ tile = d.tiles.failing.misconfigured, lint = n })
+		local n = count()
+		lab.check("misconfigured == stations with st.lint ~= 0", d.tiles.failing.misconfigured == n and n == before + 1,
+			{ tile = d.tiles.failing.misconfigured, lint = n, before = before })
 		local tip = serpent.line(d.rendered_tiles.failing.tooltip, { comment = false })
 		lab.check("failing tooltip splits misconfigured by check", string.find(tip, "overview-failing-lint-bit", 1, true) ~= nil, tip)
 		remote.call("cybersyn", "write_global", 0, "manager", "snapshot", "stations", id, "lint")
 		d = overview()
-		lab.check("misconfigured back to 0 with no findings", d.tiles.failing.misconfigured == 0, d.tiles.failing)
+		lab.check("misconfigured back to the lint job's own count once the hand-written finding is cleared",
+			d.tiles.failing.misconfigured == before and count() == before, { tile = d.tiles.failing, before = before })
 	end,
 
 	-- Acknowledge: the row leaves the open rows, shows greyed at the bottom with the toggle on, the tile reads

@@ -106,6 +106,9 @@ lab.suite("39_lint", {
 	function()
 		lx.setting = settings.global["cybersyn-diagnostics"].value
 		dev("set_setting", "cybersyn-diagnostics", "basic")
+		-- An earlier file may leave a manager window open, and the lint job then runs between steps and writes the
+		-- transition events before pass() can capture them.
+		dev("close", 1)
 		-- Row 1: depots, refueler, trains, a requester for the phantom and one for the occupancy gap.
 		-- Trains on mask 1 (the default network mask is every bit, which any refueler would match).
 		local a = cases.base("LINT_A", { k = K0 }, { network = "signal-7", depot_mask = 1 })
