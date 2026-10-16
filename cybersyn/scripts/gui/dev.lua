@@ -688,6 +688,35 @@ function interface.snapshot_fields()
 	return out
 end
 
+-- ---- cycle figures, B6 alerts, schedule edits (PLAN3 §4.4, §4.5)
+
+--- storage.stats.cycle: the last planner cycle's ticks, dispatches and tick_dispatch calls.
+function interface.cycle()
+	return stats.get().cycle
+end
+
+--- The per-(item, network) no-train alerts of the planner (B6).
+function interface.alert_dedupe()
+	local ad = storage.alert_dedupe
+	if not ad then return { cycle = 0, sent = 0, keys = {} } end
+	local keys = {}
+	for key, e in pairs(ad.keys) do
+		keys[key] = { cycle = e.cycle, code = DIAG_ALERT_NAMES[e.code], r_id = e.r_id, p_id = e.p_id, wait = e.wait,
+			shown = e.shown, sent = e.sent }
+	end
+	return { cycle = ad.cycle, sent = ad.sent, keys = keys }
+end
+
+--- Raises Cybersyn's on_train_schedule_changed handler for a train as a player's edit would (the engine raises it
+--- with player_index only for GUI edits, which a headless lab cannot make).
+function interface.train_schedule_changed(train_id, player_index)
+	local train = storage.trains[train_id]
+	if not (train and train.entity and train.entity.valid) then error("no Cybersyn train " .. tostring(train_id)) end
+	on_train_schedule_changed({ train = train.entity, player_index = player_index, tick = game.tick,
+		name = defines.events.on_train_schedule_changed })
+	return true
+end
+
 --- PLAN3 §4.5 decision check: requests the planner polled as active whose (requester, item) has no unserved entry.
 --- Reads the manager snapshot (collect first); `min_wait` in ticks filters on the tracked request start.
 function interface.diag_coverage(min_wait, top)

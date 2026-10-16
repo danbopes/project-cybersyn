@@ -214,15 +214,17 @@ function cases.depot(case, x, name, mask)
 	return d
 end
 
---- Locomotive, cargo wagon, locomotive (40 slots), built east of `x` with the depot `depot` as its schedule.
+--- Locomotive, cargo wagon (or `wagon`), locomotive (40 slots), built east of `x` with the depot `depot` as its
+--- schedule.
+--- @param wagon string? "fluid-wagon" for a fluid train
 --- @return LuaTrain
-function cases.train(case, x, depot)
+function cases.train(case, x, depot, wagon)
 	local s = case.surface
 	local y = case.y + 1
 	local force = game.forces.player
 	local l1 = add(case, s.create_entity({ name = "locomotive", position = { x + 4, y },
 		direction = defines.direction.east, force = force }))
-	add(case, s.create_entity({ name = "cargo-wagon", position = { x + 11, y },
+	add(case, s.create_entity({ name = wagon or "cargo-wagon", position = { x + 11, y },
 		direction = defines.direction.east, force = force }))
 	local l2 = add(case, s.create_entity({ name = "locomotive", position = { x + 18, y },
 		direction = defines.direction.west, force = force }))
@@ -319,7 +321,7 @@ end
 --- Common shell: row, depot and (unless opt.no_train) one train parked there.
 --- @param name string
 --- @param ctx {k: integer}
---- @param opt {no_train: boolean?, depot_mask: integer?}?
+--- @param opt {no_train: boolean?, depot_mask: integer?, network: string?, wagon: string?}?
 local function base(name, ctx, opt)
 	opt = opt or {}
 	local surface = game.surfaces[cases.SURFACE]
@@ -328,7 +330,7 @@ local function base(name, ctx, opt)
 		k = ctx.k,
 		y = cases.Y0 + cases.ROW * ctx.k,
 		surface = surface,
-		network = cases.NETWORKS[name],
+		network = opt.network or cases.NETWORKS[name],
 		item = cases.ITEM,
 		entities = {},
 		stations = {},
@@ -343,13 +345,15 @@ local function base(name, ctx, opt)
 	lay_row(case, surface)
 	case.d1 = cases.depot(case, cases.X_D1, "rc-" .. name .. "-depot", opt.depot_mask)
 	if not opt.no_train then
-		case.t1 = cases.train(case, cases.X_D1 + 6, case.d1)
+		case.t1 = cases.train(case, cases.X_D1 + 6, case.d1, opt.wagon)
 	end
 	return case
 end
+cases.base = base
 
 --- Station names carry the case so a stop is easy to find on the map.
 local function sname(case, role) return "rc-" .. case.name .. "-" .. role end
+cases.sname = sname
 
 --- The signals of a requester of `count` (negative) of the case item with a request threshold.
 local function request(case, count, threshold, extra)
@@ -361,6 +365,8 @@ end
 local function provide(case, count, item)
 	return { { item or case.item, count } }
 end
+cases.request = request
+cases.provide = provide
 
 local function finish(case)
 	local ids = {}
@@ -369,6 +375,7 @@ local function finish(case)
 	case.cleanup = function() cases.destroy(case) end
 	return case
 end
+cases.finish = finish
 
 --- The usual last stage: once the case's trains (or the given ones) are parked, switch on the request.
 --- @param ids integer[]? indices into case.trains

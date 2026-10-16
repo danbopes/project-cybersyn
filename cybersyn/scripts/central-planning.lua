@@ -270,7 +270,6 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 		train.last_manifest_tick = map_data.total_ticks
 		stats.record_dispatch(train)
 		local d = map_data.diag
-		if d then diag.dispatched(d, train_id, train, r_station_id, p_station_id, manifest) end
 
 		r_station.last_delivery_tick = map_data.total_ticks
 		p_station.last_delivery_tick = map_data.total_ticks
@@ -292,6 +291,7 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 			-- Record delivery start for analytics (only for first item to avoid duplicates)
 			if i == 1 then
 				analytics.record_delivery_start(map_data, train_id, item_hash, fulfillment_time)
+				if d then diag.dispatched(d, train_id, train, r_station_id, p_station_id, manifest, item_hash) end
 			end
 			clear_request_tracking(r_station, item_hash)
 			if d then diag.served(d, r_station_id, item_hash, p_station_id, train_id, train.delivery_id) end
@@ -476,6 +476,79 @@ end
 
 ---@param map_data MapData
 ---@param mod_settings CybersynModSettings
+-- B6: the no-train alerts (NO_TRAINS_ON_NETWORK and TRAIN_FILTERED) are sent once per (item, network) per planner
+-- cycle, on the stop of the requester that has waited longest, instead of once per failing requester evaluation.
+-- tick_dispatch only notes the evaluation (no API call, no storage.diag read); tick_init sends what the cycle noted.
+local DEDUPED_ALERT_MESSAGE = {
+	[DIAG_ALERT_MISSING_TRAIN] = "cybersyn-messages.missing-train",
+	[DIAG_ALERT_TRAINS_FILTERED] = "cybersyn-messages.trains-filtered",
+}
+
+---@param map_data MapData
+---@return {cycle: int, sent: int, keys: {[string]: table}}
+local function alert_dedupe(map_data)
+	local ad = map_data.alert_dedupe
+	if not ad then
+		ad = { cycle = 0, sent = 0, keys = {} }
+		map_data.alert_dedupe = ad
+	end
+	return ad
+end
+
+---@param ad {cycle: int, sent: int, keys: {[string]: table}}
+---@param key string item_network_name
+---@param code int DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
+---@param wait number seconds the requester has waited (0 when wait tracking is off)
+local function note_no_train_alert(ad, key, code, r_station_id, p_station_id, wait)
+	local e = ad.keys[key]
+	if not e then
+		e = {}
+		ad.keys[key] = e
+	end
+	if e.cycle ~= ad.cycle or wait > e.wait then
+		e.cycle, e.code, e.r_id, e.p_id, e.wait = ad.cycle, code, r_station_id, p_station_id, wait
+	end
+end
+
+---Sends the alerts the cycle that just ended noted, removing each key's previous alert first so it moves with the
+---worst requester instead of piling up, and removes the alerts of keys that no longer fail.
+---@param map_data MapData
+---@param d DiagState?
+local function flush_no_train_alerts(map_data, d)
+	local ad = map_data.alert_dedupe
+	if not ad then return end
+	local cycle = ad.cycle
+	local stations = map_data.stations
+	for key, e in pairs(ad.keys) do
+		local shown = e.shown and stations[e.shown]
+		local shown_stop = shown and shown.entity_stop
+		if shown_stop and not shown_stop.valid then shown_stop = nil end
+		if shown_stop then remove_alert_about_missing_train(shown_stop, e.shown_text) end
+		e.shown, e.shown_text = nil, nil
+		if e.cycle == cycle then
+			local r, p = stations[e.r_id], stations[e.p_id]
+			local r_stop, p_stop = r and r.entity_stop, p and p.entity_stop
+			if r_stop and p_stop and r_stop.valid and p_stop.valid then
+				e.shown_text = send_alert_about_missing_train(r_stop, p_stop, DEDUPED_ALERT_MESSAGE[e.code])
+				e.shown = e.r_id
+				e.sent = (e.sent or 0) + 1
+				ad.sent = ad.sent + 1
+				if d then diag.alert_ids(d, e.code, e.r_id, e.p_id) end
+			end
+		else
+			ad.keys[key] = nil
+		end
+	end
+	ad.cycle = cycle + 1
+end
+
+---The other requester alerts stay one per failing evaluation; the planner logs them with the ids it holds.
+---@param d DiagState?
+local function requester_alert(d, message, code, r_station, p_station, r_station_id, p_station_id)
+	send_alert_about_missing_train(r_station.entity_stop, p_station.entity_stop, message)
+	if d then diag.alert_ids(d, code, r_station_id, p_station_id) end
+end
+
 local function tick_dispatch(map_data, mod_settings)
 	--we do not dispatch more than one train per tick
 	--psuedo-randomize what item (and what station) to check first so if trains available is low they choose orders psuedo-randomly
@@ -487,6 +560,7 @@ local function tick_dispatch(map_data, mod_settings)
 	local all_names = map_data.economy.all_names
 	local stations = map_data.stations
 	local d = map_data.diag
+	local alerts = alert_dedupe(map_data)
 	local verify_interrupt = map_data.diag_verify_interrupt
 	-- The latest provider a requester's evaluation locked in this call (the P_BELOW_THRESHOLD table_remove), its stock
 	-- and override threshold: a later requester that finds no provider left is tested against it (diagnostics on only).
@@ -924,26 +998,28 @@ local function tick_dispatch(map_data, mod_settings)
 			create_delivery(map_data, r_station_id, p_station_id, best_train_id, manifest, best_surface_connections)
 			return false
 		else
-			if closest_to_correct_p_station then
-				if correctness == 1 then
-					-- B3: "missing train" only when the network has none available; otherwise they were filtered.
-					if trains then
-						send_alert_trains_filtered(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
-					else
-						send_alert_missing_train(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
-					end
-				elseif correctness == 2 then
-					send_alert_no_train_has_capacity(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
-				elseif correctness == 3 then
-					send_alert_no_train_matches_r_layout(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
-				elseif correctness == 4 then
-					send_alert_no_train_matches_p_layout(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
-				end
-			end
 			-- Record failed dispatch for analytics
 			local wait_so_far = 0
 			if r_station.request_start_ticks and r_station.request_start_ticks[item_hash] then
 				wait_so_far = (game.tick - r_station.request_start_ticks[item_hash]) / 60
+			end
+			if closest_to_correct_p_station then
+				local closest_id = closest_to_correct_p_station.entity_stop.unit_number
+				if correctness == 1 then
+					-- B3: "missing train" only when the network has none available; otherwise they were filtered.
+					note_no_train_alert(alerts, item_network_name,
+						trains and DIAG_ALERT_TRAINS_FILTERED or DIAG_ALERT_MISSING_TRAIN, r_station_id, closest_id,
+						wait_so_far)
+				elseif correctness == 2 then
+					requester_alert(d, "cybersyn-messages.no-train-has-capacity", DIAG_ALERT_NO_TRAIN_HAS_CAPACITY,
+						r_station, closest_to_correct_p_station, r_station_id, closest_id)
+				elseif correctness == 3 then
+					requester_alert(d, "cybersyn-messages.no-train-matches-r-layout", DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT,
+						r_station, closest_to_correct_p_station, r_station_id, closest_id)
+				elseif correctness == 4 then
+					requester_alert(d, "cybersyn-messages.no-train-matches-p-layout", DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT,
+						r_station, closest_to_correct_p_station, r_station_id, closest_id)
+				end
 			end
 			-- The train-side reason is the furthest train check any train passed; correctness 0 means no provider got as
 			-- far as the train checks, and only the diagnostics' site counters know which provider check stopped it.
@@ -1518,6 +1594,8 @@ function tick_init(map_data, mod_settings)
 		map_data.queue_station_update = nil
 	end
 
+	flush_no_train_alerts(map_data, d)
+	stats.cycle_start(game.tick)
 	diag.cycle()
 	map_data.tick_state = STATE_POLL_STATIONS
 	interface_raise_tick_init()
@@ -1545,9 +1623,12 @@ function tick(map_data, mod_settings)
 				if tick_poll_station(map_data, mod_settings) then break end
 			end
 		elseif map_data.tick_state == STATE_DISPATCH then
+			local calls = 0
 			for i = 1, mod_settings.update_rate do
+				calls = i
 				if tick_dispatch(map_data, mod_settings) then break end
 			end
+			stats.count_calls(calls)
 		end
 	else
 		map_data.tick_state = STATE_INIT

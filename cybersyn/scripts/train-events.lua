@@ -6,6 +6,84 @@ local analytics = require("scripts.analytics")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 
+local NO_FLUIDS = {}
+
+-- Placeholder signals of the cybersyn-fuel-support mod: the provider loads whatever fuel it has, so what a train
+-- carries away never matches these manifest entries by name.
+local FUEL_PLACEHOLDERS = { ["cybersyn-fuel"] = true, ["cybersyn-liquid-fuel"] = true }
+
+--- @param manifest Manifest
+local function is_fuel_manifest(manifest)
+	for _, item in ipairs(manifest) do
+		if FUEL_PLACEHOLDERS[item.name] then return true end
+	end
+	return false
+end
+
+--- Cargo against the manifest as the train leaves its provider (`at_r` false) or requester. The P side also drives
+--- the unexpected-cargo alert, so the log keeps one row for it (the unexpected_cargo event, not an alert event).
+--- @param map_data MapData
+--- @param train Train
+--- @param station Station?
+--- @param at_r boolean
+local function check_cargo(map_data, train_id, train, station, at_r)
+	local manifest = train.manifest
+	if not manifest then return end
+	local d = map_data.diag
+	local alert = not at_r and mod_settings.alert_unexpected_cargo
+	if not (d or alert) then return end
+	if not at_r and is_fuel_manifest(manifest) then return end
+	local entity = train.entity
+	local has_fluid = (train.fluid_capacity or 0) > 0
+	local tolerance = mod_settings.cargo_tolerance or 2
+	-- The usual departure has nothing to report: a few counts prove that without building the contents tables.
+	if at_r then
+		if entity.get_item_count() == 0 and not (has_fluid and entity.get_fluid_count() >= 1) then return end
+	else
+		local items, fluid, clean = 0, 0, true
+		for _, m in ipairs(manifest) do
+			if m.type == "fluid" then
+				local n = entity.get_fluid_count(m.name)
+				if n < m.count * (1 - tolerance / 100) then
+					clean = false
+					break
+				end
+				fluid = fluid + n
+			else
+				local n = entity.get_item_count({ name = m.name, quality = m.quality or "normal" })
+				if n < m.count then
+					clean = false
+					break
+				end
+				items = items + n
+			end
+		end
+		if clean and entity.get_item_count() == items and not (has_fluid and entity.get_fluid_count() >= fluid + 1) then
+			return
+		end
+	end
+	local contents = entity.get_contents()
+	local fluids = has_fluid and entity.get_fluid_contents() or NO_FLUIDS
+	local findings = diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
+	if not findings[1] then return end
+	if alert and station then
+		for _, f in ipairs(findings) do
+			if f.kind == diag.CARGO_EXTRA and f.type == "item" then
+				local stop = station.entity_stop
+				send_alert_unexpected_cargo(map_data, entity, stop.backer_name, stop.position, stop.surface)
+				break
+			end
+		end
+	end
+	if d then
+		if at_r then
+			diag.cargo_events(d, findings, train_id, train, train.r_station_id, train.p_station_id)
+		else
+			diag.cargo_events(d, findings, train_id, train, train.p_station_id, train.r_station_id)
+		end
+	end
+end
+
 ---@param map_data MapData
 ---@param station Station
 ---@param manifest Manifest?
@@ -262,6 +340,7 @@ end
 local function on_train_arrives_refueler(map_data, refueler, train_id, train)
 	if train.status == STATUS_TO_F then
 		train.status = STATUS_F
+		train.refuel_tick = game.tick
 		set_refueler_combs(map_data, refueler, train)
 		interface_raise_train_status_changed(train_id, STATUS_TO_F, STATUS_F)
 	end
@@ -280,23 +359,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 			set_comb1(map_data, p_station, nil)
 			unset_wagon_combs(map_data, p_station)
 
-			if mod_settings.alert_unexpected_cargo and train.manifest then
-				local manifest_items = {}
-				for _, item in ipairs(train.manifest) do
-					manifest_items[item.type .. ":" .. item.name .. ":" .. (item.quality or "normal")] = true
-				end
-
-				--a refuel stop puts fuel in the cargo on purpose, so it is never a surprise
-				if not manifest_items["item:cybersyn-fuel:normal"] then
-					for _, actual_item in pairs(train.entity.get_contents()) do
-						if not manifest_items["item:" .. actual_item.name .. ":" .. actual_item.quality] then
-							send_alert_unexpected_cargo(map_data, train.entity, p_station.entity_stop.backer_name,
-								p_station.entity_stop.position, p_station.entity_stop.surface)
-							break
-						end
-					end
-				end
-			end
+			if p_station.entity_stop.valid then check_cargo(map_data, train_id, train, p_station, false) end
 		end
 		if train.has_filtered_wagon then
 			train.has_filtered_wagon = nil
@@ -335,6 +398,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		-- Record delivery completion for analytics (after unloading)
 		analytics.record_delivery_complete(map_data, train_id)
 		stats.record_delivery_complete(train)
+		if map_data.diag then check_cargo(map_data, train_id, train, station, true) end
 		if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_LEAVE_R, train_id, train, train.r_station_id) end
 		train.p_station_id = nil
 		train.r_station_id = nil
@@ -540,6 +604,12 @@ function on_train_schedule_changed(event)
 	local train = storage.trains[train_e.id]
 	if train then
 		train.in_interrupt = train_in_interrupt(train_e)
+		-- Script writes (Cybersyn's own, interrupts) carry no player; a player's edit is what A2 detects.
+		local player_index = event.player_index
+		if player_index then
+			local d = storage.diag
+			if d then diag.schedule_edited(d, train_e.id, train, player_index) end
+		end
 	end
 end
 

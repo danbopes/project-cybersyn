@@ -75,7 +75,9 @@ local stats = require("scripts.stats")
 -- Bumped whenever a fork release adds storage fields an existing save must get before its first planner tick.
 -- 1: diagnostics (storage.diag per setting, storage.acks), Train.in_interrupt/last_state/state_tick, the
 -- available-train counters and the cycle fields of storage.stats.
-local SCHEMA = 1
+-- 2: the diagnostics sweep and ring fields (cycles, item_served, preallocated columns), the planner-cycle counters
+-- and refuel_since of storage.stats.
+local SCHEMA = 2
 
 local fork_migrations = {}
 

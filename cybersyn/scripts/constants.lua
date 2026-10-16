@@ -244,3 +244,83 @@ DIAG_ACK_END_EXPIRED = 1
 DIAG_ACK_END_REASON_CHANGED = 2
 DIAG_ACK_END_RESOLVED = 3
 DIAG_ACK_END_MANUAL = 4
+
+-- Setup lint (scripts/lint.lua, PLAN3 §4.12). A check is an index 1..LINT_COUNT; its bit in a subject's mask is
+-- LINT_BIT[check]. Acknowledgements and the lint ring event (`a`) carry the index. The world-scan checks are found
+-- only by the on-demand entity search; the others by the chunked job over storage and the snapshot.
+LINT_CAPACITY = 1
+LINT_LAYOUT = 2
+LINT_MASK = 3
+LINT_NO_PROVIDER = 4
+LINT_LIMIT_ZERO = 5
+LINT_SAME_ITEM = 6
+LINT_OCCUPANCY = 7
+LINT_PHANTOM = 8
+LINT_DEPOT_LIMIT = 9
+LINT_DEPOT_SHARED_NAME = 10
+LINT_REFUELER_MASK = 11
+LINT_NEVER_REFUELLED = 12
+LINT_IN_GROUP = 13
+LINT_MISSING_STOP = 14
+LINT_CAPACITY_DRIFT = 15
+LINT_DERELICT_COMB = 16
+LINT_GHOST_COMB = 17
+LINT_NO_COMB = 18
+LINT_WRONG_SIDE = 19
+LINT_DOUBLE_COMB = 20
+LINT_PRIORITY = 21
+LINT_NAME_OVERLAP = 22
+LINT_COUNT = 22
+LINT_NAMES = {
+	"capacity", "layout", "mask", "no_provider", "limit_zero", "same_item", "occupancy", "phantom", "depot_limit",
+	"depot_shared_name", "refueler_mask", "never_refuelled", "in_group", "missing_stop", "capacity_drift",
+	"derelict_comb", "ghost_comb", "no_comb", "wrong_side", "double_comb", "priority", "name_overlap",
+}
+LINT_BY_NAME = {}
+--- Locale key suffix per check: [cybersyn-diag] lint-<key> (caption) and lint-fix-<key> (fix line).
+LINT_KEYS = {}
+LINT_BIT = {}
+for check, name in ipairs(LINT_NAMES) do
+	LINT_BY_NAME[name] = check
+	LINT_KEYS[check] = string.gsub(name, "_", "-")
+	LINT_BIT[check] = 2 ^ (check - 1)
+end
+--- The reason code a check predicts (PLAN3 §4.12); nil for checks about setups the dispatcher has no reason for.
+LINT_PREDICTS = {
+	[LINT_CAPACITY] = REASON_CAPACITY,
+	[LINT_LAYOUT] = REASON_R_LAYOUT,
+	[LINT_MASK] = REASON_MASK_MISMATCH,
+	[LINT_NO_PROVIDER] = REASON_NO_PROVIDER,
+	[LINT_LIMIT_ZERO] = REASON_R_DISABLED,
+	[LINT_SAME_ITEM] = REASON_R_IS_PROVIDING,
+	[LINT_OCCUPANCY] = REASON_R_AT_LIMIT,
+	[LINT_PHANTOM] = REASON_R_AT_LIMIT,
+	[LINT_CAPACITY_DRIFT] = REASON_CAPACITY,
+}
+--- DIAG_SEV_* per check: the ones that guarantee a request is never served are errors.
+LINT_SEVERITY = {}
+for check = 1, LINT_COUNT do LINT_SEVERITY[check] = DIAG_SEV_WARNING end
+LINT_SEVERITY[LINT_CAPACITY] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_LAYOUT] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_MASK] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_NO_PROVIDER] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_PHANTOM] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_NEVER_REFUELLED] = DIAG_SEV_INFO
+LINT_SEVERITY[LINT_PRIORITY] = DIAG_SEV_ERROR
+LINT_SEVERITY[LINT_DOUBLE_COMB] = DIAG_SEV_ERROR
+LINT_SUBJECT_STATION = 1
+LINT_SUBJECT_DEPOT = 2
+LINT_SUBJECT_REFUELER = 3
+LINT_SUBJECT_TRAIN = 4
+LINT_SUBJECT_STOP = 5
+LINT_SUBJECT_COMBINATOR = 6
+LINT_SUBJECT_NAMES = { "station", "depot", "refueler", "train", "stop", "combinator" }
+-- `code` of a lint event: the finding appeared or cleared.
+DIAG_LINT_APPEARED = 1
+DIAG_LINT_CLEARED = 2
+
+-- `a` of a manual_action event: what a state-changing command or action did.
+ACTION_FIX_PRIORITIES = 1
+ACTION_ABOLISH_SAME_DEPOT = 2
+ACTION_RECALCULATE_TRAIN_SIZE = 3
+ACTION_NAMES = { "fix_priorities", "abolish_same_depot", "recalculate_train_size" }

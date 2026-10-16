@@ -32,6 +32,7 @@
 ---@field public acks {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}}? acknowledgements (PLAN3 §4.13); kept while diagnostics are off
 ---@field public diag_verify_interrupt {checks: int, mismatches: int}? lab flag DIAG_VERIFY_INTERRUPT: tick_dispatch compares Train.in_interrupt with the live schedule
 ---@field public fork_schema int? last schema step of scripts/fork-migrations.lua this save went through
+---@field public alert_dedupe {cycle: int, sent: int, keys: {[string]: table}}? per-(item, network) no-train alerts of the planner cycle (B6), see central-planning.lua
 
 ---@class PerfCache
 ---@field public se_get_space_elevator_name {}?
@@ -141,7 +142,8 @@
 ---@field public last_state defines.train_state? LuaTrain.state at the last on_train_changed_state
 ---@field public state_tick uint? when last_state began (the load tick for trains that predate the field)
 ---@field public delivery_id uint? id of the current delivery in the full diagnostics log
----@field public refuel_tick uint? last arrival at a refueler (written from phase 2b; nil = never seen refuelling)
+---@field public refuel_tick uint? last arrival at a refueler (nil = never seen refuelling)
+---@field public edited_tick uint? last schedule edit by a player that the diagnostics log recorded
 
 ---@alias Manifest ManifestEntry[]
 ---@class ManifestEntry
@@ -204,6 +206,7 @@
 ---@field public fuel_threshold double
 ---@field public allow_cargo_in_depot boolean
 ---@field public alert_unexpected_cargo boolean
+---@field public cargo_tolerance double percent of a fluid manifest that may be short or left aboard before the diagnostics log it
 ---@field public missing_train_alert_enabled boolean --interface setting
 ---@field public stuck_train_alert_enabled boolean --interface setting
 ---@field public react_to_train_at_incorrect_station boolean --interface setting

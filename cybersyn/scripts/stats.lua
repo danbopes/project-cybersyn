@@ -36,8 +36,10 @@ stats.HOUR = HOUR
 --- @field minute {[int]: StatsBucket} ring of one-minute buckets
 --- @field hour {[int]: StatsBucket} ring of one-hour buckets
 --- @field totals {deliveries: int, dispatches: int, items: int, since_tick: uint}
---- @field cycle {ema_seconds: number?, ticks_last: uint, dispatches_last: int, calls_last: int} the planner-cycle
----   figures (ticks_last, dispatches_last, calls_last) are declared here and written from phase 2b on
+--- @field cycle {ema_seconds: number?, ticks_last: uint, dispatches_last: int, calls_last: int, start_tick: uint?, dispatches_run: int, calls_run: int}
+---   the last complete planner cycle (B5): its length in ticks, deliveries created and tick_dispatch calls, from
+---   integer counters the planner bumps outside its loops (*_run, rolled over at tick_init)
+--- @field refuel_since uint tick from which Train.refuel_tick is recorded (older saves did not track refuelling)
 --- @field available_count {[string]: int} available trains per network, kept equal to the sizes of
 ---   storage.available_trains by add_available_train / remove_available_train
 
@@ -47,8 +49,9 @@ local function new_stats()
 		minute = {},
 		hour = {},
 		totals = { deliveries = 0, dispatches = 0, items = 0, since_tick = game and game.tick or 0 },
-		cycle = { ema_seconds = nil, ticks_last = 0, dispatches_last = 0, calls_last = 0 },
+		cycle = { ema_seconds = nil, ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 },
 		available_count = {},
+		refuel_since = game and game.tick or 0,
 	}
 end
 
@@ -71,7 +74,10 @@ local function get()
 	s.cycle.ticks_last = s.cycle.ticks_last or 0
 	s.cycle.dispatches_last = s.cycle.dispatches_last or 0
 	s.cycle.calls_last = s.cycle.calls_last or 0
+	s.cycle.dispatches_run = s.cycle.dispatches_run or 0
+	s.cycle.calls_run = s.cycle.calls_run or 0
 	s.available_count = s.available_count or {}
+	s.refuel_since = s.refuel_since or game.tick
 	return s
 end
 
@@ -214,6 +220,33 @@ function stats.record_dispatch(train)
 	local h = bucket(s.hour, HOUR_SLOTS, HOUR, tick)
 	h.dispatches = h.dispatches + 1
 	s.totals.dispatches = s.totals.dispatches + 1
+	local cycle = s.cycle
+	cycle.dispatches_run = cycle.dispatches_run + 1
+end
+
+--- tick_dispatch calls made in one planner tick.
+--- @param n int
+function stats.count_calls(n)
+	local s = storage.stats
+	if not s then return end
+	local cycle = s.cycle
+	cycle.calls_run = (cycle.calls_run or 0) + n
+end
+
+--- tick_init: the cycle that just ended becomes the last one.
+--- @param tick uint
+function stats.cycle_start(tick)
+	local s = storage.stats
+	if not s then return end
+	local cycle = s.cycle
+	if cycle.start_tick then
+		cycle.ticks_last = tick - cycle.start_tick
+		cycle.dispatches_last = cycle.dispatches_run
+		cycle.calls_last = cycle.calls_run
+	end
+	cycle.start_tick = tick
+	cycle.dispatches_run = 0
+	cycle.calls_run = 0
 end
 
 --- @param b StatsBucket
