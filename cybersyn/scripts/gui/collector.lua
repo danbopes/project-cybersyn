@@ -942,8 +942,12 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	st.read_tick = game.tick
 	-- The lint job's last result for this stop, which outlives the snapshot (a reopened window shows it at once).
 	st.lint = lint.bits_of(id)
-	local throttled = b.throttled
-	st.throttling = throttled ~= nil and throttled[id] == true
+	-- A live single-station read (relative panel while the collector is released) has no pass buffer and keeps the
+	-- flag from the last pass: the throttled set is one walk over every unserved entry, not a per-station lookup.
+	if b then
+		local throttled = b.throttled
+		st.throttling = throttled ~= nil and throttled[id] == true
+	end
 	local n_unserved, worst, oldest = diag.unserved_summary(id)
 	if n_unserved > 0 then
 		local u = st.unserved
