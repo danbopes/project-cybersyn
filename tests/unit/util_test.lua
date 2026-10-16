@@ -848,6 +848,35 @@ test("sync_table_rows: cells changed behind its back force a rebuild below the h
 	assert_eq(log, {})
 end)
 
+test("sync_table_rows: rows that can rebind are rewritten in place past the first difference, not rebuilt", function()
+	local u = util()
+	local tbl = header_table()
+	local state, log = {}, {}
+	local function rows(keys)
+		local out = table_rows(keys, log)
+		for _, e in ipairs(out) do
+			e.rebind = function(cells, _, index) log[#log + 1] = "rebind " .. e.key .. "@" .. index .. ":" .. cells[1].name end
+		end
+		return out
+	end
+	u.sync_table_rows(tbl, 2, 2, rows({ "a", "b", "c" }), state)
+	H.gui_log = {}
+	log = {}
+	-- "b" left: "c" takes b's elements, the last row's go.
+	assert_eq(u.sync_table_rows(tbl, 2, 2, rows({ "a", "c" }), state), "rebuilt")
+	assert_eq(log, { "a@1:a1,a2", "rebind c@2:b1" })
+	assert_eq(child_names(tbl), { "h1", "h2", "a1", "a2", "b1", "b2" })
+	assert_eq(H.count_ops("add"), 0)
+	assert_eq(H.count_ops("destroy"), 2)
+	assert_eq(state.keys, { "a", "c" })
+	-- One more row than before: the new last one is built.
+	H.gui_log = {}
+	log = {}
+	u.sync_table_rows(tbl, 2, 2, rows({ "a", "c", "d" }), state)
+	assert_eq(H.count_ops("add"), 2)
+	assert_eq(log, { "a@1:a1,a2", "c@2:b1,b2" })
+end)
+
 -- ------------------------------------------------------------------ pager, sort header
 
 test("pager_click: steps, shift steps of 10, clamps at 1, last and first", function()

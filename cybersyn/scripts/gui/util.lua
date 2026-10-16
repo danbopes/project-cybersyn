@@ -1535,7 +1535,19 @@ function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 	for i = 1, prefix do
 		update(entries[i], i, i)
 	end
-	for j = #children, first + prefix * columns + 1, -1 do
+	-- Rows past the common prefix are rebound in place when their entries can (`rebind` rewrites every cell, tags
+	-- included): removing one row then rewrites the rows below it instead of destroying and building them again.
+	local reuse = prefix
+	local old_n = old and #old or 0
+	while reuse < math.min(old_n, n) and entries[reuse + 1].rebind do reuse = reuse + 1 end
+	for i = prefix + 1, reuse do
+		local entry = entries[i]
+		local cells = {}
+		local base = first + (i - 1) * columns
+		for c = 1, columns do cells[c] = children[base + c] end
+		entry.rebind(cells, entry, i)
+	end
+	for j = #children, first + reuse * columns + 1, -1 do
 		children[j].destroy()
 	end
 	local new_sigs = {}
@@ -1543,7 +1555,11 @@ function util.sync_table_rows(tbl, columns, first, entries, state, hold)
 		local key = keys[i]
 		new_sigs[key] = sigs[key]
 	end
-	for i = prefix + 1, n do
+	for i = prefix + 1, reuse do
+		local entry = entries[i]
+		if entry.sig ~= nil then new_sigs[entry.key] = entry.sig end
+	end
+	for i = reuse + 1, n do
 		local entry = entries[i]
 		for _, def in ipairs(entry.build()) do
 			gui.add(tbl, def)

@@ -817,8 +817,8 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 	end
 	-- Escape with an overlay open closes the overlay. This event cannot tell Escape from another GUI replacing the
 	-- window (an entity clicked in the world, the map, another mod), and taking player.opened back here would take it
-	-- from that GUI. So the window gets player.opened back on a later tick (manager.settle_escapes), unless a GUI opens
-	-- or the controller changes first (manager.interrupt_escape): then an unpinned window closes as it did before the
+	-- from that GUI. So the window gets player.opened back on a later tick (manager.settle_pane_escapes), unless a GUI
+	-- opens or the controller changes first (manager.interrupt_pane_escape): then an unpinned window closes as it did before the
 	-- overlay (a pane's train stays selected), and a pinned one stays without player.opened.
 	local kind, train = peel_overlay(player, player_data)
 	if kind then
@@ -1073,10 +1073,11 @@ function manager.focus_search(player, player_data)
 	manager.refresh_search_fields(player_data)
 	local field = player_data.refs[player_data.selected_tab .. "_search_field"]
 	if field and field.valid then
+		player_data.search_focused = true
+		-- Before the focus: taking player.opened must not take the keyboard from the field again.
+		manager.overlay_opened(player, player_data)
 		field.focus()
 		field.select_all()
-		player_data.search_focused = true
-		manager.overlay_opened(player, player_data)
 	end
 	manager.render(player, player_data)
 end

@@ -142,14 +142,21 @@ lab.suite("36_window", {
 		local before = count()
 		lab.check("a station without a lint finding exists to mark by hand", id ~= nil, { flagged = before })
 		if not id then return end
-		remote.call("cybersyn", "write_global", 5, "manager", "snapshot", "stations", id, "lint")
+		-- As lint writes a mask (set_station_lint): the record, then the collector's change log the per-player counts
+		-- follow.
+		local function mark(mask)
+			remote.call("cybersyn", "write_global", mask, "manager", "snapshot", "stations", id, "lint")
+			local ids = lab.read("manager").collect_log.ids
+			remote.call("cybersyn", "write_global", id, "manager", "collect_log", "ids", #ids + 1)
+		end
+		mark(5)
 		local d = overview()
 		local n = count()
 		lab.check("misconfigured == stations with st.lint ~= 0", d.tiles.failing.misconfigured == n and n == before + 1,
 			{ tile = d.tiles.failing.misconfigured, lint = n, before = before })
 		local tip = serpent.line(d.rendered_tiles.failing.tooltip, { comment = false })
 		lab.check("failing tooltip splits misconfigured by check, named by the check caption", string.find(tip, "overview-failing-lint-check", 1, true) ~= nil and string.find(tip, "cybersyn-diag.lint-", 1, true) ~= nil, tip)
-		remote.call("cybersyn", "write_global", 0, "manager", "snapshot", "stations", id, "lint")
+		mark(0)
 		d = overview()
 		lab.check("misconfigured back to the lint job's own count once the hand-written finding is cleared",
 			d.tiles.failing.misconfigured == before and count() == before, { tile = d.tiles.failing, before = before })

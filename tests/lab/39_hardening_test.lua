@@ -58,6 +58,8 @@ lab.suite("39_hardening", {
 	-- One rule for every overlay, pinned window (dev open pins it): an overlay takes player.opened, Escape peels the top
 	-- one and the window takes player.opened back while another overlay remains, then gives it up.
 	function(ctx)
+		-- A window an earlier suite left open unpinned still holds player.opened; this case starts from a fresh one.
+		dev("close", PI)
 		dev("open", PI)
 		lab.big_screen(PI)
 		dev("select_tab", PI, "inventory")
@@ -300,6 +302,94 @@ lab.suite("39_hardening", {
 		dev("set_setting", "cybersyn-diagnostics", "basic")
 		dev("set_setting", "cybersyn-manager-actions", setting)
 		lab.check("diagnostics back on", dev("diag_state").mode == "basic")
+	end,
+
+	-- The drill-down's Requesters order against the dispatcher's real choice on a same-priority tie: two requesters of
+	-- priority 0, the one whose last delivery is older must get the train, and the drill-down must list it first.
+	function(ctx)
+		local ok, case = pcall(function()
+			local c = cases.base("TIEBREAK", { k = 74 }, { network = "signal-4" })
+			c.p = cases.station(c, { name = cases.sname(c, "p"), x = cases.X_P[1], bits = 1 + 4 })
+			c.a = cases.station(c, { name = cases.sname(c, "a"), x = cases.X_R[1], bits = 2 + 4 })
+			c.b = cases.station(c, { name = cases.sname(c, "b"), x = cases.X_R[2], bits = 2 + 4 })
+			return cases.finish(c)
+		end)
+		lab.check("same-priority tie scenario builds", ok, case)
+		if not ok then return end
+		ctx.tie = case
+		lab.wait_until(function() return cases.trains_ready(case) end, 3600, 50)
+	end,
+	function(ctx)
+		local case = ctx.tie
+		if not case then return end
+		lab.check("tie: train parked", cases.trains_ready(case))
+		-- b served recently, a long ago: the dispatcher takes a (central-planning: equal priority, older last delivery).
+		remote.call("cybersyn", "write_global", 10, "stations", case.a.id, "last_delivery_tick")
+		remote.call("cybersyn", "write_global", game.tick, "stations", case.b.id, "last_delivery_tick")
+		cases.set_signals(case.p, cases.provide(case, 2000))
+		cases.set_signals(case.a, cases.request(case, -2000, 1000))
+		cases.set_signals(case.b, cases.request(case, -2000, 1000))
+		lab.wait_until(function()
+			local t = read("trains", case.trains[1])
+			return t ~= nil and t.r_station_id ~= nil
+		end, 4800, 50)
+	end,
+	function(ctx)
+		local case = ctx.tie
+		if not case then return end
+		local t = read("trains", case.trains[1])
+		lab.check("tie: the dispatcher sent the train to the requester with the older last delivery",
+			t and t.r_station_id == case.a.id, { r = t and t.r_station_id, a = case.a.id, b = case.b.id })
+		dev("open", PI)
+		dev("collect")
+		dev("select_tab", PI, "inventory")
+		local d = dev("open_item", PI, case.item)
+		d = dev("item_dump", PI)
+		local pos = {}
+		for i, r in ipairs(d.model and d.model.requesters or {}) do pos[r.id] = i end
+		lab.check("tie: the drill-down lists that requester before the other (dispatcher order)",
+			pos[case.a.id] ~= nil and pos[case.b.id] ~= nil and pos[case.a.id] < pos[case.b.id],
+			{ a = pos[case.a.id], b = pos[case.b.id] })
+		dev("close_item", PI)
+		dev("select_tab", PI, "overview")
+		case.cleanup()
+	end,
+
+	-- The Overview's Stations failing counts follow the collector's change log: a station switched off (train limit 0)
+	-- and back is counted and uncounted as a walk of every record counts it.
+	function(ctx)
+		dev("open", PI)
+		dev("collect")
+		dev("select_tab", PI, "overview")
+		dev("update", PI)
+		local o = dev("overview_failing_oracle", PI)
+		lab.check("failing counts: cache equals a walk after the first render", o.same, o)
+		local id
+		for sid in pairs(read("stations")) do
+			local status = read("manager", "snapshot", "stations", sid, "status")
+			if status ~= "no_power" and status ~= "disabled" then
+				id = sid
+				break
+			end
+		end
+		if not id then
+			lab.check("failing counts: a station to switch off", false)
+			return
+		end
+		-- The station's own limit (its train-limit signal, read on the station's poll), which the collector copies.
+		local limit = read("stations", id, "trains_limit")
+		local before = o.cached.disabled
+		remote.call("cybersyn", "write_global", 0, "stations", id, "trains_limit")
+		dev("collect")
+		dev("update", PI)
+		o = dev("overview_failing_oracle", PI)
+		lab.check("failing counts: the switched-off station counts as disabled, as a walk counts it",
+			o.same and o.cached.disabled == before + 1, o)
+		remote.call("cybersyn", "write_global", limit, "stations", id, "trains_limit")
+		dev("collect")
+		dev("update", PI)
+		o = dev("overview_failing_oracle", PI)
+		lab.check("failing counts: switched back on, uncounted again", o.same and o.cached.disabled == before, o)
 	end,
 
 	-- The growth sampler answers with every field the phase-7 growth gate reads.
