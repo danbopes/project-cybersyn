@@ -31,7 +31,7 @@ local PADDING = 12
 -- Inside the body's padding, leaving room for the scroll bar a tall panel gets (relative.fit).
 local INNER = WIDTH - 2 * PADDING - 12
 -- An unserved row: item 28, the chip, stock and wait, 6 px apart; the chip takes what the numbers leave.
-local UNSERVED_STOCK, UNSERVED_WAIT, UNSERVED_GAP = 76, 44, 6
+local UNSERVED_STOCK, UNSERVED_WAIT, UNSERVED_GAP = 60, 52, 6
 local UNSERVED_CHIP = INNER - 28 - UNSERVED_STOCK - UNSERVED_WAIT - 3 * UNSERVED_GAP
 -- One mount per window the panel sits beside: the stop's, the locomotive's (the docked train pane: a screen frame) and
 -- each wagon's own window (anchored to it).
