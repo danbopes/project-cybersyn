@@ -57,9 +57,9 @@ local FLEET_TTL = 7200
 local LIVE_READ_TICKS = 120
 -- Ring rows the "Last events" scan examines per refresh after the first (diag.last_for_step): about 0.31 µs each inside
 -- the real tick on pY 123's full rings, so 0.05 ms beside the rest of the panel's 0.06-0.09 ms (live reads with the
--- window closed; a refresh with a live read scans half). At 256 the p90 of a refresh was 0.21-0.30 ms. A stop with
--- few events (most of a big base) is scanned through both full rings (20k rows) in about 125 refreshes, "Scanning…"
--- until then.
+-- window closed, when the scan takes half). At 256 the p90 of a refresh was 0.21-0.30 ms. A stop with few events (most
+-- of a big base) is scanned through both full rings (20k rows) in about 125 refreshes (250 with the window closed),
+-- "Scanning…" until then.
 local EVENT_SCAN_ROWS = 160
 local WAIT_SIGNAL = defines.train_state.wait_signal
 
@@ -1273,8 +1273,8 @@ local function render_events(state, body, kind, id, shown)
 	end
 	-- The refresh that opens the panel scans diag.SCAN_ROWS at once (a one-off, like the fleet walk's burst); later
 	-- refreshes go on EVENT_SCAN_ROWS at a time.
-	-- A refresh that read the stop live (window closed) has spent part of the budget already: half the rows then.
-	local rows = diag.last_for_step(cursor, not first_scan and (state.read and EVENT_SCAN_ROWS / 2 or EVENT_SCAN_ROWS) or nil)
+	-- A stop panel without a manager snapshot (state.st: live reads of the stop) spends more per refresh: half the rows.
+	local rows = diag.last_for_step(cursor, not first_scan and (state.st and EVENT_SCAN_ROWS / 2 or EVENT_SCAN_ROWS) or nil)
 	local now = game.tick
 	shown = shown or EVENTS
 	-- The rows change only when the cursor's newest row or its first row does; their ages are rewritten in place
