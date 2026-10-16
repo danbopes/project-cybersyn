@@ -657,7 +657,8 @@ function util.train_passes(tr, f, ignore_item)
 end
 
 --- Text search on trains matches the names of the depot and of the current provider and requester, so searching
---- for a station also finds the trains serving it.
+--- for a station also finds the trains serving it; a term "#<id>" also matches the train with that id (the stop
+--- panel's "Open in manager").
 --- @param tr SnapshotTrain
 --- @param terms string[] lowercase
 --- @return boolean
@@ -668,9 +669,10 @@ function util.train_terms_pass(tr, terms)
 	local r = tr.r_station_id and stations[tr.r_station_id]
 	p = p and p.name_lower
 	r = r and r.name_lower
+	local id_term = "#" .. tostring(tr.id)
 	for i = 1, #terms do
 		local term = terms[i]
-		if not ((depot and string.find(depot, term, 1, true))
+		if not (term == id_term or (depot and string.find(depot, term, 1, true))
 				or (p and string.find(p, term, 1, true))
 				or (r and string.find(r, term, 1, true))) then
 			return false
