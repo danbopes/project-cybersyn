@@ -63,12 +63,14 @@ local CHIP_ICON = {
 	stuck = "item/locomotive",
 	failing = "utility/danger_icon",
 }
--- Widths of the chips with their names at the default font (English, measured on screenshots at UI scale 1.0), so the
--- subheader can fall back to icon and count before it overflows.
+-- Widths of the chips with their names and a one-digit count at the default font (English, measured on a screenshot at
+-- UI scale 1.0), so the subheader can fall back to icon and count before it overflows.
 local CHIP_WIDTH = {
-	all = 52, no_power = 96, disabled = 88, warming_up = 112, starved = 84, saturated = 96, idle = 60, ok = 52,
-	unserved = 96, setup = 72, stuck = 104, failing = 80,
+	all = 50, no_power = 110, disabled = 108, warming_up = 125, starved = 92, saturated = 114, idle = 75, ok = 72,
+	unserved = 114, setup = 89, stuck = 119, failing = 98,
 }
+-- Each further digit of a count, separators included.
+local DIGIT_WIDTH = 8
 
 local COLUMNS = { "name", "station_status", "network", "provided_requested", "deliveries", "wait", "last_delivery" }
 local RIGHT = { wait = true, last_delivery = true }
@@ -1029,15 +1031,23 @@ function stations_tab.chip_space(player_data, tab)
 	return space
 end
 
-local FULL_CHIPS = 0
-for _, key in ipairs(CHIP_ORDER) do FULL_CHIPS = FULL_CHIPS + CHIP_WIDTH[key] + 4 end
+--- Width the chips need with their names, for these counts.
+--- @param counts {[string]: int}
+--- @return int
+local function full_chips_width(counts)
+	local w = 0
+	for _, key in ipairs(CHIP_ORDER) do
+		w = w + CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(counts[key] or 0) - 1)
+	end
+	return w
+end
 
 --- Chips: counts over the filtered set, click to show only that set, click again for all.
 local function render_chips(player_data, counts, state)
 	local flow = chip_flow(player_data)
 	if not flow then return end
 	local wanted = active_chip(player_data) or "all"
-	local compact = logic.chip_mode(stations_tab.chip_space(player_data, TAB), FULL_CHIPS) == "compact"
+	local compact = logic.chip_mode(stations_tab.chip_space(player_data, TAB), full_chips_width(counts)) == "compact"
 	local entries = {}
 	for i, key in ipairs(CHIP_ORDER) do
 		local count = counts[key]
@@ -1078,6 +1088,10 @@ local function sync_header(player_data, w, column, ascending)
 	local header = player_data.refs[HEADER]
 	if not (header and header.valid) then return false end
 	local state = util.gui_state(player_data, HEADER)
+	-- A rebuilt window has a new header built with the default widths.
+	if state.index ~= header.index then
+		state.cw, state.sort, state.index = nil, nil, header.index
+	end
 	local changed = state.cw ~= w.cw
 	if changed then
 		for i, cell in ipairs(header.children) do
@@ -1196,7 +1210,7 @@ function stations_tab.build(map_data, player_data)
 	state.result = result
 
 	if summary and summary.valid then
-		local sig = counts.all .. "|" .. #rows
+		local sig = counts.all .. "|" .. #rows .. "|" .. summary.index
 		if state.summary ~= sig then
 			summary.caption = { "cybersyn-gui.stations-summary", format.number(#rows), format.number(counts.all) }
 			state.summary = sig

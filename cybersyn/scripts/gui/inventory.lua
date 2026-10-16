@@ -23,9 +23,9 @@ local GRID_INNER = 16
 local SLOT_ROW = 40
 local TOP_N = 5
 local WAIT_SIG_TICKS = 600
--- A completed pass changes a few hundred buttons on a large base; each costs ~15 us (tooltip rebuild plus API
--- writes), so they are spread over renders rather than landing on one tick.
-local BACKGROUND_UPDATE_BUDGET = 100
+-- A completed pass changes a few hundred buttons on a large base; each costs 40-60 us on pY 123 (tooltip rebuild plus
+-- API writes), so they are spread over renders rather than landing on one tick.
+local BACKGROUND_UPDATE_BUDGET = 60
 -- Below this a whole refresh is cheap, and a pass may complete on every render, which spreading would starve.
 local SPREAD_MIN_STATIONS = 300
 
@@ -847,7 +847,9 @@ end
 local function sync_buttons(player_data, columns)
 	local refs = player_data.refs
 	local state = util.gui_state(player_data, "inventory_buttons")
-	local sig = (player_data.inventory_dim and "d" or "") .. "|" .. columns.provided .. "|" .. columns.in_transit .. "|" .. columns.requested
+	local dim = refs.inventory_dim_button
+	local sig = (player_data.inventory_dim and "d" or "") .. "|" .. columns.provided .. "|" .. columns.in_transit .. "|"
+		.. columns.requested .. "|" .. (dim and dim.valid and dim.index or "")
 	if state.sig == sig then return end
 	state.sig = sig
 	for _, grid in ipairs(GRIDS) do
@@ -856,7 +858,6 @@ local function sync_buttons(player_data, columns)
 			if button and button.valid then button.toggled = columns[grid] == column end
 		end
 	end
-	local dim = refs.inventory_dim_button
 	if dim and dim.valid then dim.toggled = player_data.inventory_dim == true end
 end
 

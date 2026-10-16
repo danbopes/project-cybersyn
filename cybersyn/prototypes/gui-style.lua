@@ -1047,11 +1047,14 @@ styles.cybersyn_sort_tool_button_selected = {
 styles.cybersyn_slot_32_count = {
 	type = "label_style",
 	parent = "count_label",
-	size = 32,
-	width = 32,
+	height = 32,
+	-- The label starts after the slot button's own padding, so it is narrower than the button.
+	width = 29,
 	horizontal_align = "right",
 	vertical_align = "bottom",
-	right_padding = 2,
+	right_padding = 0,
 	bottom_padding = 1,
+	-- The count font overflows a 32 px slot at UI scale 2.0 ("-4.2k"); one size down fits at every scale.
+	font = "default-tiny-bold",
 	parent_hovered_font_color = { 1, 1, 1 },
 }

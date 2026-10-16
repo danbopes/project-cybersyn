@@ -61,12 +61,23 @@ local NETWORK_COLUMNS = 3
 
 local TRAIN_CHIPS = { "all", "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
 	"not_refuelled", "in_group", "trouble" }
+-- Widths of the chips with their names and a one-digit count (English, measured at UI scale 1.0); each further digit
+-- adds DIGIT_WIDTH. The group toggle takes 32 more.
 local CHIP_WIDTH = {
-	all = 52, parked = 72, to_p = 100, loading = 76, to_r = 112, unloading = 88, returning = 88, refuel = 92,
-	interrupt = 96, not_refuelled = 136, in_group = 88, trouble = 84,
+	all = 46, parked = 75, to_p = 98, loading = 78, to_r = 106, unloading = 92, returning = 92, refuel = 95,
+	interrupt = 99, not_refuelled = 145, in_group = 123, trouble = 91,
 }
-local FULL_CHIPS = 40
-for _, key in ipairs(TRAIN_CHIPS) do FULL_CHIPS = FULL_CHIPS + CHIP_WIDTH[key] + 4 end
+local DIGIT_WIDTH = 8
+
+--- @param counts {[string]: int}
+--- @return int
+local function full_chips_width(counts)
+	local w = 32
+	for _, key in ipairs(TRAIN_CHIPS) do
+		w = w + CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(counts[key] or 0) - 1)
+	end
+	return w
+end
 
 local ALERT_MESSAGE = {
 	[1] = "cybersyn-messages.stuck-train",
@@ -765,7 +776,7 @@ local function build_row(view, color, w, hidden)
 			style = "cybersyn_train_id_button",
 			style_mods = { width = w.train_id },
 			caption = tostring(view.id),
-			tooltip = { "", { "cybersyn-gui.trains-open-train-tooltip" }, "\n", util.LINK_FOOTER },
+			tooltip = { "cybersyn-gui.trains-open-train-tooltip" },
 			tags = { kind = "train", id = view.id },
 			mouse_button_filter = { "left" },
 			handler = { [defines.events.on_gui_click] = util.handle.link_click },
@@ -1109,7 +1120,7 @@ local function render_chips(player_data, counts, hours)
 	local toggle = player_data.refs.manager_trains_group_toggle
 	if toggle and toggle.valid then toggle.toggled = player_data.trains_group_by_depot == true end
 	local wanted = active_chip(player_data) or "all"
-	local compact = logic.chip_mode(chip_space(player_data), FULL_CHIPS) == "compact"
+	local compact = logic.chip_mode(chip_space(player_data), full_chips_width(counts)) == "compact"
 	local entries = {}
 	for i, key in ipairs(TRAIN_CHIPS) do
 		local count = counts[key] or 0
@@ -1218,6 +1229,10 @@ local function sync_header(player_data, w, hidden, tooltip, tip_sig, column, asc
 	local header = player_data.refs[HEADER]
 	if not (header and header.valid) then return false end
 	local state = util.gui_state(player_data, HEADER)
+	-- A rebuilt window has a new header built without widths.
+	if state.index ~= header.index then
+		state.layout, state.sort, state.tip, state.index = nil, nil, nil, header.index
+	end
 	local layout_sig = w.cw
 	for _, c in ipairs(COLUMNS) do layout_sig = layout_sig .. (hidden[c] and "h" or "") .. "|" .. (w[c] or 0) end
 	local changed = state.layout ~= layout_sig
@@ -1394,7 +1409,7 @@ function trains_tab.build(map_data, player_data)
 
 	local summary = refs.manager_trains_tab_summary
 	if summary and summary.valid then
-		local sig = #rows .. "|" .. #ctx.all .. "|" .. tostring(grouped)
+		local sig = #rows .. "|" .. #ctx.all .. "|" .. tostring(grouped) .. "|" .. summary.index
 		if state.summary_sig ~= sig then
 			summary.caption = { "cybersyn-gui.trains-summary", format.number(#rows), format.number(#ctx.all) }
 			state.summary_sig = sig
