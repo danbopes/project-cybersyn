@@ -35,6 +35,26 @@ test("allocate: shrinkable columns give width to the flexible one down to their 
 	assert_eq(l.allocate(cols, nil, 300, "status", 200), { id = 60, ship = 96, status = 144 })
 end)
 
+test("table_width: the detail pane and its gap come off the content width", function()
+	local l = logic()
+	assert_eq(l.table_width(1392, false), 1392)
+	assert_eq(l.table_width(1392, true), 1392 - 332)
+	assert_eq(l.PANE_WIDTH + l.PANE_GAP, 332)
+end)
+
+test("shrink_first: the moved column gives up its width before the others", function()
+	local l = logic()
+	local cols = { { "id", 60 }, { "status", 0 }, { "net", 100, min = 60 }, { "ship", 192, min = 96 } }
+	local moved = l.shrink_first(cols, "ship")
+	assert_eq(moved[1][1], "ship")
+	assert_eq(#moved, 4)
+	assert_eq(cols[1][1], "id", "the input keeps its order")
+	-- 100 px short: list order takes 40 from net first; shrink_first takes 96 from ship and only the last 4 from net.
+	assert_eq(l.allocate(cols, nil, 552, "status", 300), { id = 60, net = 60, ship = 132, status = 300 })
+	assert_eq(l.allocate(moved, nil, 552, "status", 300), { id = 60, net = 96, ship = 96, status = 300 })
+	assert_eq(l.allocate(moved, nil, 652, "status", 300), { id = 60, net = 100, ship = 192, status = 300 })
+end)
+
 test("fit_slots: one line, the last slot turns into the overflow count", function()
 	local l = logic()
 	assert_eq({ l.fit_slots(5, 12) }, { 5, 0 })
@@ -175,6 +195,26 @@ test("train chips: every caption key, full and compact, in every manager.cfg", f
 	assert_eq(l.train_chip_locale("to_p", true), "cybersyn-gui.trains-chip-to-p-short")
 	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
 		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
+		local text = f:read("*a")
+		f:close()
+		for _, k in ipairs(keys) do
+			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
+		end
+	end
+end)
+
+test("detail pane: its locale keys in every manager.cfg, and no key the code uses is missing", function()
+	local keys = { "trains-pane-caption", "trains-pane-close-tooltip", "trains-pane-camera-tooltip" }
+	local f = assert(io.open(H.mod_root .. "/scripts/gui/trains.lua", "r"))
+	local code = f:read("*a")
+	f:close()
+	for key in code:gmatch('"cybersyn%-gui%.(trains%-pane%-[%w%-]+)"') do
+		local known = false
+		for _, k in ipairs(keys) do known = known or k == key end
+		assert_true(known, "trains.lua uses " .. key .. ", not in this list")
+	end
+	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+		f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
 		local text = f:read("*a")
 		f:close()
 		for _, k in ipairs(keys) do

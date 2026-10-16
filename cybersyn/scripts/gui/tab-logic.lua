@@ -58,6 +58,32 @@ function logic.allocate(columns, hidden, available, flex, flex_min)
 	return out
 end
 
+--- The Trains detail pane (PLAN3 §4.11) and the gap before it: the table is this much narrower while it shows.
+logic.PANE_WIDTH = 320
+logic.PANE_GAP = 12
+
+--- The width the Trains table's columns share: the tab's content width, less the detail pane while it shows.
+--- @param content_width int
+--- @param pane boolean
+--- @return int
+function logic.table_width(content_width, pane)
+	if pane then return content_width - logic.PANE_WIDTH - logic.PANE_GAP end
+	return content_width
+end
+
+--- A copy of `columns` with `key` moved to the front, so allocate takes the width a narrower table lacks from that
+--- column before any other (the Trains table gives up Shipment slots for the detail pane first).
+--- @param columns {[1]: string, [2]: int, min: int?}[]
+--- @param key string
+--- @return {[1]: string, [2]: int, min: int?}[]
+function logic.shrink_first(columns, key)
+	local out = {}
+	for _, c in ipairs(columns) do
+		if c[1] == key then table.insert(out, 1, c) else out[#out + 1] = c end
+	end
+	return out
+end
+
 --- How many slots of a one-line slot strip show items when `n` items share `capacity` slots: when they do not all
 --- fit, the last slot becomes the "+n" overflow count, so a row never wraps.
 --- @param n int

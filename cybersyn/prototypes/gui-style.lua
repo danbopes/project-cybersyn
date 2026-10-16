@@ -889,6 +889,12 @@ styles.cybersyn_station_row_light = list_row(32, true)
 styles.cybersyn_station_row_dark = list_row(32, false)
 styles.cybersyn_train_row_light = list_row(36, true)
 styles.cybersyn_train_row_dark = list_row(36, false)
+-- The train the Trains detail pane shows: the centre of the list box's hovered tile, dimmed so white captions stay
+-- readable. Centre only, like the light row: a tile with corners shifts the cells.
+styles.cybersyn_train_row_selected = list_row(36, true)
+styles.cybersyn_train_row_selected.graphical_set = {
+	base = { center = { position = { 42, 25 }, size = { 1, 1 } }, opacity = 0.4 },
+}
 -- A depot group on Trains: a subheader strip as tall as a train row.
 styles.cybersyn_group_row = {
 	type = "frame_style",

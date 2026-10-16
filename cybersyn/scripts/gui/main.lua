@@ -6,6 +6,10 @@ local collector = require("scripts.gui.collector")
 local util = require("scripts.gui.util")
 local diag = require("scripts.diag")
 local relative = require("scripts.gui.relative")
+local trains_tab = require("scripts.gui.trains")
+
+trains_tab.set_relative(relative)
+relative.set_pane_gone(trains_tab.on_pane_gone)
 
 --- @class Manager
 --- @field players table<uint, PlayerData>
@@ -127,6 +131,9 @@ function manager_gui.on_gui_closed(e)
 	player_data.handed_back_tick = game.tick
 	manager.restore_opened(player, player_data)
 end
+
+--- on_gui_click that no element handler took (scripts/main.lua): a click on a Trains row selects its train.
+manager_gui.on_unhandled_click = trains_tab.on_row_click
 
 --- Registered for every on_gui_opened (scripts/main.lua), after the entity GUI handlers of scripts/gui.lua.
 manager_gui.on_gui_opened = relative.on_gui_opened

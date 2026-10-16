@@ -269,6 +269,16 @@ function interface.click(pi, ref, index, mods)
 	})
 end
 
+--- Escape as an unpinned player presses it (on_gui_closed of the window); the pin is restored afterwards.
+function interface.escape(pi)
+	local player, pd, refs = context(pi)
+	local pinning = pd.pinning
+	pd.pinning = false
+	manager.handle.manager_closed_by_game(player, pd, refs)
+	pd.pinning = pinning
+	return state(pi)
+end
+
 --- /cybersyn-reset-gui for player `pi`.
 function interface.reset_gui(pi)
 	local player = context(pi)

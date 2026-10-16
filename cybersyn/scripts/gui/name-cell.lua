@@ -134,4 +134,16 @@ function name_cell.update(cell, parts, name, tags, width, tooltip, scope)
 	end
 end
 
+--- Gives a cell built by name_cell.def a new width in place (the Trains table narrowed by the detail pane).
+--- @param cell LuaGuiElement
+--- @param parts RichNameParts?
+--- @param width int
+--- @param shrink boolean? as name_cell.def
+function name_cell.resize(cell, parts, width, shrink)
+	local style = cell.style
+	if shrink then style.maximal_width = width else style.width = width end
+	local button = name_cell.button(cell)
+	if button then button.style.maximal_width = math.max(width - icons_width(parts) - 4, 24) end
+end
+
 return name_cell

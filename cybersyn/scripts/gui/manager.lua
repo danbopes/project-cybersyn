@@ -718,6 +718,12 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 		player.opened = refs.manager_window
 		return
 	end
+	-- Escape with the Trains detail pane open closes the pane.
+	if trains_tab.close_pane(player_data) then
+		player.opened = refs.manager_window
+		manager.render(player, player_data)
+		return
+	end
 	manager.handle.manager_close(player, player_data, refs)
 end
 

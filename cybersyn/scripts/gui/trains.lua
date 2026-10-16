@@ -1,6 +1,8 @@
 -- Trains tab (PLAN3 §4.7): chips in the tab's subheader, one 36 px row per train (id link, status with the stop as a
 -- link, network, composition, depot, state chip, time in state, last refuel, fuel, shipment), columns whose value is
 -- the same for every listed train hidden, optionally grouped by depot name. Exactly as many rows as the window fits.
+-- A row click selects the train and opens the detail pane right of the table (PLAN3 §4.11): a camera on the train and
+-- the train panel of scripts/gui/relative.lua, mounted in the window.
 
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
@@ -18,15 +20,37 @@ local stations_tab = require("scripts.gui.stations")
 
 local trains_tab = {}
 
+-- scripts/gui/relative.lua requires the manager, which requires this file: gui/main.lua hands it over.
+local relative
+
+--- @param r table scripts/gui/relative.lua
+function trains_tab.set_relative(r)
+	relative = r
+end
+
 --- @class PlayerData
 --- @field trains_chip string? the toggled Trains chip (TRAIN_CHIPS), "parked" from the Overview's Fleet tile
 --- @field trains_group_by_depot true? rows grouped by depot name
 --- @field expanded_depots {[string]: true}? depot groups showing their trains
+--- @field selected_train uint? the train the detail pane shows
 
 local TAB = "trains_tab"
 -- The row list; a flow since phase 4, the name kept for manager.refresh_sort_headers.
 local SCROLL = "manager_trains_tab_scroll_pane"
 local HEADER = "manager_trains_header"
+local CONTENT = "manager_trains_tab_content_frame"
+local BODY = "manager_trains_body"
+local TABLE = "manager_trains_table"
+local PANE = "manager_trains_pane"
+local PANE_CAPTION = "manager_trains_pane_caption"
+local PANE_CAMERA_FLOW = "manager_trains_pane_camera_flow"
+local PANE_MOUNT = "manager_trains_pane_mount"
+local CAMERA = "manager_trains_pane_camera"
+local CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_ZOOM = 300, 180, 0.5
+local PANE_PADDING = 10
+-- The pane's fixed parts around the train panel's scroll body: pane subheader 36, camera with its top padding 190,
+-- the mount's paddings 20, the panel's subheader 36, footer 40 and borders 8.
+local PANE_CHROME = 36 + PANE_PADDING + CAMERA_HEIGHT + 2 * PANE_PADDING + 36 + 40 + 8
 local CHIPS = "manager_trains_chip_flow"
 local DEFAULT_COLUMN = "train_id"
 local ROW_HEIGHT = sizing.ROW_HEIGHT[TAB]
@@ -62,6 +86,9 @@ local WIDTHS = {
 	{ "shipment", 6 * SLOT, min = 3 * SLOT },
 }
 local STATUS_MIN = 260
+-- With the detail pane open the table is 332 px narrower, and Shipment gives up its slots first.
+local PANE_WIDTHS = logic.shrink_first(WIDTHS, "shipment")
+local HEADER_HEIGHT = 36
 local NETWORK_COLUMNS = 3
 
 local TRAIN_CHIPS = logic.TRAIN_CHIPS
@@ -134,13 +161,60 @@ function trains_tab.create()
 			handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_tab_selected },
 		},
 		content = {
-			name = "manager_trains_tab_content_frame",
+			name = CONTENT,
 			type = "frame",
 			style = "ltnm_main_content_frame",
 			direction = "vertical",
 			children = {
-				header,
-				{ name = SCROLL, type = "flow", direction = "vertical", style = "cybersyn_list_rows" },
+				{
+					name = BODY,
+					type = "flow",
+					direction = "horizontal",
+					style_mods = { horizontal_spacing = logic.PANE_GAP, horizontally_stretchable = true, vertically_stretchable = true },
+					{
+						name = TABLE,
+						type = "flow",
+						direction = "vertical",
+						style_mods = { vertical_spacing = 0, horizontally_stretchable = true, vertically_stretchable = true },
+						header,
+						{ name = SCROLL, type = "flow", direction = "vertical", style = "cybersyn_list_rows" },
+					},
+					{
+						name = PANE,
+						type = "frame",
+						style = "inside_shallow_frame",
+						direction = "vertical",
+						visible = false,
+						style_mods = { width = logic.PANE_WIDTH },
+						{
+							type = "frame",
+							style = "subheader_frame",
+							style_mods = { horizontally_stretchable = true },
+							{ type = "label", name = PANE_CAPTION, style = "subheader_caption_label" },
+							{ type = "empty-widget", style = "flib_horizontal_pusher" },
+							{
+								type = "sprite-button",
+								name = "manager_trains_pane_close",
+								style = "close_button",
+								sprite = "utility/close",
+								tooltip = { "cybersyn-gui.trains-pane-close-tooltip" },
+								handler = { [defines.events.on_gui_click] = trains_tab.handle.on_pane_close },
+							},
+						},
+						{
+							name = PANE_CAMERA_FLOW,
+							type = "flow",
+							direction = "vertical",
+							style_mods = { left_padding = PANE_PADDING, right_padding = PANE_PADDING, top_padding = PANE_PADDING },
+						},
+						{
+							name = PANE_MOUNT,
+							type = "flow",
+							direction = "vertical",
+							style_mods = { padding = PANE_PADDING },
+						},
+					},
+				},
 				{
 					type = "frame",
 					name = "manager_trains_subfooter",
@@ -651,14 +725,15 @@ local function network_children(entries)
 	return children
 end
 
+--- The shipment cell's content; the slot capacity is memoised apart (update_row's resize), so a narrower table does
+--- not count as a changed dispatch.
 --- @param tr SnapshotTrain
 --- @param filter_item string?
---- @param capacity int
 --- @return string
-local function shipment_sig(tr, filter_item, capacity)
-	local parts = { tostring(capacity) }
+local function shipment_sig(tr, filter_item)
+	local parts = {}
 	for i, item in ipairs(tr.manifest) do
-		parts[i + 1] = item.hash .. "=" .. item.count
+		parts[i] = item.hash .. "=" .. item.count
 	end
 	if filter_item and tr.manifest_hashes[filter_item] then
 		parts[#parts + 1] = "*" .. filter_item
@@ -780,7 +855,7 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 		refuel_overdue = has_refueler(tr, ctx.to_refuelers) and logic.not_refuelled(now, tr.refuel_tick, ctx.hours, tr.refuel_from),
 		fuel = fuel,
 		capacity = capacity,
-		ship_sig = shipment_sig(tr, filter_item, capacity),
+		ship_sig = shipment_sig(tr, filter_item),
 		filter_item = filter_item,
 	}
 	view.sig = table.concat({
@@ -849,11 +924,19 @@ end
 --- @param view table
 --- @param color string
 --- @return table
-local function row_memo(view, color)
+--- @param w table the column widths the row is built with
+local function row_memo(view, color, w)
 	return {
 		sig = view.sig, net = view.net_sig, ship = view.ship_sig, color = color, chip = view.chip_sig,
-		in_state = view.in_state, refuel = refuel_sig(view), fuel = view.fuel,
+		in_state = view.in_state, refuel = refuel_sig(view), fuel = view.fuel, wsig = w.sig, cap = view.capacity,
 	}
+end
+
+--- The shipment cell's slot table for the row's capacity.
+--- @param view table
+--- @return flib.GuiElemDef
+local function shipment_table(view)
+	return { type = "table", style = "slot_table", column_count = view.capacity, children = shipment_children(view.tr, view.filter_item, view.capacity) }
 end
 
 --- @param view table
@@ -932,9 +1015,42 @@ local function build_row(view, color, w, hidden)
 			type = "flow",
 			style = "cybersyn_cell_flow",
 			style_mods = { width = w.shipment },
-			{ type = "table", style = "slot_table", column_count = view.capacity, children = shipment_children(view.tr, view.filter_item, view.capacity) },
+			shipment_table(view),
 		},
 	}, SCROLL)
+end
+
+--- Writes new column widths into a built row (the detail pane opened or closed); the slot table is rebuilt only when
+--- its capacity changed.
+--- @param row LuaGuiElement
+--- @param view table
+--- @param m table the row's memo
+--- @param w table
+local function resize_row(row, view, m, w)
+	local c = row.children
+	c[1].style.width = w.train_id
+	local status = c[2]
+	status.style.width = w.train_status
+	local target = status.children[2]
+	if target.visible then
+		name_cell.resize(target, view.target_parts or parts_of(view.target_name), math.max(w.train_status - 160, 80), true)
+	end
+	if w.network then c[3].style.width = w.network end
+	if w.layout then c[4].style.width = w.layout end
+	if w.depot then name_cell.resize(c[5], parts_of(view.depot_name), w.depot) end
+	c[6].style.width = w.state
+	c[7].style.width = w.time_in_state
+	if w.last_refuel then c[8].style.width = w.last_refuel end
+	if w.fuel then c[9].style.width = w.fuel end
+	local ship = c[10]
+	ship.style.width = w.shipment
+	if m.cap ~= view.capacity then
+		ship.clear()
+		gui.add(ship, shipment_table(view))
+		m.cap = view.capacity
+		m.ship = view.ship_sig
+	end
+	m.wsig = w.sig
 end
 
 --- In-place update of a row, against its memo `m` (row_memo). The dispatch part (status, target, network, layout,
@@ -948,6 +1064,7 @@ end
 --- @param budget {rewrites: int}
 --- @return table? m the memo to keep, nil when the row waits for a later update
 local function update_row(row, view, m, color, w, budget)
+	if m and m.wsig ~= w.sig then resize_row(row, view, m, w) end
 	if not (m and m.sig == view.sig) then
 		if budget.rewrites <= 0 then return m end
 		budget.rewrites = budget.rewrites - 1
@@ -974,16 +1091,18 @@ local function update_row(row, view, m, color, w, budget)
 		local alert = c[6].children[1]
 		alert.visible = view.alert ~= nil
 		alert.tooltip = alert_tooltip(view)
-		if not (m and m.ship == view.ship_sig) then
-			local ship = c[10].children[1]
+		if not (m and m.ship == view.ship_sig and m.cap == view.capacity) then
+			local ship = c[10]
 			ship.clear()
-			gui.add(ship, shipment_children(view.tr, view.filter_item, view.capacity))
+			gui.add(ship, shipment_table(view))
 		end
 		local old = m
 		m = { sig = view.sig, net = view.net_sig, ship = view.ship_sig }
 		if old then
 			m.color, m.chip, m.in_state, m.refuel, m.fuel = old.color, old.chip, old.in_state, old.refuel, old.fuel
+			m.wsig = old.wsig
 		end
+		m.cap = view.capacity
 	end
 	if m.color ~= color then
 		local style = "cybersyn_train_row_" .. color
@@ -1338,17 +1457,24 @@ end
 --- @return table
 local function widths_for(player_data, hidden)
 	local layout = player_data.layout
-	local cw = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
+	local pane = player_data.selected_train ~= nil
+	local cw = logic.table_width(layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH), pane)
 	local shown = 0
 	for _, c in ipairs(COLUMNS) do
 		if not hidden[c] then shown = shown + 1 end
 	end
 	-- Row padding, frame borders and the gaps between the shown columns.
 	local avail = cw - 20 - (shown - 1) * 8
-	local w = logic.allocate(WIDTHS, hidden, avail, "train_status", STATUS_MIN)
-	w.shipment = math.max(SLOT, math.floor((w.shipment or SLOT) / SLOT) * SLOT)
+	local w = logic.allocate(pane and PANE_WIDTHS or WIDTHS, hidden, avail, "train_status", STATUS_MIN)
+	local shipment = w.shipment or SLOT
+	w.shipment = math.max(SLOT, math.floor(shipment / SLOT) * SLOT)
+	-- What whole slots leave over goes to the status.
+	w.train_status = w.train_status + math.max(shipment - w.shipment, 0)
 	w.cw = cw
 	w.group_name = math.min(360, cw - 20 - 8 * 7 - 28 - 110 - 100 - 100 - 90 - 220)
+	local parts = { cw }
+	for i, c in ipairs(COLUMNS) do parts[i + 1] = w[c] or 0 end
+	w.sig = table.concat(parts, "|")
 	return w
 end
 
@@ -1360,28 +1486,29 @@ end
 --- @param tip_sig string
 --- @param column string
 --- @param ascending boolean
---- @return boolean changed widths or hidden set
+--- @return boolean changed the hidden set changed (rows are built again; a width change alone is written in place)
 local function sync_header(player_data, w, hidden, values, ctx, tip_sig, column, ascending)
 	local header = player_data.refs[HEADER]
 	if not (header and header.valid) then return false end
 	local state = util.gui_state(player_data, HEADER)
 	-- A rebuilt window has a new header built without widths.
 	if state.index ~= header.index then
-		state.layout, state.sort, state.tip, state.index = nil, nil, nil, header.index
+		state.hidden, state.wsig, state.sort, state.tip, state.index = nil, nil, nil, nil, header.index
 	end
-	local layout_sig = w.cw
-	for _, c in ipairs(COLUMNS) do layout_sig = layout_sig .. (hidden[c] and "h" or "") .. "|" .. (w[c] or 0) end
-	local changed = state.layout ~= layout_sig
-	if changed then
+	local hidden_sig = ""
+	for _, c in ipairs(COLUMNS) do hidden_sig = hidden_sig .. (hidden[c] and "h" or "-") end
+	local changed = state.hidden ~= hidden_sig
+	local resized = state.wsig ~= w.sig
+	if changed or resized then
 		for _, cell in ipairs(header.children) do
 			local c = cell.tags.column
 			cell.visible = not hidden[c]
 			if w[c] then cell.style.width = w[c] end
 		end
-		state.layout = layout_sig
+		state.hidden, state.wsig = hidden_sig, w.sig
 	end
 	local sig = column .. (ascending and "+" or "-")
-	if changed or state.sort ~= sig then
+	if changed or resized or state.sort ~= sig then
 		for _, cell in ipairs(header.children) do util.sync_sort_header(cell, column, ascending) end
 		state.sort = sig
 	end
@@ -1395,6 +1522,93 @@ local function sync_header(player_data, w, hidden, values, ctx, tip_sig, column,
 	return changed
 end
 
+-- ---------------------------------------------------------------- detail pane
+
+--- The front stock of a train Cybersyn knows whose entity is valid.
+--- @param id uint
+--- @return LuaEntity?
+local function front_stock_of(id)
+	local train = storage.trains[id]
+	local entity = train and train.entity
+	if not (entity and entity.valid) then return nil end
+	return entity.front_stock
+end
+
+--- The pane is as tall as the column header and the rows the window fits, so its bottom edge is the last row's.
+--- @param player_data PlayerData
+--- @return int
+local function pane_height(player_data)
+	local layout = player_data.layout
+	local rows = layout and layout.rows_by_tab and layout.rows_by_tab[TAB] or sizing.MIN_ROWS
+	return HEADER_HEIGHT + rows * ROW_HEIGHT
+end
+
+--- Selects a train for the detail pane (nil, or a train that is gone: none). The pane follows on the next render.
+--- @param player_data PlayerData
+--- @param id uint?
+function trains_tab.select(player_data, id)
+	if id and not front_stock_of(id) then id = nil end
+	player_data.selected_train = id
+	if not id and relative then relative.unmount(player_data) end
+end
+
+--- Shows the pane for `selected` (or hides it): caption, height, the player's one camera on the front stock, and the
+--- train panel mounted through relative.mount, which relative.tick then refreshes. Writes only what changed.
+--- @param player_data PlayerData
+--- @param selected uint?
+--- @param front LuaEntity? the selected train's front stock
+local function sync_pane(player_data, selected, front)
+	local refs = player_data.refs
+	local pane = refs[PANE]
+	if not (pane and pane.valid) then return end
+	local state = util.gui_state(player_data, PANE)
+	if not (selected and front and relative) then
+		if pane.visible then pane.visible = false end
+		if player_data.relative_pane_open and relative then relative.unmount(player_data) end
+		return
+	end
+	if state.index ~= pane.index then
+		state.height, state.caption, state.camera, state.body, state.index = nil, nil, nil, nil, pane.index
+	end
+	local height = pane_height(player_data)
+	if state.height ~= height then
+		pane.style.height = height
+		state.height = height
+	end
+	if not pane.visible then pane.visible = true end
+	if state.caption ~= selected then
+		refs[PANE_CAPTION].caption = { "cybersyn-gui.trains-pane-caption", tostring(selected) }
+		state.caption = selected
+	end
+	local flow = refs[PANE_CAMERA_FLOW]
+	local camera = flow[CAMERA]
+	if not camera then
+		camera = flow.add({ type = "camera", name = CAMERA, position = front.position, surface_index = front.surface_index,
+			zoom = CAMERA_ZOOM })
+		camera.style.width = CAMERA_WIDTH
+		camera.style.height = CAMERA_HEIGHT
+		state.camera = nil
+	end
+	local unit = front.unit_number
+	if state.camera ~= unit then
+		camera.surface_index = front.surface_index
+		camera.position = front.position
+		camera.entity = front
+		camera.tooltip = { "cybersyn-gui.trains-pane-camera-tooltip", tostring(selected) }
+		state.camera = unit
+	end
+	-- mod_settings mirrors cybersyn-enable-planner: the panel's paused banner takes height from its body.
+	local body = height - PANE_CHROME - (mod_settings.enable_planner == false and sizing.BANNER_HEIGHT or 0)
+	local open = player_data.relative_pane_open
+	if not (open and open.id == selected and open.panel and open.panel.valid and state.body == body) then
+		state.body = body
+		if not relative.mount(player_data, refs[PANE_MOUNT], "train", selected, body) then
+			trains_tab.select(player_data, nil)
+			pane.visible = false
+		end
+	end
+end
+
 --- @param map_data MapData
 --- @param player_data PlayerData
 function trains_tab.build(map_data, player_data)
@@ -1404,6 +1618,14 @@ function trains_tab.build(map_data, player_data)
 
 	local rows, snapshot, ctx = trains_tab.query(map_data, player_data)
 	stations_tab.fix_heights(refs, { TAB .. "_banner", TAB .. "_subheader", HEADER, "manager_trains_subfooter" })
+	local selected = player_data.selected_train
+	local front = selected and front_stock_of(selected)
+	if selected and not front then
+		trains_tab.select(player_data, nil)
+		selected = nil
+	end
+	sync_pane(player_data, selected, front)
+	selected = player_data.selected_train
 	render_chips(player_data, ctx.counts, ctx.hours)
 	local alerts = ctx.alerts
 	local filter_item = player_data.search_item
@@ -1466,6 +1688,7 @@ function trains_tab.build(map_data, player_data)
 	local tip_parts = {}
 	for k in pairs(hidden) do tip_parts[#tip_parts + 1] = k .. "=" .. tostring(values[k]) end
 	table.sort(tip_parts)
+	-- New widths alone (the pane opened or closed) are written into the built rows by update_row.
 	if sync_header(player_data, w, hidden, values, ctx, table.concat(tip_parts, ","), ctx.column, ctx.ascending)
 		or state.grouped ~= grouped then
 		state.keys = nil
@@ -1507,12 +1730,13 @@ function trains_tab.build(map_data, player_data)
 			local item = seq[i]
 			local tr = grouped and item.train or (not grouped and item) or nil
 			if tr then
+				if tr.id == selected then color = "selected" end
 				local view = row_view(tr, ctx, alerts, filter_item, new_fuel[tr.id] or nil, w)
 				-- No sig: update_row runs for every row and compares the row's own memo cell by cell.
 				entries[#entries + 1] = {
 					key = view.id,
 					build = function()
-						cells[view.id] = row_memo(view, color)
+						cells[view.id] = row_memo(view, color, w)
 						return build_row(view, color, w, hidden)
 					end,
 					update = function(elem)
@@ -1523,7 +1747,7 @@ function trains_tab.build(map_data, player_data)
 				local view = group_view(item.group, snapshot, ctx.members[item.group], ctx, expanded[item.group] == true)
 				entries[#entries + 1] = {
 					key = "g\1" .. item.group,
-					sig = view.sig,
+					sig = view.sig .. "\1" .. w.sig,
 					build = function()
 						local def = { type = "frame", style = "cybersyn_group_row", style_mods = { height = ROW_HEIGHT },
 							tags = { depot_group = item.group } }
@@ -1651,15 +1875,55 @@ dev.register_dump(TAB, function(player_data)
 			return out
 		end)(),
 		summary = player_data.refs.manager_trains_tab_summary.caption,
+		selected = player_data.selected_train,
+		pane = player_data.refs[PANE].visible,
 		pager = player_data.refs[TAB .. "_pager_label"].caption,
 		children = #list.children,
 		refuel_hours = ctx.hours,
 	}
 end)
 
-dev.register_rows(TAB, function(player_data)
-	return stations_tab.measured_rows(player_data, "manager_trains_tab_content_frame", SCROLL)
-end)
+--- Rows that fit, measured as stations_tab.measured_rows does, through the table flow that holds the column header
+--- and the rows beside the pane; -1 when a strip has no fixed height or the open pane is taller than the space.
+--- @param player_data PlayerData
+--- @return int
+local function measured_rows(player_data)
+	local refs = player_data.refs
+	local list, content, body, tbl, pane = refs[SCROLL], refs[CONTENT], refs[BODY], refs[TABLE], refs[PANE]
+	if not (list and list.valid and list.visible and content and content.valid) then return 0 end
+	local avail = content.style.maximal_height
+	if not avail or avail <= 0 then return 0 end
+	local function fixed(elem)
+		local style = elem.style
+		local h = style.maximal_height
+		if not h or h ~= style.minimal_height then return nil end
+		return h
+	end
+	for _, container in ipairs({ content, tbl }) do
+		for _, child in ipairs(container.children) do
+			if child ~= list and child ~= body and child.visible then
+				local h = fixed(child)
+				if not h then return -1 end
+				avail = avail - h
+			end
+		end
+	end
+	if pane.visible then
+		local h = fixed(pane)
+		if not h or h > avail + HEADER_HEIGHT then return -1 end
+	end
+	local n, used = 0, 0
+	for _, row in ipairs(list.children) do
+		local h = fixed(row)
+		if not h or h <= 0 then break end
+		if used + h > avail then break end
+		used = used + h
+		n = n + 1
+	end
+	return n
+end
+
+dev.register_rows(TAB, measured_rows)
 
 trains_tab.handle = {}
 
@@ -1669,6 +1933,56 @@ function trains_tab.wrapper(e, handler)
 	if not player then return end
 	local player_data = storage.manager.players[e.player_index]
 	handler(player, player_data, player_data.refs, e)
+end
+
+--- The pane's × button.
+function trains_tab.handle.on_pane_close(player, player_data)
+	trains_tab.select(player_data, nil)
+	util.rerender(player, player_data)
+end
+
+--- Escape while the Trains tab shows the pane: the pane closes, the window stays (manager.manager_closed_by_game).
+--- @param player_data PlayerData
+--- @return boolean closed
+function trains_tab.close_pane(player_data)
+	if not (player_data.selected_train and player_data.selected_tab == TAB) then return false end
+	trains_tab.select(player_data, nil)
+	return true
+end
+
+--- relative.tick found the pane's train gone.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function trains_tab.on_pane_gone(player, player_data)
+	trains_tab.select(player_data, nil)
+	util.rerender(player, player_data)
+end
+
+--- A left click on a train row that no element handler took (scripts/main.lua): anywhere on the row but its links
+--- and item slots selects the train, a click on the selected row closes the pane.
+--- @param e EventData.on_gui_click
+--- @return boolean handled
+function trains_tab.on_row_click(e)
+	local elem = e.element
+	if not (elem and elem.valid) or e.button ~= defines.mouse_button_type.left then return false end
+	local manager_data = storage.manager
+	local player_data = manager_data and manager_data.players[e.player_index]
+	if not (player_data and player_data.is_manager_open and player_data.selected_tab == TAB) then return false end
+	local list = player_data.refs[SCROLL]
+	if not (list and list.valid) then return false end
+	local index = list.index
+	while true do
+		local parent = elem.parent
+		if not parent then return false end
+		if parent.index == index then
+			local id = elem.tags.train_id
+			if not id then return false end
+			trains_tab.select(player_data, player_data.selected_train ~= id and id or nil)
+			util.rerender(game.get_player(e.player_index), player_data)
+			return true
+		end
+		elem = parent
+	end
 end
 
 --- @param e EventData.on_gui_click
@@ -1730,6 +2044,126 @@ function trains_tab.handle.on_trains_sort_checkbox_changed(player, player_data, 
 end
 
 gui.add_handlers(trains_tab.handle, trains_tab.wrapper)
+
+-- ---------------------------------------------------------------- dev interface: the detail pane
+
+--- What the pane shows: selection, visibility and size, the camera, the mounted panel's sections (as relative_dump
+--- shows them), the table's header cells and the rows' styles.
+--- @param pi uint
+--- @return table
+local function pane_dump(pi)
+	local pd = storage.manager.players[pi]
+	local refs = pd.refs
+	local pane = refs[PANE]
+	local open = pd.relative_pane_open
+	local out = {
+		selected = pd.selected_train,
+		visible = pane.visible,
+		open = open and { kind = open.kind, id = open.id } or nil,
+		width = pane.style.minimal_width,
+		height = pane.style.minimal_height,
+		gap = refs[BODY].style.horizontal_spacing,
+		pane_rows_height = pane_height(pd),
+	}
+	local camera = refs[PANE_CAMERA_FLOW][CAMERA]
+	if camera then
+		local front = pd.selected_train and front_stock_of(pd.selected_train)
+		out.camera = {
+			visible = camera.visible,
+			entity = camera.entity and camera.entity.valid and camera.entity.unit_number or nil,
+			front = front and front.unit_number or nil,
+			zoom = camera.zoom,
+			width = camera.style.minimal_width,
+			height = camera.style.minimal_height,
+			surface = camera.surface_index,
+			index = camera.index,
+		}
+	end
+	if open and open.panel and open.panel.valid and pd.relative_pane then
+		out.panel = relative.view(open.panel, pd.relative_pane)
+		out.panel_tags = open.panel.tags
+		out.body_max = open.panel.scroll.style.maximal_height
+	end
+	local header = refs[HEADER]
+	local cells, total, shown = {}, 0, 0
+	for _, cell in ipairs(header.children) do
+		if cell.visible then
+			local w = cell.style.minimal_width
+			cells[#cells + 1] = { cell.tags.column, w }
+			total = total + (w or 0)
+			shown = shown + 1
+		end
+	end
+	out.columns = cells
+	-- Cells, the 8 px gaps between them and the row's 4 + 4 px padding (the header's 6 + 6 sits in the same 20).
+	out.columns_total = total + math.max(shown - 1, 0) * 8 + 20
+	local state = util.gui_state(pd, HEADER)
+	out.table_width = tonumber(string.match(state.wsig or "", "^(%d+)"))
+	out.rows = {}
+	for i, row in ipairs(refs[SCROLL].children) do
+		local id = row.tags.train_id
+		local ship = id and row.children[10].children[1]
+		out.rows[i] = { id = id, style = row.style.name, height = row.style.minimal_height,
+			slots = ship and ship.column_count or nil, shipment_width = id and row.children[10].style.minimal_width or nil }
+	end
+	return out
+end
+
+dev.add("pane_dump", pane_dump)
+
+--- Selects a train as a row click would (nil or an unknown id: none) and renders.
+dev.add("select_train", function(pi, id)
+	local pd = storage.manager.players[pi]
+	trains_tab.select(pd, id)
+	util.rerender(game.get_player(pi), pd)
+	return pane_dump(pi)
+end)
+
+dev.add("deselect_train", function(pi)
+	local pd = storage.manager.players[pi]
+	trains_tab.select(pd, nil)
+	util.rerender(game.get_player(pi), pd)
+	return pane_dump(pi)
+end)
+
+--- A left click on child `path` (indices below the row) of the Trains row `row` as scripts/main.lua handles it: the
+--- element's own handler first, the row selection when there is none. Returns "handler", "row" or false.
+dev.add("row_click", function(pi, row, path, mods)
+	local pd = storage.manager.players[pi]
+	local elem = pd.refs[SCROLL].children[row]
+	if not elem then return "no row " .. tostring(row) end
+	for _, i in ipairs(path or {}) do
+		elem = elem.children[i]
+		if not elem then return "no child " .. serpent.line(path) end
+	end
+	mods = mods or {}
+	local e = {
+		name = defines.events.on_gui_click, element = elem, player_index = pi, tick = game.tick,
+		button = mods.right and defines.mouse_button_type.right or defines.mouse_button_type.left,
+		shift = mods.shift == true, control = mods.control == true, alt = mods.alt == true,
+	}
+	if gui.dispatch(e) then return "handler" end
+	return trains_tab.on_row_click(e) and "row" or false
+end)
+
+--- `n` refreshes of the pane's train panel, profiled (relative_refresh_ms for the mounted instance).
+dev.add("pane_refresh_ms", function(pi, n, rebuild)
+	local pd = storage.manager.players[pi]
+	local open = pd.relative_pane_open
+	if not (open and open.panel and open.panel.valid) then return "no pane open" end
+	n = n or 1
+	local total = game.create_profiler()
+	for _ = 1, n do
+		if rebuild then pd.relative_pane.sigs = {} end
+		relative.render(pd, pd.relative_pane, open.panel)
+	end
+	total.stop()
+	local avg = game.create_profiler()
+	avg.stop()
+	avg.add(total)
+	avg.divide(n)
+	return { "", "n=", n, " total ", total, " avg ", avg }
+end)
 
 if dev.enabled() and not remote.interfaces["cybersyn-manager-dev-trains"] then
 	remote.add_interface("cybersyn-manager-dev-trains", {
