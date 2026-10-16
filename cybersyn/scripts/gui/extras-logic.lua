@@ -1,0 +1,172 @@
+-- Pure rules of the phase-10 extras (PLAN3 §11, §4.14): no game API, so the host unit tests run them as they are.
+
+local logic = {}
+
+-- ---------------------------------------------------------------- path trace
+
+--- Most line objects one trace may draw per render mode; the trace draws each segment twice (game and chart view),
+--- so a player never holds more than 2 × this many objects (PLAN3 §11.1: ≤ 256).
+logic.TRACE_SEGMENTS = 128
+logic.TRACE_TICKS = 600
+
+--- Whether b continues the straight line a→b→c: the turn at b is below about 1°. Rail centres of a straight run lie
+--- exactly on one line; a curve or a diagonal change turns by at least 22.5° between neighbours.
+--- @return boolean
+local function collinear(ax, ay, bx, by, cx, cy)
+	local ux, uy = bx - ax, by - ay
+	local vx, vy = cx - bx, cy - by
+	local dot = ux * vx + uy * vy
+	if dot <= 0 then return false end
+	local cross = ux * vy - uy * vx
+	return cross * cross <= 0.0003 * (ux * ux + uy * uy) * (vx * vx + vy * vy)
+end
+
+--- Polyline vertices for a path of points: duplicates dropped, interior points of collinear runs dropped, then, if
+--- still more than `max_segments` segments, every k-th vertex kept (the first and the last always).
+--- @param xs number[]
+--- @param ys number[]
+--- @param n int points to read from xs/ys
+--- @param max_segments int?
+--- @return number[] vx
+--- @return number[] vy
+--- @return int runs segments after the collinear merge, before any thinning
+function logic.sample_runs(xs, ys, n, max_segments)
+	max_segments = max_segments or logic.TRACE_SEGMENTS
+	local px, py = {}, {}
+	for i = 1, n do
+		local x, y = xs[i], ys[i]
+		local m = #px
+		if m == 0 or px[m] ~= x or py[m] ~= y then
+			px[m + 1], py[m + 1] = x, y
+		end
+	end
+	local m = #px
+	if m < 2 then return px, py, 0 end
+	local vx, vy = { px[1] }, { py[1] }
+	for i = 2, m - 1 do
+		local k = #vx
+		if not collinear(vx[k], vy[k], px[i], py[i], px[i + 1], py[i + 1]) then
+			vx[k + 1], vy[k + 1] = px[i], py[i]
+		end
+	end
+	vx[#vx + 1], vy[#vy + 1] = px[m], py[m]
+	local runs = #vx - 1
+	if runs <= max_segments then return vx, vy, runs end
+	local step = math.ceil(runs / max_segments)
+	local tx, ty = {}, {}
+	for i = 1, #vx, step do
+		tx[#tx + 1], ty[#ty + 1] = vx[i], vy[i]
+	end
+	if tx[#tx] ~= vx[#vx] or ty[#ty] ~= vy[#vy] then
+		tx[#tx + 1], ty[#ty + 1] = vx[#vx], vy[#vy]
+	end
+	return tx, ty, runs
+end
+
+-- ---------------------------------------------------------------- confirm step
+
+--- Ticks an armed action button waits for its second click (PLAN3 §4.14), counted on the manager tick.
+logic.CONFIRM_TICKS = 180
+
+--- @class ConfirmState
+--- @field key string the action and its target, e.g. "fail:12"
+--- @field tick uint when the first click armed it
+
+--- A click on the button `key`: the first click arms it, a second click within CONFIRM_TICKS fires it. A click on
+--- another button arms that one instead (one armed button per player).
+--- @param cur ConfirmState?
+--- @param key string
+--- @param now uint
+--- @return ConfirmState? next state
+--- @return boolean fire
+function logic.confirm_click(cur, key, now)
+	if cur and cur.key == key and now - cur.tick < logic.CONFIRM_TICKS then return nil, true end
+	return { key = key, tick = now }, false
+end
+
+--- @param cur ConfirmState?
+--- @param key string
+--- @param now uint
+--- @return boolean
+function logic.confirm_armed(cur, key, now)
+	return cur ~= nil and cur.key == key and now - cur.tick < logic.CONFIRM_TICKS
+end
+
+--- @param cur ConfirmState?
+--- @param now uint
+--- @return boolean
+function logic.confirm_expired(cur, now)
+	return cur ~= nil and now - cur.tick >= logic.CONFIRM_TICKS
+end
+
+-- ---------------------------------------------------------------- chunked job
+
+--- Trains one manager update of the Refresh allow-lists job handles (PLAN3 §4.14).
+logic.JOB_CHUNK = 50
+
+--- The index range of the next chunk of a job over `total` ids, from position `i` (ids done so far).
+--- @param i int
+--- @param total int
+--- @param chunk int?
+--- @return int first
+--- @return int last
+--- @return boolean done after this chunk
+function logic.job_range(i, total, chunk)
+	chunk = chunk or logic.JOB_CHUNK
+	local first = i + 1
+	local last = math.min(total, i + chunk)
+	return first, last, last >= total
+end
+
+-- ---------------------------------------------------------------- HUD
+
+--- The HUD's numbers from the two O(1) sources: the live unserved entries per reason and the available trains per
+--- network. Headroom is the network with the fewest available trains now; nil without any network.
+--- @param counts {[int]: int} diag.counts_by_reason()
+--- @param available {[string]: int} stats available_count
+--- @return {unserved: int, headroom: int?, network: string?, top_reason: int?, top_count: int}
+function logic.hud_values(counts, available)
+	local total, top, top_n = 0, nil, 0
+	for reason, n in pairs(counts) do
+		total = total + n
+		if n > top_n or (n == top_n and top and reason < top) then top, top_n = reason, n end
+	end
+	local headroom, network
+	for name, n in pairs(available) do
+		if not headroom or n < headroom or (n == headroom and name < network) then headroom, network = n, name end
+	end
+	return { unserved = total, headroom = headroom, network = network, top_reason = top, top_count = top_n }
+end
+
+-- ---------------------------------------------------------------- Test path
+
+--- @class PathCandidate
+--- @field id uint train id
+--- @field available boolean parked or bypassing, ready for a delivery
+--- @field fits boolean the stop's allow-list accepts the train's layout
+--- @field capacity number item stacks plus fluid / 1000, only to rank
+
+--- The train a Test path click asks the pathfinder for: a named train first, then the largest available train the
+--- stop accepts, then any train the stop accepts, then any; ties go to the lowest id. This only picks a subject for
+--- the pathfinder; it never decides eligibility (PLAN3 §11.8).
+--- @param candidates PathCandidate[]
+--- @param named uint? a train the caller named (the row's delivery)
+--- @return uint?
+function logic.pick_train(candidates, named)
+	if named then
+		for _, c in ipairs(candidates) do
+			if c.id == named then return named end
+		end
+	end
+	local best, best_rank
+	for _, c in ipairs(candidates) do
+		local rank = (c.fits and 2 or 0) + (c.available and 1 or 0)
+		if not best or rank > best_rank or (rank == best_rank and (c.capacity > best.capacity
+				or (c.capacity == best.capacity and c.id < best.id))) then
+			best, best_rank = c, rank
+		end
+	end
+	return best and best.id or nil
+end
+
+return logic
