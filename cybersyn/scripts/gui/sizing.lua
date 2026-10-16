@@ -24,22 +24,21 @@ sizing.BANNER_HEIGHT = 36
 sizing.TAB_CHROME = {
 	-- subheader 36, gap 12, tiles 108, gap 12, table caption 36, column header 20
 	overview_tab = 224,
-	-- subheader 36, sort header 36, subfooter 36, frame borders
+	-- subheader 36, column header 36, subfooter 36, frame borders
 	stations_tab = 112,
 	trains_tab = 112,
-	-- subheader 36, sort bar 28, two gaps of 8, grid caption 20, frame borders
-	inventory_tab = 108,
+	-- subheader 36, gap 12, grid subheader 36, grid frame borders 8
+	inventory_tab = 92,
 	-- subheader 36, column header 20, subfooter 36, frame borders
 	problems_tab = 96,
 }
 
--- Row height per tab. Stations and Trains keep their current row frames until phase 4 restyles them to the 32 and
--- 36 px rows of the wireframe: a Stations row is held at two slot lines (88 px; a station with more than 12 provided
--- and requested items still grows), a Trains row is its 60 px minimap plus padding. Inventory counts slot rows.
+-- Row height per tab (PLAN3 §4.3): every row of a list tab has a fixed height (Stations 32, Trains 36, including the
+-- Trains depot group rows), so whole rows fit. Inventory counts slot rows.
 sizing.ROW_HEIGHT = {
 	overview_tab = 32,
-	stations_tab = 88,
-	trains_tab = 67,
+	stations_tab = 32,
+	trains_tab = 36,
 	inventory_tab = 40,
 	problems_tab = 32,
 }

@@ -480,6 +480,8 @@ data:extend({
 styles.cybersyn_tab_subheader = {
 	type = "frame_style",
 	parent = "subheader_frame",
+	-- Fixed, so a tab can measure what its strips leave for rows (dev.rows).
+	height = 36,
 	horizontally_stretchable = "on",
 	left_padding = 8,
 	right_padding = 8,
@@ -847,6 +849,214 @@ styles.cybersyn_overview_empty_label = {
 	horizontal_align = "center",
 	vertical_align = "center",
 	maximal_width = 600,
+}
+
+-- STATIONS, TRAINS AND INVENTORY TABS (PLAN3 §4.7, phase 4)
+
+-- Slot buttons that fit a 32 px row (Stations items, Trains shipments).
+for _, color in ipairs({ "default", "red", "green", "blue", "orange", "pink", "grey" }) do
+	styles["cybersyn_slot_32_" .. color] = {
+		type = "button_style",
+		parent = "flib_slot_button_" .. color,
+		size = 32,
+	}
+	styles["cybersyn_selected_slot_32_" .. color] = {
+		type = "button_style",
+		parent = "flib_selected_slot_button_" .. color,
+		size = 32,
+	}
+end
+
+-- List rows: fixed height so the window's row arithmetic holds whatever a row holds (scripts/gui/sizing.lua).
+local function list_row(height, light)
+	return {
+		type = "frame_style",
+		parent = light and "ltnm_table_row_frame_light" or "ltnm_table_row_frame_dark",
+		top_padding = 0,
+		bottom_padding = 0,
+		left_padding = 4,
+		right_padding = 4,
+		height = height,
+		horizontally_stretchable = "on",
+		horizontal_flow_style = {
+			type = "horizontal_flow_style",
+			vertical_align = "center",
+			horizontal_spacing = 8,
+		},
+	}
+end
+styles.cybersyn_station_row_light = list_row(32, true)
+styles.cybersyn_station_row_dark = list_row(32, false)
+styles.cybersyn_train_row_light = list_row(36, true)
+styles.cybersyn_train_row_dark = list_row(36, false)
+-- A depot group on Trains: a subheader strip as tall as a train row.
+styles.cybersyn_group_row = {
+	type = "frame_style",
+	parent = "subheader_frame",
+	height = 36,
+	top_padding = 0,
+	bottom_padding = 0,
+	left_padding = 4,
+	right_padding = 4,
+	horizontally_stretchable = "on",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		vertical_align = "center",
+		horizontal_spacing = 8,
+	},
+}
+
+-- Column header: as the old sort bar, but its cells are flows so number columns can sit on the numbers' right edge.
+styles.cybersyn_list_header = {
+	type = "frame_style",
+	parent = "subheader_frame",
+	height = 36,
+	left_padding = 6,
+	right_padding = 6,
+	horizontally_stretchable = "on",
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 8,
+		vertical_align = "center",
+	},
+}
+
+styles.cybersyn_list_subfooter = {
+	type = "frame_style",
+	parent = "ltnm_subfooter_frame",
+	height = 36,
+}
+
+styles.cybersyn_list_rows = {
+	type = "vertical_flow_style",
+	vertical_spacing = 0,
+	vertically_stretchable = "on",
+	horizontally_stretchable = "on",
+}
+
+styles.cybersyn_cell_flow = {
+	type = "horizontal_flow_style",
+	vertical_align = "center",
+	horizontal_spacing = 4,
+}
+
+styles.cybersyn_cell_label = {
+	type = "label_style",
+	horizontally_squashable = "on",
+}
+
+-- Numbers in a row share their column's right edge (PLAN3 §8, §9 Rai).
+styles.cybersyn_cell_value = {
+	type = "label_style",
+	horizontal_align = "right",
+}
+
+styles.cybersyn_cell_value_orange = {
+	type = "label_style",
+	parent = "cybersyn_cell_value",
+	font_color = { 1, 0.6, 0.2 },
+}
+
+styles.cybersyn_cell_value_grey = {
+	type = "label_style",
+	parent = "cybersyn_cell_value",
+	font_color = { 0.6, 0.6, 0.6 },
+}
+
+styles.cybersyn_overflow_label = {
+	type = "label_style",
+	font = "default-semibold",
+	font_color = { 0.7, 0.7, 0.7 },
+	horizontal_align = "center",
+	minimal_width = 24,
+}
+
+-- Filter chips in a tab's subheader: toggled when active, disabled at a count of 0.
+styles.cybersyn_filter_chip = {
+	type = "button_style",
+	parent = "button",
+	height = 28,
+	minimal_width = 0,
+	left_padding = 6,
+	right_padding = 6,
+}
+
+-- The second, smaller chip in a Stations status cell (a setup finding) and the State chips on Trains.
+local function small_chip(parent)
+	return {
+		type = "button_style",
+		parent = parent,
+		height = 22,
+		left_padding = 4,
+		right_padding = 4,
+		font = "default-small-semibold",
+	}
+end
+styles.cybersyn_small_chip_red = small_chip("cybersyn_chip_red")
+styles.cybersyn_small_chip_orange = small_chip("cybersyn_chip_orange")
+styles.cybersyn_small_chip_grey = small_chip("cybersyn_chip_grey")
+
+styles.cybersyn_train_id_button = {
+	type = "button_style",
+	parent = "cybersyn_link_button",
+	horizontal_align = "right",
+	height = 36,
+}
+
+-- Inventory: one frame per grid with its own subheader (caption and sort buttons) over the slot grid.
+styles.cybersyn_inventory_grid_frame = {
+	type = "frame_style",
+	parent = "inside_deep_frame",
+	top_padding = 0,
+	bottom_padding = 0,
+	vertical_flow_style = {
+		type = "vertical_flow_style",
+		vertical_spacing = 0,
+	},
+}
+
+styles.cybersyn_inventory_grid_header = {
+	type = "frame_style",
+	parent = "subheader_frame",
+	height = 36,
+	horizontally_stretchable = "on",
+	left_padding = 8,
+	right_padding = 4,
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 4,
+		vertical_align = "center",
+	},
+}
+
+styles.cybersyn_sort_tool_button = {
+	type = "button_style",
+	parent = "tool_button",
+	size = 28,
+	padding = 2,
+}
+
+styles.cybersyn_sort_tool_button_selected = {
+	type = "button_style",
+	parent = "flib_selected_tool_button",
+	size = 28,
+	padding = 2,
+}
+
+-- The count on a 32 px slot button (ltnm_label_signal_count is sized for 36 px).
+styles.cybersyn_slot_32_count = {
+	type = "label_style",
+	parent = "count_label",
+	height = 32,
+	-- The label starts after the slot button's own padding, so it is narrower than the button.
+	width = 29,
+	horizontal_align = "right",
+	vertical_align = "bottom",
+	right_padding = 0,
+	bottom_padding = 1,
+	-- The count font overflows a 32 px slot at UI scale 2.0 ("-4.2k"); one size down fits at every scale.
+	font = "default-tiny-bold",
+	parent_hovered_font_color = { 1, 1, 1 },
 }
 
 -- PROBLEMS TAB STYLES (PLAN3 §4.7): 32 px rows in a vertical flow, group rows in the subheader colour.

@@ -934,6 +934,8 @@ function manager.handle.manager_clear_filters(player, player_data, refs)
 	player_data.search_network_mask = -1
 	player_data.search_surface_idx = nil
 	player_data.stations_status_filter = nil
+	player_data.stations_chip = nil
+	player_data.trains_chip = nil
 	util.reset_pages(player_data)
 	manager.restore_filter_widgets(player_data)
 	manager.render(player, player_data)

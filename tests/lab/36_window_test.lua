@@ -379,6 +379,8 @@ lab.suite("36_window", {
 		stop.backer_name = "[item=iron-plate] Iron 50% (east)"
 		lab.dev("collect")
 		remote.call(D, "select_tab", pi, "stations")
+		-- The tile jumps above leave a Stations chip toggled (phase 4 honours it); the search is checked on all rows.
+		lab.set_status_filter(pi, nil)
 		local function rows(query)
 			local ok, res = pcall(remote.call, D, "set_filter", pi, { query = query })
 			if not ok then return nil, res end

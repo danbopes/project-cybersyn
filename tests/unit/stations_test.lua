@@ -72,7 +72,9 @@ test("query: status ladder and counts", function()
 		[1] = "no_power", [2] = "disabled", [3] = "warming_up", [4] = "starved", [5] = "saturated",
 		[6] = "ok", [7] = "idle", [8] = "ok", [9] = "ok",
 	})
-	assert_eq(counts, { all = 9, no_power = 1, disabled = 1, warming_up = 1, starved = 1, saturated = 1, idle = 1, ok = 3 })
+	-- Phase 4: the chip counts besides the statuses; failing = no power + disabled (+ throttling + setup).
+	assert_eq(counts, { all = 9, no_power = 1, disabled = 1, warming_up = 1, starved = 1, saturated = 1, idle = 1, ok = 3,
+		unserved = 0, setup = 0, failing = 2, stuck = 0 })
 end)
 
 test("station_status: idle needs an old last delivery, tps > 0 and no active request", function()
@@ -132,7 +134,8 @@ test("query: global filters narrow the set and the counts", function()
 	local pd = { search_query = "hotel" }
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(ids(rows), { 8, 9 })
-	assert_eq(counts, { all = 2, no_power = 0, disabled = 0, warming_up = 0, starved = 0, saturated = 0, idle = 0, ok = 2 })
+	assert_eq(counts, { all = 2, no_power = 0, disabled = 0, warming_up = 0, starved = 0, saturated = 0, idle = 0, ok = 2,
+		unserved = 0, setup = 0, failing = 0, stuck = 0 })
 	pd = { search_item = "coal" }
 	stations_tab = setup()
 	rows = stations_tab.query(pd)
@@ -199,7 +202,9 @@ test("query: removed station leaves rows and counts", function()
 	assert_eq(ids(rows), { 1, 2, 3, 4, 6, 7, 8, 9 })
 end)
 
-test("query: the first build after a boosted pass is spread over the two updates after the one that completed it", function()
+-- Phase 4 adds the chip flags to the classification, so the first build takes three updates (classify, sort, rows)
+-- instead of two (classify and sort, rows).
+test("query: the first build after a boosted pass is spread over the three updates after the one that completed it", function()
 	local stations_tab, _, snap = setup()
 	local pd = { player_index = 1 }
 	snap.boosted = true
@@ -209,13 +214,20 @@ test("query: the first build after a boosted pass is spread over the two updates
 	assert_eq(counts, {})
 	assert_true(ctx.pending)
 	assert_nil(pd.stations_query)
-	-- Next update: classified and sorted into the cache, rows still pending.
+	-- Next update: classified into the cache, not sorted yet, rows still pending.
 	game.tick = 21
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 0)
 	assert_true(ctx.pending)
-	assert_eq(#pd.stations_query.order, 9)
+	assert_nil(pd.stations_query.order)
+	assert_eq(pd.stations_query.counts.all, 9)
+	-- The one after: sorted, rows still pending.
 	game.tick = 22
+	rows, counts, ctx = stations_tab.query(pd)
+	assert_eq(#rows, 0)
+	assert_true(ctx.pending)
+	assert_eq(#pd.stations_query.order, 9)
+	game.tick = 23
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 9)
 	assert_eq(counts.all, 9)
@@ -231,4 +243,55 @@ test("query: a pass completed by dev collect or the regular step shows rows at o
 	snap.tick = 20
 	local rows = stations_tab.query({ player_index = 1 })
 	assert_eq(#rows, 9)
+end)
+
+-- Phase 4 (PLAN3 §4.7): the chips besides the statuses. Each chip's count is what it shows when toggled.
+test("chips: unserved, setup, stuck and failing count what they show", function()
+	local stations_tab, collector, snap = setup()
+	snap.stations[5].unserved = { count = 2, worst_reason = 1, oldest_first_tick = 1 }
+	snap.stations[6].lint = 8
+	snap.stations[7].throttling = true
+	snap.stations[8].lint = 1
+	snap.stations[8].unserved = { count = 1, worst_reason = 1, oldest_first_tick = 1 }
+	snap.trains = { [70] = { id = 70, p_station_id = 4, r_station_id = 9 }, [71] = { id = 71, p_station_id = 3 } }
+	snap.alerts = { { train_id = 70, kind = 1 }, { train_id = 71, kind = 2 } }
+	local pd = {}
+	local _, counts = stations_tab.query(pd)
+	assert_eq({ counts.unserved, counts.setup, counts.stuck, counts.failing }, { 2, 2, 2, 5 })
+	local want = { unserved = { 5, 8 }, setup = { 6, 8 }, stuck = { 4, 9 }, failing = { 1, 2, 6, 7, 8 } }
+	for chip, list in pairs(want) do
+		pd.stations_status_filter, pd.stations_chip = nil, nil
+		stations_tab.set_chip(pd, chip)
+		local rows, c = stations_tab.query(pd)
+		assert_eq(ids(rows), list, chip)
+		assert_eq(#rows, c[chip], chip .. " count == rows")
+	end
+	-- Toggling the active chip again shows all; a status chip replaces a flag chip.
+	pd = {}
+	stations_tab.set_chip(pd, "failing")
+	assert_eq(pd.stations_chip, "failing")
+	stations_tab.set_chip(pd, "failing")
+	assert_nil(pd.stations_chip)
+	stations_tab.set_chip(pd, "setup")
+	stations_tab.set_chip(pd, "ok")
+	assert_eq({ pd.stations_status_filter, pd.stations_chip }, { "ok", nil })
+	-- The surface filter narrows every chip count.
+	snap.stations[8].surface_index = 2
+	local _, narrowed = stations_tab.query({ search_surface_idx = 1 })
+	assert_eq({ narrowed.unserved, narrowed.setup }, { 1, 1 })
+end)
+
+test("chips: a refilled record moves between chip counts with the change log", function()
+	local stations_tab, collector, snap = setup()
+	local pd = {}
+	local _, counts = stations_tab.query(pd)
+	assert_eq(counts.setup, 0)
+	snap.stations[3].lint = 4
+	local manager = storage.manager
+	manager.collect_log = manager.collect_log or { epoch = 1, base = 0, ids = {} }
+	local log = manager.collect_log
+	log.ids[#log.ids + 1] = 3
+	local _, after = stations_tab.query(pd)
+	assert_eq(after.setup, 1)
+	assert_eq(after.failing, 3)
 end)

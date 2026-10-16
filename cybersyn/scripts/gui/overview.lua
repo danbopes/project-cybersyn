@@ -15,8 +15,7 @@ local text = require("scripts.gui.unserved-text")
 --- @field overview_period int? minutes covered by the Throughput tile and the headroom minimum: 10, 60 or 1440
 --- @field overview_show_acked true? acknowledged rows are listed (greyed, at the bottom)
 --- @field overview_widths {requester: int, provider: int, tile: int}? column widths for the current layout
---- @field stations_chip "unserved"|"failing"? the Stations chip a tile jump selects; read by the Stations chips from
----   phase 4 on (PLAN3 §4.7), until then the jump only sorts the Stations tab
+--- @field stations_chip "unserved"|"failing"? the Stations chip a tile jump selects (stations.lua owns the others)
 --- @field trains_chip "parked"? the Trains chip the Fleet headroom tile selects (phase 4), with the network filter
 
 local overview_tab = {}
@@ -366,7 +365,7 @@ end
 --- @return table
 local function unserved_model(d, item, rows, threshold, now)
 	local out = {
-		open = {}, acked = {}, total = 0, acked_total = 0, old = 0, old_acked = 0, reasons = {}, throttling = {},
+		open = {}, acked = {}, total = 0, acked_total = 0, old = 0, old_acked = 0, reasons = {},
 	}
 	local want_ix
 	if item then
@@ -376,16 +375,10 @@ local function unserved_model(d, item, rows, threshold, now)
 	local acks = storage.acks
 	local ack_requests = acks and acks.request
 	local reasons = out.reasons
-	local throttling = out.throttling
 	for r_id, by_item in pairs(d.unserved) do
 		local by_ack = ack_requests and ack_requests[r_id]
 		for ix, e in pairs(by_item) do
 			local reason = e.reason
-			if reason == REASON_R_AT_LIMIT then
-				throttling[r_id] = true
-			elseif reason == REASON_P_AT_LIMIT and e.p_station_id then
-				throttling[e.p_station_id] = true
-			end
 			if not want_ix or ix == want_ix then
 				local hash = d.item_hash[ix]
 				local acked = by_ack and by_ack[hash] and diag.is_acked("request", r_id, hash) ~= nil
@@ -412,19 +405,18 @@ local function unserved_model(d, item, rows, threshold, now)
 	return out
 end
 
---- Stations failing: status from the records as they are now (as the Stations chips count them), throttling from
---- the diagnostics walk, misconfigured from the lint bits. Only flagged records reach the item check.
+--- Stations failing: status, throttling and lint bits from the records as they are now, the same fields the
+--- Stations chips count. Only flagged records reach the item check.
 --- @param snapshot Snapshot
 --- @param item string?
---- @param throttling {[uint]: true}
 --- @return table
-local function failing_model(snapshot, item, throttling)
+local function failing_model(snapshot, item)
 	local out = { no_power = 0, disabled = 0, throttling = 0, misconfigured = 0, total = 0, lint_bits = {} }
 	local bits = out.lint_bits
-	for id, st in pairs(snapshot.stations) do
+	for _, st in pairs(snapshot.stations) do
 		local status = st.status
 		local lint = st.lint or 0
-		local np, dis, thr = status == "no_power", status == "disabled", throttling[id] == true
+		local np, dis, thr = status == "no_power", status == "disabled", st.throttling == true
 		if (np or dis or thr or lint ~= 0) and (not item or station_has_item(st, item)) then
 			out.total = out.total + 1
 			if np then out.no_power = out.no_power + 1 end
@@ -508,7 +500,7 @@ function overview_tab.model(player_data)
 	local d = storage.diag
 	local collecting = snapshot.tick == nil
 	local unserved = d and unserved_model(d, item, rows, minutes * 3600, now) or nil
-	local failing = not collecting and failing_model(snapshot, item, unserved and unserved.throttling or {}) or nil
+	local failing = not collecting and failing_model(snapshot, item) or nil
 	local cycle = stats.get().cycle
 	return {
 		now = now,
@@ -1347,6 +1339,8 @@ end
 --- Stations tab with the Unserved chip (phase 4), longest wait first.
 --- @param player_data PlayerData
 local function jump_unserved(player_data)
+	-- A toggled status chip would win over the flag chip (stations.lua active_chip): one chip at a time.
+	player_data.stations_status_filter = nil
 	player_data.stations_chip = "unserved"
 	util.set_sort(player_data, "stations_tab", "wait", false)
 	util.select_tab(player_data, "stations_tab")
@@ -1368,11 +1362,14 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 		local manager = overview_tab.manager
 		if manager then manager.restore_filter_widgets(player_data) end
 	elseif tile == "failing" then
+		player_data.stations_status_filter = nil
 		player_data.stations_chip = "failing"
 		util.set_sort(player_data, "stations_tab", "station_status", true)
 		util.select_tab(player_data, "stations_tab")
 	elseif tile == "throughput" then
 		util.set_sort(player_data, "inventory_tab", "amount", false)
+		-- Every grid by amount: the grids' own sort buttons give way to the tab's sort.
+		player_data.inventory_sorts = nil
 		util.select_tab(player_data, "inventory_tab")
 	else
 		return

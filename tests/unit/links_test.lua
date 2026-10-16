@@ -290,17 +290,15 @@ test("close_manager_window: forgets a pending return", function()
 	assert_nil(pd.restore_opened)
 end)
 
+-- Phase 4: the train id cell is a tag button {kind = "train", id} handled by util.handle_link_click.
 local function train_case(locomotive)
-	local manager_gui, _, _, player, pd = setup()
-	package.loaded["__flib__.train"] = { get_main_locomotive = function() return locomotive end }
-	local trains_tab = H.load("scripts.gui.trains")
+	local _, _, util, player, pd = setup()
 	local texts = {}
 	player.create_local_flying_text = function(spec) texts[#texts + 1] = spec.text end
 	player.play_sound = function() end
 	storage.trains = { [5] = { entity = { valid = true, id = 5,
 		locomotives = { front_movers = { locomotive }, back_movers = {} } } } }
-	trains_tab.handle.open_train_gui(player, pd, pd.refs, { element = { tags = { train_id = 5 } } })
-	package.loaded["__flib__.train"] = nil
+	util.handle_link_click(player, pd, { element = { tags = { kind = "train", id = 5 } }, button = defines.mouse_button_type.left })
 	return player, pd, texts
 end
 

@@ -165,6 +165,8 @@ test("empty: the snapshot shape", function()
 		depots_by_name = {},
 		provider_masks = {},
 		provider_overrides = {},
+		-- Phase 4: the active request keys, kept for the Inventory's Dim unrequested.
+		request_keys = {},
 		alerts = {},
 	})
 	assert_true(collector.empty() ~= collector.empty())
@@ -290,6 +292,8 @@ test("full pass: provider record", function()
 		-- PLAN3 §4.2 (phase 2): when the record was read, and the lint bitmask (0 until phase 2b).
 		read_tick = 1000,
 		lint = 0,
+		-- Phase 4: no unserved request at a train limit names the station.
+		throttling = false,
 	})
 	-- Copied, not shared, so the planner's later writes do not leak into the snapshot.
 	assert_true(snap.stations[1].deliveries ~= storage.stations[1].deliveries)
@@ -382,6 +386,46 @@ test("full pass: starved keys per network, each-network stations on all their ne
 	assert_eq(snap.starved_items, { coal = true, ["copper-ore"] = true, ["copper-plate"] = true })
 	assert_eq(snap.starved_source, "snapshot")
 	assert_eq(snap.starved_version, 1)
+end)
+
+test("full pass: request keys stay with the snapshot next to the provider masks", function()
+	scenario()
+	collector.run_to_completion()
+	local snap = collector.get()
+	for key in pairs(snap.starved) do
+		assert_true(snap.request_keys[key], key .. " is a request key")
+		assert_nil(snap.provider_masks[key], key .. " has no provider")
+	end
+	local first = snap.request_keys
+	collector.run_to_completion()
+	assert_eq(collector.get().request_keys, first, "the same keys after another pass")
+end)
+
+test("throttling: an unacknowledged R_AT_LIMIT names the requester, P_AT_LIMIT the provider", function()
+	scenario()
+	storage.diag = {
+		unserved = {
+			[2] = { [1] = { reason = REASON_R_AT_LIMIT, first_tick = 10 } },
+			[3] = { [2] = { reason = REASON_P_AT_LIMIT, p_station_id = 1, first_tick = 10 } },
+			[4] = { [1] = { reason = REASON_R_AT_LIMIT, first_tick = 10 } },
+			[6] = { [2] = { reason = REASON_NO_PROVIDER, first_tick = 10 } },
+		},
+		item_hash = { "iron-ore", "stone" },
+		item_ix = { ["iron-ore"] = 1, stone = 2 },
+	}
+	storage.acks = { request = { [4] = { ["iron-ore"] = { until_tick = 5000 } } }, station = {}, lint = {} }
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_true(snap.stations[1].throttling, "provider of a P_AT_LIMIT")
+	assert_true(snap.stations[2].throttling, "requester of an R_AT_LIMIT")
+	assert_false(snap.stations[3].throttling, "a requester waiting on a full provider is not itself at its limit")
+	assert_false(snap.stations[4].throttling, "acknowledged")
+	assert_false(snap.stations[6].throttling, "another reason")
+	game.tick = 6000
+	collector.run_to_completion()
+	assert_true(collector.get().stations[4].throttling, "the acknowledgement expired")
+	storage.diag = nil
+	storage.acks = nil
 end)
 
 test("full pass: trains, fleet, depots and alerts", function()
@@ -758,6 +802,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		-- PLAN3 §4.2 (phase 2): when the record was read, and the lint bitmask (0 until phase 2b).
 		read_tick = 1100,
 		lint = 0,
+		-- Phase 4: no unserved request at a train limit names the station.
+		throttling = false,
 	})
 	assert_eq(snap.stations[2], {
 		id = 2,
@@ -794,6 +840,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		-- PLAN3 §4.2 (phase 2): when the record was read, and the lint bitmask (0 until phase 2b).
 		read_tick = 1100,
 		lint = 0,
+		-- Phase 4: no unserved request at a train limit names the station.
+		throttling = false,
 	})
 	assert_eq(snap.stations[3].warming_up, false)
 	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
