@@ -80,7 +80,7 @@ local function body_defs(pd, r_id, hash, e)
 		local wait = now - e.first_tick
 		local inherited = e.first_tick < diag.inherit_threshold(d)
 		local station = storage.stations[r_id]
-		local network = station and station.network_name
+		local network = util.network_text(station and station.network_name)
 		out[#out + 1] = heading({ "cybersyn-gui.explain-recorded" })
 		out[#out + 1] = {
 			type = "flow",
@@ -90,7 +90,7 @@ local function body_defs(pd, r_id, hash, e)
 				ignored_by_interaction = true },
 			label(utext.stock_caption(e.reason, e.a, e.b), true),
 		}
-		out[#out + 1] = label({ "cybersyn-gui.unserved-why", utext.why(e.reason, e.a, e.b, network, e.rej) })
+		out[#out + 1] = label({ "cybersyn-gui.unserved-why", utext.why(e.reason, e.a, e.b, network, e.rej, util.surface_name) })
 		out[#out + 1] = label({ "cybersyn-gui.unserved-fix", utext.fix(e.reason) }, true)
 		out[#out + 1] = label({ inherited and "cybersyn-gui.unserved-since-load" or "cybersyn-gui.unserved-since",
 			util.format_duration(wait), tostring(e.n or 0) }, true)

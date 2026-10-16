@@ -944,18 +944,8 @@ local function update_name_cell(cell, view, kind, id, tooltip, acked)
 	button.tags = t
 end
 
---- @param network_name string?
---- @return LocalisedString
-local function network_text(network_name)
-	if not network_name then return "?" end
-	if network_name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
-	return network_icon(network_name)
-end
-
-local function surface_name(index)
-	local s = game.get_surface(index)
-	return s and s.name or tostring(index)
-end
+local network_text = util.network_text
+local surface_name = util.surface_name
 
 --- One table row's data and its cells.
 --- @param row {r_id: uint, hash: string, e: DiagEntry}
@@ -1393,8 +1383,6 @@ function overview_tab.handle.overview_count_click(player, player_data, refs, e)
 	util.rerender(player, player_data)
 end
 
---- Acknowledge (PLAN3 §4.13): click = 24 h, shift-click = 1 h, control-click = until the reason changes; a click
---- on an acknowledged row ends it. Display state only; diag.ack writes the event and removes the stop's alerts.
 --- The Why chip: Explain for that row (scripts/gui/explain.lua), a second click closes it.
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_explain_click(player, player_data, refs, e)
@@ -1404,6 +1392,8 @@ function overview_tab.handle.overview_explain_click(player, player_data, refs, e
 	explain.open(player, player_data, tags.r_id, tags.hash)
 end
 
+--- Acknowledge (PLAN3 §4.13): click = 24 h, shift-click = 1 h, control-click = until the reason changes; a click
+--- on an acknowledged row ends it. Display state only; diag.ack writes the event and removes the stop's alerts.
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
 	local tags = e.element.tags

@@ -1,6 +1,7 @@
 local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
 local dev = require("scripts.gui.dev")
+local utext = require("scripts.gui.unserved-text")
 
 -- Try to load the factorio-charts library for interaction support
 local charts_available, charts = pcall(require, "__factorio-charts__.charts")
@@ -136,23 +137,30 @@ local function compute_phase_stats(filtered)
 	return phase_stats
 end
 
+--- The short name of the reason the dispatcher recorded for a stuck request, the same caption as the Unserved chip
+--- and the Log, or "unknown" when none was recorded (a provider-side failure with diagnostics off).
+--- @param reason int?
+--- @return LocalisedString
+local function failure_label(reason)
+	if not (reason and REASON_KEYS[reason]) then return { "cybersyn-gui.unserved-unknown-reason" } end
+	return utext.chip_caption(reason)
+end
+
+--- The reason's full name, for the tooltip under the short caption.
+--- @param reason int?
+--- @return LocalisedString?
+local function failure_name(reason)
+	local key = reason and REASON_KEYS[reason]
+	return key and { "cybersyn-diag.reason-" .. key } or nil
+end
+
 ---Generate tooltip text for a bar segment
 ---@param bar_idx number Bar index
 ---@param phase string Phase name
 ---@param duration number Duration in seconds
 ---@param delivery table Delivery data
 ---@param phase_stats table? Optional phase statistics
----@return string tooltip Formatted tooltip text
---- The name of the reason the dispatcher recorded for a stuck request (diagnostics reason codes), or "unknown"
---- when none was recorded (a provider-side failure with diagnostics off).
---- @param reason int?
---- @return LocalisedString
-local function failure_label(reason)
-	local key = reason and REASON_KEYS[reason]
-	if not key then return { "cybersyn-gui.unserved-unknown-reason" } end
-	return { "cybersyn-diag.reason-" .. key }
-end
-
+---@return LocalisedString tooltip Formatted tooltip text
 local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_stats)
 	local label = PHASE_LABELS[phase] or phase
 	local fmt_time = charts and charts.format_time_detailed or function(d) return string.format("%.1fs", d) end
@@ -192,7 +200,9 @@ local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_sta
 	end
 
 	if reason_label then
-		return { "", head, head ~= "" and "\n" or "", reason_label, "\n", table.concat(lines, "\n") }
+		local full = failure_name(delivery.reason)
+		return { "", head, head ~= "" and "\n" or "", reason_label, full and { "", " · ", full } or "", "\n",
+			table.concat(lines, "\n") }
 	end
 	return table.concat(lines, "\n")
 end

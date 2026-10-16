@@ -103,25 +103,39 @@ end
 --- Trains one manager update of the Refresh allow-lists job handles (PLAN3 §4.14).
 logic.JOB_CHUNK = 50
 
---- The index range of the next chunk of a job over `total` ids, from position `i` (ids done so far).
---- @param i int
---- @param total int
---- @param chunk int?
---- @return int first
---- @return int last
---- @return boolean done after this chunk
-function logic.job_range(i, total, chunk)
-	chunk = chunk or logic.JOB_CHUNK
-	local first = i + 1
-	local last = math.min(total, i + chunk)
-	return first, last, last >= total
+--- Stop visits one chunk may spend. A train whose layout no other train shares costs two walks over every station and
+--- refueler in update_train_layout (the old layout dropped, the new one tested against every allow-list), so on a
+--- large map a 50-train chunk of such trains would blow the update budget; other trains cost about nothing here.
+logic.JOB_STOP_VISITS = 4096
+
+--- The stop visits update_train_layout makes for one train.
+--- @param singleton boolean no other train shares its layout
+--- @param stops int stations + refuelers
+--- @return int
+function logic.job_cost(singleton, stops)
+	return singleton and 2 * stops or 0
+end
+
+--- Whether a chunk that has handled `done` trains and spent `spent` stop visits may take one more train costing
+--- `cost`. The first train of a chunk always runs, so the job advances whatever one train costs.
+--- @param done int
+--- @param spent int
+--- @param cost int
+--- @param chunk int? trains per chunk, default JOB_CHUNK
+--- @param budget int? stop visits per chunk, default JOB_STOP_VISITS
+--- @return boolean
+function logic.job_continue(done, spent, cost, chunk, budget)
+	if done == 0 then return true end
+	if done >= (chunk or logic.JOB_CHUNK) then return false end
+	return spent + cost <= (budget or logic.JOB_STOP_VISITS)
 end
 
 -- ---------------------------------------------------------------- HUD
 
---- The HUD's numbers from the live unserved entries per reason and the available trains per network. Headroom is
---- the network with the fewest available trains now (the Overview's "Now"); a network in `networks` that never had
---- an available train has no counter and counts as 0. nil without any network.
+--- The HUD's numbers from the live unserved entries per reason and the available trains per network. `headroom` is
+--- the fewest available trains on any one network right now (shown as "free trains": the Overview's Fleet headroom
+--- is a minimum over a period, a different number); a network in `networks` that never had an available train has no
+--- counter and counts as 0. nil without any network.
 --- @param counts {[int]: int} diag.counts_by_reason()
 --- @param available {[string]: int} stats available_count
 --- @param networks {[string]: true}? networks that have Cybersyn trains

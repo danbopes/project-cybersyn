@@ -22,6 +22,24 @@ function util.error_flying_text(player, message)
 	player.play_sound({ path = "utility/cannot_build" })
 end
 
+--- A requester's network as the Unserved texts show it: the signal's icon, "Each" for the each-network, "?" without
+--- one. The Overview row and Explain both go through here so they name a network the same way.
+--- @param network_name string?
+--- @return LocalisedString
+function util.network_text(network_name)
+	if not network_name then return "?" end
+	if network_name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
+	local _, image = util.generate_item_references(network_name)
+	return image ~= "" and image or network_name
+end
+
+--- @param index uint
+--- @return string
+function util.surface_name(index)
+	local s = game.get_surface(index)
+	return s and s.name or tostring(index)
+end
+
 --- Builds a valid sprite path or returns nil
 --- @param item string
 --- @return string, string, LocalizedString

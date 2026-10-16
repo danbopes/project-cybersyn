@@ -488,7 +488,8 @@ function query.query_unserved(filter)
 	return out
 end
 
---- Totals: unserved entries per reason, available trains per network and the headroom (fewest available).
+--- Totals: unserved entries per reason, available trains per network and the fewest free trains on any network now
+--- (the HUD's "free trains"; not the Overview's Fleet headroom, which is the lowest over a period). Writes nothing.
 ---@return table
 function query.query_counts()
 	local d = storage.diag
@@ -500,16 +501,14 @@ function query.query_counts()
 	local s = query_stats.get()
 	local available = {}
 	for name, n in pairs(s and s.available_count or {}) do available[name] = n end
-	-- The same headroom as the HUD line and the Overview's "Now".
-	local _, _, v = query_extras.hud_text()
-	local headroom, worst = v.headroom, v.network
+	local _, _, v = query_extras.hud_text(false)
 	return {
 		diagnostics = d and d.mode or "off",
 		unserved = total,
 		by_reason = by_reason,
 		available = available,
-		headroom = headroom,
-		headroom_network = worst,
+		free_trains = v.headroom,
+		free_trains_network = v.network,
 		tick = game.tick,
 	}
 end

@@ -98,20 +98,47 @@ test("confirm: an armed button expires after 180 ticks and the next click arms a
 	assert_false(l.confirm_expired(nil, 1000))
 end)
 
-test("job_range: 50 per chunk, never one loop over everything", function()
+test("job_continue: 50 trains per chunk, never one loop over everything", function()
 	local l = logic()
-	assert_eq({ l.job_range(0, 553) }, { 1, 50, false })
-	assert_eq({ l.job_range(500, 553) }, { 501, 550, false })
-	assert_eq({ l.job_range(550, 553) }, { 551, 553, true })
-	assert_eq({ l.job_range(0, 0) }, { 1, 0, true })
 	local i, chunks = 0, 0
-	while true do
-		local _, last, done = l.job_range(i, 553)
-		i = last
+	while i < 553 do
+		local n = 0
+		while i < 553 and l.job_continue(n, 0, 0) do
+			i, n = i + 1, n + 1
+		end
+		assert_true(n <= 50)
 		chunks = chunks + 1
-		if done then break end
 	end
 	assert_eq(chunks, 12)
+end)
+
+test("job_continue: the stop-visit budget splits singleton layouts, the first train always runs", function()
+	local l = logic()
+	local stops = 2030
+	local single = l.job_cost(true, stops)
+	assert_eq(single, 4060)
+	assert_eq(l.job_cost(false, stops), 0)
+	assert_true(l.job_continue(0, 0, 1e9))
+	assert_true(l.job_continue(1, single, 0))
+	assert_false(l.job_continue(1, single, single))
+	assert_true(l.job_continue(1, 0, single, nil, l.JOB_STOP_VISITS))
+	assert_false(l.job_continue(50, 0, 0))
+	assert_false(l.job_continue(2, 0, 0, 2))
+	assert_false(l.job_continue(1, 0, 2, 50, 1))
+	-- 553 trains, every 10th alone on its layout, on pY's stop count: each such train gets its own chunk.
+	local i, chunks, worst = 0, 0, 0
+	while i < 553 do
+		local n, spent = 0, 0
+		while i < 553 do
+			local cost = l.job_cost((i + 1) % 10 == 0, stops)
+			if not l.job_continue(n, spent, cost) then break end
+			i, n, spent = i + 1, n + 1, spent + cost
+		end
+		if spent > worst then worst = spent end
+		chunks = chunks + 1
+	end
+	assert_eq(worst, single)
+	assert_true(chunks >= 55)
 end)
 
 test("hud_values: totals, worst network, top reason with ties by lowest code", function()

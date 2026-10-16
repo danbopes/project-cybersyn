@@ -23,7 +23,7 @@ local dev = require("scripts.gui.dev")
 --- @field stop_id uint
 --- @field train_id uint?
 --- @field found boolean
---- @field rails int?
+--- @field no_rail boolean? the stop is not connected to a rail, so there is nothing to ask the pathfinder
 --- @field length number?
 --- @field depot string? the train's depot name
 --- @field seq int bumps per result, for render signatures
@@ -36,7 +36,8 @@ local PANEL = "cybersyn_relative_panel"
 local TRAINS_ANCHOR = "cybersyn_trains_gui"
 local HUD = "cybersyn_hud"
 local TRACE_COLOR = { 0.25, 0.8, 1, 0.9 }
-local HUD_TICKS = 300
+-- Not a multiple of the usual manager intervals (60, 30, 20, ... ticks), so a HUD refresh seldom shares their tick.
+local HUD_TICKS = 301
 extras.HUD_TICKS = HUD_TICKS
 
 local open_manager_fn
@@ -164,8 +165,7 @@ end
 --- @param pd PlayerData
 --- @param train_id uint
 function extras.toggle_path_trace(player, pd, train_id)
-	local t = pd.path_trace
-	if t and t.train_id == train_id then
+	if extras.trace_shown(pd, train_id) then
 		extras.clear_path_trace(pd)
 		return
 	end
@@ -260,7 +260,8 @@ local function path_candidates(record, stop)
 end
 
 --- Asks the pathfinder whether one train can reach the stop and records the answer for the player's panels. A
---- read-only action, audited like the others (manual_action event, log, one force line).
+--- read-only action: the manual_action event and the log line as for the others, but the result line goes to the
+--- clicking player only, since anyone may run it.
 --- @param player LuaPlayer
 --- @param pd PlayerData
 --- @param stop_id uint
@@ -278,7 +279,11 @@ function extras.test_path(player, pd, stop_id, named_train)
 	local result = { stop_id = stop_id, train_id = train_id, found = false, seq = seq, tick = game.tick }
 	local train = train_id and storage.trains[train_id]
 	local entity = train and lua_train(train_id)
-	if entity then
+	-- The pathfinder requires a goal stop that sits on a rail (a mined or destroyed rail leaves a registered stop).
+	local rail = stop.connected_rail
+	if not (rail and rail.valid) then
+		result.no_rail = true
+	elseif entity then
 		-- The pathfinder starts where the train is; it names the depot only when the train is parked there.
 		local depot = train.status == STATUS_D and train.depot_id and storage.depots[train.depot_id]
 		local depot_stop = depot and depot.entity_stop
@@ -286,18 +291,14 @@ function extras.test_path(player, pd, stop_id, named_train)
 		local res = game.train_manager.request_train_path({
 			train = entity,
 			goals = { { train_stop = stop } },
-			return_path = true,
 		})
 		result.found = res.found_path == true
-		if result.found then
-			result.rails = res.path and #res.path or 0
-			result.length = res.total_length
-		end
+		if result.found then result.length = res.total_length end
 	end
 	pd.test_path = result
 	actions.audit(ACTION_TEST_PATH, stop_id, player, { "cybersyn-gui.audit-test-path" },
 		{ "cybersyn-messages.audit-test-path", player.name, "[train-stop=" .. stop.unit_number .. "]",
-			extras.path_caption(result) }, train_id, stop_id)
+			extras.path_caption(result) }, train_id, stop_id, true)
 	return result
 end
 
@@ -305,10 +306,10 @@ end
 --- @param r ExtrasPathResult
 --- @return LocalisedString
 function extras.path_caption(r)
+	if r.no_rail then return { "cybersyn-gui.test-path-no-rail" } end
 	if not r.train_id then return { "cybersyn-gui.test-path-no-train" } end
 	if r.found then
-		return { "cybersyn-gui.test-path-found", format.number(r.rails or 0), tostring(r.train_id),
-			format.number(math.floor((r.length or 0) + 0.5)) }
+		return { "cybersyn-gui.test-path-found", tostring(r.train_id), format.number(math.floor((r.length or 0) + 0.5)) }
 	end
 	if r.depot then return { "cybersyn-gui.test-path-none", r.depot, tostring(r.train_id) } end
 	return { "cybersyn-gui.test-path-none-train", tostring(r.train_id) }
@@ -442,11 +443,13 @@ local function hud_wanted(player, pd)
 end
 
 --- Networks that have Cybersyn trains, at most a minute old: the available-train counters only know networks that
---- had a train available since the load, and the HUD's headroom must agree with the Overview's "Now".
+--- had a train available since the load, and a network whose trains were never free has 0 free trains, not none.
+--- Only the HUD tick writes the cache; any other caller (the read-only query interface) reads it or scans.
+--- @param keep boolean write the scan into the cache
 --- @return {[string]: true}
-local function train_networks()
+local function train_networks(keep)
 	local m = storage.manager
-	local cached = m.hud_networks
+	local cached = m and m.hud_networks
 	if cached and game.tick - cached.tick < 3600 then return cached.set end
 	local set = {}
 	for _, train in pairs(storage.trains) do
@@ -460,19 +463,20 @@ local function train_networks()
 			set[net] = true
 		end
 	end
-	m.hud_networks = { tick = game.tick, set = set }
+	if keep and m then m.hud_networks = { tick = game.tick, set = set } end
 	return set
 end
 
 --- The HUD's two captions, from diag.counts_by_reason(), the available-train counters and the cached network set;
 --- nothing here wakes the collector.
+--- @param keep boolean? cache the network scan (the HUD tick only)
 --- @return LocalisedString line1
 --- @return LocalisedString line2
 --- @return table values
-function extras.hud_text()
+function extras.hud_text(keep)
 	local d = storage.diag
 	local s = stats.get()
-	local v = logic.hud_values(diag.counts_by_reason(), s and s.available_count or {}, train_networks())
+	local v = logic.hud_values(diag.counts_by_reason(), s and s.available_count or {}, train_networks(keep == true))
 	local headroom = v.headroom and format.number(v.headroom) or utext.NO_VALUE
 	if not d then
 		return { "cybersyn-gui.hud-line-off", headroom }, { "cybersyn-gui.hud-diag-off" }, v
@@ -531,7 +535,7 @@ function extras.hud_refresh(player, pd)
 		return
 	end
 	local frame = hud_frame(player, pd)
-	local l1, l2 = extras.hud_text()
+	local l1, l2 = extras.hud_text(true)
 	frame.lines.line1.caption = l1
 	frame.lines.line2.caption = l2
 end
@@ -685,7 +689,7 @@ dev.extend({
 		local player, pd = dev_context(pi)
 		local r = extras.test_path(player, pd, stop_id, train_id)
 		if not r then return nil end
-		return { stop_id = r.stop_id, train_id = r.train_id, found = r.found, rails = r.rails, length = r.length,
+		return { stop_id = r.stop_id, train_id = r.train_id, found = r.found, no_rail = r.no_rail, length = r.length,
 			depot = r.depot, caption = extras.path_caption(r) }
 	end,
 	--- Emulates the click on the trains-window button (an offline player cannot open the vanilla trains window).

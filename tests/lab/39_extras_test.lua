@@ -35,6 +35,16 @@ local function actions_after(seq, code)
 	return out
 end
 
+--- Whether the layout counts add up to one per Cybersyn train, every layout counted at least once.
+local function layout_counts_ok()
+	local want = {}
+	for _, t in pairs(read("trains")) do want[t.layout_id] = (want[t.layout_id] or 0) + 1 end
+	local have = read("layout_train_count")
+	for id, n in pairs(want) do if have[id] ~= n then return false end end
+	for id, n in pairs(have) do if want[id] ~= n then return false end end
+	return true
+end
+
 local function seq_now()
 	return dev("diag_state").seq
 end
@@ -174,13 +184,12 @@ lab.suite("39_extras", {
 		-- Test path against the pathfinder asked here: one stop this train reaches, one it does not.
 		local tid = ctx.trace_train or ctx.train_ids[1]
 		local t = game.train_manager.get_train_by_id(tid)
-		local reach, miss, reach_rails
+		local reach, miss, reach_length
 		for _, id in ipairs(ctx.stations) do
 			local st = read("stations", id)
-			local res = game.train_manager.request_train_path({ train = t, goals = { { train_stop = st.entity_stop } },
-				return_path = true })
+			local res = game.train_manager.request_train_path({ train = t, goals = { { train_stop = st.entity_stop } } })
 			if res.found_path and not reach then
-				reach, reach_rails = id, #res.path
+				reach, reach_length = id, res.total_length
 			elseif not res.found_path and not miss then
 				miss = id
 			end
@@ -190,8 +199,8 @@ lab.suite("39_extras", {
 		end
 		local seq = seq_now()
 		local r = dev("test_path", PI, reach, tid)
-		lab.check("Test path: reachable stop found with the pathfinder's rail count",
-			r.found == true and r.rails == reach_rails and key_of(r.caption) == "cybersyn-gui.test-path-found", r)
+		lab.check("Test path: reachable stop found with the pathfinder's length",
+			r.found == true and r.length == reach_length and key_of(r.caption) == "cybersyn-gui.test-path-found", r)
 		r = dev("test_path", PI, miss, tid)
 		lab.check("Test path: unreachable stop says no path from the depot",
 			r.found == false and (key_of(r.caption) == "cybersyn-gui.test-path-none" or key_of(r.caption) == "cybersyn-gui.test-path-none-train"), r)
@@ -199,6 +208,24 @@ lab.suite("39_extras", {
 		lab.check("Test path is audited: two manual_action events with the stop and the train",
 			#evs == 2 and evs[1].station == reach and evs[1].train == tid and evs[2].station == miss, evs)
 		lab.check("Test path audit line", key_of(dev("last_audit")) == "cybersyn-messages.audit-test-path", dev("last_audit"))
+
+		-- A registered stop whose rail is gone: the pathfinder needs a goal on a rail, so Test path must not ask it.
+		local cut = read("stations", reach).entity_stop
+		local rail = cut.connected_rail
+		if lab.check("the reachable stop sits on a rail", rail ~= nil and rail.valid) then
+			local saved = { name = rail.name, position = rail.position, direction = rail.direction, force = rail.force,
+				surface = rail.surface }
+			rail.destroy()
+			local seq_cut = seq_now()
+			local ok, cr = pcall(dev, "test_path", PI, reach, tid)
+			lab.check("Test path on a stop without a rail: no error, says so, no path",
+				ok and cr and cr.found == false and cr.no_rail == true
+				and key_of(cr.caption) == "cybersyn-gui.test-path-no-rail", ok and cr or tostring(cr))
+			lab.check("Test path on a stop without a rail is still audited", #actions_after(seq_cut, ACTION_TEST_PATH) == 1)
+			saved.surface.create_entity({ name = saved.name, position = saved.position, direction = saved.direction,
+				force = saved.force })
+			lab.check("the rail is back under the stop", cut.connected_rail ~= nil and cut.connected_rail.valid)
+		end
 		-- The stop panel's button, result in the footer.
 		dev("relative_open", PI, "stop", reach)
 		dev("action_click", PI, "test_path")
@@ -220,6 +247,9 @@ lab.suite("39_extras", {
 		local reason_key = "cybersyn-diag.chip-" .. string.lower(string.gsub(row.reason, "_", "-"))
 		lab.check("Explain shows the recorded reason chip and why line", string.find(text, reason_key, 1, true) ~= nil
 			and string.find(text, "cybersyn-gui.unserved-why", 1, true) ~= nil, text)
+		-- The why line names the network as the Overview row does (its icon), never the raw signal name.
+		lab.check("Explain's why line names the network like the row (no raw signal name)",
+			not string.find(text, '"signal%-[AB]"'), text)
 		lab.check("Explain shows the change history", string.find(text, "cybersyn-gui.explain-history", 1, true) ~= nil)
 		local lb = dev("lint_bits", row.requester)
 		local findings = 0
@@ -245,12 +275,17 @@ lab.suite("39_extras", {
 		for _, bar in ipairs(res.bars or {}) do labels[#labels + 1] = key_of(bar.label) end
 		table.sort(labels)
 		lab.check("Breakdown bars are labelled with the diag reason (unknown without one)",
-			lab.same_list(labels, { "cybersyn-diag.reason-p-below-threshold", "cybersyn-gui.unserved-unknown-reason" }), res)
+			lab.same_list(labels, { "cybersyn-diag.chip-p-below-threshold", "cybersyn-gui.unserved-unknown-reason" }), res)
 		local tips_ok = true
 		for _, bar in ipairs(res.bars or {}) do
 			if not mentions(bar.tooltip, key_of(bar.label)) then tips_ok = false end
 		end
 		lab.check("Breakdown bar tooltips carry the reason label", tips_ok and #(res.bars or {}) == 2, res.bars)
+		local full_ok = false
+		for _, bar in ipairs(res.bars or {}) do
+			if mentions(bar.tooltip, "cybersyn-diag.reason-p-below-threshold") then full_ok = true end
+		end
+		lab.check("Breakdown bar tooltip adds the reason's full name", full_ok, res.bars)
 		lab.check("Breakdown stats list one line per reason", #(res.reasons or {}) == 2, res.reasons)
 
 		-- HUD line: values against the counters, location persisted, off again.
@@ -275,7 +310,7 @@ lab.suite("39_extras", {
 		end
 		lab.check("HUD shown when the setting is on", hud.shown == true, hud)
 		lab.check("HUD unserved = diag counts", hud.values.unserved == total, { hud = hud.values, counts = total })
-		lab.check("HUD headroom = fewest available trains", hud.values.headroom == min, { hud = hud.values, avail = avail })
+		lab.check("HUD free trains = fewest available now", hud.values.headroom == min, { hud = hud.values, avail = avail })
 		lab.check("HUD caption", key_of(hud.line1) == "cybersyn-gui.hud-line" and hud.line1[2] ~= nil, hud.line1)
 		local loc = dev("hud_move", PI, 100, 200)
 		lab.check("HUD position persisted", loc and loc.x == 100 and loc.y == 200, loc)
@@ -290,9 +325,11 @@ lab.suite("39_extras", {
 		local toggled = remote.call("cybersyn", "toggle_gui", PI)
 		lab.check("toggle_gui flips it", toggled == not open and dev("state", PI).is_open == toggled)
 		remote.call("cybersyn", "toggle_gui", PI)
+		remote.call("cybersyn", "write_global", nil, "manager", "hud_networks")
 		local counts = remote.call("cybersyn-query", "query_counts")
-		lab.check("query_counts: unserved = diag counts, headroom = the HUD's", counts.unserved == total
-			and counts.headroom == min, counts)
+		lab.check("query_counts: unserved = diag counts, free trains = the HUD's", counts.unserved == total
+			and counts.free_trains == min, counts)
+		lab.check("query_counts writes nothing to storage", read("manager", "hud_networks") == nil)
 		local q = remote.call("cybersyn-query", "query_unserved", { limit = 3 })
 		local sorted = #q <= 3
 		for i = 2, #q do if q[i].first_tick < q[i - 1].first_tick then sorted = false end end
@@ -345,6 +382,9 @@ lab.suite("39_extras", {
 					and d.buttons[2] == "confirm")), d)
 			lab.check(tag .. ": Recalculate audited only with the right", #actions_after(seq, ACTION_RECALC) == (allowed and 1 or 0))
 		end
+
+		-- Each allowed run re-derived every train's layout; the counts must still add up to the trains.
+		lab.check("Recalculate keeps layout_train_count = one per train", layout_counts_ok(), read("layout_train_count"))
 
 		-- Expiry: an armed button falls back after 180 ticks, driven by the manager tick.
 		dev("set_setting", "cybersyn-manager-actions", "everyone")
@@ -426,6 +466,29 @@ lab.suite("39_extras", {
 		local last = dev("repair_job").last
 		lab.check("allow-list job refreshed every train", last and last.refreshed == #ctx.train_ids, last)
 		lab.check("allow-list job audited", #actions_after(seq3, ACTION_ALLOW) == 1)
+		lab.check("allow-list job keeps layout_train_count = one per train", layout_counts_ok(), read("layout_train_count"))
+
+		-- The stop-visit budget: a train whose layout no other train shares walks every stop twice, so with a budget
+		-- of one stop visit each such train gets a chunk of its own, while trains sharing a layout still batch.
+		local singles = 0
+		for _, n in pairs(read("layout_train_count")) do if n == 1 then singles = singles + 1 end end
+		dev("repair_job_chunk", 50, 1)
+		d = dev("action_dialog", PI, "allow", true)
+		local spent_ok, steps = true, 0
+		last_i = 0
+		while dev("repair_job").running and steps < 100 do
+			local j = dev("repair_job", true)
+			steps = steps + 1
+			if j.running and j.spent and j.spent > 1 and j.i - (last_i or 0) > 1 then spent_ok = false end
+			last_i = j.i
+		end
+		local lastb = dev("repair_job").last
+		lab.check("budgeted job refreshed every train", d.ran == true and lastb and lastb.refreshed == #ctx.train_ids, lastb)
+		-- layout-dev's trains share their layouts (cost 0), so they batch; the split itself is in the unit test and pY.
+		lab.check("budgeted job: one chunk per singleton-layout train at least, shared layouts batch",
+			lastb and lastb.chunks >= singles and spent_ok
+			and (singles > 0 or lastb.chunks == math.ceil(#ctx.train_ids / 50)), { chunks = lastb and lastb.chunks, singles = singles })
+		lab.check("budgeted job keeps layout_train_count = one per train", layout_counts_ok(), read("layout_train_count"))
 		dev("repair_job_chunk", nil)
 
 		dev("set_setting", "cybersyn-manager-actions", ctx.actions)

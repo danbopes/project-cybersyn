@@ -4,7 +4,7 @@
 --   Fail delivery and send home   interface.fail_delivery + the depot schedule (train panel)
 --   Rescan station                the combinator re-read the planner applies at tick_init (stop panel)
 --   Recalculate train sizes       retrigger_train_calculation, every train at once (dialog)
---   Refresh allow-lists           update_train_layout per train, JOB_CHUNK trains per manager update (dialog)
+--   Refresh allow-lists           update_train_layout per train, chunked by trains and stop visits (dialog)
 
 local gui = require("__flib__.gui")
 
@@ -23,14 +23,13 @@ local dev = require("scripts.gui.dev")
 --- @field player_index uint 0 = the console
 --- @field started uint tick
 --- @field refreshed int
+--- @field chunk int? trains per chunk; nil = logic.JOB_CHUNK
+--- @field budget int? stop visits per chunk; nil = logic.JOB_STOP_VISITS
 
 local repair = {}
 repair.handle = {}
 
 local DIALOG = "cybersyn_action_dialog"
---- Trains per job chunk; nil = logic.JOB_CHUNK. Only the dev interface changes it, to test the chunking on a small save.
---- @type int?
-repair.chunk = nil
 local DELIVERY_STATUSES = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
 
 --- @param id uint
@@ -103,8 +102,10 @@ end
 function repair.start_allow_job(player)
 	local ids = {}
 	for id in pairs(storage.trains) do ids[#ids + 1] = id end
-	storage.manager.repair_job = { ids = ids, i = 0, player_index = player and player.index or 0, started = game.tick,
-		refreshed = 0 }
+	-- The dev override sits in storage, not in a module upvalue: it decides how much game state a tick changes.
+	local m = storage.manager
+	m.repair_job = { ids = ids, i = 0, player_index = player and player.index or 0, started = game.tick,
+		refreshed = 0, chunk = m.repair_job_chunk, budget = m.repair_job_budget }
 end
 
 --- One chunk of the Refresh allow-lists job (manager tick, or the world-scan tick while manager updates are off).
@@ -112,16 +113,26 @@ function repair.job_tick()
 	local m = storage.manager
 	local job = m and m.repair_job
 	if not job then return end
-	local first, last, done = logic.job_range(job.i, #job.ids, repair.chunk)
-	for k = first, last do
-		local id = job.ids[k]
-		if train_record(id) then
-			remote.call("cybersyn", "update_train_layout", id)
+	local total = #job.ids
+	local stops = table_size(storage.stations) + table_size(storage.refuelers)
+	local counts = storage.layout_train_count
+	local k, n, spent = job.i, 0, 0
+	while k < total do
+		local train = train_record(job.ids[k + 1])
+		local cost = train and logic.job_cost((counts[train.layout_id] or 0) <= 1, stops) or 0
+		if not logic.job_continue(n, spent, cost, job.chunk, job.budget) then break end
+		k = k + 1
+		if train then
+			remote.call("cybersyn", "update_train_layout", job.ids[k])
 			job.refreshed = job.refreshed + 1
+			n = n + 1
+			spent = spent + cost
 		end
 	end
-	job.i = last
+	local done = k >= total
+	job.i = k
 	job.chunks = (job.chunks or 0) + 1
+	job.last_spent = spent
 	if done then
 		m.repair_job = nil
 		m.repair_job_last = { refreshed = job.refreshed, chunks = job.chunks, ticks = game.tick - job.started }
@@ -493,13 +504,38 @@ dev.extend({
 		if confirm then out.ran = repair.dialog_confirm(player, pd) end
 		return out
 	end,
-	repair_job_chunk = function(n)
-		repair.chunk = n
+	--- Overrides for the next job: trains and stop visits per chunk (nil = the defaults).
+	repair_job_chunk = function(n, budget)
+		storage.manager.repair_job_chunk = n
+		storage.manager.repair_job_budget = budget
 	end,
 	repair_job = function(step)
 		if step then repair.job_tick() end
 		local job = storage.manager.repair_job
-		return { running = job ~= nil, i = job and job.i, total = job and #job.ids, last = storage.manager.repair_job_last }
+		return { running = job ~= nil, i = job and job.i, total = job and #job.ids, last = storage.manager.repair_job_last,
+			spent = job and job.last_spent }
+	end,
+	--- Starts the allow-list job as the console would and runs it to the end with one profiler per chunk. Returns the
+	--- chunk times in ms, the trains per chunk and the singleton-layout trains seen at the start.
+	repair_job_profile = function()
+		if storage.manager.repair_job then return { error = "job running" } end
+		local singles = 0
+		for _, train in pairs(storage.trains) do
+			if (storage.layout_train_count[train.layout_id] or 0) <= 1 then singles = singles + 1 end
+		end
+		repair.start_allow_job(nil)
+		local total = #storage.manager.repair_job.ids
+		local out, trains = {}, {}
+		while storage.manager.repair_job do
+			local before = storage.manager.repair_job.i
+			local p = game.create_profiler()
+			repair.job_tick()
+			p.stop()
+			out[#out + 1] = p
+			local job = storage.manager.repair_job
+			trains[#trains + 1] = (job and job.i or total) - before
+		end
+		return { profilers = out, trains = trains, singletons = singles, last = storage.manager.repair_job_last }
 	end,
 	set_admin = function(pi, admin)
 		local player = game.get_player(pi)

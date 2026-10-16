@@ -51,10 +51,11 @@ end
 --- @param target uint? the entity or train it applied to; nil = all of them
 --- @param player LuaPlayer?
 --- @param what LocalisedString the command or action, as the player typed or saw it
---- @param line LocalisedString? the force-chat line; default "<player> ran <what>"
+--- @param line LocalisedString? the chat line; default "<player> ran <what>"
 --- @param train_id uint? the train it applied to, for the event's train column
 --- @param station_id uint? the stop it applied to, for the event's station column
-function actions.audit(action, target, player, what, line, train_id, station_id)
+--- @param private boolean? print the line to the player only (a read-only action anyone may run)
+function actions.audit(action, target, player, what, line, train_id, station_id, private)
 	local index = player and player.valid and player.index or 0
 	local name = player and player.valid and player.name or "server"
 	diag.manual_action(action, target, index, train_id, station_id)
@@ -63,7 +64,11 @@ function actions.audit(action, target, player, what, line, train_id, station_id)
 	local text = line or { "cybersyn-messages.action-audit", name, what }
 	-- Read only by the dev interface (the lab cannot read chat); never part of game state.
 	actions.last_line = text
-	if player and player.valid then player.force.print(text) else game.print(text) end
+	if player and player.valid then
+		if private then player.print(text) else player.force.print(text) end
+	else
+		game.print(text)
+	end
 end
 
 return actions
