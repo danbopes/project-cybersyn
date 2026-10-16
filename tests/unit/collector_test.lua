@@ -132,7 +132,7 @@ local function scenario()
 		},
 	}
 	storage.depots = {
-		[100] = { entity_stop = { valid = true, backer_name = "Depot 1" } },
+		[100] = { entity_stop = { valid = true, backer_name = "Depot 1", trains_limit = 1, trains_count = 0 } },
 		[101] = { entity_stop = { valid = false }, available_train_id = 12 },
 	}
 	storage.available_trains = { ["signal-A"] = { [12] = true } }
@@ -157,11 +157,14 @@ test("empty: the snapshot shape", function()
 		starved_count = 0,
 		starved_source = "snapshot",
 		starved_version = 0,
-		-- PLAN3 §4.2 (phase 2): the hour's minimum from stats; capability, mask_or and depots_by_name declared empty.
+		-- PLAN3 §4.2: the hour's minimum from stats (phase 2); the fleet facts, depot groups and provider masks the lint
+		-- engine reads (phase 2b).
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
-			capability = {}, mask_or = {} },
+			capability = {}, mask_or = {}, in_interrupt_count = {}, not_refuelled_count = {}, group_depots = {} },
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
+		provider_masks = {},
+		provider_overrides = {},
 		alerts = {},
 	})
 	assert_true(collector.empty() ~= collector.empty())
@@ -297,11 +300,11 @@ test("full pass: requester record with thresholds, control combinator and waits"
 	collector.run_to_completion()
 	local st = collector.get().stations[2]
 	assert_eq(st.requested, {
-		["iron-ore"] = { count = -1000, threshold = 500, active = true },
-		["copper-ore"] = { count = -100, threshold = 50, active = true },
-		coal = { count = -800, threshold = 500, active = true },
+		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 1 },
+		["copper-ore"] = { count = -100, threshold = 50, active = true, mask = 1 },
+		coal = { count = -800, threshold = 500, active = true, mask = 1 },
 		-- No fluid threshold anywhere: the item threshold applies to fluids.
-		water = { count = -50, threshold = 500, active = false },
+		water = { count = -50, threshold = 500, active = false, mask = 1 },
 	})
 	assert_eq(st.provided, {})
 	assert_eq(st.control, {})
@@ -322,7 +325,7 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	local warm = snap.stations[3]
 	assert_true(warm.warming_up)
 	assert_true(warm.comb_ok)
-	assert_eq(warm.requested, { stone = { count = -5000, threshold = 2000, active = true } })
+	assert_eq(warm.requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
 	local each = snap.stations[4]
 	assert_eq(each.surface_index, 2)
 	assert_eq(each.requested, {
@@ -338,7 +341,7 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	assert_true(sec.secondary)
 	assert_eq(sec.secondary_count, 1)
 	assert_eq(sec.provided, { ["iron-plate"] = 100 })
-	assert_eq(sec.requested, { ["copper-plate"] = { count = -30, threshold = 20, active = true } })
+	assert_eq(sec.requested, { ["copper-plate"] = { count = -30, threshold = 20, active = true, mask = 1 } })
 	assert_eq(sec.control, {})
 	assert_eq(snap.station_count, 5)
 	assert_eq(snap.secondary_count, 1)
@@ -406,6 +409,7 @@ test("full pass: trains, fleet, depots and alerts", function()
 		is_available = false,
 		-- PLAN3 §4.2 (phase 2); the stub entity has no state, signal or path, so only the cached flag shows.
 		in_interrupt = false,
+		in_group = false,
 	})
 	local t12 = snap.trains[12]
 	assert_eq(t12.depot_name, "")
@@ -420,10 +424,20 @@ test("full pass: trains, fleet, depots and alerts", function()
 		available_by_network = { ["signal-A"] = 1 },
 		by_layout = { [1] = 1 },
 		min_available_by_network = {},
-		capability = {},
-		mask_or = {},
+		-- Phase 2b: per network and layout (train 12 has no layout yet: 0), and the OR of the masks.
+		capability = { ["signal-A"] = {
+			[1] = { count = 1, item_capacity = 0, fluid_capacity = 0, mask_or = 1 },
+			[0] = { count = 1, item_capacity = 0, fluid_capacity = 0, mask_or = 1 },
+		} },
+		mask_or = { ["signal-A"] = 1 },
+		in_interrupt_count = {},
+		not_refuelled_count = {},
+		group_depots = {},
 	})
 	assert_eq(snap.depots, { total = 2, parked = 1 })
+	-- Depot 101's stop is invalid; train 12's depot has no name, so only Depot 1 forms a group.
+	assert_eq(snap.depots_by_name, { ["Depot 1"] = { ids = { 100 }, limit = 1, count = 0, parked = 0, inbound = 0,
+		trains_bound = 1, compositions = { [1] = 1 }, same_depot_bypass = 1 } })
 	-- tps 30 = 2 ticks per main tick: alert raised 10 main ticks ago.
 	assert_eq(snap.alerts, { { train_id = 10, kind = 2, since_tick = 980 }, { train_id = 12, kind = 3, since_tick = 1000 } })
 end)
@@ -676,9 +690,9 @@ test("thresholds: a request exactly at its threshold is active", function()
 	}
 	collector.run_to_completion()
 	assert_eq(collector.get().stations[1].requested, {
-		coal = { count = -500, threshold = 500, active = true },
-		stone = { count = -499, threshold = 500, active = false },
-		water = { count = -40, threshold = 40, active = true },
+		coal = { count = -500, threshold = 500, active = true, mask = 1 },
+		stone = { count = -499, threshold = 500, active = false, mask = 1 },
+		water = { count = -40, threshold = 40, active = true, mask = 1 },
 	})
 end)
 
@@ -762,10 +776,10 @@ test("second pass: changed inputs replace every field of the previous record", f
 		deliveries_total = 0,
 		provided = {},
 		requested = {
-			["iron-ore"] = { count = -1000, threshold = 500, active = true },
-			["copper-ore"] = { count = -100, threshold = 500, active = false },
-			stone = { count = -700, threshold = 300, active = true },
-			water = { count = -50, threshold = 500, active = false },
+			["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
+			["copper-ore"] = { count = -100, threshold = 500, active = false, mask = 3 },
+			stone = { count = -700, threshold = 300, active = true, mask = 3 },
+			water = { count = -50, threshold = 500, active = false, mask = 3 },
 		},
 		deliveries = { stone = 200 },
 		control = {},
@@ -780,7 +794,7 @@ test("second pass: changed inputs replace every field of the previous record", f
 		lint = 0,
 	})
 	assert_eq(snap.stations[3].warming_up, false)
-	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true } })
+	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
 
 	-- The refilled record still owns its tables: later planner writes must not show through.
 	local rec = snap.stations[2]
@@ -924,12 +938,12 @@ test("control combinator: stack stations multiply item thresholds, an unpowered 
 	assert_true(stack.comb2_ok)
 	assert_eq(stack.thresholds, { stone = 150, ["iron-plate"] = 200, water = 7 })
 	assert_eq(stack.control2, { [REQUEST_THRESHOLD] = 4 })
-	assert_eq(stack.requested, { stone = { count = -150, threshold = 100, active = true } })
+	assert_eq(stack.requested, { stone = { count = -150, threshold = 100, active = true, mask = 1 } })
 	local unpowered = snap.stations[3]
 	assert_false(unpowered.comb2_ok)
 	assert_eq(unpowered.thresholds, {})
 	assert_eq(unpowered.control2, {})
-	assert_eq(unpowered.requested, { coal = { count = -10, threshold = 5, active = true } })
+	assert_eq(unpowered.requested, { coal = { count = -10, threshold = 5, active = true, mask = 1 } })
 end)
 
 test("merge: inventory_all keeps the earliest wait start across requesters", function()
@@ -1030,8 +1044,8 @@ test("refill: removed entries go, new ones arrive, and a changed manifest or mas
 	assert_same(snap.stations[2], smelter)
 	assert_same(smelter.requested, requested)
 	assert_eq(smelter.requested, {
-		["iron-ore"] = { count = -1000, threshold = 500, active = true },
-		gravel = { count = -900, threshold = 500, active = true },
+		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 1 },
+		gravel = { count = -900, threshold = 500, active = true, mask = 1 },
 	})
 	assert_eq(smelter.deliveries, { gravel = 50 })
 	assert_eq(smelter.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20 })
@@ -1154,4 +1168,64 @@ test("status: set once per pass, and a changed starved set reclassifies and logs
 	assert_eq(snap.stations[4].status, "starved")
 	local log = storage.manager.collect_log.ids
 	assert_eq(log[#log], 2)
+end)
+
+test("fleet: train groups count the depot names of their Cybersyn trains", function()
+	scenario()
+	storage.trains[10].entity.group = "G"
+	storage.trains[12].entity.group = "G"
+	storage.trains[12].depot_id = 100
+	storage.trains[13] = { entity = { valid = true, group = "H", front_stock = { surface_index = 1 } }, depot_id = 100,
+		network_name = "signal-A", network_mask = 1, status = STATUS_D }
+	storage.depots[101].entity_stop = { valid = true, backer_name = "Depot 2", trains_limit = 1, trains_count = 0 }
+	storage.trains[13].depot_id = 101
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.fleet.group_depots, { G = 1, H = 1 })
+	assert_eq({ snap.trains[10].in_group, snap.trains[10].group, snap.trains[13].group }, { true, "G", "H" })
+	storage.trains[13].entity.group = "G"
+	collector.run_to_completion()
+	assert_eq(collector.get().fleet.group_depots, { G = 2 })
+end)
+
+test("fleet: a Cybersyn train whose depot has no name does not count as another depot name", function()
+	scenario()
+	storage.trains[10].entity.group = "G"
+	storage.trains[12].entity.group = "G"
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.trains[12].depot_name, "")
+	assert_eq(snap.fleet.group_depots, { G = 1 })
+end)
+
+test("provider keys: the providers' masks OR-ed and their lowest item threshold per network:item", function()
+	scenario()
+	storage.stations[1].item_thresholds = { ["iron-ore"] = 300, water = 1500 }
+	storage.stations[5].entity_comb1 = comb(WORKING, { sig("iron-ore", 900) })
+	storage.stations[5].network_mask = 2
+	storage.stations[5].item_thresholds = { ["iron-ore"] = 200 }
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.provider_masks["signal-A:iron-ore"], 3)
+	assert_eq(snap.provider_overrides, { ["signal-A:iron-ore"] = 200, ["signal-A:water"] = 1500 })
+	-- In stack mode an item threshold counts stacks; fluids keep their units.
+	storage.stations[5].is_stack = true
+	storage.stations[5].item_thresholds = { ["iron-ore"] = 2 }
+	collector.run_to_completion()
+	assert_eq(collector.get().provider_overrides["signal-A:iron-ore"], 2 * get_stack_size(nil, "iron-ore"))
+end)
+
+test("secondary combinator on one network: its own mask for what it provides and requests", function()
+	scenario()
+	-- Station 6 (signal-B, mask 1): its secondary carries signal-B = 2, as the planner reads it for that combinator.
+	storage.stations[6].entity_comb1 = comb(WORKING, { sig("iron-plate", 999) })
+	storage.stations[6].secondary_inv_combs = {
+		comb(WORKING, { sig("coal", 100), sig("copper-plate", -30), sig("signal-B", 2, "virtual"),
+			sig(REQUEST_THRESHOLD, 20, "virtual") }),
+	}
+	collector.run_to_completion()
+	local snap = collector.get()
+	assert_eq(snap.provider_masks["signal-B:coal"], 2)
+	assert_eq(snap.provider_masks["signal-B:iron-plate"], 1)
+	assert_eq(snap.stations[6].requested["copper-plate"].mask, 2)
 end)

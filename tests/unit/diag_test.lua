@@ -11,6 +11,7 @@ end
 
 --- A fresh storage.diag in `mode` with a full ring of `ring` rows.
 local function setup(mode, ring)
+	diag.SWEEP_EVERY = 4
 	settings.global["cybersyn-diagnostics"] = { value = mode or "basic" }
 	settings.global["cybersyn-diagnostics-ring"] = { value = ring or 16384 }
 	storage.trains = storage.trains or {}
@@ -235,6 +236,8 @@ end)
 test("cycle: entries no evaluation touched for two cycles are swept", function()
 	at(0)
 	local d = setup()
+	-- The sweep at every cycle (the game runs it every SWEEP_EVERY-th, tested below).
+	diag.SWEEP_EVERY = 1
 	diag.cycle()
 	diag.fail(d, 1, "coal", REASON_NO_PROVIDER, 0, 0)
 	diag.fail(d, 2, "coal", REASON_NO_PROVIDER, 0, 0)
@@ -278,6 +281,8 @@ end)
 test("cap: more failing keys than the cap over two cycles; refused keys are counted, logged once, never evicting", function()
 	at(0)
 	local d = setup()
+	-- The sweep at every cycle (the game runs it every SWEEP_EVERY-th, tested below).
+	diag.SWEEP_EVERY = 1
 	diag.cycle()
 	local cap, extra = diag.UNSERVED_CAP, 500
 	local function evaluate_all(from)
@@ -312,6 +317,8 @@ end)
 test("acks: the sweep keeps an acknowledgement; a re-created key with another reason ends it; service ends it", function()
 	at(0)
 	local d = setup()
+	-- The sweep at every cycle (the game runs it every SWEEP_EVERY-th, tested below).
+	diag.SWEEP_EVERY = 1
 	diag.cycle()
 	diag.fail(d, 1, "coal", REASON_R_AT_LIMIT, 1, 1)
 	diag.ack("request", 1, "coal", 3, nil)
@@ -700,4 +707,183 @@ test("no-train failures come from transitions into no-train reasons only", funct
 	at(2000)
 	diag.fail(d, 2, "coal", REASON_CAPACITY, 5, 4)
 	assert_eq(stats.aggregate(10).no_train_failures, 2)
+end)
+
+-- ---------------------------------------------------------------- phase 2b
+
+test("rings: the basic ring's columns are filled up front; the full ring only once full mode is on", function()
+	at(0)
+	local d = setup("basic", 2048)
+	for _, c in ipairs(diag.COLUMNS) do
+		assert_eq(#d.ring_basic[c], diag.BASIC_RING, c)
+		assert_eq(#d.ring_full[c], 0, c)
+	end
+	setup("full", 2048)
+	for _, c in ipairs(diag.COLUMNS) do assert_eq(#d.ring_full[c], 2048, c) end
+	-- A resize keeps the newest rows and fills the rest of the new size.
+	for i = 1, 10 do diag.event(d, DIAG_KIND_DISPATCHED, DIAG_SEV_INFO, 0, i, 0, 0, 0, 0, 0, 0) end
+	setup("full", 1024)
+	assert_eq(#d.ring_full.delivery, 1024)
+	assert_eq(d.ring_full.count, 10)
+	local rows = diag.events({ kind = DIAG_KIND_DISPATCHED }, nil, 100)
+	assert_eq(#rows, 10)
+	assert_eq(rows[10].delivery, 10)
+end)
+
+test("sweep: only every SWEEP_EVERY-th cycle", function()
+	at(0)
+	local d = setup()
+	diag.cycle()
+	diag.fail(d, 1, "coal", REASON_NO_PROVIDER, 0, 0)
+	local swept_at
+	for k = 1, 8 do
+		at(k * 50)
+		diag.cycle()
+		if not swept_at and not d.unserved[1] then swept_at = d.cycles end
+	end
+	assert_eq(swept_at % diag.SWEEP_EVERY, 0)
+	assert_true(swept_at >= 3, "never before the entry is two cycles old")
+end)
+
+test("sweep: a key whose item was served to another requester since the cutoff is kept, for a while", function()
+	at(0)
+	local d = setup()
+	diag.SWEEP_EVERY = 1
+	diag.cycle()
+	diag.fail(d, 1, "coal", REASON_P_RESERVED, 10, 20)
+	diag.fail(d, 2, "coal", REASON_NO_PROVIDER, 0, 0)
+	diag.fail(d, 1, "iron-ore", REASON_NO_PROVIDER, 0, 0)
+	-- Requester 3 is served coal every cycle; the call ends there, so requester 1 is never evaluated for coal.
+	for t = 50, 300, 50 do
+		at(t)
+		diag.cycle()
+		diag.served(d, 3, "coal", 9, 4, 0)
+	end
+	local ix_coal, ix_ore = d.item_ix.coal, d.item_ix["iron-ore"]
+	assert_not_nil(d.unserved[1] and d.unserved[1][ix_coal], "kept while coal is dispatched")
+	assert_eq(d.unserved[1][ix_coal].first_tick, 0)
+	assert_nil(d.unserved[1][ix_ore], "iron ore was not dispatched: swept")
+	assert_not_nil(d.unserved[2], "requester 2's coal key is kept the same way")
+	-- Not forever: SWEEP_SPARE after its last evaluation it goes even while the item is still being served.
+	at(diag.SWEEP_SPARE + 100)
+	diag.served(d, 3, "coal", 9, 4, 0)
+	diag.cycle()
+	at(diag.SWEEP_SPARE + 150)
+	diag.served(d, 3, "coal", 9, 4, 0)
+	diag.cycle()
+	assert_nil(d.unserved[1])
+	assert_eq(d.counts, tally(d))
+end)
+
+test("dispatched: interns the hash the caller passes", function()
+	at(5)
+	local d = setup("full")
+	local train = {}
+	diag.dispatched(d, 4, train, 1, 2, { { name = "coal", count = 30 }, { name = "iron-ore", count = 20 } }, "coal")
+	local ev = diag.events({ kind = DIAG_KIND_DISPATCHED }, nil, 1)[1]
+	assert_eq({ ev.delivery, ev.item, ev.a, ev.b }, { 1, d.item_ix.coal, 2, 50 })
+	assert_eq(train.delivery_id, 1)
+end)
+
+test("alert_ids: one row per requester and alert per ALERT_REPEAT, without entity reads", function()
+	at(100)
+	local d = setup()
+	diag.alert_ids(d, DIAG_ALERT_MISSING_TRAIN, 11, 12)
+	diag.alert_ids(d, DIAG_ALERT_MISSING_TRAIN, 11, 12)
+	diag.alert_ids(d, DIAG_ALERT_TRAINS_FILTERED, 11, 12)
+	local rows = diag.events({ kind = DIAG_KIND_ALERT }, 0, 10)
+	assert_eq(#rows, 2)
+	assert_eq({ rows[1].station, rows[1].station2, rows[1].code }, { 11, 12, DIAG_ALERT_MISSING_TRAIN })
+end)
+
+local function cargo(manifest, contents, fluids, tol, at_r)
+	local out = {}
+	for i, f in ipairs(diag.cargo_check(manifest, contents, fluids or {}, tol or 2, at_r)) do
+		out[i] = { f.kind, f.name, f.planned, f.actual }
+	end
+	return out
+end
+
+test("cargo_check at the provider: items short by any amount, fluids beyond the tolerance, extras", function()
+	local S, X = diag.CARGO_SHORT, diag.CARGO_EXTRA
+	local m = { { type = "item", name = "iron-plate", count = 2000 } }
+	assert_eq(cargo(m, { { name = "iron-plate", quality = "normal", count = 2000 } }), {})
+	assert_eq(cargo(m, { { name = "iron-plate", quality = "normal", count = 1999 } }), { { S, "iron-plate", 2000, 1999 } })
+	assert_eq(cargo(m, { { name = "iron-plate", quality = "normal", count = 2000 }, { name = "coal", quality = "normal",
+		count = 5 } }), { { X, "coal", 0, 5 } })
+	-- Quality is part of the item: a rare plate is not the normal one.
+	assert_eq(cargo(m, { { name = "iron-plate", quality = "rare", count = 2000 } }),
+		{ { S, "iron-plate", 2000, 0 }, { X, "iron-plate", 0, 2000 } })
+	-- Over-loading the planned item is not an anomaly.
+	assert_eq(cargo(m, { { name = "iron-plate", quality = "normal", count = 2500 } }), {})
+	local f = { { type = "fluid", name = "water", count = 10000 } }
+	assert_eq(cargo(f, {}, { water = 9801 }), {})
+	assert_eq(cargo(f, {}, { water = 9800 }), {}, "exactly at the tolerance")
+	assert_eq(cargo(f, {}, { water = 9799 }), { { S, "water", 10000, 9799 } })
+	assert_eq(cargo(f, {}, { water = 9500 }, 5), {})
+	assert_eq(cargo(f, {}, { water = 10000, ["crude-oil"] = 300 }), { { X, "crude-oil", 0, 300 } })
+	-- The largest relative shortfall wins.
+	local two = { { type = "item", name = "iron-plate", count = 1000 }, { type = "item", name = "coal", count = 100 } }
+	assert_eq(cargo(two, { { name = "iron-plate", quality = "normal", count = 900 }, { name = "coal", quality = "normal",
+		count = 50 } }), { { S, "coal", 100, 50 } })
+	-- A larger unplanned fluid is the finding, but the unplanned item still raises the unexpected-cargo alert.
+	local mixed = { { type = "fluid", name = "water", count = 10000 } }
+	local found, item_extra = diag.cargo_check(mixed, { { name = "coal", quality = "normal", count = 5 } },
+		{ water = 10000, ["crude-oil"] = 25000 }, 2, false)
+	assert_eq({ found[1].kind, found[1].name, item_extra }, { X, "crude-oil", true })
+	assert_eq(select(2, diag.cargo_check(mixed, {}, { water = 10000, ["crude-oil"] = 25000 }, 2, false)), nil)
+end)
+
+test("cargo_check at the requester: any item left, fluid above the tolerance, the largest one", function()
+	local R = diag.CARGO_RESIDUE
+	local m = { { type = "item", name = "iron-plate", count = 2000 } }
+	assert_eq(cargo(m, {}, {}, 2, true), {})
+	assert_eq(cargo(m, { { name = "iron-plate", quality = "normal", count = 1 } }, {}, 2, true),
+		{ { R, "iron-plate", 2000, 1 } })
+	assert_eq(cargo(m, { { name = "coal", quality = "normal", count = 3 }, { name = "iron-plate", quality = "normal",
+		count = 30 } }, {}, 2, true), { { R, "iron-plate", 2000, 30 } })
+	local f = { { type = "fluid", name = "water", count = 10000 } }
+	assert_eq(cargo(f, {}, { water = 200 }, 2, true), {})
+	assert_eq(cargo(f, {}, { water = 201 }, 2, true), { { R, "water", 10000, 201 } })
+	assert_eq(cargo(f, {}, { water = 0.4 }, 0, true), {}, "a trace below one unit is not cargo")
+	assert_eq(cargo(f, {}, { ["crude-oil"] = 5 }, 2, true), { { R, "crude-oil", 0, 5 } })
+end)
+
+test("cargo_events: a = planned, b = actual, the stop left and the other one, the item interned", function()
+	at(10)
+	local d = setup()
+	local train = { delivery_id = nil }
+	diag.cargo_events(d, { { kind = diag.CARGO_SHORT, name = "iron-plate", type = "item", planned = 2000, actual = 1900 },
+		{ kind = diag.CARGO_EXTRA, name = "coal", quality = "rare", type = "item", planned = 0, actual = 5 } }, 7, train, 1, 2)
+	local rows = diag.events(nil, 0, 10)
+	assert_eq(kinds(rows), { "short_load", "unexpected_cargo" })
+	assert_eq({ rows[1].train, rows[1].station, rows[1].station2, rows[1].a, rows[1].b }, { 7, 1, 2, 2000, 1900 })
+	assert_eq(d.item_hash[rows[2].item], "coal|rare")
+end)
+
+test("schedule_edited, lint and manual_action rows", function()
+	at(1000)
+	local d = setup()
+	local train = { r_station_id = 4 }
+	diag.schedule_edited(d, 9, train, 3)
+	at(1000 + diag.EDIT_REPEAT - 1)
+	diag.schedule_edited(d, 9, train, 3)
+	at(1000 + diag.EDIT_REPEAT)
+	diag.schedule_edited(d, 9, train, 2)
+	diag.lint(LINT_CAPACITY, LINT_SUBJECT_STATION, 44, true)
+	diag.lint(LINT_IN_GROUP, LINT_SUBJECT_TRAIN, 9, false)
+	diag.manual_action(ACTION_FIX_PRIORITIES, nil, 3)
+	local rows = diag.events(nil, 0, 10)
+	assert_eq(kinds(rows), { "schedule_edited", "schedule_edited", "lint", "lint", "manual_action" })
+	assert_eq({ rows[1].train, rows[1].station, rows[1].station2 }, { 9, 4, 3 })
+	assert_eq({ rows[3].station, rows[3].a, rows[3].b, rows[3].code, rows[3].sev },
+		{ 44, LINT_CAPACITY, 44, DIAG_LINT_APPEARED, DIAG_SEV_ERROR })
+	assert_eq({ rows[4].train, rows[4].station, rows[4].code, rows[4].sev }, { 9, 0, DIAG_LINT_CLEARED, DIAG_SEV_INFO })
+	assert_eq({ rows[5].code, rows[5].a, rows[5].b, rows[5].station2 }, { ACTION_FIX_PRIORITIES, ACTION_FIX_PRIORITIES, 0, 3 })
+	assert_eq(diag.code_name(DIAG_KIND_MANUAL_ACTION, ACTION_FIX_PRIORITIES), "fix_priorities")
+	assert_eq(diag.code_name(DIAG_KIND_LINT, DIAG_LINT_CLEARED), "cleared")
+	-- Off: nothing to write to, and no error.
+	setup("off")
+	diag.lint(LINT_CAPACITY, LINT_SUBJECT_STATION, 44, true)
+	diag.manual_action(ACTION_FIX_PRIORITIES, nil, 3)
 end)

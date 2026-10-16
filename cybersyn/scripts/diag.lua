@@ -25,6 +25,14 @@ local WAIT_SIGNAL_MIN = 600
 -- The dispatcher re-sends its no-train alerts on every failing evaluation and the stuck-train alert on every visit;
 -- the log keeps one row per entity and alert until the alert changes or this long has passed.
 local ALERT_REPEAT = 36000
+-- The unserved sweep runs on every SWEEP_EVERY-th planner cycle: an entry then lives up to that many cycles longer,
+-- and the walk over every entry (about 60 µs per cycle on a 2,030-station base) costs that much less per tick.
+local SWEEP_EVERY = 4
+-- A key whose item was dispatched to another requester since the cutoff was not evaluated (the call ended in that
+-- dispatch), so the sweep keeps it, for at most this long since its last evaluation.
+local SWEEP_SPARE = 36000
+-- A player editing a schedule changes it several times in a row; one log row per train per this long.
+local EDIT_REPEAT = 600
 local ACK_CAP = 1024
 local EXPORT_CHUNK = 2000
 local EXPORT_SCAN = 4 * EXPORT_CHUNK
@@ -36,6 +44,9 @@ diag.FLAP_WINDOW = FLAP_WINDOW
 diag.ACK_CAP = ACK_CAP
 diag.EXPORT_CHUNK = EXPORT_CHUNK
 diag.WAIT_SIGNAL_MIN = WAIT_SIGNAL_MIN
+diag.SWEEP_EVERY = SWEEP_EVERY
+diag.SWEEP_SPARE = SWEEP_SPARE
+diag.EDIT_REPEAT = EDIT_REPEAT
 
 local COLUMNS = { "seq", "tick", "kind", "sev", "code", "delivery", "train", "station", "station2", "item", "a", "b" }
 diag.COLUMNS = COLUMNS
@@ -107,6 +118,8 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field unpowered {[uint]: true} stations whose combinator was not working at their last poll
 --- @field alert_last {[int]: uint} (stop unit number, or -train id) * 32 + alert code -> tick it was last logged
 --- @field alert_sweep uint? next tick alert_last is pruned
+--- @field cycles int planner cycles started since this state was created (the unserved sweep runs every SWEEP_EVERY)
+--- @field item_served {[int]: uint} item index -> tick create_delivery last served a requester of it
 --- @field next_delivery uint
 --- @field export_jobs DiagExportJob[]
 --- @field loaded_tick uint when this state was created
@@ -115,12 +128,36 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 
 -- ---------------------------------------------------------------- state
 
+--- Columns are filled to their size up front: a column grown by appending is reallocated at every power of two, and
+--- those copies landed in the dispatcher's ticks.
+--- @param col table
+--- @param from int
+--- @param to int
+local function prefill(col, from, to)
+	for k = from, to do col[k] = 0 end
+end
+
 --- @param size int
+--- @param filled boolean? preallocate the columns now (the full ring waits until full mode is on)
 --- @return DiagRing
-local function new_ring(size)
-	local r = { size = size, head = 0, count = 0 }
-	for _, c in ipairs(COLUMNS) do r[c] = {} end
+local function new_ring(size, filled)
+	local r = { size = size, head = 0, count = 0, filled = filled or nil }
+	for _, c in ipairs(COLUMNS) do
+		local col = {}
+		if filled then prefill(col, 1, size) end
+		r[c] = col
+	end
 	return r
+end
+
+--- @param r DiagRing
+local function fill_ring(r)
+	if r.filled then return end
+	for _, c in ipairs(COLUMNS) do
+		local col = r[c]
+		prefill(col, #col + 1, r.size)
+	end
+	r.filled = true
 end
 
 --- @return int
@@ -141,8 +178,8 @@ local function new_state()
 		mode = "basic",
 		full = false,
 		seq = 0,
-		ring_basic = new_ring(BASIC_RING),
-		ring_full = new_ring(full_ring_size()),
+		ring_basic = new_ring(BASIC_RING, true),
+		ring_full = new_ring(full_ring_size(), false),
 		unserved = {},
 		unserved_count = {},
 		unserved_n = 0,
@@ -155,6 +192,8 @@ local function new_state()
 		fleet_tick = -2,
 		unpowered = {},
 		alert_last = {},
+		cycles = 0,
+		item_served = {},
 		next_delivery = 0,
 		export_jobs = {},
 		loaded_tick = game.tick,
@@ -174,6 +213,7 @@ function diag.resize_ring(r, size)
 		for k = 1, keep do
 			out[k] = col[(head - keep + k - 1) % old_size + 1]
 		end
+		if r.filled then prefill(out, keep + 1, size) end
 		r[c] = out
 	end
 	r.size = size
@@ -205,7 +245,11 @@ function diag.apply()
 	d.mode = mode
 	d.full = mode == "full"
 	d.unserved_dropped = d.unserved_dropped or 0
+	d.cycles = d.cycles or 0
+	d.item_served = d.item_served or {}
 	diag.resize_ring(d.ring_full, full_ring_size())
+	fill_ring(d.ring_basic)
+	if d.full then fill_ring(d.ring_full) end
 	return d
 end
 
@@ -825,9 +869,10 @@ end
 --- @param train_id uint
 --- @param delivery_id uint?
 function diag.served(d, r_id, hash, p_id, train_id, delivery_id)
+	local ix = d.item_ix[hash]
+	if ix then d.item_served[ix] = game.tick end
 	local by_item = d.unserved[r_id]
-	local ix = by_item and d.item_ix[hash]
-	local e = ix and by_item[ix]
+	local e = ix and by_item and by_item[ix]
 	if e then
 		diag.event(d, DIAG_KIND_SERVED, DIAG_SEV_INFO, e.reason, delivery_id, train_id, r_id, p_id, ix,
 			game.tick - e.first_tick, e.n)
@@ -859,8 +904,9 @@ function diag.station_removed(station_id)
 	end
 end
 
---- Planner cycle start (tick_init): drops entries no evaluation has touched for two cycles, expires
---- acknowledgements.
+--- Planner cycle start (tick_init): every SWEEP_EVERY cycles drops entries no evaluation has touched for two cycles,
+--- unless their item was served to another requester since (that dispatch ended the call before they were reached);
+--- expires acknowledgements.
 function diag.cycle()
 	diag.expire_acks()
 	local d = storage.diag
@@ -877,6 +923,8 @@ function diag.cycle()
 	d.cycle_prev2 = d.cycle_prev
 	d.cycle_prev = d.cycle_start >= 0 and d.cycle_start or nil
 	d.cycle_start = now
+	local cycles = d.cycles + 1
+	d.cycles = cycles
 	if now >= (d.alert_sweep or 0) then
 		local last = d.alert_last
 		for key, tick in pairs(last) do
@@ -885,10 +933,14 @@ function diag.cycle()
 		d.alert_sweep = now + ALERT_REPEAT
 	end
 	local cutoff = d.cycle_prev2
-	if not cutoff or d.unserved_n == 0 then return end
+	if not cutoff or d.unserved_n == 0 or cycles % diag.SWEEP_EVERY ~= 0 then return end
+	local served = d.item_served
 	for r_id, by_item in pairs(d.unserved) do
 		for ix, e in pairs(by_item) do
-			if e.last_tick < cutoff then remove_entry(d, r_id, by_item, ix, e) end
+			local last = e.last_tick
+			if last < cutoff and ((served[ix] or -1) < cutoff or now - last > SWEEP_SPARE) then
+				remove_entry(d, r_id, by_item, ix, e)
+			end
 		end
 	end
 end
@@ -1013,6 +1065,20 @@ function diag.alert(code, train, stop, stop2)
 		train_id, station, unit(stop2), 0, 0, 0)
 end
 
+--- An alert about a requester sent from inside the planner, which already holds storage.diag and the stop ids.
+--- @param d DiagState
+--- @param code int DIAG_ALERT_*
+--- @param station uint requester stop unit number
+--- @param station2 uint? provider
+function diag.alert_ids(d, code, station, station2)
+	local key = station * 32 + code
+	local now = game.tick
+	local last = d.alert_last[key]
+	if last and now - last < ALERT_REPEAT then return end
+	d.alert_last[key] = now
+	diag.event(d, DIAG_KIND_ALERT, ALERT_SEVERITY[code] or DIAG_SEV_WARNING, code, 0, 0, station, station2 or 0, 0, 0, 0)
+end
+
 --- The create_delivery exits that give up on a chosen train.
 --- @param code int DIAG_DISPATCH_*
 function diag.dispatch_failed(code, train_id, r_id, p_id)
@@ -1057,7 +1123,8 @@ end
 --- create_delivery applied the schedule: in full mode the delivery gets an id its later events carry.
 --- @param train Train
 --- @param manifest Manifest
-function diag.dispatched(d, train_id, train, r_id, p_id, manifest)
+--- @param first_hash string? hash of manifest[1], which the caller has already built
+function diag.dispatched(d, train_id, train, r_id, p_id, manifest, first_hash)
 	if not d.full then
 		train.delivery_id = nil
 		return
@@ -1065,11 +1132,10 @@ function diag.dispatched(d, train_id, train, r_id, p_id, manifest)
 	local id = d.next_delivery + 1
 	d.next_delivery = id
 	train.delivery_id = id
-	local first = manifest[1]
 	local total = 0
 	for _, item in ipairs(manifest) do total = total + item.count end
 	diag.event(d, DIAG_KIND_DISPATCHED, DIAG_SEV_INFO, 0, id, train_id, r_id, p_id,
-		first and intern(d, hash_item(first.name, first.quality)) or 0, #manifest, total)
+		first_hash and intern(d, first_hash) or 0, #manifest, total)
 end
 
 --- Arrivals, departures and the return to a depot (full only).
@@ -1116,6 +1182,168 @@ function diag.train_state(train_id, train, old_state, since, new_state)
 	end
 end
 
+-- ---------------------------------------------------------------- cargo anomalies (PLAN3 §4.5, A3)
+
+local CARGO_SHORT = 1
+local CARGO_EXTRA = 2
+local CARGO_RESIDUE = 3
+diag.CARGO_SHORT, diag.CARGO_EXTRA, diag.CARGO_RESIDUE = CARGO_SHORT, CARGO_EXTRA, CARGO_RESIDUE
+
+--- @param quality string?
+local function q(quality)
+	return quality or "normal"
+end
+
+--- Amount of a manifest entry aboard: items by name and quality from get_contents(), fluids by name.
+--- @param m ManifestEntry
+--- @param contents ItemWithQualityCounts
+--- @param fluids {[string]: number}
+--- @return number
+local function aboard(m, contents, fluids)
+	if m.type == "fluid" then return fluids[m.name] or 0 end
+	local n, mq = 0, q(m.quality)
+	for _, c in pairs(contents) do
+		if c.name == m.name and q(c.quality) == mq then n = n + c.count end
+	end
+	return n
+end
+
+--- @param manifest Manifest
+--- @return ManifestEntry?
+local function planned(manifest, name, quality, is_fluid)
+	for _, m in ipairs(manifest) do
+		if m.name == name and ((m.type == "fluid") == is_fluid) and (is_fluid or q(m.quality) == q(quality)) then
+			return m
+		end
+	end
+	return nil
+end
+
+--- Compares a train's cargo with its manifest when it leaves a stop. At the provider (`at_r` false) a manifest
+--- entry with less aboard is a short load (items: any shortfall; fluids: more than `tolerance` percent) and
+--- anything aboard that the manifest does not name is unexpected; at the requester anything still aboard is
+--- residual (fluids: above `tolerance` percent of the planned amount, or any amount the manifest did not name).
+--- Pure: the caller reads the contents. Returns at most one finding per kind, the largest.
+--- @param manifest Manifest
+--- @param contents ItemWithQualityCounts LuaTrain.get_contents()
+--- @param fluids {[string]: number} LuaTrain.get_fluid_contents()
+--- @param tolerance number percent
+--- @param at_r boolean
+--- @return {kind: int, name: string, quality: string?, type: string, planned: int, actual: int}[]
+--- @return boolean? item_extra at the provider: some item aboard is unplanned (the unexpected-cargo alert), even when
+---   a larger unplanned fluid is the finding
+function diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
+	local out = {}
+	local frac = tolerance / 100
+	if at_r then
+		local best, best_n
+		for _, c in pairs(contents) do
+			if c.count > 0 and (not best_n or c.count > best_n) then
+				local m = planned(manifest, c.name, c.quality, false)
+				best = { kind = CARGO_RESIDUE, name = c.name, quality = c.quality, type = "item",
+					planned = m and m.count or 0, actual = c.count }
+				best_n = c.count
+			end
+		end
+		for name, amount in pairs(fluids) do
+			local m = planned(manifest, name, nil, true)
+			local limit = m and m.count * frac or 0
+			if amount > limit and amount >= 1 and (not best_n or amount > best_n) then
+				best = { kind = CARGO_RESIDUE, name = name, type = "fluid", planned = m and m.count or 0,
+					actual = math.floor(amount + 0.5) }
+				best_n = amount
+			end
+		end
+		if best then out[1] = best end
+		return out
+	end
+	local short, short_gap
+	for _, m in ipairs(manifest) do
+		local have = aboard(m, contents, fluids)
+		local need = m.type == "fluid" and m.count * (1 - frac) or m.count
+		if have < need and m.count > 0 then
+			local gap = (m.count - have) / m.count
+			if not short_gap or gap > short_gap then
+				short = { kind = CARGO_SHORT, name = m.name, quality = m.quality, type = m.type or "item",
+					planned = m.count, actual = math.floor(have + 0.5) }
+				short_gap = gap
+			end
+		end
+	end
+	if short then out[#out + 1] = short end
+	local extra, item_extra
+	for _, c in pairs(contents) do
+		if c.count > 0 and not planned(manifest, c.name, c.quality, false) then
+			item_extra = true
+			if not extra or c.count > extra.actual then
+				extra = { kind = CARGO_EXTRA, name = c.name, quality = c.quality, type = "item", planned = 0,
+					actual = c.count }
+			end
+		end
+	end
+	for name, amount in pairs(fluids) do
+		if amount >= 1 and not planned(manifest, name, nil, true) and (not extra or amount > extra.actual) then
+			extra = { kind = CARGO_EXTRA, name = name, type = "fluid", planned = 0, actual = math.floor(amount + 0.5) }
+		end
+	end
+	if extra then out[#out + 1] = extra end
+	return out, item_extra
+end
+
+local CARGO_KIND = {
+	[CARGO_SHORT] = DIAG_KIND_SHORT_LOAD,
+	[CARGO_EXTRA] = DIAG_KIND_UNEXPECTED_CARGO,
+	[CARGO_RESIDUE] = DIAG_KIND_RESIDUAL_CARGO,
+}
+
+--- Writes the findings of diag.cargo_check: `a` = planned, `b` = actual, station = the stop the train left.
+--- @param d DiagState
+--- @param findings table[] diag.cargo_check
+--- @param train Train
+function diag.cargo_events(d, findings, train_id, train, station_id, other_id)
+	for _, f in ipairs(findings) do
+		local hash = f.type == "fluid" and f.name or hash_item(f.name, f.quality)
+		diag.event(d, CARGO_KIND[f.kind], DIAG_SEV_WARNING, 0, train.delivery_id, train_id, station_id or 0,
+			other_id or 0, intern(d, hash), f.planned, f.actual)
+	end
+end
+
+-- ---------------------------------------------------------------- schedule edits, lint, manual actions
+
+--- on_train_schedule_changed raised by a player on a Cybersyn train (A2): one row per train per EDIT_REPEAT.
+--- @param d DiagState
+--- @param train Train
+function diag.schedule_edited(d, train_id, train, player_index)
+	local now = game.tick
+	local last = train.edited_tick
+	if last and now - last < EDIT_REPEAT then return end
+	train.edited_tick = now
+	diag.event(d, DIAG_KIND_SCHEDULE_EDITED, DIAG_SEV_WARNING, 0, train.delivery_id, train_id,
+		train.r_station_id or train.p_station_id or 0, player_index, 0, player_index, 0)
+end
+
+--- A lint finding appeared or cleared (`a` = check, `b` = subject id; trains also in `train`, stops in `station`).
+--- @param check int LINT_*
+--- @param subject int LINT_SUBJECT_*
+--- @param id uint
+--- @param appeared boolean
+function diag.lint(check, subject, id, appeared)
+	local d = storage.diag
+	if not d then return end
+	local is_train = subject == LINT_SUBJECT_TRAIN
+	diag.event(d, DIAG_KIND_LINT, appeared and (LINT_SEVERITY[check] or DIAG_SEV_WARNING) or DIAG_SEV_INFO,
+		appeared and DIAG_LINT_APPEARED or DIAG_LINT_CLEARED, 0, is_train and id or 0, is_train and 0 or id, subject, 0,
+		check, id)
+end
+
+--- A state-changing command or manager action (PLAN3 §4.14): `a` = ACTION_*, `b` = target id (0 = all),
+--- station2 = player index (0 = the server console).
+function diag.manual_action(action, target, player_index)
+	local d = storage.diag
+	if not d then return end
+	diag.event(d, DIAG_KIND_MANUAL_ACTION, DIAG_SEV_INFO, action, 0, 0, 0, player_index or 0, 0, action, target or 0)
+end
+
 -- ---------------------------------------------------------------- export
 
 --- @class DiagExportJob
@@ -1149,6 +1377,10 @@ local function code_name(kind, code)
 		return DIAG_ACK_KINDS[code] or tostring(code)
 	elseif kind == DIAG_KIND_TRAIN_STATE then
 		return STATE_NAMES[code] or tostring(code)
+	elseif kind == DIAG_KIND_LINT then
+		return code == DIAG_LINT_APPEARED and "appeared" or "cleared"
+	elseif kind == DIAG_KIND_MANUAL_ACTION then
+		return ACTION_NAMES[code] or tostring(code)
 	end
 	return tostring(code)
 end

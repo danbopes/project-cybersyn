@@ -182,6 +182,34 @@ data:extend({
 		maximum_value = 65536,
 	},
 	{
+		type = "double-setting",
+		name = "cybersyn-cargo-tolerance",
+		order = "dc",
+		setting_type = "runtime-global",
+		-- Percent of a fluid manifest that may be missing at the provider or left at the requester before the log
+		-- records it; items count any shortfall.
+		default_value = 2,
+		minimum_value = 0,
+		maximum_value = 20,
+	},
+	{
+		type = "string-setting",
+		name = "cybersyn-manager-actions",
+		order = "dd",
+		setting_type = "runtime-global",
+		default_value = "admins",
+		allowed_values = { "admins", "everyone", "nobody" },
+	},
+	{
+		type = "double-setting",
+		name = "cybersyn-manager-refuel-hours",
+		order = "ac",
+		setting_type = "runtime-per-user",
+		default_value = 1,
+		minimum_value = 0.25,
+		maximum_value = 24,
+	},
+	{
 		type = "bool-setting",
 		name = "cybersyn-manager-dev-interface",
 		order = "ab",

@@ -77,7 +77,8 @@ lab.suite("38_diag", {
 			st.ring_basic_size == 4096 and st.ring_full_size == 16384, st)
 		lab.check("the log has events after the trace", st.seq > 0 and st.count_basic > 0, st)
 		lab.check("kinds table names all 25 kinds", #st.kinds == 25 and st.kinds[2] == "served", st.kinds)
-		lab.check("schema step 1 recorded", lab.read("fork_schema") == 1, lab.read("fork_schema"))
+		-- Step 2 (phase 2b): the sweep and ring fields, the planner-cycle counters, refuel_since.
+		lab.check("schema step 2 recorded", lab.read("fork_schema") == 2, lab.read("fork_schema"))
 		local acks = lab.read("acks")
 		lab.check("storage.acks created", acks ~= nil and acks.request ~= nil and acks.station ~= nil and acks.lint ~= nil,
 			acks)
@@ -135,8 +136,9 @@ lab.suite("38_diag", {
 
 		dev("collect")
 		local f = dev("snapshot_fields")
-		lab.check("snapshot: read_tick and lint 0 on every station record",
-			f.stations == 30 and f.read_tick == 30 and f.lint_zero == 30, f)
+		-- Phase 2b: st.lint is the lint job's last mask for the stop (the manager ran it in 20_manager).
+		lab.check("snapshot: read_tick and lint on every station record, equal to the lint job's mask",
+			f.stations == 30 and f.read_tick == 30 and f.lint_number == 30 and f.lint_matches == 30, f)
 		lab.check("snapshot: st.unserved copies the station's entries", f.unserved > 0 and f.unserved_count ==
 			dev("diag_state").unserved_entries, f)
 		lab.check("snapshot: train state, state_since, in_interrupt and has_path",
@@ -162,7 +164,7 @@ lab.suite("38_diag", {
 		lab.wait(10)
 	end,
 	function()
-		lab.check("migration: schema step re-run", lab.read("fork_schema") == 1)
+		lab.check("migration: schema step re-run", lab.read("fork_schema") == 2)
 		lab.check("migration: storage.acks recreated", lab.read("acks", "request") ~= nil)
 		local t = lab.read("trains", dg.train)
 		lab.check("migration: train fields recreated", t ~= nil and type(t.in_interrupt) == "boolean" and

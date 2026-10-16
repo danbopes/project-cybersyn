@@ -8,6 +8,7 @@
 local rich_name = require("scripts.gui.rich-name")
 local diag = require("scripts.diag")
 local stats = require("scripts.stats")
+local lint = require("scripts.lint")
 
 local collector = {}
 
@@ -26,6 +27,10 @@ local IDLE_TICKS = 30 * 60 * 60
 local UNLIMITED = 2100000000
 
 local WAIT_SIGNAL = defines.train_state.wait_signal
+-- The Trains chip "Not refuelled > N h" applies each player's N when it renders; the per-network count in the fleet
+-- summary is taken against this fixed hour.
+local REFUEL_COUNT_TICKS = 216000
+local bor = bit32.bor
 local WORKING = defines.entity_status.working
 local LOW_POWER = defines.entity_status.low_power
 local RED = defines.wire_connector_id.circuit_red
@@ -94,6 +99,19 @@ collector.UNLIMITED = UNLIMITED
 --- @field in_interrupt boolean current schedule record was inserted by an interrupt
 --- @field signal_unit_number uint? the signal it waits at, while state is wait_signal
 --- @field has_path boolean?
+--- @field in_group boolean the train belongs to a vanilla train group (LuaTrain.group ~= "")
+--- @field group string? that group's name
+--- @field refuel_tick uint? last arrival at a refueler (Train.refuel_tick)
+
+--- @class SnapshotDepotGroup depots sharing one name (PLAN3 §4.2, the Trains tab's group rows)
+--- @field ids uint[] depot stop unit numbers
+--- @field limit int sum of the stops' train limits (collector.UNLIMITED when any has none)
+--- @field count int sum of the stops' vanilla trains_count
+--- @field parked int depots with a train parked
+--- @field inbound int trains on their way to one of these depots
+--- @field trains_bound int Cybersyn trains whose depot is one of these
+--- @field compositions {[uint]: int} layout id -> trains bound
+--- @field same_depot_bypass int bound trains that require their own depot with depot bypass on
 
 --- @class Snapshot
 --- @field tick uint? game tick the last pass completed; nil = never collected
@@ -114,8 +132,14 @@ collector.UNLIMITED = UNLIMITED
 --- @field starved_version int bumped only when the contents of `starved` change; equal sets keep their table
 --- @field fleet SnapshotFleet
 --- @field depots {total: int, parked: int}
---- @field depots_by_name {[string]: {ids: uint[], limit: int, parked: int, inbound: int, trains_bound: int, compositions: {[uint]: int}}} declared; filled from phase 4 (PLAN3 §4.2)
+--- @field depots_by_name {[string]: SnapshotDepotGroup} built in the chunked pass (depot stops) and the fleet summary (trains)
+--- @field provider_masks {[string]: int} "network:hash" -> OR of the network masks of the stations providing it, as of
+---   the last complete pass (the lint engine's requester-vs-provider mask check)
+--- @field provider_overrides {[string]: number} "network:hash" -> the lowest item threshold (in items or fluid units) a
+---   provider of it sets; the dispatcher uses it instead of the requester's when it is lower (the lint's capacity check)
 --- @field alerts {train_id: uint, kind: int, since_tick: int}[]
+--- @field station_ids uint[]? the station ids this snapshot's pass walked, sorted (a complete pass only)
+--- @field depot_ids uint[]? the depot ids, sorted
 
 --- @class SnapshotFleet
 --- @field total int
@@ -123,8 +147,13 @@ collector.UNLIMITED = UNLIMITED
 --- @field available_by_network {[string]: int}
 --- @field by_layout {[uint]: int}
 --- @field min_available_by_network {[string]: int} fewest available trains per network over the last hour (stats)
---- @field capability {[string]: {[uint]: {count: int, item_capacity: int, fluid_capacity: int, mask_or: int}}} declared; built from phase 2b (PLAN3 §4.2)
---- @field mask_or {[string]: int} declared; built from phase 2b
+--- @field capability {[string]: {[uint]: {count: int, item_capacity: int, fluid_capacity: int, mask_or: int}}} per network
+---   and layout: Cybersyn trains, the largest capacities among them and the OR of their masks on that network
+--- @field mask_or {[string]: int} OR of every Cybersyn train's mask on the network
+--- @field in_interrupt_count {[string]: int} trains inside an interrupt, per network
+--- @field not_refuelled_count {[string]: int} per network that has a refueler: trains not seen at one for an hour
+---   (never, or refuel_tick older than REFUEL_COUNT_TICKS)
+--- @field group_depots {[string]: int} vanilla train group -> distinct depot names among its Cybersyn trains
 
 local function new_inventory()
 	return { provided = {}, requested = {}, in_transit = {} }
@@ -148,9 +177,11 @@ function collector.empty()
 		starved_source = "snapshot",
 		starved_version = 0,
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
-			capability = {}, mask_or = {} },
+			capability = {}, mask_or = {}, in_interrupt_count = {}, not_refuelled_count = {}, group_depots = {} },
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
+		provider_masks = {},
+		provider_overrides = {},
 		alerts = {},
 	}
 end
@@ -218,6 +249,15 @@ function collector.release_if_unused()
 		if player_data.is_manager_open then return end
 	end
 	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then return end
+	-- A half-done lint pass holds an occupancy index of this moment and gap timestamps nobody refreshes while the
+	-- window is closed; resumed hours later they would turn stale counts into findings. The masks of the last
+	-- complete pass stay, so a reopened window shows them until the next pass ends.
+	local s = manager.lint
+	if s then
+		s.job = nil
+		s.occupancy_since = {}
+		s.phantom_since = {}
+	end
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
@@ -323,6 +363,7 @@ end
 -- The networks of the combinator being read. Only indices 1..nets_n are ever read, so what earlier calls left behind
 -- cannot reach game state.
 local nets = {}
+local net_masks = {}
 local nets_n = 0
 
 --- @param network_name string?
@@ -331,14 +372,16 @@ local function set_networks(network_name, network_mask)
 	nets_n = 0
 	if network_name == NETWORK_EACH then
 		if type(network_mask) == "table" then
-			for name in pairs(network_mask) do
+			for name, mask in pairs(network_mask) do
 				nets_n = nets_n + 1
 				nets[nets_n] = name
+				net_masks[nets_n] = mask
 			end
 		end
 	elseif network_name then
 		nets_n = 1
 		nets[1] = network_name
+		net_masks[1] = type(network_mask) == "number" and network_mask or 0
 	end
 end
 
@@ -429,12 +472,45 @@ local function same_manifest(old, manifest)
 	return true
 end
 
+--- Adds one train to the per-network fleet facts on `network`, whose mask for the train is `mask`.
+local function add_capability(fleet, network, mask, train, refuel_counted)
+	local by_layout = fleet.capability[network]
+	if not by_layout then
+		by_layout = {}
+		fleet.capability[network] = by_layout
+	end
+	local layout_id = train.layout_id or 0
+	local c = by_layout[layout_id]
+	if not c then
+		c = { count = 0, item_capacity = 0, fluid_capacity = 0, mask_or = 0 }
+		by_layout[layout_id] = c
+	end
+	c.count = c.count + 1
+	local items, fluid = train.item_slot_capacity or 0, train.fluid_capacity or 0
+	if items > c.item_capacity then c.item_capacity = items end
+	if fluid > c.fluid_capacity then c.fluid_capacity = fluid end
+	c.mask_or = bor(c.mask_or, mask)
+	fleet.mask_or[network] = bor(fleet.mask_or[network] or 0, mask)
+	if train.in_interrupt then
+		fleet.in_interrupt_count[network] = (fleet.in_interrupt_count[network] or 0) + 1
+	end
+	local refuelers = storage.to_refuelers
+	if refuel_counted and refuelers and refuelers[network] then
+		fleet.not_refuelled_count[network] = (fleet.not_refuelled_count[network] or 0) + 1
+	end
+end
+
 local function summarize_trains(b)
 	-- Refilled straight in the live snapshot for the same memory reason as station records.
 	local live = collector.get()
 	local trains = live.trains
 	local fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {},
-		min_available_by_network = stats.min_available(60), capability = {}, mask_or = {} }
+		min_available_by_network = stats.min_available(60), capability = {}, mask_or = {}, in_interrupt_count = {},
+		not_refuelled_count = {}, group_depots = {} }
+	local group_names = {}
+	local now = game.tick
+	local by_name = {}
+	b.depots_by_name = by_name
 	local depot_names = {}
 	local depots = storage.depots
 	local storage_trains = storage.trains
@@ -499,6 +575,50 @@ local function summarize_trains(b)
 				tr.signal_unit_number = nil
 			end
 			tr.has_path = entity.has_path
+			local group = entity.group
+			tr.in_group = group ~= nil and group ~= ""
+			if tr.group ~= group then tr.group = group end
+			if tr.in_group then
+				local names = group_names[group]
+				if not names then
+					names = {}
+					group_names[group] = names
+					fleet.group_depots[group] = 0
+				end
+				local home = depot_name
+				if home ~= "" and not names[home] then
+					names[home] = true
+					fleet.group_depots[group] = fleet.group_depots[group] + 1
+				end
+			end
+			local refuel_tick = train.refuel_tick
+			tr.refuel_tick = refuel_tick
+			local stale = not refuel_tick or now - refuel_tick > REFUEL_COUNT_TICKS
+			local network = train.network_name
+			if network == NETWORK_EACH then
+				if type(train.network_mask) == "table" then
+					for name, m in pairs(train.network_mask) do add_capability(fleet, name, m, train, stale) end
+				end
+			elseif network then
+				local m = train.network_mask
+				add_capability(fleet, network, type(m) == "number" and m or 0, train, stale)
+			end
+			if depot_name ~= "" then
+				local g = by_name[depot_name]
+				if not g then
+					g = { ids = {}, limit = 0, count = 0, parked = 0, inbound = 0, trains_bound = 0, compositions = {},
+						same_depot_bypass = 0 }
+					by_name[depot_name] = g
+				end
+				g.trains_bound = g.trains_bound + 1
+				local layout_id = train.layout_id
+				if layout_id then g.compositions[layout_id] = (g.compositions[layout_id] or 0) + 1 end
+				local status = train.status
+				if status == STATUS_TO_D or status == STATUS_TO_D_BYPASS then g.inbound = g.inbound + 1 end
+				if not train.use_any_depot and not train.disable_bypass then
+					g.same_depot_bypass = g.same_depot_bypass + 1
+				end
+			end
 			fleet.total = fleet.total + 1
 			local status = train.status or STATUS_D
 			fleet.by_status[status] = (fleet.by_status[status] or 0) + 1
@@ -534,6 +654,8 @@ local function summarize_trains(b)
 	live.fleet = fleet
 	live.depots = { total = depot_total, parked = parked }
 	live.depots_by_name = live.depots_by_name or {}
+	live.provider_masks = live.provider_masks or {}
+	live.provider_overrides = live.provider_overrides or {}
 	live.alerts = alerts
 	b.trains = nil
 end
@@ -566,15 +688,48 @@ local function start_pass(manager)
 	b.seen = spare(manager, "seen")
 	b.r_keys = spare(manager, "r_keys")
 	b.p_keys = spare(manager, "p_keys")
+	b.p_over = spare(manager, "p_over")
 	-- Every reader is at most one update behind, so entries from the previous pass are no longer needed.
 	local log = manager.collect_log
 	if log then
 		log.base = log.base + #log.ids
 		log.ids = {}
 	end
+	local depot_ids = {}
+	for id in pairs(storage.depots) do
+		depot_ids[#depot_ids + 1] = id
+	end
+	table.sort(depot_ids)
+	b.depot_ids = depot_ids
+	b.di = 0
 	b.trains_pending = true
 	manager.snapshot_build = b
 	return b
+end
+
+--- Adds one depot stop to its name's group (the trains half was filled by summarize_trains).
+--- @param by_name {[string]: SnapshotDepotGroup}
+--- @param id uint
+--- @param depot Depot
+local function collect_depot(by_name, id, depot)
+	local stop = depot.entity_stop
+	if not (stop and stop.valid) then return end
+	local name = stop.backer_name
+	local g = by_name[name]
+	if not g then
+		g = { ids = {}, limit = 0, count = 0, parked = 0, inbound = 0, trains_bound = 0, compositions = {},
+			same_depot_bypass = 0 }
+		by_name[name] = g
+	end
+	g.ids[#g.ids + 1] = id
+	local limit = stop.trains_limit
+	if limit >= UNLIMITED or g.limit >= UNLIMITED then
+		g.limit = UNLIMITED
+	else
+		g.limit = g.limit + limit
+	end
+	g.count = g.count + stop.trains_count
+	if depot.available_train_id then g.parked = g.parked + 1 end
 end
 
 local function read_signals(entity)
@@ -589,18 +744,20 @@ local function read_signals(entity)
 end
 
 --- Adds one source's request into a record whose old requests are marked with count 0 (see mark_requests).
+--- @param mask int? the requesting combinator's network mask (one network; nil on a NETWORK_EACH station)
 --- @return boolean active
-local function add_request(requested, hash, count, threshold)
+local function add_request(requested, hash, count, threshold, mask)
 	local active = -count >= threshold
 	local req = requested[hash]
 	if req and req.count ~= 0 then
 		req.count = req.count + count
 		if threshold < req.threshold then req.threshold = threshold end
 		req.active = req.active or active
+		if mask then req.mask = bor(req.mask or 0, mask) end
 	elseif req then
-		req.count, req.threshold, req.active = count, threshold, active
+		req.count, req.threshold, req.active, req.mask = count, threshold, active, mask
 	else
-		requested[hash] = { count = count, threshold = threshold, active = active }
+		requested[hash] = { count = count, threshold = threshold, active = active, mask = mask }
 	end
 	return active
 end
@@ -630,7 +787,8 @@ local SECONDARY_SETTINGS = {
 --- planner registers each combinator under its own networks, for the starved derivation.
 local function classify(station, signals, st, base_item, base_fluid, control, b)
 	local network_name = station.network_name
-	local r_keys, p_keys = b and b.r_keys, b and b.p_keys
+	local r_keys, p_keys, p_over = b and b.r_keys, b and b.p_keys, b and b.p_over
+	local overrides = station.item_thresholds
 	local provided, requested = st.provided, st.requested
 	for _, v in pairs(signals) do
 		local signal = v.signal
@@ -644,7 +802,9 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 				local hash = hash_signal(signal)
 				if count < 0 then
 					if station.is_r then
-						local active = add_request(requested, hash, count, item_threshold(station, hash, name, item_type, base_item, base_fluid))
+						local active = add_request(requested, hash, count,
+							item_threshold(station, hash, name, item_type, base_item, base_fluid),
+							network_name ~= NETWORK_EACH and nets_n == 1 and net_masks[1] or nil)
 						if active and r_keys then
 							for i = 1, nets_n do
 								r_keys[nets[i] .. ":" .. hash] = true
@@ -654,8 +814,19 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 				elseif count > 0 and station.is_p then
 					provided[hash] = (provided[hash] or 0) + count
 					if p_keys then
+						-- The provider's masks, OR-ed per key: the lint's requester-vs-provider mask check reads them.
 						for i = 1, nets_n do
-							p_keys[nets[i] .. ":" .. hash] = true
+							local key = nets[i] .. ":" .. hash
+							p_keys[key] = bor(p_keys[key] or 0, net_masks[i])
+						end
+						local over = overrides and overrides[hash]
+						if over then
+							if station.is_stack and item_type == "item" then over = over * (get_stack_size(nil, name) or 1) end
+							for i = 1, nets_n do
+								local key = nets[i] .. ":" .. hash
+								local prev = p_over[key]
+								if not prev or over < prev then p_over[key] = over end
+							end
 						end
 					end
 				end
@@ -727,7 +898,8 @@ local function collect_station(b, id, station)
 	st.secondary = false
 	st.secondary_count = 0
 	st.read_tick = game.tick
-	if st.lint == nil then st.lint = 0 end
+	-- The lint job's last result for this stop, which outlives the snapshot (a reopened window shows it at once).
+	st.lint = lint.bits_of(id)
 	local n_unserved, worst, oldest = diag.unserved_summary(id)
 	if n_unserved > 0 then
 		local u = st.unserved
@@ -788,6 +960,8 @@ local function collect_station(b, id, station)
 			local signals = read_signals(sec)
 			if signals then
 				local sec_item, sec_fluid = default_item, default_fluid
+				-- A secondary on one network may carry that network's signal: its own mask, as the planner reads it.
+				local sec_mask
 				if is_each then nets_n = 0 end
 				for _, v in pairs(signals) do
 					local signal = v.signal
@@ -799,10 +973,13 @@ local function collect_station(b, id, station)
 						elseif is_each and signal.name and not SECONDARY_SETTINGS[signal.name] then
 							nets_n = nets_n + 1
 							nets[nets_n] = signal.name
+							net_masks[nets_n] = v.count
+						elseif not is_each and signal.name == st.network_name then
+							sec_mask = v.count
 						end
 					end
 				end
-				if not is_each then set_networks(st.network_name, st.network_mask) end
+				if not is_each then set_networks(st.network_name, sec_mask or st.network_mask) end
 				classify(station, signals, st, sec_item, sec_fluid, nil, keyed)
 				st.secondary_count = st.secondary_count + 1
 				st.secondary = true
@@ -992,7 +1169,11 @@ local function finish_pass(manager, b)
 		end
 	end
 	if changed then reclassify_starved(stations, live.starved, b.starved) end
-	manager.collect_spare = { seen = seen, r_keys = b.r_keys, p_keys = b.p_keys }
+	-- This pass's provider keys become the live provider masks; the previous live set is cleared for the next pass.
+	manager.collect_spare = { seen = seen, r_keys = b.r_keys, p_keys = live.provider_masks,
+		p_over = live.provider_overrides }
+	b.provider_masks = b.p_keys
+	b.provider_overrides = b.p_over
 	b.stations = stations
 	b.trains = live.trains
 	b.trains_version = live.trains_version
@@ -1000,11 +1181,16 @@ local function finish_pass(manager, b)
 	b.fleet = live.fleet
 	b.depots = live.depots
 	b.alerts = live.alerts
+	-- The sorted id lists of this pass stay with the snapshot: the lint job walks them instead of listing storage
+	-- again. Never changed after this point, so a job may hold them past the next pass.
+	b.station_ids = b.ids
 	b.ids = nil
 	b.i = nil
+	b.di = nil
 	b.seen = nil
 	b.r_keys = nil
 	b.p_keys = nil
+	b.p_over = nil
 	b.tick = game.tick
 	manager.snapshot = b
 	manager.snapshot_build = nil
@@ -1049,10 +1235,25 @@ function collector.step(budget, scale)
 		end
 	end
 	b.i = i
+	-- Depot stops go at the same pace as the stations (two stop reads each).
+	local depot_ids = b.depot_ids
+	local nd = #depot_ids
+	local di = b.di
+	local dstop = math.min(nd, di + (budget == math.huge and nd or math.ceil(budget * nd / math.max(n, 1))))
+	if i >= n then dstop = nd end
+	local depots = storage.depots
+	local by_name = b.depots_by_name
+	while di < dstop do
+		di = di + 1
+		local id = depot_ids[di]
+		local depot = depots[id]
+		if depot then collect_depot(by_name, id, depot) end
+	end
+	b.di = di
 	if b.starved_source ~= "economy" then
 		capture_economy_starved(b)
 	end
-	if i >= n then
+	if i >= n and di >= nd then
 		finish_pass(manager, b)
 		return true
 	end
@@ -1104,7 +1305,10 @@ end
 --- @return boolean ran
 function collector.tick()
 	local manager = storage.manager
-	if not manager or not collector.wanted() then return false end
+	if not manager then return false end
+	-- The world scan of /cybersyn-find-problems runs whether or not a window is open.
+	if manager.lint and manager.lint.world_job then lint.world_tick() end
+	if not collector.wanted() then return false end
 	if manager.collect_boost then
 		if collector.step(nil, BOOST) then
 			manager.collect_boost = nil
@@ -1112,6 +1316,8 @@ function collector.tick()
 		end
 	else
 		collector.step()
+		-- Not during the opening boost: those updates already carry a double collector step.
+		lint.tick()
 	end
 	return true
 end

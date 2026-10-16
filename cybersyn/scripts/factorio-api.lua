@@ -1114,13 +1114,26 @@ local send_alert_about_missing_train_icon = { name = MISSING_TRAIN_NAME, type = 
 ---@param r_stop LuaEntity
 ---@param p_stop LuaEntity
 ---@param message string
+---@return LocalisedString message as sent, for remove_alert_about_missing_train
 function send_alert_about_missing_train(r_stop, p_stop, message)
+	local text = { message, r_stop.backer_name, p_stop.backer_name }
 	for _, player in pairs(r_stop.force.players) do
 		player.add_custom_alert(
 			r_stop,
 			send_alert_about_missing_train_icon,
-			{ message, r_stop.backer_name, p_stop.backer_name },
+			text,
 			true)
+	end
+	return text
+end
+
+---Removes one requester alert sent by send_alert_about_missing_train, matched by its exact message.
+---@param stop LuaEntity
+---@param message LocalisedString as it was sent
+function remove_alert_about_missing_train(stop, message)
+	for _, player in pairs(stop.force.players) do
+		player.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
+			message = message })
 	end
 end
 
@@ -1277,7 +1290,7 @@ function send_alert_unexpected_cargo(map_data, train, station_name, station_posi
 	send_alert_sounds(train)
 	map_data.active_alerts = map_data.active_alerts or {}
 	map_data.active_alerts[train.id] = { train, 10, map_data.total_ticks }
-	diag.alert(DIAG_ALERT_UNEXPECTED_CARGO, train)
+	-- Logged by the departure's unexpected_cargo event, which names the item and amount (one row, not two).
 
 	if station_name and station_position and station_surface then
 		local gps_tag = "[gps=" .. station_position.x .. "," .. station_position.y .. "," .. station_surface.name .. "]"
