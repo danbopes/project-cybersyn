@@ -236,14 +236,16 @@ function interface.header(pi)
 	return out
 end
 
---- Clicks child `index` of the element refs[ref] (or the element itself when index is nil) through flib, with
---- optional modifiers {shift, control, alt, right}.
+--- Clicks child `index` of the element refs[ref] (or the element itself when index is nil; a list of indices walks
+--- down that many levels) through flib, with optional modifiers {shift, control, alt, right}.
 function interface.click(pi, ref, index, mods)
 	local _, pd, refs = context(pi)
 	local elem = refs[ref]
 	if not (elem and elem.valid) then return "no element " .. tostring(ref) end
-	if index then elem = elem.children[index] end
-	if not elem then return "no child " .. tostring(index) end
+	for _, i in ipairs(type(index) == "table" and index or { index }) do
+		elem = elem.children[i]
+		if not elem then return "no child " .. serpent.line(index) end
+	end
 	mods = mods or {}
 	return flib_gui.dispatch({
 		name = defines.events.on_gui_click,
@@ -688,6 +690,8 @@ function interface.diag_state()
 		unserved_entries = d and d.unserved_n or 0,
 		unserved_dropped = d and d.unserved_dropped or 0,
 		loaded_tick = d and d.loaded_tick or nil,
+		inherit_until = d and d.inherit_until or nil,
+		inherit_open = d ~= nil and d.inherit_cycles ~= nil,
 		horizon_ticks = horizon,
 		interrupt_checks = verify and verify.checks or nil,
 		interrupt_mismatches = verify and verify.mismatches or nil,

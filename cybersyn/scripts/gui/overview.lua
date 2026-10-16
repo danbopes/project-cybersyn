@@ -519,7 +519,7 @@ function overview_tab.model(player_data)
 		tracking = tracking,
 		collecting = collecting,
 		diag = d ~= nil,
-		loaded_tick = d and d.loaded_tick or 0,
+		inherit_before = d and diag.inherit_threshold(d) or 0,
 		dropped = d and d.unserved_dropped or 0,
 		unserved = unserved,
 		failing = failing,
@@ -836,7 +836,41 @@ local function station_tooltip(view, extra)
 	return tooltip
 end
 
---- A link cell: up to three icons from the name, then its text.
+--- Every interactive cell joins the table's hover hold, so rows do not reorder under the cursor.
+--- @param def flib.GuiElemDef
+--- @return flib.GuiElemDef
+local function hoverable(def)
+	return util.hoverable(def, TABLE)
+end
+
+--- @param view OverviewNameView?
+--- @param id uint?
+--- @return string
+local function icons_sig(view, id)
+	return (view and view.name or "") .. "|" .. tostring(id)
+end
+
+--- @param view OverviewNameView
+--- @param tags table
+--- @param tooltip LocalisedString
+--- @param i int
+--- @return flib.GuiElemDef
+local function name_icon(view, tags, tooltip, i)
+	local icon = view.icons[i]
+	-- Each icon gets its own tags table: util.hoverable writes into it.
+	return hoverable({
+		type = "sprite-button",
+		style = "cybersyn_name_icon",
+		sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
+		quality = icon.quality,
+		tooltip = tooltip,
+		tags = { kind = tags.kind, id = tags.id },
+		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+	})
+end
+
+--- A link cell: up to three icons from the name, then its text. The click handler is always attached, even
+--- without a target, because an in-place update rewrites only the tags (flib keeps its handler name there).
 --- @param view OverviewNameView?
 --- @param kind string
 --- @param id uint?
@@ -846,23 +880,15 @@ end
 --- @return flib.GuiElemDef
 local function name_cell(view, kind, id, width, tooltip, acked)
 	local tags = id and { kind = kind, id = id } or {}
-	local handler = id and { [defines.events.on_gui_click] = util.handle.link_click } or nil
 	local icons = {
 		type = "flow",
 		direction = "horizontal",
 		style = "cybersyn_unserved_icon_flow",
+		tags = { s = icons_sig(view, id) },
 	}
 	if view then
-		for i, icon in ipairs(view.icons) do
-			icons[i] = {
-				type = "sprite-button",
-				style = "cybersyn_name_icon",
-				sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
-				quality = icon.quality,
-				tooltip = tooltip,
-				tags = tags,
-				handler = handler,
-			}
+		for i = 1, #view.icons do
+			icons[i] = name_icon(view, tags, tooltip, i)
 		end
 	end
 	return {
@@ -871,21 +897,21 @@ local function name_cell(view, kind, id, width, tooltip, acked)
 		style = "cybersyn_unserved_cell_flow",
 		style_mods = { width = width },
 		icons,
-		{
+		hoverable({
 			type = "button",
 			style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button",
 			style_mods = { maximal_width = width - ICON_ROW - 4 },
 			caption = view and view.text or NO_VALUE,
 			enabled = view ~= nil,
 			tooltip = tooltip,
-			tags = tags,
+			tags = { kind = tags.kind, id = tags.id },
 			mouse_button_filter = { "left" },
-			handler = handler,
-		},
+			handler = { [defines.events.on_gui_click] = util.handle.link_click },
+		}),
 	}
 end
 
---- Rewrites a name cell in place (icons rebuilt when they differ).
+--- Rewrites a name cell in place; the icons are rebuilt only when the name or the target changed.
 --- @param cell LuaGuiElement
 --- @param view OverviewNameView?
 --- @param kind string
@@ -895,18 +921,18 @@ end
 local function update_name_cell(cell, view, kind, id, tooltip, acked)
 	local icons, button = cell.children[1], cell.children[2]
 	local tags = id and { kind = kind, id = id } or {}
-	icons.clear()
-	if view then
-		for _, icon in ipairs(view.icons) do
-			gui.add(icons, {
-				type = "sprite-button",
-				style = "cybersyn_name_icon",
-				sprite = helpers.is_valid_sprite_path(icon.sprite) and icon.sprite or "utility/questionmark",
-				quality = icon.quality,
-				tooltip = tooltip,
-				tags = tags,
-				handler = id and { [defines.events.on_gui_click] = util.handle.link_click } or nil,
-			})
+	local isig = icons_sig(view, id)
+	if icons.tags.s ~= isig then
+		icons.clear()
+		if view then
+			for i = 1, #view.icons do
+				gui.add(icons, name_icon(view, tags, tooltip, i))
+			end
+		end
+		icons.tags = { s = isig }
+	else
+		for _, icon in ipairs(icons.children) do
+			icon.tooltip = tooltip
 		end
 	end
 	local style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button"
@@ -918,7 +944,7 @@ local function update_name_cell(cell, view, kind, id, tooltip, acked)
 	button.caption = view and view.text or NO_VALUE
 	button.enabled = view ~= nil
 	button.tooltip = tooltip
-	-- flib keeps its handler name in the tags; only kind and id change.
+	-- flib keeps its handler name in the tags (and util.hoverable its scope); only kind and id change.
 	local t = button.tags
 	t.kind, t.id = tags.kind, tags.id
 	button.tags = t
@@ -953,7 +979,7 @@ local function row_entry(row, acked, ctx)
 	local provider = p_id and station_view(p_id, ctx.snapshot) or nil
 	local lost = e.lost_n > 0 and e.lost_to and station_view(e.lost_to, ctx.snapshot) or nil
 	local wait = now - e.first_tick
-	local inherited = e.first_tick <= ctx.loaded_tick
+	local inherited = e.first_tick < ctx.inherit_before
 	local wait_caption = text.wait_caption(wait, inherited, util.short_duration)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
 	local requested
@@ -963,7 +989,7 @@ local function row_entry(row, acked, ctx)
 	end
 	local sig = table.concat({
 		reason, e.a, e.b, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to), e.lost_n, e.n,
-		acked and "a" or "", math.floor(wait / text.READ_STEP), text.read_step(read_age), tostring(requested),
+		acked and "a" or "", inherited and "i" or "", math.floor(wait / text.READ_STEP), text.read_step(read_age), tostring(requested),
 	}, "|")
 	local widths = ctx.widths
 	local key = r_id .. "|" .. hash
@@ -1002,6 +1028,8 @@ local function row_entry(row, acked, ctx)
 	end
 	local stock = text.stock_caption(reason, e.a, e.b)
 	local value_style = acked and "cybersyn_unserved_value_acked" or "cybersyn_unserved_value"
+	local link_style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button"
+	local cell_style = acked and "cybersyn_unserved_cell_acked" or "cybersyn_unserved_cell"
 	local lost_caption = lost and ("×" .. e.lost_n) or ""
 	return {
 		key = key,
@@ -1012,7 +1040,7 @@ local function row_entry(row, acked, ctx)
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
 			local link = { [defines.events.on_gui_click] = util.handle.link_click }
 			return {
-				{
+				hoverable({
 					type = "sprite-button",
 					style = "cybersyn_unserved_item",
 					sprite = sprite,
@@ -1022,36 +1050,36 @@ local function row_entry(row, acked, ctx)
 					tags = { kind = "item", id = hash },
 					mouse_button_filter = { "left", "right" },
 					handler = link,
-				},
+				}),
 				name_cell(requester, "station", r_id, widths.requester, r_tip, acked),
-				{
+				hoverable({
 					type = "button",
 					style = acked and "cybersyn_chip_grey" or text.chip_style(reason),
 					style_mods = { width = W.why },
 					caption = text.chip_caption(reason),
 					tooltip = chip,
-				},
+				}),
 				name_cell(provider, "station", p_id, widths.provider, p_tip, acked),
-				{ type = "label", style = value_style, style_mods = { width = W.stock }, caption = stock },
+				hoverable({ type = "label", style = value_style, style_mods = { width = W.stock }, caption = stock }),
 				{
 					type = "flow",
 					direction = "horizontal",
 					style = "cybersyn_unserved_cell_flow",
 					style_mods = { width = W.lost },
-					{
+					hoverable({
 						type = "button",
-						style = "cybersyn_link_button",
+						style = link_style,
 						style_mods = { maximal_width = W.lost - 32 },
 						caption = lost and lost.text or "",
 						tooltip = l_tip,
 						tags = lost and { kind = "station", id = e.lost_to } or {},
 						mouse_button_filter = { "left" },
 						handler = link,
-					},
-					{ type = "label", style = "cybersyn_unserved_cell", caption = lost_caption, tooltip = l_tip },
+					}),
+					hoverable({ type = "label", style = cell_style, caption = lost_caption, tooltip = l_tip }),
 				},
-				{ type = "label", style = value_style, style_mods = { width = W.wait }, caption = wait_caption },
-				{
+				hoverable({ type = "label", style = value_style, style_mods = { width = W.wait }, caption = wait_caption }),
+				hoverable({
 					type = "sprite-button",
 					style = "cybersyn_unserved_ack",
 					sprite = "utility/check_mark",
@@ -1059,7 +1087,7 @@ local function row_entry(row, acked, ctx)
 					tooltip = ack,
 					tags = { r_id = r_id, hash = hash },
 					handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_ack_click },
-				},
+				}),
 			}
 		end,
 		update = function(cells)
@@ -1082,6 +1110,11 @@ local function row_entry(row, acked, ctx)
 			end
 			cells[5].caption = stock
 			local lost_button, lost_label = cells[6].children[1], cells[6].children[2]
+			if lost_button.style.name ~= link_style then
+				lost_button.style = link_style
+				lost_button.style.maximal_width = W.lost - 32
+			end
+			if lost_label.style.name ~= cell_style then lost_label.style = cell_style end
 			lost_button.caption = lost and lost.text or ""
 			lost_button.tooltip = l_tip
 			local t = lost_button.tags
@@ -1109,7 +1142,7 @@ local function render_table(player_data, model)
 	local entries = {}
 	local shown_total = 0
 	if u and not model.collecting then
-		local ctx = { now = model.now, snapshot = collector.get(), loaded_tick = model.loaded_tick, widths = widths }
+		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths }
 		local rows = model.rows
 		for _, row in ipairs(u.open) do
 			if #entries >= rows then break end
@@ -1228,6 +1261,7 @@ dev.register_dump(TAB, function(player_data)
 		end
 	end
 	local tbl = refs[TABLE]
+	local handler_tag = "__" .. script.mod_name .. "_handler"
 	if tbl and tbl.valid then
 		local children = tbl.children
 		for r = 1, #children / TABLE_COLUMNS - 1 do
@@ -1241,6 +1275,9 @@ dev.register_dump(TAB, function(player_data)
 				chip_style = c(3).style.name,
 				chip_tooltip = c(3).tooltip,
 				provider = c(4).children[2].caption,
+				provider_id = c(4).children[2].tags.id,
+				provider_handler = c(4).children[2].tags[handler_tag] ~= nil,
+				hover_scope = c(3).tags.hover_scope,
 				stock = c(5).caption,
 				lost = c(6).children[2].caption,
 				wait = c(7).caption,
@@ -1271,6 +1308,8 @@ dev.register_dump(TAB, function(player_data)
 				caption = refs.overview_unserved_count.caption,
 				empty = empty.parent.visible and empty.caption or nil,
 				sigs = state.sigs,
+				shown_keys = state.keys,
+				held = state.dirty == true,
 			},
 		},
 	}
@@ -1309,7 +1348,7 @@ end
 --- @param player_data PlayerData
 local function jump_unserved(player_data)
 	player_data.stations_chip = "unserved"
-	util.set_sort(player_data, "stations_tab", "wait", true)
+	util.set_sort(player_data, "stations_tab", "wait", false)
 	util.select_tab(player_data, "stations_tab")
 end
 

@@ -780,6 +780,12 @@ styles.cybersyn_unserved_cell = {
 	vertical_align = "center",
 }
 
+styles.cybersyn_unserved_cell_acked = {
+	type = "label_style",
+	parent = "cybersyn_unserved_cell",
+	font_color = { 0.5, 0.5, 0.5 },
+}
+
 styles.cybersyn_unserved_value = {
 	type = "label_style",
 	parent = "cybersyn_unserved_cell",

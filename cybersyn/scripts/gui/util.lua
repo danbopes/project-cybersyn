@@ -520,8 +520,6 @@ function util.normalize(text)
 	return helpers.multilingual_to_lower(text)
 end
 
---- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
---- plain = true), never as Lua patterns, so "[", "%" or "-" in a query match themselves.
 --- Any click in the manager other than on a search field takes the keyboard away from it, so a later Escape closes
 --- the window again instead of cancelling the search (manager.cancel_search).
 --- @param e EventData.on_gui_click
@@ -534,6 +532,8 @@ function util.note_click(e)
 	if not string.find(elem.name, "_search_field$") then player_data.search_focused = nil end
 end
 
+--- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
+--- plain = true), never as Lua patterns, so "[", "%" or "-" in a query match themselves.
 --- @param text string?
 --- @return string[]?
 function util.search_terms(text)
@@ -1157,8 +1157,9 @@ function util.show_on_map(player, player_data, target, follow)
 	else
 		player.set_controller({ type = defines.controllers.remote, position = target.position, surface = target.surface })
 		-- Remote view keeps its own zoom, known only once the view is open.
-		local pos = offset_position(player, player_data, target.position)
-		if pos ~= target.position then
+		local position = target.position
+		local pos = offset_position(player, player_data, position)
+		if pos ~= position then
 			player.set_controller({ type = defines.controllers.remote, position = pos, surface = target.surface })
 		end
 	end

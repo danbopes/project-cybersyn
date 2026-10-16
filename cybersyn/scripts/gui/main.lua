@@ -240,6 +240,7 @@ function manager_gui.reset_gui(player)
 	player_data.filter_row_open = nil
 	local refs = player_data.refs
 	if refs and refs.manager_window and refs.manager_window.valid then
+		manager.refresh_filter_row(player, player_data)
 		manager.apply_layout(player, player_data)
 		refs.manager_window.force_auto_center()
 		if player_data.is_manager_open then manager.render(player, player_data) end

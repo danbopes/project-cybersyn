@@ -17,6 +17,17 @@ local function key_of(c)
 	return type(c) == "table" and c[1] or c
 end
 
+local TABLE = "overview_unserved_table"
+local COLUMNS = 8
+
+--- The since line of a chip tooltip, with or without its "read n s ago" suffix.
+local function since_key(tip)
+	local since = tip and tip[8]
+	if type(since) ~= "table" then return nil end
+	if since[1] == "" then return key_of(since[2]) end
+	return since[1]
+end
+
 local function overview()
 	remote.call(D, "select_tab", pi, "overview")
 	return remote.call(D, "dump", pi, "overview")
@@ -89,8 +100,11 @@ lab.suite("36_window", {
 			and d.rendered_tiles.unserved.caption[2] == "1", d.rendered_tiles.unserved.caption)
 		lab.check("table caption counts shown of total", key_of(u.caption) == "cybersyn-gui.unserved-count", u.caption)
 		local r1 = u.rendered[1]
-		lab.check("rows carry the four-line chip tooltip", r1 and key_of(r1.chip_tooltip[2]) == "cybersyn-gui.unserved-asked"
-			or key_of(r1 and r1.chip_tooltip[2]) == "cybersyn-gui.unserved-asked-no-amount", r1)
+		local tip = r1 and r1.chip_tooltip
+		local asked = tip and key_of(tip[2])
+		lab.check("rows carry the four-line chip tooltip", tip and (asked == "cybersyn-gui.unserved-asked"
+			or asked == "cybersyn-gui.unserved-asked-no-amount") and key_of(tip[4]) == "cybersyn-gui.unserved-why"
+			and key_of(tip[6]) == "cybersyn-gui.unserved-fix" and since_key(tip) ~= nil, tip)
 		local sorted = true
 		for i = 2, #u.order do
 			if u.order[i] < u.order[i - 1] then sorted = false end
@@ -186,6 +200,133 @@ lab.suite("36_window", {
 		remote.call(D, "set_filter", pi, { item = false })
 		lab.check("clicking an acknowledged row ends it", again and not lab.dev("diag_is_acked", "request", row.requester_id, row.item))
 		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "overview_show_acked")
+		lab.dev("set_setting", "cybersyn-enable-planner", true)
+	end,
+
+	-- Rows update in place: a row built while it had no provider gets a working provider link once its reason names
+	-- one. Hovering a row holds the order; leaving releases it.
+	function(ctx)
+		lab.dev("set_setting", "cybersyn-enable-planner", false)
+		remote.call(D, "clear_filters", pi)
+		local d = overview()
+		local pick
+		for i, r in ipairs(d.lists.unserved.rendered) do
+			if i > 1 and r.provider_id and not pick then pick = r end
+		end
+		lab.check("a rendered row with a provider", pick ~= nil and #d.lists.unserved.rendered >= 3, #d.lists.unserved.rendered)
+		if not pick then
+			lab.dev("set_setting", "cybersyn-enable-planner", true)
+			return
+		end
+		local all_handlers = true
+		for _, r in ipairs(d.lists.unserved.rendered) do
+			if not r.provider_handler or r.hover_scope ~= TABLE then all_handlers = false end
+		end
+		lab.check("every provider link has a click handler and every row joins the hover hold", all_handlers)
+		local ix = lab.read("diag", "item_ix", pick.item)
+		local function entry() return lab.read("diag", "unserved", pick.requester_id, ix) end
+		local function write(field, value)
+			remote.call("cybersyn", "write_global", value, "diag", "unserved", pick.requester_id, ix, field)
+		end
+		local e = entry()
+		local saved = { reason = e.reason, first_tick = e.first_tick }
+		local key = pick.requester_id .. "|" .. pick.item
+		-- No provider and the oldest of all: the row moves to the top, so it is built without a provider, and stays
+		-- first so the next render updates it in place.
+		write("reason", 1)
+		write("first_tick", 0)
+		d = overview()
+		local keys = serpent.line(d.lists.unserved.shown_keys, { comment = false })
+		local r1 = d.lists.unserved.rendered[1]
+		lab.check("no provider: the row is rebuilt first without a provider", d.lists.unserved.shown_keys[1] == key
+			and r1.provider_id == nil, r1)
+		write("reason", saved.reason)
+		d = overview()
+		r1 = d.lists.unserved.rendered[1]
+		lab.check("provider back in place: the link has its target and its click handler", r1.provider_id == e.p_station_id
+			and r1.provider_handler and serpent.line(d.lists.unserved.shown_keys, { comment = false }) == keys, r1)
+		local tbl_child = { COLUMNS + 4, 2 }
+		local res = lab.dev("click", pi, TABLE, tbl_child, { right = true })
+		lab.check("a click on the provider link reaches its handler", res == true, res)
+		-- Hover hold: the chip of row 2 is under the cursor; a row that would move to the top waits.
+		local rendered = d.lists.unserved.rendered
+		local last = rendered[#rendered]
+		local h = remote.call(D, "hover", pi, TABLE, COLUMNS * 2 + 3)
+		lab.check("hovering an Unserved row starts the hold", h.handled and h.hold, h)
+		local last_ix = lab.read("diag", "item_ix", last.item)
+		local last_first = lab.read("diag", "unserved", last.requester_id, last_ix, "first_tick")
+		remote.call("cybersyn", "write_global", -1, "diag", "unserved", last.requester_id, last_ix, "first_tick")
+		d = overview()
+		lab.check("while hovered the row order is held", d.lists.unserved.held
+			and serpent.line(d.lists.unserved.shown_keys, { comment = false }) == keys, d.lists.unserved.held)
+		remote.call(D, "hover", pi, TABLE, COLUMNS * 2 + 3, true)
+		d = overview()
+		lab.check("after the leave the moved row is first", not d.lists.unserved.held
+			and d.lists.unserved.shown_keys[1] == last.requester_id .. "|" .. last.item, d.lists.unserved.shown_keys[1])
+		remote.call("cybersyn", "write_global", last_first, "diag", "unserved", last.requester_id, last_ix, "first_tick")
+		write("first_tick", saved.first_tick)
+		-- The caption jumps to Stations sorted longest wait first.
+		local sort_before = lab.read("manager", "players", pi, "sort", "stations_tab")
+		lab.dev("click", pi, "overview_unserved_count")
+		remote.call(D, "select_tab", pi, "stations")
+		local ids = remote.call(D, "dump", pi, "stations").ids
+		local stations = lab.read("manager", "snapshot", "stations")
+		local oldest
+		for _, st in pairs(stations) do
+			local start = st.longest_wait_start
+			if start and (not oldest or start < oldest) then oldest = start end
+		end
+		local first = ids[1] and stations[ids[1]]
+		lab.check("the Unserved caption opens Stations with the longest wait first", oldest ~= nil and first
+			and first.longest_wait_start == oldest, { first = first and first.longest_wait_start, oldest = oldest })
+		remote.call("cybersyn", "write_global", sort_before, "manager", "players", pi, "sort", "stations_tab")
+		lab.dev("set_setting", "cybersyn-enable-planner", true)
+	end,
+
+	-- Requests already failing when the diagnostics state is created show their wait as a lower bound ("≥", "since
+	-- load") until the second planner cycle after creation; later entries are measured. The window is reopened on the
+	-- live state rather than by diag_reset, which would empty the rings 38_diag reads.
+	function(ctx)
+		remote.call("cybersyn", "write_global", 0, "diag", "inherit_cycles")
+		remote.call("cybersyn", "write_global", nil, "diag", "inherit_until")
+		local st = lab.dev("diag_state")
+		lab.check("the inherited window is open", st.inherit_open == true and st.inherit_until == nil, st)
+		lab.wait_until(function() return lab.dev("diag_state").inherit_until ~= nil end, 7200)
+	end,
+	function(ctx)
+		local st = lab.dev("diag_state")
+		lab.check("the inherited window closes at the second cycle start", st.inherit_until ~= nil and not st.inherit_open, st)
+		if not st.inherit_until then return end
+		lab.dev("set_setting", "cybersyn-enable-planner", false)
+		local d = overview()
+		local rendered = d.lists.unserved.rendered
+		local inherited, right = 0, true
+		for _, r in ipairs(rendered) do
+			local e = lab.dev("diag_unserved", r.requester_id)[r.item]
+			local is = e.first_tick < st.inherit_until
+			if is then inherited = inherited + 1 end
+			local shows = string.sub(r.wait, 1, #"≥") == "≥"
+			local since = since_key(r.chip_tooltip)
+			if shows ~= is or since ~= (is and "cybersyn-gui.unserved-since-load" or "cybersyn-gui.unserved-since") then
+				right = false
+			end
+		end
+		lab.check("rows first seen inside the window show ≥ and 'since load', the others do not", right and inherited > 0,
+			{ rows = #rendered, inherited = inherited })
+		local r1 = rendered[1]
+		local ix = lab.read("diag", "item_ix", r1.item)
+		local first = lab.read("diag", "unserved", r1.requester_id, ix, "first_tick")
+		remote.call("cybersyn", "write_global", st.inherit_until, "diag", "unserved", r1.requester_id, ix, "first_tick")
+		remote.call(D, "set_filter", pi, { item = r1.item })
+		d = overview()
+		local again
+		for _, r in ipairs(d.lists.unserved.rendered) do
+			if r.requester_id == r1.requester_id and r.item == r1.item then again = r end
+		end
+		lab.check("an entry first seen at the window's end is measured", again and string.sub(again.wait, 1, #"≥") ~= "≥"
+			and since_key(again.chip_tooltip) == "cybersyn-gui.unserved-since", again or #d.lists.unserved.rendered)
+		remote.call(D, "set_filter", pi, { item = false })
+		remote.call("cybersyn", "write_global", first, "diag", "unserved", r1.requester_id, ix, "first_tick")
 		lab.dev("set_setting", "cybersyn-enable-planner", true)
 	end,
 

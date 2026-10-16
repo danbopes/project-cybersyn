@@ -114,7 +114,7 @@ end
 --- @field network LocalisedString?
 --- @field rej int[]?
 --- @field wait int ticks since first_tick
---- @field inherited boolean first_tick at or before the diagnostics state was created
+--- @field inherited boolean first_tick inside diagnostics' inherited window (diag.inherit_threshold)
 --- @field n int failing evaluations
 --- @field read_age int? ticks since the requester was last read by the collector
 --- @field surface_name (fun(index: int): string)?

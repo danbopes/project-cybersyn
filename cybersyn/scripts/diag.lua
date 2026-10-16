@@ -109,7 +109,9 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field alert_sweep uint? next tick alert_last is pruned
 --- @field next_delivery uint
 --- @field export_jobs DiagExportJob[]
---- @field loaded_tick uint when this state was created; a first_tick at or before it may predate the request
+--- @field loaded_tick uint when this state was created
+--- @field inherit_cycles int? planner cycle starts seen since creation, while the inherited window is open
+--- @field inherit_until uint? start of the second planner cycle after creation; see diag.inherit_threshold
 
 -- ---------------------------------------------------------------- state
 
@@ -156,6 +158,7 @@ local function new_state()
 		next_delivery = 0,
 		export_jobs = {},
 		loaded_tick = game.tick,
+		inherit_cycles = 0,
 	}
 end
 
@@ -863,6 +866,14 @@ function diag.cycle()
 	local d = storage.diag
 	if not d then return end
 	local now = game.tick
+	local seen = d.inherit_cycles
+	if seen then
+		if seen >= 1 then
+			d.inherit_until, d.inherit_cycles = now, nil
+		else
+			d.inherit_cycles = seen + 1
+		end
+	end
 	d.cycle_prev2 = d.cycle_prev
 	d.cycle_prev = d.cycle_start >= 0 and d.cycle_start or nil
 	d.cycle_start = now
@@ -883,6 +894,18 @@ function diag.cycle()
 end
 
 -- ---------------------------------------------------------------- GUI reads
+
+--- An entry whose first_tick is below this may have been failing before diagnostics saw it: a request already
+--- starving when the state was created is first evaluated somewhere in the cycle that was running then or in the
+--- next full one, so the window closes at the start of the second cycle after creation. States from before the
+--- window existed fall back to the creation tick.
+--- @param d DiagState
+--- @return number
+function diag.inherit_threshold(d)
+	if d.inherit_until then return d.inherit_until end
+	if d.inherit_cycles then return math.huge end
+	return d.loaded_tick + 1
+end
 
 --- @param r_id uint
 --- @return {[int]: DiagEntry}? item index -> entry; read only
