@@ -12,6 +12,7 @@ local log_tab = require("scripts.gui.log")
 local utilization_tab = require("scripts.gui.utilization")
 local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
 local problems_tab = require("scripts.gui.problems")
+local item = require("scripts.gui.item")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local analytics = require("scripts.analytics")
@@ -270,6 +271,7 @@ function manager.apply_layout(player, player_data)
 	inventory_tab.apply_layout(player_data, layout)
 	problems_tab.apply_layout(player_data, layout)
 	log_tab.apply_layout(player_data, layout)
+	item.apply_layout(player_data, layout)
 	return layout
 end
 
@@ -581,6 +583,9 @@ function manager.update(map_data, player_data)
 		player_data.previous_tab = current_tab
 	end
 
+	-- The drill-down replaces the selected tab's content while it is open.
+	if player_data.item_view and item.build(map_data, player_data) then return end
+
 	local builder = tab_builders[current_tab]
 	if builder then
 		builder.build(map_data, player_data)
@@ -619,6 +624,7 @@ end
 util.set_rerender(manager.render)
 manager.log_tab = log_tab
 overview_tab.manager = manager
+item.manager = manager
 
 manager.handle = {}
 
@@ -695,6 +701,7 @@ function manager.handle.manager_close(player, player_data, refs)
 	-- Cleanup above runs again on reopen otherwise.
 	player_data.previous_tab = nil
 	player_data.search_open = nil
+	item.close(player, player_data)
 	util.close_manager_window(player, player_data, refs, true)
 end
 
@@ -703,6 +710,8 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_closed_by_game(player, player_data, refs)
+	-- Escape on a pinned window with the drill-down open closes the drill-down (PLAN3 §4.10).
+	if item.on_window_closed(player, player_data) then return end
 	if player_data.pinning or not player_data.is_manager_open then return end
 	-- A link of this window just opened an entity GUI: stay on screen and take player.opened back once it is closed.
 	local return_to = player_data.return_to

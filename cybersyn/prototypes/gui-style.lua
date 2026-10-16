@@ -1306,3 +1306,19 @@ styles.cybersyn_log_rows_table = {
 		size = 1,
 	},
 }
+
+-- ITEM DRILL-DOWN (PLAN3 §4.10, phase 8)
+
+-- A total in the drill-down's subheader: "Provided 12.3k".
+styles.cybersyn_item_total = {
+	type = "label_style",
+	parent = "subheader_caption_label",
+	left_margin = 8,
+}
+
+-- The train id link of a Trains-carrying-it row: a number, so it sits on the column's right edge.
+styles.cybersyn_item_train_button = {
+	type = "button_style",
+	parent = "cybersyn_link_button",
+	horizontal_align = "right",
+}

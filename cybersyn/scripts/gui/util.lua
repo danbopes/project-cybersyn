@@ -853,8 +853,16 @@ function util.set_item_filter(player_data, hash)
 	util.reset_pages(player_data)
 end
 
---- Standard click semantics for item buttons. Left: filter and go to Stations; shift+left: filter and stay;
---- right: clear the item filter.
+local item_view
+
+--- Lets item.lua (the drill-down) take item clicks without a require cycle.
+--- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData, hash: string), close: fun(player: LuaPlayer, player_data: PlayerData)}
+function util.set_item_view(fns)
+	item_view = fns
+end
+
+--- Every item cell's click, in any tab (PLAN3 §4.7, §4.10): left opens the item's drill-down, shift+left shows the
+--- Stations tab filtered to the item, right clears the item filter.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
@@ -863,13 +871,16 @@ function util.item_button_click(player, player_data, e, hash)
 	if e.button == defines.mouse_button_type.right then
 		util.set_item_filter(player_data, nil)
 	elseif e.button == defines.mouse_button_type.left then
-		util.set_item_filter(player_data, hash)
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
 		interop_add_recent_item(player.index, name, "cybersyn")
 		player_data.recent_panel_dirty = true
-		if not e.shift then
+		if e.shift or not item_view then
+			if item_view then item_view.close(player, player_data) end
+			util.set_item_filter(player_data, hash)
 			util.select_tab(player_data, "stations_tab")
+		else
+			item_view.open(player, player_data, hash)
 		end
 	else
 		return

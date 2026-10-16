@@ -33,6 +33,9 @@ sizing.TAB_CHROME = {
 	problems_tab = 96,
 	-- subheader 36, gap 12, caption strip 36, frame borders 4
 	log_tab = 88,
+	-- The item drill-down (scripts/gui/item.lua) in place of a tab's content: subheader 36, then three tables of
+	-- gap 12, caption strip 36, column header 20, frame borders 4.
+	item_tab = 252,
 }
 
 -- Row height per tab (PLAN3 §4.3): every row of a list tab has a fixed height (Stations 32, Trains 36, including the
@@ -44,6 +47,8 @@ sizing.ROW_HEIGHT = {
 	inventory_tab = 40,
 	problems_tab = 32,
 	log_tab = 28,
+	-- Shared by the drill-down's three tables (item-model.split_rows).
+	item_tab = 32,
 }
 
 --- @class ManagerLayout

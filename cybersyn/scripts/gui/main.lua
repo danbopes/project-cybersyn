@@ -419,6 +419,8 @@ function manager_gui.reset_player(i, v)
 		end
 		v.refs = manager.create(player)
 		relative.reset(player, v)
+		v.item_view = nil
+		v.item_cache = nil
 		v.is_manager_open = false
 		v.gui_state = {}
 		player.set_shortcut_toggled("cybersyn-toggle-gui", false)
