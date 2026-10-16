@@ -67,6 +67,7 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field b number?
 --- @field network string?
 --- @field item string? item hash the finding is about
+--- @field c number? CAPACITY: the threshold as typed (items or fluid units) behind the stacks in `a`
 --- @field entity LuaEntity? world scan: the stop or combinator
 --- @field message string? world scan: the [cybersyn-problems] key the command prints
 
@@ -98,6 +99,9 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field tick uint? when the last pass completed
 --- @field updates int updates the last pass took
 --- @field job LintJob?
+--- @field removed int? counts station removals that dropped findings between passes (part of the Problems model sig)
+--- @field logged {[uint]: int}? masks the log stated during the running (or a dropped) pass, until a pass commits
+--- @field train_logged {[uint]: int}?
 --- @field occupancy_since {[uint]: uint} stop -> tick the occupancy gap was first seen (cleared when it closes)
 --- @field phantom_since {[uint]: uint}
 --- @field world {tick: uint, findings: LintFinding[], player_index: uint?}?
@@ -318,6 +322,7 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, key
 			end
 			if need > have_any then
 				mask = find(out, mask, S, id, LINT_CAPACITY, need, have_any, net, hash)
+				out[#out].c = threshold
 			elseif need > have and ok > 0 and band(mask, LINT_BIT[LINT_LAYOUT]) == 0 then
 				mask = find(out, mask, S, id, LINT_LAYOUT, count_keys(accepted),
 					lint.rejected_layouts(fleet.capability[net], net_mask, allows_all, accepted, need, not stack), net, hash)
@@ -513,6 +518,22 @@ local function setup_job(job, snap)
 	end
 end
 
+--- What the log last said about a subject whose mask changed during the running pass: a pass dropped half-way (the
+--- last window closed) leaves the committed masks as they were, and the next pass must not log those transitions
+--- again. Cleared when a pass commits (the committed masks then say the same).
+--- @param s LintState
+--- @param field "logged"|"train_logged"
+--- @param id uint
+--- @param mask int
+local function note_logged(s, field, id, mask)
+	local t = s[field]
+	if not t then
+		t = {}
+		s[field] = t
+	end
+	t[id] = mask
+end
+
 --- Writes the transitions between `old` and `new` to the log.
 local function transitions(subject, id, old, new)
 	if old == new then return end
@@ -610,8 +631,12 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		if not (stop and stop.valid) then return end
 		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet)
 	end
-	local old = s.bits[id] or 0
-	if old ~= mask then transitions(subject, id, old, mask) end
+	local logged = s.logged
+	local old = logged and logged[id] or s.bits[id] or 0
+	if old ~= mask then
+		transitions(subject, id, old, mask)
+		note_logged(s, "logged", id, mask)
+	end
 	if mask ~= 0 then job.bits[id] = mask end
 end
 
@@ -713,8 +738,12 @@ local function check_train(s, job, snap, id)
 		t.missing_record, t.items, t.fluid = nil, train.item_slot_capacity or 0, nil
 	end
 	local mask = lint.check_train(job.findings, id, train, t)
-	local old = s.train_bits[id] or 0
-	if old ~= mask then transitions(LINT_SUBJECT_TRAIN, id, old, mask) end
+	local logged = s.train_logged
+	local old = logged and logged[id] or s.train_bits[id] or 0
+	if old ~= mask then
+		transitions(LINT_SUBJECT_TRAIN, id, old, mask)
+		note_logged(s, "train_logged", id, mask)
+	end
 	if mask ~= 0 then job.train_bits[id] = mask end
 end
 
@@ -790,6 +819,7 @@ local function commit(s, job)
 	end
 	s.bits = new
 	s.train_bits = job.train_bits
+	s.logged, s.train_logged = nil, nil
 	resolve_acks(s)
 end
 
@@ -1008,7 +1038,8 @@ local function scan_stop(job, stop)
 			world_find(out, LINT_NO_COMB, stop, "stop-no-combinator")
 		end
 	end
-	if wrong then
+	-- One finding per combinator: one within reach of two stops is reported at the first stop scanned.
+	if wrong and not job.reported[wrong.unit_number] then
 		job.reported[wrong.unit_number] = true
 		world_find(out, LINT_WRONG_SIDE, stop, "wrong-side-combinator")
 	end
@@ -1092,6 +1123,60 @@ function lint.scan_world_now(player_index, quiet)
 	s.world_job.quiet = quiet
 	while not lint.world_tick() do end
 	return s.world
+end
+
+--- A station left Cybersyn: its findings of the last pass go now, not at the next pass, so the Problems tab counts the
+--- same stations as the Overview's misconfigured line (which reads the snapshot records) in between.
+--- @param id uint
+function lint.station_removed(id)
+	local manager = storage.manager
+	local s = manager and manager.lint
+	if not s then return end
+	s.bits[id] = nil
+	local findings = s.findings
+	local hit = false
+	for _, f in ipairs(findings) do
+		if f.subject == LINT_SUBJECT_STATION and f.id == id then
+			hit = true
+			break
+		end
+	end
+	if not hit then return end
+	local kept = {}
+	for _, f in ipairs(findings) do
+		if not (f.subject == LINT_SUBJECT_STATION and f.id == id) then kept[#kept + 1] = f end
+	end
+	s.findings = kept
+	s.removed = (s.removed or 0) + 1
+end
+
+--- Drops the last world scan's findings whose stop or combinator has since been removed, so the tab does not list
+--- rows that read "Removed" and link nowhere until the next scan. A scan holds a few findings, so this is cheap.
+--- @return int? version counts the findings dropped this way (for the Problems model's sig); nil without a scan
+function lint.prune_world()
+	local manager = storage.manager
+	local world = manager and manager.lint and manager.lint.world
+	if not world then return nil end
+	local findings = world.findings
+	local gone = false
+	for _, f in ipairs(findings) do
+		local e = f.entity
+		if e and not e.valid then
+			gone = true
+			break
+		end
+	end
+	if gone then
+		local kept = {}
+		for _, f in ipairs(findings) do
+			local e = f.entity
+			if not (e and not e.valid) then kept[#kept + 1] = f end
+		end
+		world.findings = kept
+		world.pruned = (world.pruned or 0) + 1
+		resolve_world_acks(kept)
+	end
+	return world.pruned or 0
 end
 
 --- The stop or combinator of the last world scan with this unit number (most entities cannot be looked up by unit

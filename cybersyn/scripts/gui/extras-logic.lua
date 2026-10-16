@@ -72,14 +72,16 @@ logic.CONFIRM_TICKS = 180
 --- @field tick uint when the first click armed it
 
 --- A click on the button `key`: the first click arms it, a second click within CONFIRM_TICKS fires it. A click on
---- another button arms that one instead (one armed button per player).
+--- another button arms that one instead (one armed button per player). `shown` = the button still reads "Confirm?"
+--- (its expiry has not been drawn yet): what the player saw is what the click does, so it fires.
 --- @param cur ConfirmState?
 --- @param key string
 --- @param now uint
+--- @param shown boolean? the clicked button shows the armed state
 --- @return ConfirmState? next state
 --- @return boolean fire
-function logic.confirm_click(cur, key, now)
-	if cur and cur.key == key and now - cur.tick < logic.CONFIRM_TICKS then return nil, true end
+function logic.confirm_click(cur, key, now, shown)
+	if cur and cur.key == key and (now - cur.tick < logic.CONFIRM_TICKS or shown) then return nil, true end
 	return { key = key, tick = now }, false
 end
 

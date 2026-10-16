@@ -180,6 +180,51 @@ test("rows: a backward fill to the limit, then the head followed; identical new 
 	assert_eq(shape(), { { 10, 1 }, { 9, 1 }, { 6, 3 }, { 5, 1 } })
 end)
 
+test("rows: while paused, 'n newer' counts only the newer events the filter shows, within the budget", function()
+	at(1000)
+	local d = setup()
+	for s = 1, 4 do ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = s }) end
+	local only_7 = model.compile(filter({ subject = { kind = "station", id = 7 } }), 1000)
+	local rs = {}
+	model.update_rows(rs, d, only_7, 4, false, 100)
+	assert_eq({ model.newer(rs, d) }, { 0, true })
+	-- Five newer events, two of them at station 7, one of those an info hidden by the severity filter of none.
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 7 })
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 8 })
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 7 })
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 9 })
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 9 })
+	model.update_rows(rs, d, only_7, 4, false, 100)
+	assert_eq({ model.newer(rs, d) }, { 2, true }, "two of the five newer events are this station's")
+	-- A budget smaller than the gap: a partial count, completed on the next update.
+	for _ = 1, 6 do ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 7 }) end
+	model.update_rows(rs, d, only_7, 4, false, 3)
+	local n, complete = model.newer(rs, d)
+	assert_eq({ n, complete }, { 5, false })
+	model.update_rows(rs, d, only_7, 4, false, 100)
+	assert_eq({ model.newer(rs, d) }, { 8, true })
+	-- Follow on: no paused count.
+	model.update_rows(rs, d, only_7, 4, true, 100)
+	assert_eq({ model.newer(rs, d) }, { 0, true })
+end)
+
+test("rows: a row whose events its ring has overwritten leaves; the other ring's older rows fill in", function()
+	at(1000)
+	local d = setup("full", 1024)
+	-- An old basic row of station 7, then four full rows of station 7, then 1,100 full rows elsewhere.
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 7 })
+	for _ = 1, 4 do ev(d, DIAG_KIND_ARRIVE_R, DIAG_SEV_INFO, { station = 7, train = 3 }) end
+	local only_7 = model.compile(filter({ subject = { kind = "station", id = 7 } }), 1000)
+	local rs = {}
+	model.update_rows(rs, d, only_7, 4, true, 10000)
+	assert_eq(#rs.groups, 2, "the four identical arrivals collapse into one row above the basic row")
+	assert_true(rs.groups[1].full == true)
+	for k = 1, 1100 do ev(d, DIAG_KIND_ARRIVE_R, DIAG_SEV_INFO, { station = 8, train = k }) end
+	model.update_rows(rs, d, only_7, 4, true, 10000)
+	assert_eq(#rs.groups, 1, "the arrivals left the full ring")
+	assert_eq({ rs.groups[1].kind, rs.groups[1].station }, { DIAG_KIND_STATION_LIMIT, 7 })
+end)
+
 test("rows: severity toggles, a sparse filter scanned over several updates, the window trims the bottom", function()
 	at(0)
 	local d = setup()
@@ -304,6 +349,19 @@ test("badge: errors after the last seen seq, counted forward within a budget; se
 	d = setup("basic")
 	ev(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR)
 	assert_eq(model.update_badge(bs, d, 10, 100), 1)
+end)
+
+test("badge: errors of the first planner cycles after diagnostics start are the base's state, not news", function()
+	at(100)
+	local d = setup()
+	for _ = 1, 6 do ev(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR) end
+	at(200)
+	ev(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR)
+	local bs = {}
+	-- While the threshold is unknown (math.huge) nothing counts; once known, the count starts over from it.
+	assert_eq(model.update_badge(bs, d, nil, 100, math.huge), 0)
+	assert_eq(model.update_badge(bs, d, nil, 100, 150), 1)
+	assert_eq(model.update_badge(bs, d, nil, 100, nil), 7, "without a threshold every error counts")
 end)
 
 test("badge and Follow off across a diagnostics restart: an old state's seq means nothing in the new one", function()
@@ -550,7 +608,7 @@ test("locale: every key the Log builds exists in en and in the six fallback loca
 	for key in string.gmatch(src, '"(cybersyn%-gui%.[%w%-]+)"') do
 		if not string.match(key, "%-$") then used[key] = true end
 	end
-	for _, mode in ipairs({ "basic", "full" }) do used["cybersyn-gui.log-mode-" .. mode] = true end
+	for _, mode in ipairs({ "basic", "full-reach" }) do used["cybersyn-gui.log-mode-" .. mode] = true end
 	for key in string.gmatch(src, '"(cybersyn%-diag%.[%w%-]+)"') do
 		if not string.match(key, "%-$") then used[key] = true end
 	end

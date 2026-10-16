@@ -263,8 +263,11 @@ function model.detail(f, env)
 		if env.is_fluid(f.item) then
 			return { key .. "-fluid", env.item(f.item), n(a), n(b) }
 		end
+		-- The threshold as typed, then the stacks the trains are measured in.
+		if f.c then return { key .. "-threshold", env.item(f.item), n(f.c), n(a), n(b) } end
 		return { key, env.item(f.item), n(a), n(b) }
 	elseif check == LINT_LAYOUT then
+		if f.item then return { key .. "-item", env.item(f.item), n(a), n(b), env.network(f.network) } end
 		return { key, n(a), n(b), env.network(f.network) }
 	elseif check == LINT_MASK then
 		if a == 0 then return { key .. "-zero", env.network(f.network) } end
@@ -297,7 +300,7 @@ end
 function model.detail_sig(f)
 	local a = f.a
 	if f.check == LINT_NEVER_REFUELLED and a then a = math.floor(a / HOUR_TICKS) end
-	return tostring(a) .. ":" .. tostring(f.b) .. ":" .. tostring(f.network) .. ":" .. tostring(f.item)
+	return tostring(a) .. ":" .. tostring(f.b) .. ":" .. tostring(f.network) .. ":" .. tostring(f.item) .. ":" .. tostring(f.c)
 end
 
 return model

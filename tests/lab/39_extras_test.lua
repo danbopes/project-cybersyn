@@ -162,8 +162,8 @@ lab.suite("39_extras", {
 			or before.controller == defines.controllers.character or before.controller == defines.controllers.god, before)
 		dev("link_click", PI, "train", ctx.trace_train, { control = true, shift = true })
 		pin = dev("last_pin", PI)
-		lab.check("ctrl+shift on a train link pins 'Train <id>'",
-			pin and pin.kind == "train" and pin.label == "Train " .. ctx.trace_train, pin)
+		lab.check("ctrl+shift on a train link pins '#<id>' (no English word in a plain-string label)",
+			pin and pin.kind == "train" and pin.label == "#" .. ctx.trace_train, pin)
 		dev("action_click", PI, "pin")
 		pin = dev("last_pin", PI)
 		lab.check("train panel pin tool", pin and pin.kind == "train" and pin.id == ctx.trace_train, pin)

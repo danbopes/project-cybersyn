@@ -1723,6 +1723,17 @@ function diag.export_step()
 	end
 	local job = list and list[1]
 	if not job then return nil end
+	-- The player who asked for the file left: the rest would be written to a machine that is gone, so the export
+	-- starts over on the server and says so in the server log and on the Log tab's note.
+	if job.player_index ~= 0 then
+		local player = game.get_player(job.player_index)
+		if not (player and player.connected) then
+			log({ "", "Cybersyn diagnostics: export ", job.path, " for player ", player and player.name or "?",
+				" continues on the server (the player left)" })
+			job.player_index, job.server = 0, true
+			job.next_seq, job.started, job.rows, job.chunks = job.start_seq, false, 0, 0
+		end
+	end
 	local d = storage.diag
 	local rb, rf = job.rb, job.rf
 	-- A job queued before jobs kept their rings reads the live ones.

@@ -21,7 +21,6 @@ local item_model = require("scripts.gui.item-model")
 --- @field from_tab string the tab the drill-down was opened from; back returns there
 --- @field host string the tab whose content it replaces (from_tab, or the Inventory when that tab has no content frame)
 --- @field hidden int[] indices of the host content's children it hid, shown again on close
---- @field took_opened true? it made the pinned window player.opened, so Escape reaches it (released on close)
 
 --- @class ItemCache
 --- @field hash string
@@ -294,8 +293,6 @@ local function teardown(player, player_data)
 	-- (otherwise it closes it again with back and re-selects the tab it came from).
 	player_data.item_view = nil
 	player_data.item_cache = nil
-	local release = view and view.took_opened
-	if view then view.took_opened = nil end
 	if view and refs then
 		local frame = refs[VIEW]
 		-- A rebuilt window has fresh tab contents: nothing of them was hidden.
@@ -320,10 +317,7 @@ local function teardown(player, player_data)
 	if states then
 		for _, t in ipairs(item_model.TABLES) do states[table_name(t)] = nil end
 	end
-	if release and player and player_data.pinning and refs then
-		local window = refs.manager_window
-		if window and window.valid and player.opened == window then player.opened = nil end
-	end
+	util.overlay_closed(player, player_data)
 end
 
 --- Closes the drill-down; with `back`, the tab it was opened from is selected again.
@@ -379,55 +373,9 @@ function item.open(player, player_data, hash)
 	gui.add(content, view_def(from, layout), refs)
 	view = { hash = hash, from_tab = from, host = host, hidden = hidden }
 	player_data.item_view = view
-	-- A pinned window does not hold player.opened, so Escape would never reach it; while the drill-down is open it
-	-- does (not in remote view, where Escape must leave the map).
-	if player_data.pinning and not player_data.auto_pinned and player.opened == nil
-		and player.controller_type ~= defines.controllers.remote then
-		local window = refs.manager_window
-		if window and window.valid then
-			player.opened = window
-			view.took_opened = player.opened == window or nil
-		end
-	end
-end
-
---- Escape (on_gui_closed of the window) while the drill-down is open on a pinned window: closes the drill-down only.
---- A link of the drill-down that just opened an entity GUI also raises it; that one keeps the drill-down.
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @return boolean handled
-function item.on_window_closed(player, player_data)
-	local view = player_data.item_view
-	if not (view and view.took_opened and player_data.pinning) then return false end
-	local return_to = player_data.return_to
-	if return_to and return_to.tick == game.tick then
-		view.took_opened = nil
-		return true
-	end
-	view.took_opened = nil
-	item.close(player, player_data, true)
-	util.rerender(player, player_data)
-	return true
-end
-
---- The pin button was toggled while the drill-down is open. Pinned, the window keeps player.opened for the drill-down's
---- Escape; unpinned, it holds player.opened anyway and Escape closes the window.
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @return boolean kept the window stays player.opened: the pin handler must not release it
-function item.on_pin_changed(player, player_data)
-	local view = player_data.item_view
-	if not view then return false end
-	if not player_data.pinning or player_data.auto_pinned or player.controller_type == defines.controllers.remote then
-		view.took_opened = nil
-		return false
-	end
-	local window = player_data.refs.manager_window
-	if window and window.valid and player.opened == window then
-		view.took_opened = true
-		return true
-	end
-	return false
+	-- A pinned window does not hold player.opened, so Escape would never reach the drill-down: the overlay rule
+	-- (manager.PINNED_OVERLAYS_TAKE_OPENED) lets it take it, not in remote view, where Escape must leave the map.
+	util.overlay_opened(player, player_data)
 end
 
 -- ---------------------------------------------------------------- render
@@ -666,7 +614,7 @@ local function requester_entry(r, ctx, i)
 			chip = {
 				sig = chip_sig,
 				caption = text.chip_caption(reason),
-				style = acked and "cybersyn_chip_grey" or text.chip_style(reason),
+				style = acked and "cybersyn_chip_acked" or text.chip_style(reason),
 				tooltip = text.chip_tooltip({
 					item = ctx.item_tooltip,
 					requested = r.requested,
@@ -1072,7 +1020,7 @@ local function dump(player_data)
 		from_tab = view.from_tab,
 		host = view.host,
 		selected_tab = player_data.selected_tab,
-		took_opened = view.took_opened == true,
+		took_opened = player_data.overlay_took == true,
 		alloc = cache and cache.alloc,
 		total_rows = player_data.layout and player_data.layout.rows_by_tab[TAB],
 		totals = m and m.totals,

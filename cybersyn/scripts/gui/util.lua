@@ -869,6 +869,28 @@ function util.rerender(player, player_data)
 	if rerender_fn then rerender_fn(player, player_data) end
 end
 
+local overlay_fns
+
+--- Lets manager.lua own the overlay rule (manager.overlay_opened / overlay_closed) without a require cycle.
+--- @param fns {opened: fun(player: LuaPlayer, player_data: PlayerData), closed: fun(player: LuaPlayer, player_data: PlayerData)}
+function util.set_overlay_fns(fns)
+	overlay_fns = fns
+end
+
+--- An overlay of the manager window opened (the item drill-down, the Trains pane, Explain): manager.overlay_opened.
+--- @param player LuaPlayer?
+--- @param player_data PlayerData
+function util.overlay_opened(player, player_data)
+	if player and overlay_fns then overlay_fns.opened(player, player_data) end
+end
+
+--- An overlay closed by its own button or a tab switch (not by Escape): manager.overlay_closed.
+--- @param player LuaPlayer?
+--- @param player_data PlayerData
+function util.overlay_closed(player, player_data)
+	if player and overlay_fns then overlay_fns.closed(player, player_data) end
+end
+
 --- Switches the tabbed pane and keeps `player_data.selected_tab` in sync (setting the index raises no event).
 --- @param player_data PlayerData
 --- @param tab string e.g. "stations_tab"

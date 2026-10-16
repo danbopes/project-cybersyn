@@ -128,7 +128,24 @@ end
 --- @param d DiagState
 --- @return LogCompiled
 local function compiled(player_data, d)
-	return model.compile(get_filter(player_data), game.tick, item_filter(player_data, d))
+	local f = get_filter(player_data)
+	local item = item_filter(player_data, d)
+	local s = f.subject
+	local c = player_data.log_cf
+	local sev = f.sev
+	-- Rebuilt only when the filter changed; otherwise only the window's start moves with the clock.
+	if c and c.f_group == f.group and c.f_kind == f.kind and c.f_train == f.train and c.f_window == f.window
+		and c.f_item == item and c.f_sub_kind == (s and s.kind) and c.f_sub_id == (s and s.id)
+		and c.sevs[1] == (sev[1] == true) and c.sevs[2] == (sev[2] == true) and c.sevs[3] == (sev[3] == true) then
+		local window = model.WINDOWS[f.window or model.DEFAULT_WINDOW]
+		c.min_tick = window and math.max(0, game.tick - window) or nil
+		return c
+	end
+	c = model.compile(f, game.tick, item)
+	c.f_group, c.f_kind, c.f_train, c.f_window, c.f_item = f.group, f.kind, f.train, f.window, item
+	c.f_sub_kind, c.f_sub_id = s and s.kind, s and s.id
+	player_data.log_cf = c
+	return c
 end
 log_tab.compiled = compiled
 
@@ -611,11 +628,16 @@ local function write_cells(cells, g, m, now, key)
 		for i = 1, NAME_ICONS do
 			local icon = view and view.icons[i]
 			local sprite = icon and valid_sprite(icon.sprite) or false
-			if mi[i] ~= sprite then
+			local quality = sprite and icon.quality or nil
+			local isig = sprite and (sprite .. "|" .. (quality or "")) or false
+			if mi[i] ~= isig then
 				local slot = slots[i]
-				if sprite then slot.sprite = sprite end
+				if sprite then
+					slot.sprite = sprite
+					slot.quality = quality
+				end
 				if (mi[i] or false) == false or sprite == false then slot.visible = sprite ~= false end
-				mi[i] = sprite
+				mi[i] = isig
 			end
 		end
 		if view then
@@ -696,9 +718,10 @@ local function cell_defs(widths)
 				type = "flow",
 				direction = "horizontal",
 				style = "cybersyn_log_icon_flow",
-				{ type = "sprite", style = "cybersyn_log_icon", visible = false, ignored_by_interaction = true },
-				{ type = "sprite", style = "cybersyn_log_icon", visible = false, ignored_by_interaction = true },
-				{ type = "sprite", style = "cybersyn_log_icon", visible = false, ignored_by_interaction = true },
+				-- Sprite buttons, not sprites: only a button draws an icon's quality badge.
+				{ type = "sprite-button", style = "cybersyn_name_icon", visible = false, ignored_by_interaction = true },
+				{ type = "sprite-button", style = "cybersyn_name_icon", visible = false, ignored_by_interaction = true },
+				{ type = "sprite-button", style = "cybersyn_name_icon", visible = false, ignored_by_interaction = true },
 			},
 			hoverable({
 				type = "button",
@@ -794,7 +817,7 @@ end
 --- @param player_data PlayerData
 --- @param groups LogGroup[]
 --- @param limit int
-local function render_rows(player_data, groups, limit)
+local function render_rows(player_data, groups, limit, changed)
 	local refs = player_data.refs
 	local parent = refs[ROWS]
 	local widths = player_data.log_widths
@@ -805,7 +828,34 @@ local function render_rows(player_data, groups, limit)
 		memo = {}
 		state.memo = memo
 	end
-	r_memo, r_widths, r_now = memo, widths, game.tick
+	local now = game.tick
+	-- Nothing new and nothing held back: the rows stay, only the age column and the staggered name refresh move.
+	if not changed and state.groups == groups and state.limit == limit and state.widths == widths and not state.dirty
+		and state.keys then
+		local intact = true
+		for _, key in ipairs(state.keys) do
+			local m = memo[key]
+			local g = m and m.g
+			if g and not m.hidden then
+				local cells = m.cells
+				if not (cells and cells[1].valid) then
+					intact = false
+					break
+				end
+				view_cache = view_cache or {}
+				if m.epoch ~= name_epoch(key, now) then write_cells(cells, g, m, now, key) end
+				local age = model.age_caption(now, g, util.short_duration)
+				if m.a ~= age then
+					cells[1].caption = age
+					m.a = age
+				end
+			end
+		end
+		view_cache = nil
+		if intact then return end
+	end
+	state.groups, state.limit, state.widths = groups, limit, widths
+	r_memo, r_widths, r_now = memo, widths, now
 	view_cache = {}
 	local entries = {}
 	for i, g in ipairs(groups) do
@@ -903,28 +953,27 @@ local function cycle_figures()
 	return cycle.dispatches_last, cycle.ticks_last or 0
 end
 
---- "covering the last 11 min · basic · planner cycle 43 ticks · 2.7 dispatches per cycle"; with full on, the full
---- events' own reach is named too (the full ring fills far faster than the basic one).
+--- "covering the last 11 min · basic · planner cycle 43 ticks · 2.7 dispatches per cycle". The reach is
+--- diag.horizon(), the one figure for how far back the log is complete; with full on that is the full ring's reach,
+--- and the basic events' longer one is named beside it.
 --- @param d DiagState
 --- @return LocalisedString
 --- @return string sig
 local function header_line(d)
 	local now = game.tick
+	local _, ticks = diag.horizon()
+	local covering = util.short_duration(ticks)
+	local mode, basic_covering = { "cybersyn-gui.log-mode-basic" }, ""
 	local rb, rf = model.rings(d)
-	-- A ring that has not wrapped yet reaches back to when diagnostics started (nothing older was dropped).
-	local start = d.loaded_tick
-	if rb.count >= rb.size and rb.count > 0 then start = math.max(start, rb.tick[diag.ring_at(rb, 0)]) end
-	local covering = util.short_duration(now - start)
-	local mode, full_covering = { "cybersyn-gui.log-mode-basic" }, ""
 	if rf then
-		local full_start = rf.count > 0 and rf.tick[diag.ring_at(rf, 0)] or now
-		full_covering = util.short_duration(now - full_start)
-		mode = { "cybersyn-gui.log-mode-full", full_covering }
+		local basic_start = rb.count > 0 and rb.tick[diag.ring_at(rb, 0)] or now
+		basic_covering = util.short_duration(now - basic_start)
+		mode = { "cybersyn-gui.log-mode-full-reach", basic_covering }
 	end
-	local per_cycle, ticks = cycle_figures()
+	local per_cycle, cycle_ticks = cycle_figures()
 	local per = per_cycle and format.number(per_cycle) or "–"
-	return { "cybersyn-gui.log-header", covering, mode, tostring(ticks), per },
-		covering .. "|" .. full_covering .. "|" .. ticks .. "|" .. per
+	return { "cybersyn-gui.log-header", covering, mode, tostring(cycle_ticks), per },
+		covering .. "|" .. basic_covering .. "|" .. cycle_ticks .. "|" .. per
 end
 
 --- The export note in the subheader: "Exporting… n %", then where the file went.
@@ -948,7 +997,8 @@ function log_tab.refresh_export_note(player_data)
 		tooltip = { "cybersyn-gui.log-export-path", job.path }
 	elseif ex and ex.state ~= "running" then
 		sig = ex.state .. ex.path .. tostring(ex.rows)
-		local key = ex.state == "off" and "cybersyn-gui.log-exported-off" or "cybersyn-gui.log-exported"
+		local key = ex.state == "off" and "cybersyn-gui.log-exported-off"
+			or ex.state == "server" and "cybersyn-gui.log-exported-server" or "cybersyn-gui.log-exported"
 		caption = { key, format.number(ex.rows or 0), ex.path }
 		tooltip = { "cybersyn-gui.log-export-path", ex.path }
 	else
@@ -1057,21 +1107,38 @@ function log_tab.forget(player_data)
 	player_data.log_rows = nil
 	player_data.log_counts = nil
 	player_data.log_summary = nil
+	player_data.log_cf = nil
 end
 
---- Unread errors as the tab's badge (PLAN3 §4.6).
+local PREWARM_ROWS = 6
+
+--- While another tab shows, the row pool grows by PREWARM_ROWS hidden rows per render up to the page, so the Log's first
+--- render writes cells into existing rows instead of creating about 13 elements per row in one update.
+--- @param player_data PlayerData
+function log_tab.prewarm(player_data)
+	if player_data.selected_tab == TAB or player_data.item_view then return end
+	local parent = player_data.refs[ROWS]
+	if not (parent and parent.valid and player_data.log_widths and collector.get().tick) then return end
+	local limit = row_limit(player_data)
+	local have = #parent.children
+	if have >= limit then return end
+	render_rows(player_data, {}, math.min(limit, have + PREWARM_ROWS), true)
+end
+
+--- Unread errors as the tab's badge (PLAN3 §4.6), and the row pool prewarmed.
 --- @param player_data PlayerData
 function log_tab.refresh_badge(player_data)
 	local refs = player_data.refs
 	local tab = refs and refs.manager_log_tab
 	local d = storage.diag
 	if not (tab and tab.valid and d) then return end
+	log_tab.prewarm(player_data)
 	local bs = player_data.log_badge
 	if not bs then
 		bs = {}
 		player_data.log_badge = bs
 	end
-	local n = model.update_badge(bs, d, model.seen_seq(player_data.log_seen, d), BADGE_BUDGET)
+	local n = model.update_badge(bs, d, model.seen_seq(player_data.log_seen, d), BADGE_BUDGET, diag.inherit_threshold(d))
 	local caption = n > 0 and format.number(n) or ""
 	if tab.badge_text ~= caption then
 		tab.badge_text = caption
@@ -1151,7 +1218,7 @@ function log_tab.build(map_data, player_data)
 			player_data.log_rows = rs
 		end
 		prof_start("rows")
-		local _, used = model.update_rows(rs, d, cf, limit, f.follow ~= false, left)
+		local rows_changed, used = model.update_rows(rs, d, cf, limit, f.follow ~= false, left)
 		left = left - used
 		prof_stop("rows")
 		prof_start("render")
@@ -1159,7 +1226,7 @@ function log_tab.build(map_data, player_data)
 		local any = #rs.groups > 0
 		if rows_flow.visible ~= any then rows_flow.visible = any end
 		-- With nothing to show the row elements stay (hidden), to be reused when rows come back.
-		if any then render_rows(player_data, rs.groups, limit) end
+		if any then render_rows(player_data, rs.groups, limit, rows_changed) end
 		prof_stop("render")
 		if not any then
 			if rs.below then
@@ -1169,9 +1236,10 @@ function log_tab.build(map_data, player_data)
 			end
 		end
 		if f.follow == false and rs.anchor then
-			local newer = d.seq - rs.anchor
-			status_sig = "paused" .. newer
-			status = { "cybersyn-gui.log-paused", format.number(newer) }
+			local newer, complete = model.newer(rs, d)
+			local shown = format.number(newer) .. (complete and "" or "+")
+			status_sig = "paused" .. shown
+			status = { "cybersyn-gui.log-paused", shown }
 			seen = rs.anchor
 		else
 			status_sig, status = "", ""
@@ -1220,8 +1288,8 @@ diag.set_export_listener(function(job, cause)
 	for _, player_data in pairs(manager_data.players) do
 		local ex = player_data.log_export
 		if ex and ex.path == job.path and ex.state == "running" then
-			player_data.log_export = { path = job.path, state = cause == "off" and "off" or "done", rows = job.rows,
-				chunks = job.chunks, first_tick = job.first_tick, last_tick = job.last_tick }
+			player_data.log_export = { path = job.path, state = cause == "off" and "off" or (job.server and "server" or "done"),
+				rows = job.rows, chunks = job.chunks, first_tick = job.first_tick, last_tick = job.last_tick }
 			log_tab.refresh_export_note(player_data)
 		end
 	end
@@ -1571,14 +1639,14 @@ dev.register_dump(TAB, function(player_data)
 	return out
 end)
 
-dev.register_function("log_dump", function(pi)
+dev.add("log_dump", function(pi)
 	return dev.call("dump", pi, TAB)
 end)
 
 --- Keys present in `f` are applied (false clears): sev = {bool, bool, bool}, kind = kind name, group = group name,
 --- train, subject = {kind, id}, window = 1..3, follow, summary. `quiet`: no render (so the next update is the one a
 --- filter change costs).
-dev.register_function("log_set_filter", function(pi, f, quiet)
+dev.add("log_set_filter", function(pi, f, quiet)
 	local player = game.get_player(pi)
 	local player_data = storage.manager.players[pi]
 	local filter = get_filter(player_data)
@@ -1612,7 +1680,7 @@ dev.register_function("log_set_filter", function(pi, f, quiet)
 end)
 
 --- An export with the Log's filter, written at once (the GUI's runs in chunks); returns the path and the rows written.
-dev.register_function("log_export", function(pi)
+dev.add("log_export", function(pi)
 	local player = game.get_player(pi)
 	local player_data = storage.manager.players[pi]
 	local d = storage.diag
@@ -1624,7 +1692,7 @@ dev.register_function("log_export", function(pi)
 end)
 
 --- Times every chunk of an unfiltered export written now (budget measurement); returns one LocalisedString per chunk.
-dev.register_function("log_export_bench", function(pi)
+dev.add("log_export_bench", function(pi)
 	local d = storage.diag
 	if not d then return nil end
 	diag.export(0, nil)
@@ -1642,7 +1710,7 @@ end)
 
 --- One Log render of player `pi` timed by phase: counts, the rows model, writing the rows, the rest; plus the rows
 --- written.
-dev.register_function("log_profile", function(pi)
+dev.add("log_profile", function(pi)
 	local player_data = storage.manager.players[pi]
 	prof = { written = 0 }
 	for _, k in ipairs({ "counts", "rows", "render", "rest" }) do prof[k] = game.create_profiler(true) end
@@ -1656,14 +1724,14 @@ dev.register_function("log_profile", function(pi)
 end)
 
 --- Prints the row holding `seq` to player `pi` as the Print button does; returns the printed LocalisedString.
-dev.register_function("log_print", function(pi, seq)
+dev.add("log_print", function(pi, seq)
 	local player = game.get_player(pi)
 	local player_data = storage.manager.players[pi]
 	return log_tab.print_row(player, player_data, seq)
 end)
 
 --- The Log's export filter and compiled filter, for oracles.
-dev.register_function("log_filter_state", function(pi)
+dev.add("log_filter_state", function(pi)
 	local player_data = storage.manager.players[pi]
 	local d = storage.diag
 	if not d then return nil end

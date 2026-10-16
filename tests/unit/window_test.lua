@@ -63,13 +63,25 @@ test("compute: the filter row and the banner take rows away, never push past 85 
 	assert_eq(both.window_height, s.OUTER_HEIGHT + s.FILTER_ROW_HEIGHT + s.BANNER_HEIGHT + both.content_height)
 end)
 
-test("compute: a tiny screen still gets the minimum rows on every tab, and a zero scale reads as 1", function()
+test("compute: a tiny screen gets a window no larger than the screen, at least one row, and a zero scale reads as 1", function()
 	local s = sizing()
 	local l = s.compute(800, 400, 1)
-	assert_true(l.rows_by_tab.overview_tab >= s.MIN_ROWS)
+	assert_true(l.rows_by_tab.overview_tab >= 1)
 	assert_eq(l.content_height, s.TAB_CHROME.overview_tab + l.rows_by_tab.overview_tab * s.ROW_HEIGHT.overview_tab)
-	assert_eq(l.width, s.MIN_WIDTH)
+	assert_eq(l.width, 800)
+	assert_true(l.window_height <= 400)
 	assert_eq(s.compute(1920, 1080, 0).width, 1440)
+end)
+
+test("compute: below the minimum width the window takes MIN_WIDTH, never more than the screen (phase 7 rule)", function()
+	local s = sizing()
+	-- 1080p at 2.0 is 960 logical px wide: 75 % would be 720
+	assert_eq(s.compute(1920, 1080, 2.0).width, 960)
+	-- 1366x768 at 1.5 is 910 wide
+	assert_eq(s.compute(1366, 768, 1.5).width, 910)
+	-- 1080p at 1.5 is 1,280 wide: the share (960) already reaches the minimum
+	assert_eq(s.compute(1920, 1080, 1.5).width, 960)
+	assert_eq(s.compute(2560, 1440, 1.0).width, 1440)
 end)
 
 test("compute: small screens fit every tab's chrome plus its minimum whole rows (the drill-down is the tallest)", function()
@@ -81,10 +93,19 @@ test("compute: small screens fit every tab's chrome plus its minimum whole rows 
 		for _, filter_row in ipairs({ false, true }) do
 			local l = s.compute(screen[1], screen[2], screen[3], filter_row)
 			local label = screen[1] .. "x" .. screen[2] .. "@" .. screen[3] .. (filter_row and " +filter" or "")
+			local sh = math.floor(screen[2] / screen[3])
+			if sh >= 540 then assert_true(l.window_height <= sh, label .. " window within the screen") end
+			assert_true(l.width <= math.floor(screen[1] / screen[3]), label .. " window within the screen width")
+			-- The minimum rows wherever the screen has the height for them.
+			local roomy = s.OUTER_HEIGHT + (filter_row and s.FILTER_ROW_HEIGHT or 0) + s.TAB_CHROME.item_tab
+				+ s.MIN_ROWS * s.ROW_HEIGHT.item_tab + s.ROW_HEIGHT.overview_tab <= sh
 			for tab, h in pairs(s.ROW_HEIGHT) do
 				local rows = l.rows_by_tab[tab]
-				assert_true(rows >= s.MIN_ROWS, label .. " " .. tab .. " minimum rows")
-				assert_true(s.TAB_CHROME[tab] + rows * h <= l.content_height, label .. " " .. tab .. " fits")
+				if roomy then assert_true(rows >= s.MIN_ROWS, label .. " " .. tab .. " minimum rows") end
+				assert_true(rows >= 1, label .. " " .. tab .. " at least one row")
+				if sh >= 540 then
+					assert_true(s.TAB_CHROME[tab] + rows * h <= l.content_height, label .. " " .. tab .. " fits")
+				end
 			end
 		end
 	end

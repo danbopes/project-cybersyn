@@ -1,4 +1,4 @@
--- PLAN3 phase 9 (§4.11): the Trains detail pane. A row click selects the train and opens a 320 px pane 12 px right of
+-- PLAN3 phase 9 (§4.11): the Trains detail pane. A row click selects the train and opens a 324 px pane 12 px right of
 -- the table, which loses its Shipment column (and on narrow windows more columns, so the status keeps its minimum);
 -- the pane holds one camera per player on the front stock and the train panel of relative.lua, whose sections equal
 -- the vanilla-window panel's for the same train. On short windows the camera shrinks or goes so the panel body stays
@@ -64,8 +64,8 @@ lab.suite("37_trains_pane", {
 		ctx.p1 = p
 		lab.check("select: pane shown for the train", p.visible == true and p.selected == id and p.open and
 			p.open.kind == "train" and p.open.id == id, { p.visible, p.selected, p.open })
-		lab.check("select: pane 320 px, 12 px gap", p.width == 320 and p.gap == 12, { p.width, p.gap })
-		lab.check("select: the table is 332 px narrower", p.table_width == p0.table_width - 332, { p0.table_width, p.table_width })
+		lab.check("select: pane 324 px (300 px panel in 12 px insets), 12 px gap", p.width == 324 and p.gap == 12, { p.width, p.gap })
+		lab.check("select: the table is 336 px narrower", p.table_width == p0.table_width - 336, { p0.table_width, p.table_width })
 		lab.check("select: the columns fill the narrower table", p.columns_total <= p.table_width and
 			p.columns_total >= p.table_width - 8, { p.columns_total, p.table_width })
 		local w0, w1 = widths(p0), widths(p)

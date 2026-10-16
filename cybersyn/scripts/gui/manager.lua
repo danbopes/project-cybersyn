@@ -13,6 +13,7 @@ local utilization_tab = require("scripts.gui.utilization")
 local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
 local problems_tab = require("scripts.gui.problems")
 local item = require("scripts.gui.item")
+local explain = require("scripts.gui.explain")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local analytics = require("scripts.analytics")
@@ -654,6 +655,7 @@ function manager.handle.manager_open(player, player_data, refs)
 	player_data.collecting_shown = nil
 	player_data.trains_badge = nil
 	player_data.problems_badge = nil
+	player_data.problems_scan_sig = nil
 	manager.refresh_banners(player_data)
 	manager.apply_layout(player, player_data)
 	refs.manager_window.visible = true
@@ -701,44 +703,121 @@ function manager.handle.manager_close(player, player_data, refs)
 	-- Cleanup above runs again on reopen otherwise.
 	player_data.previous_tab = nil
 	player_data.search_open = nil
+	player_data.overlay_took = nil
 	item.close(player, player_data)
+	explain.close(player, player_data)
 	util.close_manager_window(player, player_data, refs, true)
 end
 
---- on_gui_closed (Escape / E): a pinned window ignores it.
+-- ---------------------------------------------------------------- overlays and Escape
+
+--- One rule for every overlay of the window (Explain, the item drill-down, the Trains detail pane; top first): Escape
+--- closes the top overlay and the window stays. An unpinned window holds player.opened anyway. A pinned one does not,
+--- so while an overlay is open it takes player.opened when this is set (and gives it up with the last overlay), and
+--- Escape peels its overlays too; with it unset a pinned window's overlays close only by their own buttons, and Escape
+--- goes past the window. Open question for Daniel in DECISIONS.md (phase 7); this flag is the whole answer.
+manager.PINNED_OVERLAYS_TAKE_OPENED = true
+
+--- The overlay Escape closes next, or nil.
+--- @param player_data PlayerData
+--- @return "explain"|"item"|"pane"|nil
+function manager.top_overlay(player_data)
+	if player_data.explain then return "explain" end
+	if player_data.item_view then return "item" end
+	if trains_tab.pane_shown(player_data) then return "pane" end
+	return nil
+end
+
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @return boolean
+local function may_take_opened(player, player_data)
+	return manager.PINNED_OVERLAYS_TAKE_OPENED and player_data.pinning and not player_data.auto_pinned
+		and player.controller_type ~= defines.controllers.remote and player_data.is_manager_open == true
+end
+
+--- An overlay opened: a pinned window takes player.opened so that Escape reaches it (only when no GUI holds it).
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.overlay_opened(player, player_data)
+	if player_data.overlay_took or not may_take_opened(player, player_data) then return end
+	local window = player_data.refs and player_data.refs.manager_window
+	if not (window and window.valid) or player.opened_gui_type ~= defines.gui_type.none then return end
+	player.opened = window
+	player_data.overlay_took = player.opened == window or nil
+end
+
+--- An overlay closed by its own button or a tab switch: with the last one gone, a pinned window that took
+--- player.opened for them gives it up (the on_gui_closed that raises is ignored: pinned, nothing taken).
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.overlay_closed(player, player_data)
+	if not player_data.overlay_took or manager.top_overlay(player_data) then return end
+	player_data.overlay_took = nil
+	local window = player_data.refs and player_data.refs.manager_window
+	if window and window.valid and player.opened == window then player.opened = nil end
+end
+
+util.set_overlay_fns({ opened = manager.overlay_opened, closed = manager.overlay_closed })
+
+--- Closes the top overlay; returns its kind and, for the pane, the train it showed.
+--- @return string?
+--- @return uint?
+local function peel_overlay(player, player_data)
+	local kind = manager.top_overlay(player_data)
+	if kind == "explain" then
+		explain.close(player, player_data)
+	elseif kind == "item" then
+		item.close(player, player_data, true)
+	elseif kind == "pane" then
+		return kind, trains_tab.close_pane(player_data)
+	end
+	return kind, nil
+end
+
+--- on_gui_closed (Escape / E) of the window. Escape peels the top overlay (manager.top_overlay); with none, an unpinned
+--- window closes and a pinned one ignores it.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_closed_by_game(player, player_data, refs)
-	-- Escape on a pinned window with the drill-down open closes the drill-down (PLAN3 §4.10).
-	if item.on_window_closed(player, player_data) then return end
-	if player_data.pinning or not player_data.is_manager_open then return end
+	if not player_data.is_manager_open then return end
+	-- The action dialog took player.opened from the window: it hands it back when it closes (repair.lua).
+	if player_data.dialog_opening == game.tick then return end
+	local pinned = player_data.pinning
+	-- A pinned window without player.opened taken for its overlays: Escape was not for it.
+	if pinned and not player_data.overlay_took then return end
 	-- A link of this window just opened an entity GUI: stay on screen and take player.opened back once it is closed.
 	local return_to = player_data.return_to
 	-- Without a manager tick (updates per second 0) nothing would ever hand player.opened back.
-	if return_to and return_to.tick == game.tick and mod_settings.manager_ups > DELTA then
+	if return_to and return_to.tick == game.tick and (pinned or mod_settings.manager_ups > DELTA) then
 		player_data.return_to = nil
 		player_data.restore_opened = { entity = return_to.entity, controller = return_to.controller }
 		return
 	end
 	if player_data.restore_opened and player_data.handed_back_tick == game.tick then return end
 	-- Escape while the search field has the keyboard cancels the search, not the window.
-	if manager.cancel_search(player, player_data) then
+	if not pinned and manager.cancel_search(player, player_data) then
 		player.opened = refs.manager_window
 		return
 	end
-	-- Escape with the Trains detail pane open closes the pane. This event cannot tell Escape from another GUI replacing
-	-- the window (an entity clicked in the world, the map, another mod), and taking player.opened back here would take
-	-- it from that GUI. So the window gets player.opened back on a later tick (manager.settle_pane_escapes), unless a
-	-- GUI opens or the controller changes first (manager.interrupt_pane_escape): then the window closes as it did
-	-- before the pane, and the selection stays.
-	local train = trains_tab.close_pane(player_data)
-	if train then
+	-- Escape with an overlay open closes the overlay. This event cannot tell Escape from another GUI replacing the
+	-- window (an entity clicked in the world, the map, another mod), and taking player.opened back here would take it
+	-- from that GUI. So the window gets player.opened back on a later tick (manager.settle_escapes), unless a GUI opens
+	-- or the controller changes first (manager.interrupt_escape): then an unpinned window closes as it did before the
+	-- overlay (a pane's train stays selected), and a pinned one stays without player.opened.
+	local kind, train = peel_overlay(player, player_data)
+	if kind then
 		local manager_data = storage.manager
 		local pending = manager_data.pane_escapes or {}
 		manager_data.pane_escapes = pending
-		pending[player.index] = { tick = game.tick, train = train, controller = player.controller_type }
+		pending[player.index] = { tick = game.tick, train = train, controller = player.controller_type, kind = kind,
+			pinned = pinned }
 		manager.render(player, player_data)
+		return
+	end
+	if pinned then
+		player_data.overlay_took = nil
 		return
 	end
 	manager.handle.manager_close(player, player_data, refs)
@@ -746,7 +825,7 @@ end
 
 --- @param manager_data Manager
 --- @param pi uint
---- @return {tick: uint, train: uint, controller: defines.controllers}?
+--- @return {tick: uint, train: uint?, controller: defines.controllers, kind: string?, pinned: boolean?}?
 local function take_pane_escape(manager_data, pi)
 	local pending = manager_data and manager_data.pane_escapes
 	local p = pending and pending[pi]
@@ -756,18 +835,23 @@ local function take_pane_escape(manager_data, pi)
 	return p
 end
 
---- A GUI opened or the controller changed while an Escape of the Trains pane waits for its hand-back: something
---- replaced the window, which closes; the train stays selected for the next open.
+--- A GUI opened or the controller changed while an Escape waits for its hand-back: something replaced the window. An
+--- unpinned window closes (the pane's train stays selected for the next open); a pinned one stays, without
+--- player.opened.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.interrupt_pane_escape(player, player_data)
 	local p = take_pane_escape(storage.manager, player.index)
 	if not (p and player_data.is_manager_open) then return end
-	trains_tab.select(player_data, p.train)
+	if p.pinned then
+		player_data.overlay_took = nil
+		return
+	end
+	if p.train then trains_tab.select(player_data, p.train) end
 	manager.handle.manager_close(player, player_data, player_data.refs)
 end
 
---- on_gui_opened: any GUI but the manager window itself interrupts a waiting pane Escape.
+--- on_gui_opened: any GUI but the manager window itself interrupts a waiting Escape.
 --- @param e EventData.on_gui_opened
 function manager.on_other_gui_opened(e)
 	local manager_data = storage.manager
@@ -779,8 +863,9 @@ function manager.on_other_gui_opened(e)
 	if player and player_data then manager.interrupt_pane_escape(player, player_data) end
 end
 
---- Hands player.opened back to windows whose Trains pane an Escape closed in an earlier tick, when nothing else took
---- the screen meanwhile; otherwise the window closes. Runs on the manager tick and the fixed export tick.
+--- Hands player.opened back to windows an Escape peeled an overlay of in an earlier tick, when nothing else took the
+--- screen meanwhile; otherwise an unpinned window closes. A pinned window takes it back only while an overlay is still
+--- open. Runs every few ticks (scripts/main.lua: the planner's tick, the manager tick and the fixed export tick).
 function manager.settle_pane_escapes()
 	local manager_data = storage.manager
 	local pending = manager_data and manager_data.pane_escapes
@@ -792,9 +877,17 @@ function manager.settle_pane_escapes()
 			local player = game.get_player(pi)
 			local player_data = manager_data.players[pi]
 			local window = player_data and player_data.refs and player_data.refs.manager_window
-			if player and player_data and player_data.is_manager_open and window and window.valid
-				and not player_data.pinning then
-				if player.opened_gui_type ~= defines.gui_type.none or player.controller_type ~= p.controller then
+			if player and player_data and player_data.is_manager_open and window and window.valid then
+				local replaced = (player.opened_gui_type ~= defines.gui_type.none and player.opened ~= window)
+					or player.controller_type ~= p.controller
+				if p.pinned then
+					if replaced or not (manager.top_overlay(player_data) and may_take_opened(player, player_data)) then
+						player_data.overlay_took = nil
+					elseif player.opened ~= window then
+						player.opened = window
+						player_data.overlay_took = player.opened == window or nil
+					end
+				elseif replaced then
 					manager.handle.manager_close(player, player_data, player_data.refs)
 				elseif player.opened ~= window then
 					player.opened = window
@@ -816,17 +909,28 @@ end
 function manager.restore_opened(player, player_data)
 	local refs = player_data.refs
 	local window = refs and refs.manager_window
-	if player_data.pinning or not player_data.is_manager_open or not (window and window.valid) then return true end
+	if not player_data.is_manager_open or not (window and window.valid) then return true end
+	local pinned = player_data.pinning
+	-- A pinned window takes player.opened back only for its overlays (a drill-down link opened the entity GUI).
+	if pinned and not (manager.top_overlay(player_data) and may_take_opened(player, player_data)) then
+		player_data.overlay_took = nil
+		return true
+	end
 	if player.opened == window then return true end
 	if player.opened_gui_type ~= defines.gui_type.none then return false end
 	-- Checked only once no GUI is open: a locomotive on another surface opens its GUI in remote view and leaves it
 	-- when that GUI closes.
 	local pending = player_data.restore_opened
 	if pending and pending.controller and player.controller_type ~= pending.controller then
-		manager.handle.manager_close(player, player_data, refs)
+		if pinned then
+			player_data.overlay_took = nil
+		else
+			manager.handle.manager_close(player, player_data, refs)
+		end
 		return true
 	end
 	player.opened = window
+	if pinned then player_data.overlay_took = player.opened == window or nil end
 	return player.opened == window
 end
 
@@ -910,12 +1014,17 @@ function manager.handle.manager_toggle_pinned(player, player_data, refs)
 	manager.refresh_toggles(player_data)
 	if not player_data.is_manager_open then return end
 	if player_data.pinning then
-		-- Releasing player.opened raises on_gui_closed, which a pinned window ignores. An open drill-down keeps it.
-		if player.opened == refs.manager_window and not item.on_pin_changed(player, player_data) then
-			player.opened = nil
+		-- Releasing player.opened raises on_gui_closed, which a pinned window ignores. Open overlays keep it
+		-- (manager.PINNED_OVERLAYS_TAKE_OPENED).
+		if player.opened == refs.manager_window then
+			if manager.top_overlay(player_data) and may_take_opened(player, player_data) then
+				player_data.overlay_took = true
+			else
+				player.opened = nil
+			end
 		end
 	else
-		item.on_pin_changed(player, player_data)
+		player_data.overlay_took = nil
 		player.opened = refs.manager_window
 	end
 end
@@ -1113,6 +1222,8 @@ function manager.handle.manager_tab_changed(player, player_data, refs, e)
 	if name then
 		player_data.selected_tab = name
 		manager.render(player, player_data)
+		-- Another tab hides the pane and closes the drill-down: a pinned window may give player.opened up.
+		manager.overlay_closed(player, player_data)
 	end
 end
 

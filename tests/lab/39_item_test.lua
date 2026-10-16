@@ -303,12 +303,17 @@ lab.suite("39_item", {
 		local e = dev("item_escape", PI)
 		lab.check("Escape on the pinned window closes the drill-down, the window stays", e.before and not e.open and e.manager_open,
 			e)
-		-- Unpinned: Escape closes the window (and the drill-down with it).
+		-- Unpinned: one rule for every overlay since phase 7 (manager.top_overlay): Escape closes the drill-down and
+		-- the window stays, as it does for the Trains pane; the next Escape closes the window. (Phase 8 closed the
+		-- window with the drill-down here.)
 		dev("click", PI, "manager_pin_button")
 		dev("open_item", PI, hash)
 		e = dev("item_escape", PI)
-		lab.check("Escape on an unpinned window closes the window and the drill-down", e.before and not e.open and
-			not e.manager_open, e)
+		lab.check("Escape on an unpinned window closes the drill-down, the window stays", e.before and not e.open and
+			e.manager_open, e)
+		dev("pane_escapes", PI, true)
+		e = dev("item_escape", PI)
+		lab.check("the next Escape on the unpinned window closes the window", not e.before and not e.manager_open, e)
 		dev("open", PI)
 		lab.big_screen(PI)
 	end,

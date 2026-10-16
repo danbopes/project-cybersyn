@@ -59,14 +59,15 @@ function logic.allocate(columns, hidden, available, flex, flex_min)
 end
 
 --- The Trains detail pane (PLAN3 §4.11) and the gap before it: the table is this much narrower while it shows.
-logic.PANE_WIDTH = 320
+-- The 300 px train panel inside 12 px insets (PLAN3 §8 rhythm).
+logic.PANE_WIDTH = 324
 logic.PANE_GAP = 12
 
 -- The pane's fixed parts around its camera and the train panel's scroll body: the pane's subheader 36, the mount's
--- paddings 20, the panel's footer 40 and the frames' borders 8 (the panel's own subheader and paused banner are
+-- paddings 24, the panel's footer 40 and the frames' borders 8 (the panel's own subheader and paused banner are
 -- hidden in the pane: the pane's subheader and the tab's banner say the same).
-logic.PANE_FIXED = 36 + 20 + 40 + 8
-logic.PANE_CAMERA_GAP = 10
+logic.PANE_FIXED = 36 + 24 + 40 + 8
+logic.PANE_CAMERA_GAP = 12
 logic.PANE_CAMERA_HEIGHT = 180
 logic.PANE_CAMERA_MIN = 90
 logic.PANE_BODY_MIN = 120
@@ -113,8 +114,9 @@ logic.TRAIN_WIDTHS = {
 	{ "shipment", 6 * TRAIN_SLOT, min = 3 * TRAIN_SLOT },
 }
 logic.TRAIN_STATUS_MIN = 260
---- While the detail pane shows, Shipment is dropped (the pane shows the cargo), then these one at a time, as long as
---- the status would stay under its minimum. Id, status and state always stay.
+--- While the detail pane shows, Shipment is dropped (the pane shows the cargo); with or without the pane, these go
+--- one at a time while the status would stay under its minimum (a window narrower than about 1,100 px drops columns
+--- even with the pane closed). Id, status and state always stay.
 logic.TRAIN_PANE_DROP = { "last_refuel", "fuel", "layout", "network", "depot", "time_in_state" }
 
 --- Column widths of the Trains table. The table is narrower by the detail pane while it shows; columns the pane
@@ -142,7 +144,7 @@ function logic.train_widths(content_width, hidden, pane)
 		end
 		w = logic.allocate(logic.TRAIN_WIDTHS, h, cw - ROW_PADDING - (shown - 1) * COLUMN_GAP, "train_status",
 			logic.TRAIN_STATUS_MIN)
-		if not pane or w.train_status >= logic.TRAIN_STATUS_MIN then break end
+		if w.train_status >= logic.TRAIN_STATUS_MIN then break end
 		local key
 		repeat
 			next_drop = next_drop + 1
@@ -297,6 +299,28 @@ function logic.not_refuelled(now, refuel_tick, hours, refuel_from)
 	local since = refuel_tick or refuel_from
 	if not since then return true end
 	return now - since > hours * 216000
+end
+
+--- The next tick at which the passing of time alone changes a train's time-dependent chips (In trouble by a long
+--- signal wait, Not refuelled), or nil when nothing will: the chip counts stay valid until the earliest such tick.
+--- @param now number
+--- @param state string? LuaTrain.state as its defines.train_state name
+--- @param state_since number?
+--- @param refuel_since number? refuel_tick, else the train's refuel grace start (refuel_from); nil = never refuelled
+--- @param hours number
+--- @param has_refueler boolean
+--- @return number?
+function logic.chip_change_tick(now, state, state_since, refuel_since, hours, has_refueler)
+	local t
+	if state == "wait_signal" and state_since then
+		local at = state_since + logic.WAIT_SIGNAL_MIN
+		if at > now then t = at end
+	end
+	if has_refueler and refuel_since then
+		local at = math.floor(refuel_since + hours * 216000) + 1
+		if at > now and (not t or at < t) then t = at end
+	end
+	return t
 end
 
 --- A duration caption with "never" for no tick: the Last refuel and Last delivery cells.

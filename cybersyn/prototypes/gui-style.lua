@@ -597,6 +597,11 @@ end
 styles.cybersyn_chip_red = chip({ 1, 0.5, 0.45 })
 styles.cybersyn_chip_orange = chip({ 1, 0.78, 0.45 })
 styles.cybersyn_chip_grey = chip(nil)
+-- An acknowledged reason or finding: darker than an info chip, so the two never read alike.
+styles.cybersyn_chip_acked = chip({ 0.55, 0.55, 0.55 })
+styles.cybersyn_chip_acked.default_font_color = { 0.22, 0.22, 0.22 }
+styles.cybersyn_chip_acked.hovered_font_color = { 0.22, 0.22, 0.22 }
+styles.cybersyn_chip_acked.clicked_font_color = { 0.22, 0.22, 0.22 }
 
 -- A link cell: text that opens what it names (scripts/gui/util.lua util.handle_link_click).
 styles.cybersyn_link_button = {
@@ -917,8 +922,9 @@ styles.cybersyn_list_header = {
 	type = "frame_style",
 	parent = "subheader_frame",
 	height = 36,
-	left_padding = 6,
-	right_padding = 6,
+	-- As the rows' padding, so a header cell starts where its column's cells do.
+	left_padding = 4,
+	right_padding = 4,
 	horizontally_stretchable = "on",
 	horizontal_flow_style = {
 		type = "horizontal_flow_style",

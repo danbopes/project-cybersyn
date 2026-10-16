@@ -177,7 +177,7 @@ function trains_tab.create()
 							{
 								type = "sprite-button",
 								name = "manager_trains_pane_close",
-								style = "close_button",
+								style = "tool_button",
 								sprite = "utility/close",
 								tooltip = { "cybersyn-gui.trains-pane-close-tooltip" },
 								handler = { [defines.events.on_gui_click] = trains_tab.handle.on_pane_close },
@@ -536,17 +536,21 @@ function trains_tab.query(map_data, player_data)
 		alerts = alerts_by_train(snapshot)
 		cache.alerts = alerts
 	end
-	-- Trouble and refuel age move with time, so the chips are counted again once a second, not on every render.
-	local csig = tostring(wanted) .. "\1" .. hours .. "\1" .. math.floor(now / 60)
+	-- Trouble and refuel age move with time: the counts hold until the first train whose chips time alone changes
+	-- (logic.chip_change_tick), a new pass (a new query cache) or another chip or refuel setting.
 	local chips = cache.chips
-	if not (chips and chips.sig == csig) then
+	if not (chips and chips.wanted == wanted and chips.hours == hours and not (chips.next and chips.next <= now)) then
 		local counts = { all = #cache.all }
 		for _, key in ipairs(TRAIN_CHIPS) do if key ~= "all" then counts[key] = 0 end end
 		local rows = {}
+		local next_change
 		for _, tr in ipairs(cache.all) do
 			if count_train(tr, counts, wanted, now, hours, to_refuelers, alerts) then rows[#rows + 1] = tr end
+			local at = logic.chip_change_tick(now, tr.state and STATE_NAME[tr.state], tr.state_since,
+				tr.refuel_tick or tr.refuel_from, hours, has_refueler(tr, to_refuelers))
+			if at and (not next_change or at < next_change) then next_change = at end
 		end
-		chips = { sig = csig, counts = counts, rows = rows }
+		chips = { wanted = wanted, hours = hours, next = next_change, counts = counts, rows = rows }
 		cache.chips = chips
 	end
 	return chips.rows, snapshot, {
@@ -692,17 +696,26 @@ local function network_entries(tr, sprite_of)
 	return list, table.concat(sig, ",")
 end
 
+--- The network icon(s), the mask beside the icon rather than drawn over it: one network shows its mask as text,
+--- an "each" train its networks' icons with the masks in their tooltips.
 --- @param entries {sprite: string, number: int?}[]
 local function network_children(entries)
 	local children = {}
-	for i, entry in ipairs(entries) do
-		children[i] = {
+	local single = #entries == 1
+	for _, entry in ipairs(entries) do
+		local mask = entry.number
+		local tooltip = mask and { "cybersyn-gui.trains-network-mask", tostring(mask) } or nil
+		children[#children + 1] = {
 			type = "sprite-button",
 			style = "cybersyn_slot_32_default",
-			ignored_by_interaction = true,
+			ignored_by_interaction = tooltip == nil,
 			sprite = entry.sprite,
-			number = entry.number,
+			tooltip = tooltip,
 		}
+		if single and mask then
+			children[#children + 1] = { type = "label", style = "cybersyn_cell_label", caption = tostring(mask),
+				tooltip = tooltip, style_mods = { left_padding = 4 } }
+		end
 	end
 	return children
 end
@@ -1732,10 +1745,27 @@ function trains_tab.build(map_data, player_data)
 					end,
 				}
 			else
-				local view = group_view(item.group, snapshot, ctx.members[item.group], ctx, expanded[item.group] == true)
+				-- A group row is the same for as long as the chip count it was made from lives (its members and counts
+				-- come from it and the query), so its view and sig are made once per recount, expanded state and widths.
+				local is_expanded = expanded[item.group] == true
+				local gviews = ctx.chips.gviews
+				if not gviews then
+					gviews = {}
+					ctx.chips.gviews = gviews
+				end
+				local view = gviews[item.group]
+				if not (view and view.expanded == is_expanded) then
+					view = group_view(item.group, snapshot, ctx.members[item.group], ctx, is_expanded)
+					gviews[item.group] = view
+				end
+				if view.wsig ~= w.sig then
+					view.wsig = w.sig
+					view.full_sig = view.sig .. "\1" .. w.sig
+					view.key_g = "g\1" .. item.group
+				end
 				entries[#entries + 1] = {
-					key = "g\1" .. item.group,
-					sig = view.sig .. "\1" .. w.sig,
+					key = view.key_g,
+					sig = view.full_sig,
 					build = function()
 						local def = { type = "frame", style = "cybersyn_group_row", style_mods = { height = ROW_HEIGHT },
 							tags = { depot_group = item.group } }
@@ -1927,6 +1957,16 @@ end
 function trains_tab.handle.on_pane_close(player, player_data)
 	trains_tab.select(player_data, nil)
 	util.rerender(player, player_data)
+	util.overlay_closed(player, player_data)
+end
+
+--- Whether the detail pane shows: a train selected on the Trains tab, no drill-down over it (manager.top_overlay).
+--- @param player_data PlayerData
+--- @return boolean
+function trains_tab.pane_shown(player_data)
+	if not (player_data.selected_train and player_data.selected_tab == TAB) or player_data.item_view then return false end
+	local pane = player_data.refs and player_data.refs[PANE]
+	return pane ~= nil and pane.valid and pane.visible
 end
 
 --- Escape while the Trains tab shows the pane: the pane closes (manager.manager_closed_by_game).
@@ -1970,7 +2010,13 @@ function trains_tab.on_row_click(e)
 			local id = elem.tags.train_id
 			if not id then return false end
 			trains_tab.select(player_data, player_data.selected_train ~= id and id or nil)
-			util.rerender(game.get_player(e.player_index), player_data)
+			local player = game.get_player(e.player_index)
+			util.rerender(player, player_data)
+			if player_data.selected_train then
+				util.overlay_opened(player, player_data)
+			else
+				util.overlay_closed(player, player_data)
+			end
 			return true
 		end
 		elem = parent
@@ -2130,15 +2176,19 @@ dev.add("pane_dump", pane_dump)
 --- Selects a train as a row click would (nil or an unknown id: none) and renders.
 dev.add("select_train", function(pi, id)
 	local pd = storage.manager.players[pi]
+	local player = game.get_player(pi)
 	trains_tab.select(pd, id)
-	util.rerender(game.get_player(pi), pd)
+	util.rerender(player, pd)
+	util.overlay_opened(player, pd)
 	return pane_dump(pi)
 end)
 
 dev.add("deselect_train", function(pi)
 	local pd = storage.manager.players[pi]
+	local player = game.get_player(pi)
 	trains_tab.select(pd, nil)
-	util.rerender(game.get_player(pi), pd)
+	util.rerender(player, pd)
+	util.overlay_closed(player, pd)
 	return pane_dump(pi)
 end)
 

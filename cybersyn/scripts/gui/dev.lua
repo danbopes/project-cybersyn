@@ -39,7 +39,8 @@ function dev.register_dump(tab_name, fn)
 	dumpers[canonical(tab_name)] = fn
 end
 
---- A tab module adds a dev function of its own (loaded before dev.register publishes the interface).
+--- The one way modules add a dev function of their own: while they load, before dev.register publishes the interface
+--- (dev.extend adds several). dev.lua must not require them, they require it.
 --- @param name string
 --- @param fn function
 function dev.add(name, fn)
@@ -742,6 +743,8 @@ function interface.diag_state()
 		mode = d and d.mode or "off",
 		ring_basic_size = d and d.ring_basic.size or 0,
 		ring_full_size = d and d.ring_full.size or 0,
+		head_basic = d and d.ring_basic.head or 0,
+		head_full = d and d.ring_full.head or 0,
 		count_basic = d and d.ring_basic.count or 0,
 		count_full = d and d.ring_full.count or 0,
 		seq = d and d.seq or 0,
@@ -876,6 +879,85 @@ function interface.diag_size()
 		unpowered = table_size(d.unpowered),
 		stations_with_entries = table_size(d.unserved),
 	}
+end
+
+--- Everything the phase-7 growth gate samples, in one call. The heap is read first, after a full collect, so the
+--- JSON encodings below do not count against it.
+--- @param pi uint? player whose window and tabs are reported
+function interface.growth_sample(pi)
+	collectgarbage("collect")
+	local heap = collectgarbage("count")
+	local d = storage.diag
+	local out = { tick = game.tick, heap_kb = heap, mode = d and d.mode or "off" }
+	if d then
+		local live = 0
+		local since = d.cycle_prev or d.cycle_start
+		for _, by_item in pairs(d.unserved) do
+			for _, e in pairs(by_item) do
+				if e.last_tick >= since then live = live + 1 end
+			end
+		end
+		out.diag_json = #helpers.table_to_json(d)
+		out.unserved_entries = d.unserved_n
+		out.live_entries = live
+		out.unserved_dropped = d.unserved_dropped
+		out.seq = d.seq
+		out.basic = { count = d.ring_basic.count, head = d.ring_basic.head, size = d.ring_basic.size }
+		out.full = { count = d.ring_full.count, head = d.ring_full.head, size = d.ring_full.size }
+		out.items = #d.item_hash
+		out.alert_last = table_size(d.alert_last)
+		out.export_jobs = #diag.export_jobs()
+	end
+	local acks = storage.acks
+	if acks then
+		out.acks_json = #helpers.table_to_json(acks)
+		local list = {}
+		for id, by in pairs(acks.request) do
+			for hash, ack in pairs(by) do list[#list + 1] = { "request", id, hash, ack.until_tick or -1 } end
+		end
+		for id, ack in pairs(acks.station) do list[#list + 1] = { "station", id, "", ack.until_tick or -1 } end
+		for id, by in pairs(acks.lint) do
+			for bit, ack in pairs(by) do list[#list + 1] = { "lint", id, tostring(bit), ack.until_tick or -1 } end
+		end
+		out.acks_n = #list
+		out.acks = list
+	end
+	local ls = lint.state()
+	out.lint = { pass = ls.pass, findings = #ls.findings, running = ls.job ~= nil,
+		world = ls.world and #ls.world.findings or nil }
+	local s = storage.stats
+	out.stats_json = s and #helpers.table_to_json(s) or 0
+	out.cycle = s and s.cycle or nil
+	out.census = interface.census()
+	local function json_len(t)
+		if not t then return 0 end
+		-- Player data holds GUI element references, which the encoder may refuse.
+		local ok, str = pcall(helpers.table_to_json, t)
+		return ok and #str or -1
+	end
+	local m = storage.manager
+	out.snapshot_json = json_len(m.snapshot)
+	out.lint_json = json_len(m.lint)
+	if pi then
+		local pd = m.players[pi]
+		out.player_json = json_len(pd)
+		-- Entries reachable from the player data (GUI element references counted, not followed): growth in caches.
+		local seen, n = {}, 0
+		local function walk(t)
+			if seen[t] then return end
+			seen[t] = true
+			for k, v in pairs(t) do
+				n = n + 1
+				if type(v) == "table" then walk(v) end
+				if type(k) == "table" then walk(k) end
+			end
+		end
+		if pd then walk(pd) end
+		out.player_entries = n
+		out.selected_tab = pd and pd.selected_tab or nil
+		out.open = pd and pd.is_manager_open or false
+	end
+	return out
 end
 
 --- The always-on train and stats fields: available counters against the planner's table, the hour's minimum and
@@ -1120,24 +1202,17 @@ function interface.diag_coverage(min_wait, top)
 	return out
 end
 
---- Modules that dev.lua must not require (they require it) add their own functions to the interface at load time,
---- before dev.register publishes it.
+--- Several functions at once (dev.add for each).
 --- @param fns {[string]: function}
 function dev.extend(fns)
-	for name, fn in pairs(fns) do interface[name] = fn end
-end
-
---- Tab modules add their own functions to the interface while they load (before dev.register runs).
---- @param name string
---- @param fn function
-function dev.register_function(name, fn)
-	interface[name] = fn
+	for name, fn in pairs(fns) do dev.add(name, fn) end
 end
 
 --- Calls an interface function from Lua (a tab module's dev function reusing another).
 --- @param name string
 function dev.call(name, ...)
-	return interface[name](...)
+	local fn = interface[name] or dev_functions[name]
+	return fn(...)
 end
 
 --- @return boolean

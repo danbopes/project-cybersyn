@@ -34,6 +34,7 @@ local TABLE_COLUMNS = 8
 -- Logical px at the 1,392 px content width of a 1,440 px window (PLAN3 §4.7); the requester column takes the rest.
 local W = { item = 32, why = 132, provider = 272, stock = 110, lost = 96, wait = 72, ack = 28 }
 local BASE_CONTENT_WIDTH = 1392
+local REQUESTER_MIN, PROVIDER_MIN = 160, 120
 local TABLE_PADDING = 4 + 10
 local TABLE_SPACING = 8
 local FRAME_BORDER = 4
@@ -275,6 +276,11 @@ function overview_tab.apply_layout(player_data, layout)
 	local provider = math.floor(W.provider * math.min(cw, BASE_CONTENT_WIDTH) / BASE_CONTENT_WIDTH)
 	local fixed = W.item + W.why + provider + W.stock + W.lost + W.wait + W.ack
 	local requester = cw - FRAME_BORDER - TABLE_PADDING - (TABLE_COLUMNS - 1) * TABLE_SPACING - fixed
+	-- Windows below 960 px (screens narrower than that): the provider gives way so the requester keeps its name.
+	if requester < REQUESTER_MIN then
+		local give = math.max(0, math.min(provider - PROVIDER_MIN, REQUESTER_MIN - requester))
+		provider, requester = provider - give, requester + give
+	end
 	local widths = { tile = tile, requester = requester, provider = provider, rows = rows }
 	for _, t in ipairs(TILES) do
 		local button = refs["overview_tile_" .. t.name]
@@ -693,7 +699,10 @@ local function render_failing_tile(refs, cache, model)
 		tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-failing-lint-header" } }
 		for i, bit in ipairs(bits) do
 			if i > 16 then break end
-			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-failing-lint-bit", tostring(bit), format.number(f.lint_bits[bit]) } }
+			-- Bit b is check b + 1 (LINT_BIT); named by the check's caption, as the Problems tab names it.
+			local key = LINT_KEYS[bit + 1]
+			local caption = key and { "cybersyn-diag.lint-" .. key } or tostring(bit)
+			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-failing-lint-check", caption, format.number(f.lint_bits[bit]) } }
 		end
 	end
 	set_tooltip(cache, refs.overview_tile_failing, sig, tooltip)
@@ -1040,7 +1049,7 @@ local function row_entry(row, acked, ctx)
 				name_cell(requester, "station", r_id, widths.requester, r_tip, acked),
 				hoverable({
 					type = "button",
-					style = acked and "cybersyn_chip_grey" or text.chip_style(reason),
+					style = acked and "cybersyn_chip_acked" or text.chip_style(reason),
 					style_mods = { width = W.why },
 					caption = text.chip_caption(reason),
 					tooltip = chip,
@@ -1082,7 +1091,7 @@ local function row_entry(row, acked, ctx)
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
 			cells[1].tooltip = item_tip
 			update_name_cell(cells[2], requester, "station", r_id, r_tip, acked)
-			local chip_style = acked and "cybersyn_chip_grey" or text.chip_style(reason)
+			local chip_style = acked and "cybersyn_chip_acked" or text.chip_style(reason)
 			if cells[3].style.name ~= chip_style then
 				cells[3].style = chip_style
 				cells[3].style.width = W.why

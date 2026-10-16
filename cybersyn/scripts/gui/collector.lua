@@ -128,6 +128,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field secondary_count int stations with at least one secondary inventory combinator contributing
 --- @field stations {[uint]: SnapshotStation} updated in place during a pass; each record is at most one pass old
 --- @field trains {[uint]: SnapshotTrain}
+--- @field item_stations {[string]: uint[]}? stations providing, requesting or with a delivery of each item (complete pass)
 --- @field inventory_all {provided: {[string]: {count: int, stations: int}}, requested: {[string]: {count: int, stations: int, earliest_wait_start: uint?}}, in_transit: {[string]: {count: int, stations: int}}}
 --- @field starved {[string]: true} "network:hash" request keys with no provider on that network
 --- @field starved_items {[string]: true}
@@ -1042,6 +1043,19 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	sweep_signals(st.thresholds)
 end
 
+--- Appends a station to an item's list once (a station's items are visited one station at a time).
+--- @param index {[string]: uint[]}
+--- @param hash string
+--- @param id uint
+local function index_add(index, hash, id)
+	local list = index[hash]
+	if not list then
+		index[hash] = { id }
+	elseif list[#list] ~= id then
+		list[#list + 1] = id
+	end
+end
+
 --- @param id uint
 --- @param station Station
 local function collect_station(b, id, station)
@@ -1057,8 +1071,15 @@ local function collect_station(b, id, station)
 	local provided, requested = st.provided, st.requested
 
 	local inv = b.inventory_all
+	-- Stations by item, for the drill-down (item-model.build): the few stations of one item instead of all of them.
+	local index = b.item_stations
+	if not index then
+		index = {}
+		b.item_stations = index
+	end
 
 	for hash, count in pairs(provided) do
+		index_add(index, hash, id)
 		local agg = inv.provided[hash]
 		if agg then
 			agg.count = agg.count + count
@@ -1070,6 +1091,7 @@ local function collect_station(b, id, station)
 
 	local wait = st.wait
 	for hash, req in pairs(requested) do
+		index_add(index, hash, id)
 		if req.active then
 			local start = wait[hash]
 			if start and (not st.longest_wait_start or start < st.longest_wait_start) then
@@ -1089,6 +1111,7 @@ local function collect_station(b, id, station)
 	end
 
 	for hash, count in pairs(st.deliveries) do
+		if count ~= 0 then index_add(index, hash, id) end
 		if count > 0 then
 			local agg = inv.in_transit[hash]
 			if agg then

@@ -71,24 +71,32 @@ function sizing.compute(res_w, res_h, scale, filter_row, banner)
 	if not scale or scale <= 0 then scale = 1 end
 	local sw = math.floor(res_w / scale)
 	local sh = math.floor(res_h / scale)
-	local width = math.max(sizing.MIN_WIDTH, math.min(sizing.MAX_WIDTH, math.floor(sizing.WIDTH_SHARE * sw)))
+	-- Small logical screens (1080p at 2.0 is 960 px wide) leave the share too narrow for the tables, so the window
+	-- takes MIN_WIDTH there, but never more than the screen; below 1,100 px the Overview's provider column shrinks and
+	-- the Trains table drops columns (tab-logic.train_widths) instead of scrolling.
+	local width = math.min(sizing.MAX_WIDTH, math.floor(sizing.WIDTH_SHARE * sw))
+	if width < sizing.MIN_WIDTH then width = math.min(sizing.MIN_WIDTH, sw) end
 	local extra = (filter_row and sizing.FILTER_ROW_HEIGHT or 0) + (banner and sizing.BANNER_HEIGHT or 0)
 	local space = math.floor(sizing.HEIGHT_SHARE * sh) - sizing.OUTER_HEIGHT - extra
 	local chrome = sizing.TAB_CHROME
 	local heights = sizing.ROW_HEIGHT
 	-- The Overview sets the content height; every other tab fits as many of its own rows into the same height, so
 	-- switching tabs never resizes the window. On a small screen the height is raised until every tab gets its
-	-- minimum rows (the drill-down's chrome is the tallest), even past the share of the screen.
+	-- minimum rows (the drill-down's chrome is the tallest), past the share of the screen but never past the screen:
+	-- where even that does not fit, the tallest tabs get fewer rows (at least one).
 	local need = 0
 	for tab, h in pairs(heights) do
 		need = math.max(need, chrome[tab] + sizing.MIN_ROWS * h)
 	end
-	local overview_rows = math.max(sizing.MIN_ROWS, math.floor((space - chrome.overview_tab) / heights.overview_tab),
-		math.ceil((need - chrome.overview_tab) / heights.overview_tab))
-	local content = chrome.overview_tab + overview_rows * heights.overview_tab
+	local oh = heights.overview_tab
+	local overview_rows = math.max(sizing.MIN_ROWS, math.floor((space - chrome.overview_tab) / oh),
+		math.ceil((need - chrome.overview_tab) / oh))
+	local max_rows = math.floor((sh - sizing.OUTER_HEIGHT - extra - chrome.overview_tab) / oh)
+	overview_rows = math.max(1, math.min(overview_rows, max_rows))
+	local content = chrome.overview_tab + overview_rows * oh
 	local rows = {}
 	for tab, h in pairs(heights) do
-		rows[tab] = math.max(sizing.MIN_ROWS, math.floor((content - chrome[tab]) / h))
+		rows[tab] = math.max(1, math.floor((content - chrome[tab]) / h))
 	end
 	return {
 		width = width,

@@ -148,7 +148,7 @@ lab.suite("36_window", {
 		lab.check("misconfigured == stations with st.lint ~= 0", d.tiles.failing.misconfigured == n and n == before + 1,
 			{ tile = d.tiles.failing.misconfigured, lint = n, before = before })
 		local tip = serpent.line(d.rendered_tiles.failing.tooltip, { comment = false })
-		lab.check("failing tooltip splits misconfigured by check", string.find(tip, "overview-failing-lint-bit", 1, true) ~= nil, tip)
+		lab.check("failing tooltip splits misconfigured by check, named by the check caption", string.find(tip, "overview-failing-lint-check", 1, true) ~= nil and string.find(tip, "cybersyn-diag.lint-", 1, true) ~= nil, tip)
 		remote.call("cybersyn", "write_global", 0, "manager", "snapshot", "stations", id, "lint")
 		d = overview()
 		lab.check("misconfigured back to the lint job's own count once the hand-written finding is cleared",
@@ -188,7 +188,7 @@ lab.suite("36_window", {
 		local rendered = d.lists.unserved.rendered
 		local last = rendered[#rendered]
 		lab.check("with the toggle on the acknowledged row is greyed at the bottom", #rendered < d.rows and last.acked == true
-			and last.requester_id .. "|" .. last.item == key and last.chip_style == "cybersyn_chip_grey"
+			and last.requester_id .. "|" .. last.item == key and last.chip_style == "cybersyn_chip_acked"
 			and #rendered == d.lists.unserved.total + 1, { rows = #rendered, last = last })
 		remote.call(D, "set_filter", pi, { item = false })
 		-- Expiry: the acknowledgement's time is up.

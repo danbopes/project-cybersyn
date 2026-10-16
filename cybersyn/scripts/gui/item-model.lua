@@ -16,10 +16,14 @@ model.TABLES = { "providers", "requesters", "trains" }
 -- Requester groups, in display order: the dispatcher's queue, then what keeps a request out of it this cycle.
 model.QUEUED = 0
 model.AT_LIMIT = 1
-model.PROVIDING = 2
-model.BELOW_THRESHOLD = 3
-model.NOT_POLLED = 4
-model.GROUP_KEYS = { [1] = "at-limit", [2] = "providing", [3] = "below-threshold", [4] = "not-polled" }
+model.DISABLED = 2
+model.PROVIDING = 3
+model.BELOW_THRESHOLD = 4
+model.NOT_POLLED = 5
+-- A delivery of the item is on its way in, but the stop no longer requests it (the Stations tab lists it too).
+model.NOT_REQUESTING = 6
+model.GROUP_KEYS = { [1] = "at-limit", [2] = "disabled", [3] = "providing", [4] = "below-threshold", [5] = "not-polled",
+	[6] = "not-requesting" }
 
 --- Rows per table out of `n` whole rows. Each table is allotted a third (floor(n / 3)) and Requesters also the
 --- remainder, so Requesters never gets fewer than either other table. A table needs one row per entry and at least one
@@ -81,6 +85,8 @@ end
 function model.requester_group(st, req, hash)
 	if st.warming_up or st.status == "no_power" then return model.NOT_POLLED end
 	if not req.active then return model.BELOW_THRESHOLD end
+	-- Train limit 0: the stop is switched off, not merely busy.
+	if (st.trains_limit or 0) == 0 then return model.DISABLED end
 	if (st.deliveries_total or 0) >= (st.trains_limit or 0) then return model.AT_LIMIT end
 	local d = st.deliveries and st.deliveries[hash]
 	if d and d < 0 then return model.PROVIDING end
@@ -141,17 +147,30 @@ end
 --- @field trains ItemTrainRow[]
 --- @field queued int requesters in the dispatcher's queue
 
---- Every station and train of the snapshot that provides, requests or carries `hash`, sorted: providers by stock,
---- requesters in the dispatcher's order, trains by amount (each with the id as the final tiebreak).
---- @param snapshot {tick: uint?, stations: table, trains: table, inventory_all: table}
+--- Every station and train of the snapshot that provides, requests, carries or has a delivery of `hash` (as the
+--- Stations tab filtered to the item lists them), sorted: providers by stock, requesters in the dispatcher's order,
+--- trains by amount (each with the id as the final tiebreak). A station with only a delivery joins the table of its
+--- side: an outgoing one Providers (stock 0), an incoming one Requesters (not requesting).
+--- @param snapshot {tick: uint?, stations: table, trains: table, inventory_all: table, item_stations: {[string]: uint[]}?}
 --- @param hash string
 --- @param priority_signal string
 --- @return ItemModel
 function model.build(snapshot, hash, priority_signal)
 	local providers, requesters, trains = {}, {}, {}
-	for id, st in pairs(snapshot.stations) do
-		local stock = st.provided and st.provided[hash]
-		local d = st.deliveries and st.deliveries[hash] or 0
+	local stations = snapshot.stations
+	-- The collector's per-item index (a complete pass) names the few stations to look at; without it, all of them.
+	local ids = snapshot.item_stations and (snapshot.item_stations[hash] or {})
+	local list
+	if not ids then
+		list = {}
+		for id in pairs(stations) do list[#list + 1] = id end
+	end
+	for _, id in ipairs(ids or list) do
+		local st = stations[id]
+		local stock = st and st.provided and st.provided[hash]
+		local d = st and st.deliveries and st.deliveries[hash] or 0
+		local req = st and st.requested and st.requested[hash]
+		if st and not stock and d < 0 then stock = 0 end
 		if stock then
 			providers[#providers + 1] = {
 				id = id,
@@ -161,17 +180,16 @@ function model.build(snapshot, hash, priority_signal)
 				status = st.status,
 			}
 		end
-		local req = st.requested and st.requested[hash]
-		if req then
+		if req or (st and d > 0) then
 			requesters[#requesters + 1] = {
 				id = id,
-				requested = -req.count,
-				threshold = req.threshold,
-				wait_start = st.wait and st.wait[hash] or nil,
+				requested = req and -req.count or 0,
+				threshold = req and req.threshold or 0,
+				wait_start = req and st.wait and st.wait[hash] or nil,
 				incoming = d > 0 and d or 0,
 				priority = model.effective_priority(st, hash, priority_signal),
 				last_served = st.last_delivery_tick or 0,
-				group = model.requester_group(st, req, hash),
+				group = req and model.requester_group(st, req, hash) or model.NOT_REQUESTING,
 				network = st.network_name,
 			}
 		end

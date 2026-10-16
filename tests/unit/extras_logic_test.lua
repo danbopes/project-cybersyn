@@ -96,6 +96,13 @@ test("confirm: an armed button expires after 180 ticks and the next click arms a
 	assert_false(fire)
 	assert_eq(s2.tick, 280)
 	assert_false(l.confirm_expired(nil, 1000))
+	-- Still drawn as "Confirm?" (the redraw of the expiry has not happened yet): the click does what it showed.
+	local s3, fire3 = l.confirm_click(s, "fail:1", 285, true)
+	assert_true(fire3)
+	assert_nil(s3)
+	-- Shown armed, but for another key: arms that one.
+	local _, fire4 = l.confirm_click(s, "rescan:2", 285, true)
+	assert_false(fire4)
 end)
 
 test("job_continue: 50 trains per chunk, never one loop over everything", function()
