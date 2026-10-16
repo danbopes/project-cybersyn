@@ -147,7 +147,9 @@ lab.suite("20_manager", {
 				for _, g in ipairs(lab.GRIDS) do
 					local grid = d[g]
 					-- A column a grid cannot sort by (wait outside requests, or without wait data) falls back to item order.
-					local used_ok = grid.column == column or (column == "wait" and grid.column == "item_order")
+					-- Wait and deficit sort the Requested grid only; the others keep item order.
+					local used_ok = grid.column == column
+						or ((column == "wait" or column == "deficit") and grid.column == "item_order")
 					lab.check(label .. " " .. g .. " column", used_ok, grid.column)
 					lab.check(label .. " " .. g .. " keeps the item set",
 						#grid.hashes == #ctx.all.inventory[g] and lab.subset(grid.hashes, ctx.all.inventory[g]),

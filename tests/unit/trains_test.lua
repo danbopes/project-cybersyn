@@ -116,5 +116,8 @@ test("query: the context resolves target names from the snapshot and refuelers",
 	assert_eq({ ctx.names(snap.trains[6], "refueler", 20) }, { "Fuel", "fuel" })
 	assert_eq({ ctx.names(snap.trains[6], "station", 99) }, {})
 	assert_eq({ ctx.names(snap.trains[1], "depot") }, { "Depot B", "depot b" })
-	assert_eq(ctx.layout_captions[2], "[item=locomotive][item=cargo-wagon]")
+	-- Phase 4: composition strings for the Layout column and its tooltip icons.
+	assert_eq(ctx.comps[2], "L<C>")
+	assert_eq(ctx.comps[3], "LL<C>")
+	assert_eq(ctx.icons[2], "[item=locomotive][item=cargo-wagon]")
 end)

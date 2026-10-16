@@ -17,10 +17,12 @@ lab = {
 	TABS = { "overview", "inventory", "stations", "trains" },
 	GRIDS = { "provided", "in_transit", "requested" },
 	SORTS = {
-		stations = { "name", "station_status", "network", "provided_requested", "deliveries", "control_signals", "wait",
-			"last_delivery" },
-		trains = { "train_id", "train_status", "network", "layout", "depot", "shipment" },
-		inventory = { "item_order", "amount", "stations", "wait" },
+		-- Phase 4: Control signals moved to the relative panel; Trains gained state, time in state and last refuel;
+		-- the Requested grid gained deficit.
+		stations = { "name", "station_status", "network", "provided_requested", "deliveries", "wait", "last_delivery" },
+		trains = { "train_id", "train_status", "network", "layout", "depot", "state", "time_in_state", "last_refuel",
+			"shipment" },
+		inventory = { "item_order", "amount", "stations", "wait", "deficit" },
 	},
 	DEFAULT_SORT = {
 		stations = { "name", true },
