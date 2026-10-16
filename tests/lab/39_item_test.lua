@@ -71,8 +71,10 @@ end
 --- The checks that hold for any open drill-down: totals, row sets, sort orders, rendered rows, whole rows.
 local function model_checks(label, hash)
 	dev("collect")
-	dev("update", PI, 1)
+	-- A pass that re-sorts the lists spreads its row rewrites over a few updates (REWRITE_ROWS per update).
+	dev("update", PI, 4)
 	local d = dev("item_dump", PI)
+	lab.check(label .. ": no row rewrite left for a later update", d.deferred == 0, d.deferred)
 	local o = dev("item_oracle", hash)
 	lab.check(label .. ": open on " .. hash, d.open and d.hash == hash, { d.open, d.hash })
 	if not d.open then return d end
@@ -127,12 +129,9 @@ local function model_checks(label, hash)
 		lab.check(label .. ": " .. tname .. " shows its first " .. want .. " rows in model order", same,
 			{ want = want, rendered = #rendered })
 		local cap = d.captions[tname]
-		if #d.model[tname] > 0 then
-			lab.check(label .. ": " .. tname .. " caption counts n of m", cap.count and cap.count[2] == tostring(want) and
-				cap.count[3] == tostring(#d.model[tname]), cap.count)
-		else
-			lab.check(label .. ": " .. tname .. " empty state shown", cap.empty == true, cap)
-		end
+		lab.check(label .. ": " .. tname .. " caption counts n of m", cap.count and cap.count[2] == tostring(want) and
+			cap.count[3] == tostring(#d.model[tname]), cap.count)
+		lab.check(label .. ": " .. tname .. " empty state exactly when the list is empty", cap.empty == (#d.model[tname] == 0), cap)
 	end
 	local rows = dev("rows", PI, "item")
 	lab.check(label .. ": rows computed == the layout's item rows, rendered <= computed",
@@ -234,6 +233,46 @@ lab.suite("39_item", {
 		dev("select_tab", PI, "stations")
 		lab.check("and the host tab's content is back", scroll.valid and scroll.visible and
 			top_child(scroll, "manager_stations_content_frame").visible)
+
+		-- A Trains shipment slot: the same handler.
+		dev("select_tab", PI, "trains")
+		local trains = find_named(window(), "manager_trains_tab_scroll_pane")
+		local tpath = trains and path_to(trains, function(e)
+			return e.type == "sprite-button" and e.tags and e.tags.item_hash ~= nil
+		end)
+		if tpath then
+			local tslot = trains
+			for _, i in ipairs(tpath) do tslot = tslot.children[i] end
+			dev("click", PI, "manager_trains_tab_scroll_pane", tpath)
+			local td = dev("item_dump", PI)
+			lab.check("left-click on a Trains shipment slot opens the drill-down from Trains", td.open and
+				td.hash == tslot.tags.item_hash and td.from_tab == "trains_tab", td.from_tab)
+			dev("close_item", PI)
+			lab.check("back returns to Trains", dev("state", PI).selected_tab == "trains_tab" and trains.visible)
+		else
+			lab.skip("Trains shipment slot click", "no train carries cargo on this page")
+		end
+		dev("select_tab", PI, "stations")
+
+		-- Ctrl+F and a search set from outside (the stop panel's Open in manager) show the lists again.
+		dev("open_item", PI, hash)
+		local sf = dev("search_input", PI)
+		lab.check("Ctrl+F closes the drill-down and opens the visible search field", not dev("item_dump", PI).open and
+			sf.open and sf.visible, sf)
+		dev("cancel_search", PI)
+		dev("open_item", PI, hash)
+		dev("set_filter", PI, { query = "stn-1" })
+		lab.check("a station search set from outside closes the drill-down", not dev("item_dump", PI).open)
+		dev("clear_filters", PI)
+
+		-- An item cell outside the window (the stop and train panels): the window opens on the drill-down.
+		dev("close", PI)
+		local outside = dev("link_click", PI, "item", hash)
+		local od = dev("item_dump", PI)
+		lab.check("an item link with the window closed opens the window on the drill-down",
+			dev("state", PI).is_open and od.open and od.hash == hash, { outside, od.open })
+		dev("close_item", PI)
+		dev("select_tab", PI, "stations")
 
 		-- Escape: on a pinned window it closes only the drill-down.
 		dev("open_item", PI, hash)

@@ -45,6 +45,13 @@ local VIEW = "item_view"
 local NO_VALUE = text.NO_VALUE
 local DEFAULT_PERIOD = 60
 local ROW = 32
+-- Requesters column that shows the wait, and the step of the "last delivery n ago" tooltip age.
+local WAIT_COLUMN = 5
+local AGE_STEP = 3600
+-- Rows rewritten in place per update, over the three tables (Requesters first): a collector pass that re-sorts the
+-- lists spreads its rewrites over two or three updates instead of one long one (PLAN3 §4.10: 2 ms per update).
+local REWRITE_ROWS = 8
+local RENDER_ORDER = { "requesters", "providers", "trains" }
 
 -- The content element of every tab that can host the drill-down (manager.lua sizes them).
 item.CONTENT_FRAMES = {
@@ -516,30 +523,44 @@ local function cell_update(col, cell, v, width, scope)
 	end
 end
 
---- A row entry for util.sync_table_rows: `values()` builds the cells' values only when the sig changed.
+--- A row entry for util.sync_table_rows: `values()` builds the cells' values only when the row's sig changed, and a
+--- cell is written only when its own sig (`value.sig`) differs from the one memorised for that row position.
 --- @param t string
---- @param key int
+--- @param key int row position
 --- @param sig string
 --- @param values fun(): table[]
---- @param widths {[string]: int}
-local function row_entry(t, key, sig, values, widths)
+--- @param ctx table widths and the per-table memo (render state, dropped on close)
+local function row_entry(t, key, sig, values, ctx)
 	local cols = COLUMNS[t]
 	local scope = table_name(t)
+	local widths = ctx.widths
+	local memo = ctx.memo[t]
 	return {
 		key = key,
 		sig = sig,
 		build = function()
 			local vals = values()
-			local defs = {}
+			local defs, sigs = {}, {}
 			for i, col in ipairs(cols) do
 				defs[i] = cell_def(col, vals[i], col.width or widths[t], scope)
+				sigs[i] = vals[i].sig
 			end
+			memo[key] = sigs
 			return defs
 		end,
 		update = function(cells)
 			local vals = values()
+			local sigs = memo[key]
+			if not sigs then
+				sigs = {}
+				memo[key] = sigs
+			end
 			for i, col in ipairs(cols) do
-				cell_update(col, cells[i], vals[i], col.width or widths[t], scope)
+				local v = vals[i]
+				if v.sig == nil or sigs[i] ~= v.sig then
+					cell_update(col, cells[i], v, col.width or widths[t], scope)
+					sigs[i] = v.sig
+				end
 			end
 		end,
 	}
@@ -550,29 +571,33 @@ local function count(n)
 end
 
 --- @param r ItemProviderRow
-local function provider_entry(r, ctx)
+--- @param i int position: rows are keyed by position, so a re-sort rewrites cells instead of rebuilding rows
+local function provider_entry(r, ctx, i)
 	local st = station_view(ctx.snapshot, r.id)
 	local name = st and st.name or ""
 	local sig = table.concat({ name, r.stock, tostring(r.threshold), r.out, tostring(r.status) }, "|")
-	return row_entry("providers", r.id, sig, function()
+	return row_entry("providers", i, r.id .. "#" .. sig, function()
 		local status = r.status or "ok"
 		return {
-			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network_text(st and st.network_name) }) },
-			{ caption = count(r.stock), tooltip = format.number(r.stock) },
-			r.threshold and { caption = count(r.threshold), tooltip = format.number(r.threshold) }
-				or { caption = NO_VALUE, tooltip = { "cybersyn-gui.item-threshold-none-tooltip" } },
-			{ caption = r.out > 0 and count(r.out) or NO_VALUE },
+			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network_text(st and st.network_name) }),
+				sig = name .. "\1" .. r.id .. "\1" .. tostring(st and st.network_name) },
+			{ caption = count(r.stock), tooltip = format.number(r.stock), sig = tostring(r.stock) },
+			r.threshold and { caption = count(r.threshold), tooltip = format.number(r.threshold), sig = tostring(r.threshold) }
+				or { caption = NO_VALUE, tooltip = { "cybersyn-gui.item-threshold-none-tooltip" }, sig = "-" },
+			{ caption = r.out > 0 and count(r.out) or NO_VALUE, sig = tostring(r.out) },
 			{
 				sprite = "flib_indicator_" .. (STATUS_COLOR[status] or "white"),
 				caption = { "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") },
 				tooltip = { "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") .. "-tooltip" },
+				sig = status,
 			},
 		}
-	end, ctx.widths)
+	end, ctx)
 end
 
 --- @param r ItemRequesterRow
-local function requester_entry(r, ctx)
+--- @param i int
+local function requester_entry(r, ctx, i)
 	local st = station_view(ctx.snapshot, r.id)
 	local name = st and st.name or ""
 	local now = ctx.now
@@ -580,14 +605,21 @@ local function requester_entry(r, ctx)
 	local acked = e and diag.is_acked("request", r.id, ctx.hash) ~= nil or false
 	local wait = r.wait_start and now - r.wait_start or nil
 	local age = st and collector.delivery_age(st) or nil
+	-- The wait caption has its own clock (wait_clock); the tooltips' ages move in steps, so a steady row is not
+	-- rewritten every update.
 	local sig = table.concat({
-		name, r.requested, r.threshold, r.priority, r.group, tostring(r.position), r.incoming,
-		wait and math.floor(wait / 60) or -1, text.read_step(age),
-		e and e.reason or 0, e and e.a or 0, e and e.b or 0, e and e.n or 0, acked and "a" or "",
+		name, r.requested, r.threshold, r.priority, r.group, tostring(r.position), r.incoming, wait and 1 or 0,
+		age and math.floor(age / AGE_STEP) or -1,
+		e and e.reason or 0, e and e.a or 0, e and e.b or 0, acked and "a" or "",
 		e and math.floor((now - e.first_tick) / text.READ_STEP) or -1,
 	}, "|")
-	return row_entry("requesters", r.id, sig, function()
-		local last = age and { "cybersyn-gui.time-ago", util.format_duration(age - age % text.READ_STEP) }
+	local age_step = age and math.floor(age / AGE_STEP) or -1
+	local station_sig = table.concat({ name, r.id, tostring(r.position), r.priority, r.group, age_step,
+		tostring(st and st.network_name) }, "\1")
+	local chip_sig = e and table.concat({ e.reason, e.a, e.b, acked and "a" or "", math.floor((now - e.first_tick) / text.READ_STEP),
+		r.requested }, "\1") or tostring(r.group)
+	return row_entry("requesters", i, r.id .. "#" .. sig, function()
+		local last = age and { "cybersyn-gui.time-ago", util.short_duration(age - age % AGE_STEP) }
 			or { "cybersyn-gui.item-last-served-never" }
 		local queue
 		if r.position then
@@ -600,6 +632,7 @@ local function requester_entry(r, ctx)
 		if e then
 			local reason = e.reason
 			chip = {
+				sig = chip_sig,
 				caption = text.chip_caption(reason),
 				style = acked and "cybersyn_chip_grey" or text.chip_style(reason),
 				tooltip = text.chip_tooltip({
@@ -619,45 +652,72 @@ local function requester_entry(r, ctx)
 			}
 		elseif r.group ~= item_model.QUEUED then
 			local key = item_model.GROUP_KEYS[r.group]
-			chip = { caption = { "cybersyn-gui.item-group-" .. key }, tooltip = { "cybersyn-gui.item-group-" .. key .. "-tooltip" } }
+			chip = { caption = { "cybersyn-gui.item-group-" .. key }, tooltip = { "cybersyn-gui.item-group-" .. key .. "-tooltip" },
+				sig = chip_sig }
 		else
-			chip = { visible = false }
+			chip = { visible = false, sig = chip_sig }
 		end
 		return {
 			{ st = st, id = r.id, tooltip = station_tooltip(st, { "", queue, "\n",
-				{ "cybersyn-gui.item-network", network_text(st and st.network_name) } }) },
-			{ caption = tostring(r.priority), tooltip = { "cybersyn-gui.item-priority-tooltip" } },
-			{ caption = count(r.requested), tooltip = format.number(r.requested) },
-			{ caption = count(r.threshold), tooltip = format.number(r.threshold) },
+				{ "cybersyn-gui.item-network", network_text(st and st.network_name) } }), sig = station_sig },
+			{ caption = tostring(r.priority), tooltip = { "cybersyn-gui.item-priority-tooltip" }, sig = tostring(r.priority) },
+			{ caption = count(r.requested), tooltip = format.number(r.requested), sig = tostring(r.requested) },
+			{ caption = count(r.threshold), tooltip = format.number(r.threshold), sig = tostring(r.threshold) },
+			-- The seconds are wait_clock's; this cell is written when the row gains or loses a wait.
 			{ caption = wait and util.short_duration(wait) or NO_VALUE,
-				tooltip = wait and { "cybersyn-gui.waiting-for", util.format_duration(wait) } or { "cybersyn-gui.item-wait-none" } },
+				tooltip = wait and { "cybersyn-gui.waiting-for", util.format_duration(wait) } or { "cybersyn-gui.item-wait-none" },
+				sig = wait and "w" or "-" },
 			chip,
-			{ caption = r.incoming > 0 and count(r.incoming) or NO_VALUE },
+			{ caption = r.incoming > 0 and count(r.incoming) or NO_VALUE, sig = tostring(r.incoming) },
 		}
-	end, ctx.widths)
+	end, ctx)
 end
 
 --- @param r ItemTrainRow
-local function train_entry(r, ctx)
+--- @param i int
+local function train_entry(r, ctx, i)
 	local to = station_view(ctx.snapshot, r.to)
 	local from = station_view(ctx.snapshot, r.from)
 	local sig = table.concat({ r.status or -1, r.amount, to and to.name or "", from and from.name or "" }, "|")
-	return row_entry("trains", r.id, sig, function()
+	return row_entry("trains", i, r.id .. "#" .. sig, function()
 		local chip = item_model.train_chip(r.status, train_statuses())
 		local status = chip and { logic.train_chip_locale(chip, false) } or { "cybersyn-gui.trains-custom-status", tostring(r.status) }
 		local status_tip = chip and { logic.train_chip_locale(chip, false) .. "-tooltip" } or nil
 		local route = { "cybersyn-gui.item-train-route", from and from.name or NO_VALUE, to and to.name or NO_VALUE }
+		local route_sig = (from and from.name or "") .. "\1" .. (to and to.name or "")
 		return {
 			{ caption = tostring(r.id), id = r.id, tooltip = { "", { "cybersyn-gui.item-train-tooltip", tostring(r.id) }, "\n",
-				route, "\n", util.LINK_FOOTER } },
-			{ caption = status, tooltip = status_tip },
-			{ caption = count(r.amount), tooltip = format.number(r.amount) },
-			{ st = to, id = r.to, tooltip = station_tooltip(to, route) },
+				route, "\n", util.LINK_FOOTER }, sig = r.id .. "\1" .. route_sig },
+			{ caption = status, tooltip = status_tip, sig = tostring(r.status) },
+			{ caption = count(r.amount), tooltip = format.number(r.amount), sig = tostring(r.amount) },
+			{ st = to, id = r.to, tooltip = station_tooltip(to, route), sig = tostring(r.to) .. "\1" .. route_sig },
 		}
-	end, ctx.widths)
+	end, ctx)
 end
 
 local ENTRY = { providers = provider_entry, requesters = requester_entry, trains = train_entry }
+
+--- The Wait column of the shown requester rows, every update: one caption write per row whose seconds moved.
+--- @param tbl LuaGuiElement
+--- @param rows ItemRequesterRow[]
+--- @param n int
+--- @param now uint
+local function wait_clock(tbl, rows, n, now)
+	local children
+	local cols = #COLUMNS.requesters
+	for i = 1, n do
+		local start = rows[i].wait_start
+		if start then
+			children = children or tbl.children
+			local cell = children[cols * i + WAIT_COLUMN]
+			local caption = util.short_duration(now - start)
+			if cell and cell.caption ~= caption then
+				cell.caption = caption
+				cell.tooltip = { "cybersyn-gui.waiting-for", util.format_duration(now - start) }
+			end
+		end
+	end
+end
 
 local function set_caption(elem, caption)
 	if elem and elem.valid then elem.caption = caption end
@@ -733,19 +793,20 @@ end
 
 --- @param player_data PlayerData
 --- @return ItemCache
+--- @return boolean refreshed the model of the shown item was rebuilt for a new collector pass
 local function get_cache(player_data, hash)
 	local snapshot = collector.get()
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass)
 	local cache = player_data.item_cache
-	if cache and cache.hash == hash and cache.key == key then return cache end
+	if cache and cache.hash == hash and cache.key == key then return cache, false end
 	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
-	else
-		cache = { hash = hash, key = key, model = m }
-		player_data.item_cache = cache
+		return cache, true
 	end
-	return cache
+	cache = { hash = hash, key = key, model = m }
+	player_data.item_cache = cache
+	return cache, false
 end
 
 --- Renders the open drill-down. False when there is none (or it just closed because another tab was selected),
@@ -763,9 +824,21 @@ function item.build(map_data, player_data)
 		return false
 	end
 	local profiler = storage.manager.item_samples and game.create_profiler()
-	local cache = get_cache(player_data, view.hash)
-	local rebuilt = cache.header_sig == nil
+	local cache, refreshed = get_cache(player_data, view.hash)
 	local m = cache.model
+	render_header(player_data, cache)
+	-- A new pass rebuilds the model in this update and rewrites the rows in the next ones, so neither update pays
+	-- for both (PLAN3 §4.10: 2 ms per update).
+	if refreshed then
+		cache.rows_pending = true
+		if profiler then
+			profiler.stop()
+			item.samples[#item.samples + 1] = { p = profiler, kind = "R", deferred = 0 }
+		end
+		return true
+	end
+	local kind = cache.rows_pending and "P" or "S"
+	cache.rows_pending = nil
 	local layout = player_data.layout
 	local total = layout and layout.rows_by_tab[TAB] or 3
 	local alloc = item_model.split_rows(total, { providers = #m.providers, requesters = #m.requesters, trains = #m.trains })
@@ -775,7 +848,6 @@ function item.build(map_data, player_data)
 		cache.alloc = alloc
 		apply_alloc(refs, alloc)
 	end
-	render_header(player_data, cache)
 
 	local snapshot = collector.get()
 	local d = storage.diag
@@ -795,17 +867,42 @@ function item.build(map_data, player_data)
 			return s and s.name or tostring(index)
 		end,
 	}
+	local budget, deferred = REWRITE_ROWS, 0
+	ctx.memo = {}
 	for _, t in ipairs(item_model.TABLES) do
+		local state = util.gui_state(player_data, table_name(t))
+		-- The cell memo belongs to the rows the state's keys describe; without keys the rows are rebuilt anyway.
+		if not (state.cells and state.keys) then state.cells = {} end
+		ctx.memo[t] = state.cells
+	end
+	for _, t in ipairs(RENDER_ORDER) do
 		local rows = m[t]
 		local n = math.min(#rows, alloc[t])
-		local entries = {}
-		local make = ENTRY[t]
-		for i = 1, n do entries[i] = make(rows[i], ctx) end
 		local name = table_name(t)
 		local tbl = refs[name]
-		if tbl and tbl.valid then
-			util.sync_table_rows(tbl, #COLUMNS[t], #COLUMNS[t], entries, util.gui_state(player_data, name),
-				util.hold_active(player_data, name))
+		-- Under the cursor a table keeps its rows as they are (the hover hold), new data waits for the next update.
+		if tbl and tbl.valid and not util.hold_active(player_data, name) then
+			local state = util.gui_state(player_data, name)
+			local sigs = state.keys and state.sigs
+			local built = state.keys and #state.keys or 0
+			local entries = {}
+			local make = ENTRY[t]
+			for i = 1, n do
+				local entry = make(rows[i], ctx, i)
+				-- Rows that exist and changed are rewritten up to the update's budget; the rest keep their content (and
+				-- their old sig) until the next update. Missing rows are always built.
+				if i <= built and (not sigs or sigs[i] ~= entry.sig) then
+					if budget > 0 then
+						budget = budget - 1
+					else
+						entry.update = nil
+						deferred = deferred + 1
+					end
+				end
+				entries[i] = entry
+			end
+			util.sync_table_rows(tbl, #COLUMNS[t], #COLUMNS[t], entries, state)
+			if t == "requesters" then wait_clock(tbl, rows, n, ctx.now) end
 		end
 		local empty = refs["item_" .. t .. "_empty_flow"]
 		local show_empty = #rows == 0
@@ -814,12 +911,13 @@ function item.build(map_data, player_data)
 		local csig = n .. "/" .. #rows
 		if c and c.valid and cache["count_" .. t] ~= csig then
 			cache["count_" .. t] = csig
-			c.caption = #rows > 0 and { "cybersyn-gui.item-count", tostring(n), tostring(#rows) } or ""
+			c.caption = { "cybersyn-gui.item-count", tostring(n), tostring(#rows) }
 		end
 	end
+	cache.deferred = deferred
 	if profiler then
 		profiler.stop()
-		item.samples[#item.samples + 1] = { p = profiler, rebuilt = rebuilt }
+		item.samples[#item.samples + 1] = { p = profiler, kind = kind, deferred = deferred }
 	end
 	return true
 end
@@ -880,7 +978,7 @@ util.set_item_view({
 		item.open(player, player_data, hash)
 	end,
 	close = function(player, player_data)
-		item.close(player, player_data)
+		item.close(player or game.get_player(player_data.player_index), player_data)
 	end,
 })
 
@@ -920,6 +1018,7 @@ local function dump(player_data)
 		delivered = cache and cache.delivered,
 		period = get_period(player_data),
 		queued = m and m.queued,
+		deferred = cache and cache.deferred,
 		model = {},
 		rendered = {},
 		captions = {},
@@ -1066,8 +1165,20 @@ dev.add("item_profile", function(pi, n, rebuild)
 	return { "", "avg ", total }
 end)
 
+--- `n` builds of the model alone for `hash` (the snapshot walk and the sorts).
+dev.add("item_model_profile", function(hash, n)
+	n = n or 1
+	local snapshot = collector.get()
+	local p = game.create_profiler()
+	for _ = 1, n do item_model.build(snapshot, hash, SIGNAL_PRIORITY) end
+	p.stop()
+	p.divide(n)
+	return { "", "model avg ", p }
+end)
+
 --- Records (true) or stops recording a profiler around every drill-down render of the real manager tick; `print`
---- returns the samples, each "rebuilt" when the model was rebuilt in that update.
+--- returns the samples: "R" the update that rebuilt the model for a new pass, "P" the rows rewritten after it, "S" the
+--- others; "d" counts rows left for a later update.
 dev.add("item_samples", function(on, print)
 	storage.manager.item_samples = on or nil
 	local out
@@ -1077,7 +1188,7 @@ dev.add("item_samples", function(on, print)
 		local samples = item.samples
 		local n = math.min(#samples, 18)
 		for i = 1, n do
-			out[#out + 1] = { "", samples[i].rebuilt and "R " or "S ", samples[i].p, "\n" }
+			out[#out + 1] = { "", samples[i].kind, " ", samples[i].p, " d", samples[i].deferred, "\n" }
 		end
 		local rest = {}
 		for i = n + 1, #samples do rest[#rest + 1] = samples[i] end

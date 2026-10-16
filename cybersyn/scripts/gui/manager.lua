@@ -849,6 +849,8 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.focus_search(player, player_data)
+	-- The search field lives in the tab's subheader, which the drill-down hides.
+	item.close(player, player_data)
 	if not SEARCH_TABS[player_data.selected_tab] then
 		util.select_tab(player_data, "stations_tab")
 	end

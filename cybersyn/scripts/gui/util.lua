@@ -14,6 +14,9 @@ util.parse_rich_name = rich_name.parse
 --- @type fun(player: LuaPlayer?): boolean
 util.may_act = require("scripts.actions").may_act
 
+-- The item drill-down's open/close (scripts/gui/item.lua registers them through util.set_item_view).
+local item_view
+
 --- Create a flying text at the player's cursor with an error sound.
 --- @param player LuaPlayer
 --- @param message LocalisedString
@@ -567,6 +570,10 @@ end
 --- @param text string?
 function util.set_search_query(player_data, text)
 	if text == "" then text = nil end
+	-- A new station search comes from outside the drill-down (its subheader has no search field): show the lists.
+	if text ~= player_data.search_query and player_data.item_view and item_view then
+		item_view.close(nil, player_data)
+	end
 	player_data.search_query = text
 	player_data.search_terms = util.search_terms(text)
 end
@@ -852,8 +859,6 @@ function util.set_item_filter(player_data, hash)
 	end
 	util.reset_pages(player_data)
 end
-
-local item_view
 
 --- Lets item.lua (the drill-down) take item clicks without a require cycle.
 --- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData, hash: string), close: fun(player: LuaPlayer, player_data: PlayerData)}
