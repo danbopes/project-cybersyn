@@ -1,5 +1,5 @@
--- Measured extras of PLAN3 §11 (phase 10) that only read game state: the path trace, pins, Test path, the button
--- in the vanilla trains window and the opt-in HUD line. Actions that change game state live in repair.lua.
+-- Measured extras of PLAN3 §11 (phase 10) that only read game state: the path trace, pins, the button in the
+-- vanilla trains window and the opt-in HUD line. Actions that change game state live in repair.lua.
 
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
@@ -7,27 +7,15 @@ local format = require("__flib__.format")
 local util = require("scripts.gui.util")
 local logic = require("scripts.gui.extras-logic")
 local utext = require("scripts.gui.unserved-text")
-local actions = require("scripts.actions")
 local diag = require("scripts.diag")
 local stats = require("scripts.stats")
 local dev = require("scripts.gui.dev")
 
 --- @class PlayerData
 --- @field path_trace {train_id: uint, ids: uint[], until_tick: uint, rails: int, runs: int, segments: int}? the drawn trace
---- @field test_path ExtrasPathResult? the latest Test path result
 --- @field last_pin {kind: string, id: uint, label: string, tick: uint}? the latest pin this player added
 --- @field hud_on boolean? cached cybersyn-manager-hud; nil = read it again
 --- @field hud_location {x: int, y: int}? the HUD's position, physical px
-
---- @class ExtrasPathResult
---- @field stop_id uint
---- @field train_id uint?
---- @field found boolean
---- @field no_rail boolean? the stop is not connected to a rail, so there is nothing to ask the pathfinder
---- @field length number?
---- @field depot string? the train's depot name
---- @field seq int bumps per result, for render signatures
---- @field tick uint
 
 local extras = {}
 extras.handle = {}
@@ -212,136 +200,6 @@ function extras.add_pin(player, kind, id)
 	return true
 end
 
--- ---------------------------------------------------------------- Test path (§11.7)
-
-extras.TEST_PATH_TICKS = 60
-extras.TEST_PATH_REPEAT = 3600
-
---- Whether a train's network can serve a station's, loosely: only to rank the pathfinder's subject.
-local function network_match(station, train)
-	local s_net, t_net = station.network_name, train.network_name
-	if not (s_net and t_net) then return false end
-	if s_net == NETWORK_EACH then
-		local mask = station.network_mask
-		if type(mask) ~= "table" then return false end
-		if t_net == NETWORK_EACH then
-			local tmask = train.network_mask
-			if type(tmask) ~= "table" then return false end
-			for name in pairs(tmask) do if mask[name] then return true end end
-			return false
-		end
-		return mask[t_net] ~= nil
-	end
-	if t_net == NETWORK_EACH then
-		local tmask = train.network_mask
-		return type(tmask) == "table" and tmask[s_net] ~= nil
-	end
-	return s_net == t_net
-end
-
---- The trains a Test path may ask about: Cybersyn trains on the stop's surface, network-matched when any is.
---- @param record Station|Depot|Refueler
---- @param stop LuaEntity
---- @return PathCandidate[]
-local function path_candidates(record, stop)
-	local surface = stop.surface_index
-	local matched, any = {}, {}
-	local accepted = record.accepted_layouts
-	for id, train in pairs(storage.trains) do
-		local entity = train.entity
-		local front = entity and entity.valid and entity.front_stock
-		if front and front.surface_index == surface then
-			local c = {
-				id = id,
-				available = train.is_available == true,
-				fits = record.allows_all_trains == true or (accepted ~= nil and accepted[train.layout_id] ~= nil),
-				capacity = (train.item_slot_capacity or 0) + (train.fluid_capacity or 0) / 1000,
-			}
-			any[#any + 1] = c
-			if record.network_name and network_match(record, train) then matched[#matched + 1] = c end
-		end
-	end
-	return #matched > 0 and matched or any
-end
-
---- Asks the pathfinder whether one train can reach the stop and records the answer for the player's panels. A
---- read-only action: the manual_action event and the log line as for the others, but the result line goes to the
---- clicking player only, since anyone may run it.
---- @param player LuaPlayer
---- @param pd PlayerData
---- @param stop_id uint
---- @param named_train uint? a train the caller names (the row's delivery)
---- @return ExtrasPathResult?
-function extras.test_path(player, pd, stop_id, named_train)
-	local stop, record = stop_record(stop_id)
-	if not (stop and record) then
-		util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
-		return nil
-	end
-	-- One pathfinder request per player per TEST_PATH_TICKS: a click in between gets the last answer again.
-	local last = pd.test_path
-	if last and game.tick - last.tick < extras.TEST_PATH_TICKS then return last end
-	local seq = ((last and last.seq) or 0) + 1
-	local train_id = named_train and lua_train(named_train) and named_train
-		or logic.pick_train(path_candidates(record, stop))
-	local result = { stop_id = stop_id, train_id = train_id, found = false, seq = seq, tick = game.tick }
-	local train = train_id and storage.trains[train_id]
-	local entity = train and lua_train(train_id)
-	-- The pathfinder requires a goal stop that sits on a rail (a mined or destroyed rail leaves a registered stop).
-	local rail = stop.connected_rail
-	if not (rail and rail.valid) then
-		result.no_rail = true
-	elseif entity then
-		-- The pathfinder starts where the train is; it names the depot only when the train is parked there.
-		local depot = train.status == STATUS_D and train.depot_id and storage.depots[train.depot_id]
-		local depot_stop = depot and depot.entity_stop
-		result.depot = depot_stop and depot_stop.valid and depot_stop.backer_name or nil
-		local res = game.train_manager.request_train_path({
-			train = entity,
-			goals = { { train_stop = stop } },
-		})
-		result.found = res.found_path == true
-		if result.found then result.length = res.total_length end
-	end
-	-- The same answer about the same stop and train within a minute is one audit entry, not one per click.
-	local same = last and last.stop_id == stop_id and last.train_id == train_id and last.found == result.found
-		and last.no_rail == result.no_rail and last.audit_tick and game.tick - last.audit_tick < extras.TEST_PATH_REPEAT
-	pd.test_path = result
-	if same then
-		result.audit_tick = last.audit_tick
-	else
-		result.audit_tick = game.tick
-		actions.audit(ACTION_TEST_PATH, stop_id, player, { "cybersyn-gui.audit-test-path" },
-			{ "cybersyn-messages.audit-test-path", player.name, "[train-stop=" .. stop.unit_number .. "]",
-				extras.path_caption(result) }, train_id, stop_id, true)
-	end
-	return result
-end
-
---- One line for a Test path result.
---- @param r ExtrasPathResult
---- @return LocalisedString
-function extras.path_caption(r)
-	if r.no_rail then return { "cybersyn-gui.test-path-no-rail" } end
-	if not r.train_id then return { "cybersyn-gui.test-path-no-train" } end
-	if r.found then
-		return { "cybersyn-gui.test-path-found", tostring(r.train_id), format.number(math.floor((r.length or 0) + 0.5)) }
-	end
-	if r.depot then return { "cybersyn-gui.test-path-none", r.depot, tostring(r.train_id) } end
-	return { "cybersyn-gui.test-path-none-train", tostring(r.train_id) }
-end
-
---- The result line for a stop when the player's latest Test path was about it, else nil.
---- @param pd PlayerData
---- @param stop_id uint
---- @return LocalisedString? caption
---- @return int seq
-function extras.path_note(pd, stop_id)
-	local r = pd.test_path
-	if not (r and r.stop_id == stop_id) then return nil, 0 end
-	return extras.path_caption(r), r.seq
-end
-
 -- ---------------------------------------------------------------- relative panel tools
 
 local function tool(name, sprite, tooltip, handler, toggled, enabled)
@@ -361,8 +219,6 @@ end
 --- @return flib.GuiElemDef[]
 function extras.stop_tools()
 	return {
-		tool("test_path", "utility/no_path_icon", { "cybersyn-gui.relative-test-path-tooltip" },
-			extras.handle.extras_test_path),
 		tool("pin", "utility/custom_tag_in_map_view", { "cybersyn-gui.relative-pin-tooltip" }, extras.handle.extras_pin),
 	}
 end
@@ -386,8 +242,7 @@ end
 --- @return string
 function extras.tools_sig(pd, kind, id)
 	if kind == "train" then return extras.trace_shown(pd, id) and "t" or "" end
-	local _, seq = extras.path_note(pd, id)
-	return tostring(seq)
+	return ""
 end
 
 function extras.handle.extras_path_trace(player, pd, e)
@@ -402,13 +257,6 @@ function extras.handle.extras_pin(player, pd, e)
 	local kind, id = extras.panel_subject(e.element)
 	if not kind then return end
 	extras.add_pin(player, kind == "train" and "train" or "stop", id)
-end
-
-function extras.handle.extras_test_path(player, pd, e)
-	local kind, id = extras.panel_subject(e.element)
-	if kind ~= "stop" then return end
-	extras.test_path(player, pd, id)
-	if extras.on_change then extras.on_change(player, pd) end
 end
 
 -- ---------------------------------------------------------------- trains_gui anchor (§11.3)
@@ -483,6 +331,16 @@ local function train_networks(keep)
 	return set
 end
 
+--- The HUD's two labelled numbers. The keys are bare labels, not "label __1__" templates, because the Overview's Fleet
+--- headroom tile sets its "Now" line as a separate label and value: it uses `hud-headroom-now` as that label, so the
+--- tile and the HUD say one thing in the same words.
+--- @param unserved string
+--- @param free string
+--- @return LocalisedString
+function extras.hud_line(unserved, free)
+	return { "", { "cybersyn-gui.hud-unserved" }, " ", unserved, " · ", { "cybersyn-gui.hud-headroom-now" }, " ", free }
+end
+
 --- The HUD's two captions, from diag.counts_by_reason(), the available-train counters and the cached network set;
 --- nothing here wakes the collector.
 --- @param keep boolean? cache the network scan (the HUD tick only)
@@ -494,16 +352,15 @@ function extras.hud_text(keep)
 	local s = stats.get()
 	local v = logic.hud_values(diag.counts_by_reason(), s and s.available_count or {}, train_networks(keep == true))
 	local headroom = v.headroom and format.number(v.headroom) or utext.NO_VALUE
-	if not d then
-		return { "cybersyn-gui.hud-line-off", headroom }, { "cybersyn-gui.hud-diag-off" }, v
-	end
 	local line2
-	if v.unserved == 0 then
+	if not d then
+		line2 = { "cybersyn-gui.hud-diag-off" }
+	elseif v.unserved == 0 then
 		line2 = { "cybersyn-gui.hud-all-served" }
 	else
 		line2 = { "cybersyn-gui.hud-top", utext.chip_caption(v.top_reason), format.number(v.top_count) }
 	end
-	return { "cybersyn-gui.hud-line", format.number(v.unserved), headroom }, line2, v
+	return extras.hud_line(d and format.number(v.unserved) or utext.NO_VALUE, headroom), line2, v
 end
 
 --- @param player LuaPlayer
@@ -700,15 +557,6 @@ dev.extend({
 	last_pin = function(pi)
 		local _, pd = dev_context(pi)
 		return pd.last_pin
-	end,
-	--- `limited`: keep the once-per-TEST_PATH_TICKS rule a click has (tests otherwise ask several stops in one tick).
-	test_path = function(pi, stop_id, train_id, limited)
-		local player, pd = dev_context(pi)
-		if pd.test_path and not limited then pd.test_path.tick = -extras.TEST_PATH_TICKS end
-		local r = extras.test_path(player, pd, stop_id, train_id)
-		if not r then return nil end
-		return { stop_id = r.stop_id, train_id = r.train_id, found = r.found, no_rail = r.no_rail, length = r.length,
-			depot = r.depot, caption = extras.path_caption(r), seq = r.seq, tick = r.tick }
 	end,
 	--- Emulates the click on the trains-window button (an offline player cannot open the vanilla trains window).
 	trains_gui_button = function(pi)

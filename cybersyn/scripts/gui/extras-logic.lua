@@ -170,35 +170,70 @@ function logic.hud_values(counts, available, networks)
 	return { unserved = total, headroom = headroom, network = network, top_reason = top, top_count = top_n }
 end
 
--- ---------------------------------------------------------------- Test path
+-- ---------------------------------------------------------------- Recount deliveries (PLAN4 D10)
 
---- @class PathCandidate
---- @field id uint train id
---- @field available boolean parked or bypassing, ready for a delivery
---- @field fits boolean the stop's allow-list accepts the train's layout
---- @field capacity number item stacks plus fluid / 1000, only to rank
+local P_SIDE = { [STATUS_TO_P] = true, [STATUS_P] = true }
+local R_SIDE = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
 
---- The train a Test path click asks the pathfinder for: a named train first, then the largest available train the
---- stop accepts, then any train the stop accepts, then any; ties go to the lowest id. This only picks a subject for
---- the pathfinder; it never decides eligibility (PLAN3 §11.8).
---- @param candidates PathCandidate[]
---- @param named uint? a train the caller named (the row's delivery)
---- @return uint?
-function logic.pick_train(candidates, named)
-	if named then
-		for _, c in ipairs(candidates) do
-			if c.id == named then return named end
+--- A station's delivery counters as the dispatcher's own bookkeeping would hold them, from the trains bound to it:
+--- create_delivery counts a train at both stations and adds the manifest to the requester's `deliveries` and
+--- subtracts it from the provider's; leaving the provider undoes the provider side, leaving the requester the
+--- requester side. So the provider side counts TO_P/P trains and the requester side TO_P..R trains, the same rule
+--- the lint pass's occupancy index uses. Two limits, shared with the lint: a train under a custom status (>=
+--- STATUS_CUSTOM, other mods') is not counted, and a net-zero amount (one train at both ends of the station) is dropped
+--- where create_delivery would keep a 0 entry; remove_manifest then skips that key, which is harmless.
+--- @param trains {[uint]: {status: int?, p_station_id: uint?, r_station_id: uint?, manifest: {name: string, quality: string?, count: int}[]?}}
+--- @param station_id uint
+--- @param hash fun(name: string, quality: string?): string
+--- @return int total
+--- @return {[string]: int} deliveries without zero entries
+--- @return uint[] train ids counted, ascending
+function logic.recount(trains, station_id, hash)
+	local total, deliveries, ids = 0, {}, {}
+	for id, train in pairs(trains) do
+		local status = train.status
+		local p = P_SIDE[status] and train.p_station_id == station_id
+		local r = R_SIDE[status] and train.r_station_id == station_id
+		if p or r then
+			ids[#ids + 1] = id
+			for _, item in ipairs(train.manifest or {}) do
+				local h = hash(item.name, item.quality)
+				local n = deliveries[h] or 0
+				if p then n = n - item.count end
+				if r then n = n + item.count end
+				deliveries[h] = n
+			end
+			total = total + (p and 1 or 0) + (r and 1 or 0)
 		end
 	end
-	local best, best_rank
-	for _, c in ipairs(candidates) do
-		local rank = (c.fits and 2 or 0) + (c.available and 1 or 0)
-		if not best or rank > best_rank or (rank == best_rank and (c.capacity > best.capacity
-				or (c.capacity == best.capacity and c.id < best.id))) then
-			best, best_rank = c, rank
-		end
+	for h, n in pairs(deliveries) do
+		if n == 0 then deliveries[h] = nil end
 	end
-	return best and best.id or nil
+	table.sort(ids)
+	return total, deliveries, ids
+end
+
+--- Whether a phantom finding is the counter-leak direction (the station counts more deliveries than trains are
+--- bound to it), the one case "Recount deliveries" repairs; the other direction has a train to send home.
+--- @param f {check: int, a: int?, b: int?}
+--- @return boolean
+function logic.is_counter_leak(f)
+	return f.check == LINT_PHANTOM and (f.a or 0) > (f.b or 0)
+end
+
+-- ---------------------------------------------------------------- stop panel on narrow screens (PLAN4 D16)
+
+-- The vanilla train-stop window and the 300 px panel beside it, in logical px.
+logic.STOP_WINDOW_WIDTH = 1067
+logic.STOP_PANEL_WIDTH = 300
+
+--- Whether the stop panel fits beside the vanilla window on this screen. Where it does not, the panel is hidden
+--- rather than drawn over or off the screen; "Open in manager" is the route there.
+--- @param width number physical px
+--- @param scale number UI scale
+--- @return boolean
+function logic.stop_panel_fits(width, scale)
+	return width / scale >= logic.STOP_WINDOW_WIDTH + logic.STOP_PANEL_WIDTH
 end
 
 return logic

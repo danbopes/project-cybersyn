@@ -46,7 +46,7 @@ function actions.check(player, what)
 	return actions.refuse(player, what)
 end
 
---- Records an action that changed game state (or a read-only one audited the same way, Test path).
+--- Records an action that changed game state.
 --- @param action int ACTION_*
 --- @param target uint? the entity or train it applied to; nil = all of them
 --- @param player LuaPlayer?

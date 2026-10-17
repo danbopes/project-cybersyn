@@ -108,8 +108,16 @@ lab.suite("37_trains_pane", {
 		local r = remote.call(D, "relative_open", pi, "train", ctx.id)
 		remote.call(D, "pane_refresh_ms", pi, 1)
 		local p = pane()
-		lab.check("pane sections == relative_dump sections", line(p.panel.sections) == line(r.sections),
+		-- The footer differs on purpose (PLAN4 D13): the pane has no Open in manager, so Locate leads the one action row.
+		local pane_buttons, rel_buttons = p.panel.sections.buttons, r.sections.buttons
+		p.panel.sections.buttons, r.sections.buttons = nil, nil
+		lab.check("pane sections == relative_dump sections (footer apart)", line(p.panel.sections) == line(r.sections),
 			{ pane = p.panel.sections, relative = r.sections })
+		local row = pane_buttons and pane_buttons.content and pane_buttons.content[1]
+		local names = {}
+		for _, c in ipairs(row and row.children or {}) do if c.name then names[#names + 1] = c.name end end
+		lab.check("pane footer: one row of Locate, Send home, Path trace, Pin", #pane_buttons.content == 1
+			and table.concat(names, ",") == "locate,fail_delivery,path_trace,pin" and #rel_buttons.content == 2, names)
 		lab.check("pane caption == relative_dump caption", line(p.panel.caption) == line(r.caption))
 		remote.call(D, "relative_close", pi)
 		lab.check("closing the vanilla panel keeps the pane", pane().open ~= nil)
