@@ -28,7 +28,7 @@ test("get: creates the table with since_tick = game.tick", function()
 	-- and the tick refuel tracking starts from.
 	assert_eq(s, { minute = {}, hour = {}, totals = { deliveries = 0, dispatches = 0, items = 0, since_tick = 500 },
 		cycle = { ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 },
-		available_count = {}, refuel_since = 500 })
+		available_count = {}, refuel_since = 500, busy_since = 500 })
 	assert_same(storage.stats, s)
 	assert_same(stats.get(), s)
 end)
@@ -574,6 +574,20 @@ test("layout usage: busy time split over the buckets a delivery spans, trips per
 	usage = stats.layout_usage(10)
 	assert_eq(usage[7].busy, MIN, "only minute 3 is inside 3:00-12:00")
 	assert_eq(stats.layout_usage(1440)[7].busy, 9000)
+end)
+
+test("layout usage: on a save from before busy tracking, the span starts at the upgrade", function()
+	at(0)
+	storage.stats = { totals = { deliveries = 9, dispatches = 9, items = 9, since_tick = 0 } }
+	at(100 * MIN)
+	assert_eq(stats.get().busy_since, 100 * MIN)
+	-- A delivery dispatched before the upgrade counts busy time only from it.
+	at(102 * MIN)
+	stats.record_delivery_complete({ layout_id = 3, manifest = {}, dispatch_tick = 99 * MIN })
+	local usage, span = stats.layout_usage(60, { [3] = { 98 * MIN } })
+	assert_eq(span, 2 * MIN + 1, "not the full hour")
+	assert_eq(usage[3].busy, 2 * MIN + 2 * MIN)
+	assert_eq(usage[3].trip_n, 1)
 end)
 
 test("layout usage: a delivery longer than the minute ring adds only the minutes still in it", function()

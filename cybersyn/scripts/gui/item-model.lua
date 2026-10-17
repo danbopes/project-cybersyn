@@ -123,7 +123,7 @@ end
 --- @field id uint
 --- @field requested int positive
 --- @field threshold int
---- @field wait_start uint? request start tick (nil while wait tracking is off)
+--- @field wait_start uint? request start tick, if one was recorded
 --- @field incoming int
 --- @field priority int
 --- @field last_served number planner ticks of the last delivery

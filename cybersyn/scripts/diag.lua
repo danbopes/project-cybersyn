@@ -396,7 +396,7 @@ local function matches(r, i, f)
 	if f.sev and sev > f.sev then return false end
 	if f.sevs and not f.sevs[sev] then return false end
 	if f.train and r.train[i] ~= f.train then return false end
-	if f.delivery and r.delivery[i] ~= f.delivery then return false end
+	if f.delivery and (r.delivery[i] ~= f.delivery or kind == DIAG_KIND_LINT) then return false end
 	if f.item and r.item[i] ~= f.item then return false end
 	local st = f.station
 	if st and r.station[i] ~= st and not (STATION2_IS_STATION[kind] and r.station2[i] == st) then return false end
@@ -525,6 +525,8 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 	local seq_b, seq_f = rb.seq, rf.seq
 	local col_b, col_f = rb[key], rf[key]
 	local is_station = key == "station"
+	-- A lint row's delivery column holds its pass key, not a delivery.
+	local is_delivery = key == "delivery"
 	local st2_b, st2_f = rb.station2, rf.station2
 	local kind_b, kind_f = rb.kind, rf.kind
 	local size_b, size_f = rb.size, rf.size
@@ -536,7 +538,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 			if examined >= budget then return examined, oldest, false end
 			examined = examined + 1
 			oldest = seq
-			if col_b[ib] == id or (is_station and st2_b[ib] == id and STATION2_IS_STATION[kind_b[ib]]) then
+			if (col_b[ib] == id and not (is_delivery and kind_b[ib] == DIAG_KIND_LINT)) or (is_station and st2_b[ib] == id and STATION2_IS_STATION[kind_b[ib]]) then
 				found = found + 1
 				out[found] = row(rb, ib)
 			end
@@ -548,7 +550,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 			if examined >= budget then return examined, oldest, false end
 			examined = examined + 1
 			oldest = seq
-			if col_f[iff] == id or (is_station and st2_f[iff] == id and STATION2_IS_STATION[kind_f[iff]]) then
+			if (col_f[iff] == id and not (is_delivery and kind_f[iff] == DIAG_KIND_LINT)) or (is_station and st2_f[iff] == id and STATION2_IS_STATION[kind_f[iff]]) then
 				found = found + 1
 				out[found] = row(rf, iff)
 			end
@@ -1580,7 +1582,8 @@ function diag.schedule_edited(d, train_id, train, player_index, group)
 end
 
 --- A lint finding appeared or cleared (`a` = check, `b` = subject id; trains also in `train`, stops in `station`).
---- The delivery column holds the running pass's start tick + 1 (0 outside a pass), so the Log shows a pass as one row.
+--- The delivery column holds the running pass's start tick + 1 (0 outside a pass), so the Log shows a pass as one row;
+--- delivery subjects and filters skip lint rows and the CSV export writes 0 there.
 --- @param check int LINT_*
 --- @param subject int LINT_SUBJECT_*
 --- @param id uint
@@ -1674,7 +1677,8 @@ end
 --- @return string
 function diag.csv_line(ev, item_hash)
 	return string.format(LINE, ev.seq, ev.tick, DIAG_KIND_NAMES[ev.kind] or tostring(ev.kind),
-		DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev), code_name(ev.kind, ev.code), ev.delivery, ev.train, ev.station,
+		DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev), code_name(ev.kind, ev.code),
+		ev.kind == DIAG_KIND_LINT and 0 or ev.delivery, ev.train, ev.station,
 		ev.station2, csv_item(item_hash, ev.item), ev.a, ev.b)
 end
 
@@ -1815,7 +1819,8 @@ function diag.export_step()
 			local kind, code = r.kind[i], r.code[i]
 			n = n + 1
 			parts[n] = string.format(LINE, seq, r.tick[i], DIAG_KIND_NAMES[kind] or tostring(kind),
-				DIAG_SEV_NAMES[r.sev[i]] or tostring(r.sev[i]), code_name(kind, code), r.delivery[i], r.train[i],
+				DIAG_SEV_NAMES[r.sev[i]] or tostring(r.sev[i]), code_name(kind, code),
+				kind == DIAG_KIND_LINT and 0 or r.delivery[i], r.train[i],
 				r.station[i], r.station2[i], csv_item(item_hash, r.item[i]), r.a[i], r.b[i])
 			rows = rows + 1
 		end

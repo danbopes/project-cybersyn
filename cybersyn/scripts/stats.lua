@@ -52,6 +52,7 @@ stats.HOUR = HOUR
 --- @field refuel_since uint tick from which Train.refuel_tick is recorded (older saves did not track refuelling)
 --- @field available_count {[string]: int} available trains per network, kept equal to the sizes of
 ---   storage.available_trains by add_available_train / remove_available_train
+--- @field busy_since uint tick from which the buckets' busy, trip_sum and trip_n are recorded (older saves had none)
 --- @field trip_ema {[string]: {avg: number, n: int}}? per item hash (the manifest's first item), the moving average
 ---   of dispatch-to-unloaded ticks and the deliveries behind it; the slow-delivery baseline
 
@@ -64,6 +65,7 @@ local function new_stats()
 		cycle = { ema_seconds = nil, ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 },
 		available_count = {},
 		refuel_since = game and game.tick or 0,
+		busy_since = game and game.tick or 0,
 	}
 end
 
@@ -90,6 +92,7 @@ local function get()
 	s.cycle.calls_run = s.cycle.calls_run or 0
 	s.available_count = s.available_count or {}
 	s.refuel_since = s.refuel_since or game.tick
+	s.busy_since = s.busy_since or game.tick
 	return s
 end
 
@@ -403,8 +406,9 @@ function stats.record_delivery_complete(train)
 		local ticks = tick - dispatch_tick
 		local layout = train.layout_id
 		if layout then
-			add_busy(s.minute, MINUTE_SLOTS, MINUTE, dispatch_tick, tick, layout)
-			add_busy(s.hour, HOUR_SLOTS, HOUR, dispatch_tick, tick, layout)
+			local from = math.max(dispatch_tick, s.busy_since)
+			add_busy(s.minute, MINUTE_SLOTS, MINUTE, from, tick, layout)
+			add_busy(s.hour, HOUR_SLOTS, HOUR, from, tick, layout)
 			add_layout_trip(m, layout, ticks)
 			add_layout_trip(h, layout, ticks)
 		end
@@ -641,7 +645,7 @@ function stats.layout_usage(minutes, inflight)
 	end
 	local current = tick - tick % width
 	local oldest = current - (count - 1) * width
-	local since = s.totals.since_tick or 0
+	local since = s.busy_since
 	local usage = {}
 	local function of(layout)
 		local u = usage[layout]
