@@ -638,6 +638,8 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	if #filtered == 0 then
 		-- Clear overlay buttons when no data
 		charts.create_overlay_buttons(refs.breakdown_camera, {}, OVERLAY_BUTTON_OPTIONS)
+		-- The stats of another range must not stay beside an empty one.
+		if refs.breakdown_stats_label then refs.breakdown_stats_label.caption = "" end
 		return
 	end
 
