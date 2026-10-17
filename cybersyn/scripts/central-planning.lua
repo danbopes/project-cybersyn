@@ -40,9 +40,6 @@ end
 ---@param station Station
 ---@param item_hash string
 local function track_request_start(station, item_hash)
-	if not mod_settings.track_request_wait_times then
-		return
-	end
 	init_request_tracking(station)
 	if not station.request_start_ticks[item_hash] then
 		station.request_start_ticks[item_hash] = game.tick
@@ -282,8 +279,7 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 		local request_start_ticks = r_station.request_start_ticks
 		for i, item in ipairs(manifest) do
 			local item_hash = hash_item(item.name, item.quality)
-			-- Start ticks are frozen while tracking is off, so they only measure a wait while it is on.
-			local start_tick = mod_settings.track_request_wait_times and request_start_ticks and request_start_ticks[item_hash]
+			local start_tick = request_start_ticks and request_start_ticks[item_hash]
 			local fulfillment_time = start_tick and game.tick - start_tick or nil
 			if fulfillment_time then
 				stats.record_fulfilment(fulfillment_time, r_station_id, item_hash)
@@ -498,7 +494,7 @@ end
 ---@param ad {cycle: int, sent: int, keys: {[string]: table}}
 ---@param key string item_network_name
 ---@param code int DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
----@param wait number seconds the requester has waited (0 when wait tracking is off)
+---@param wait number seconds the requester has waited
 local function note_no_train_alert(ad, key, code, r_station_id, p_station_id, wait)
 	local e = ad.keys[key]
 	if not e then
@@ -1429,7 +1425,7 @@ local function tick_poll_station(map_data, mod_settings)
 		end
 
 		-- Clean up request_start_ticks for items no longer being requested
-		if mod_settings.track_request_wait_times and station.request_start_ticks and next(station.request_start_ticks) then
+		if station.request_start_ticks and next(station.request_start_ticks) then
 			local requested_items = {}
 			-- Build set of currently requested items
 			for k, v in pairs(comb1_signals) do
@@ -1450,9 +1446,6 @@ local function tick_poll_station(map_data, mod_settings)
 			if not next(requested_items) then
 				clear_all_request_tracking(station)
 			end
-		elseif station.request_start_ticks and not mod_settings.track_request_wait_times then
-			-- Nothing refreshes these while tracking is off, so turning it back on would report stale waits.
-			clear_all_request_tracking(station)
 		end
 	end
 	-- Update the graphic of the station combinator based on the result of polling the station.

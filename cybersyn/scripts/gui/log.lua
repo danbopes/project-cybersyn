@@ -1,6 +1,14 @@
--- Log tab (PLAN3 §4.7 Log): the diagnostics rings as a list of events, newest first, in whole 28 px rows. The rows,
--- counts, badge and Summary come from scripts/gui/log-model.lua; this file turns them into elements and handles the
+-- Log tab (PLAN3 §4.7 Log, PLAN4 D12): the diagnostics rings as a list of events, newest first, in 28 px rows in a
+-- scroll pane that holds the newest model.PAGE matching rows (the one tab that scrolls, PLAN4 D12). The rows, counts,
+-- badge and Summary come from scripts/gui/log-model.lua; this file turns them into elements and handles the
 -- subheader. Visible only while diagnostics are on (storage.diag exists).
+--
+-- Follow holds while the pointer is over the rows or the window is paused; Pause / Newest stops and resumes it. 2.0 has
+-- no GUI wheel event, and a custom input on the wheel does not fire over a scroll pane (the pane takes the wheel), so
+-- the wheel cannot pause Follow. Factorio does not tell a mod where a scroll pane is scrolled either, so only the
+-- first rows_by_tab.log rows (the viewport while the pane is at the top) get their age every update; the rows below
+-- are written when their event moves and their ages one viewport's worth per update in turn, so a row scrolled to is
+-- at most PAGE / rows updates stale.
 
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
@@ -10,6 +18,7 @@ local collector = require("scripts.gui.collector")
 local dev = require("scripts.gui.dev")
 local diag = require("scripts.diag")
 local model = require("scripts.gui.log-model")
+local name_cell = require("scripts.gui.name-cell")
 local text = require("scripts.gui.unserved-text")
 
 --- @class PlayerData
@@ -22,12 +31,33 @@ local text = require("scripts.gui.unserved-text")
 --- @field log_export {path: string, state: "running"|"done"|"off", rows: int?, chunks: int?, first_tick: uint?, last_tick: uint?}? the player's latest export
 --- @field log_widths {station: int, message: int, rows: int}? cell widths for the current layout
 --- @field log_caps {[string]: any}? signatures of the subheader and caption texts last written
+--- @field log_expanded {[number]: true}? lint passes (model.pass_key) whose rows the player opened
 
 local log_tab = {}
 
 local TAB = "log_tab"
 local ROWS = "log_rows"
 local ROW_HEIGHT = 28
+local PAGE = model.PAGE
+-- The scroll pane always shows its vertical bar, so the rows' width does not change with their number.
+local SCROLLBAR = 12
+-- The pointer resting on the rows holds Follow this long without a new hover event (a lost leave event cannot hold it
+-- for ever).
+local HOLD_TICKS = 3600
+-- Rows built in the first update of an empty page (PLAN4 D12 allows that one update up to 6 ms; a row costs about
+-- 50-70 µs to build and write), then per update until the page is full, inside the Log's 1 ms. The prewarm builds
+-- the pool while another tab shows, so the first look at the Log seldom builds anything.
+local FIRST_FILL = 80
+local FILL_ROWS = 8
+-- Rows below the viewport a rewrite writes per update (at 16 a catch-up update measured 1.01-1.10 ms on pY).
+local DEFER_ROWS = 12
+-- PLAN4 D12's 2 s timer. While Follow is held the whole page's ages are written together once per AGE_TICKS and not
+-- in between: a reader scrolled anywhere sees ages in order (a slice spread over updates left rows a second apart, the
+-- older above the newer). Under Follow the reader is at the top: the viewport every update, and below it a slice
+-- that would pass the page once per AGE_TICKS, capped at a viewport per update (the Follow path's 1 ms).
+local AGE_TICKS = 120
+-- A lint pass's own rows are indented under its row.
+local CHILD_INDENT = "      "
 -- Logical px at the 1,392 px content width of a 1,440 px window; the message takes the rest.
 local W = { age = 60, dot = 16, kind = 20, train = 56, station = 300, item = 28, count = 44, print = 28 }
 local BASE_CONTENT_WIDTH = 1392
@@ -36,7 +66,6 @@ local SPACING = 8
 local ROW_PADDING = 4 + 8
 local FRAME_BORDER = 4
 local ICON = 20
-local NAME_ICONS = 3
 -- Ring rows examined per update by the rows, the Summary and the counts together, in that order (about 1 µs a row on a
 -- 2,030-station base with a full ring of 16,384 rows): what the rows leave goes to the Summary, then to the counts.
 local SCAN_BUDGET = 640
@@ -45,11 +74,11 @@ local BADGE_BUDGET = 1024
 -- Subheader controls on the right of a fixed width (logical px), and the spacing of the subheader flow; the item and
 -- subject chips share what is left of the content width.
 local SEV_BUTTON_WIDTH = 84
-local SUBHEADER_FIXED = 3 * SEV_BUTTON_WIDTH + 190 + 40 + 72 + 140 + 3 * 28 + 9 * 8
+local FOLLOW_WIDTH = 84
+local SUBHEADER_FIXED = 3 * SEV_BUTTON_WIDTH + 190 + 40 + 72 + 140 + FOLLOW_WIDTH + 2 * 28 + 9 * 8
 local SUBHEADER_PADDING = 16
 local CHIP_MAX = 240
 local SEV_SPRITES = { "flib_indicator_red", "flib_indicator_orange", "flib_indicator_white" }
-local FOLLOW_SPRITE = "utility/play"
 local SUMMARY_SPRITE = "utility/list_view"
 local SEV_KEYS = { "error", "warning", "info" }
 
@@ -80,6 +109,7 @@ local KIND_SPRITE_CANDIDATES = {
 	[DIAG_KIND_LEAVE_R] = { "item/locomotive" },
 	[DIAG_KIND_RETURNED] = { "item/locomotive" },
 	[DIAG_KIND_TRAIN_STATE] = { "item/locomotive" },
+	[DIAG_KIND_SLOW_DELIVERY] = { "item/locomotive" },
 }
 local kind_sprites
 
@@ -197,7 +227,7 @@ end
 --- @class LogNameView
 --- @field name string
 --- @field text string
---- @field icons {sprite: string, quality: string?}[]
+--- @field parts RichNameParts?
 --- @field kind "station"|"depot"|"refueler"
 
 --- Views made during one render, by id (rows of one stop share it); emptied when the render ends, so nothing stale
@@ -237,17 +267,9 @@ local function station_view(id)
 		name = stop.backer_name
 		parts = parse_name(name)
 	end
-	local icons = {}
-	local lead = parts and parts.lead
-	if lead then
-		for i = 1, math.min(#lead, NAME_ICONS) do
-			icons[i] = { sprite = lead[i], quality = parts.lead_quality and parts.lead_quality[i] or nil }
-		end
-	end
-	-- A name made only of icons shows them in the icon slots; the text would repeat them.
 	local label = parts and parts.text or name
-	if label == nil or label == "" then label = #icons > 0 and "" or name end
-	local view = { name = name, text = label, icons = icons, kind = kind }
+	if label == nil or label == "" then label = name end
+	local view = { name = name, text = label, parts = parts, kind = kind }
 	if view_cache then view_cache[id] = view end
 	return view
 end
@@ -269,9 +291,10 @@ local TEXT_CTX = {
 }
 
 --- @param g LogGroup
+--- @param expanded boolean? a lint pass's rows are shown
 --- @return LocalisedString
-function log_tab.message(g)
-	return model.message(g, TEXT_CTX)
+function log_tab.message(g, expanded)
+	return model.message(g, TEXT_CTX, expanded)
 end
 
 -- ---------------------------------------------------------------- build
@@ -372,7 +395,15 @@ function log_tab.subheader_right()
 			tooltip = { "cybersyn-gui.log-window-tooltip" },
 			handler = { [defines.events.on_gui_selection_state_changed] = log_tab.handle.log_window_changed },
 		},
-		toggle_button("log_follow", FOLLOW_SPRITE, "cybersyn-gui.log-follow", log_tab.handle.log_follow_changed),
+		{
+			type = "button",
+			name = "log_follow",
+			style = "cybersyn_log_sev_button",
+			style_mods = { width = FOLLOW_WIDTH },
+			caption = { "cybersyn-gui.log-pause" },
+			tooltip = { "cybersyn-gui.log-pause-tooltip" },
+			handler = { [defines.events.on_gui_click] = log_tab.handle.log_follow_changed },
+		},
 		toggle_button("log_summary_toggle", SUMMARY_SPRITE, "cybersyn-gui.log-summary", log_tab.handle.log_summary_changed),
 		{
 			type = "sprite-button",
@@ -434,7 +465,14 @@ function log_tab.create()
 					name = "log_body",
 					direction = "vertical",
 					style_mods = { vertical_spacing = 0 },
-					{ type = "table", name = ROWS, style = "cybersyn_log_rows_table", column_count = 1 },
+					hoverable({
+						type = "scroll-pane",
+						name = "log_scroll",
+						style = "flib_naked_scroll_pane_no_padding",
+						horizontal_scroll_policy = "never",
+						vertical_scroll_policy = "always",
+						{ type = "table", name = ROWS, style = "cybersyn_log_rows_table", column_count = 1 },
+					}),
 					{
 						type = "flow",
 						name = "log_summary",
@@ -467,7 +505,7 @@ function log_tab.apply_layout(player_data, layout)
 	local rows = layout.rows_by_tab[TAB]
 	local station = math.floor(W.station * math.min(cw, BASE_CONTENT_WIDTH) / BASE_CONTENT_WIDTH)
 	local fixed = W.age + W.dot + W.kind + W.train + station + W.item + W.count + W.print
-	local message = cw - FRAME_BORDER - ROW_PADDING - (CELLS - 1) * SPACING - fixed
+	local message = cw - FRAME_BORDER - ROW_PADDING - (CELLS - 1) * SPACING - fixed - SCROLLBAR
 	local old = player_data.log_widths
 	-- Two summary frames side by side with 12 between them, inside the body's 8 px padding.
 	local summary = math.floor((cw - FRAME_BORDER - 16 - 12) / 2)
@@ -493,17 +531,46 @@ function log_tab.apply_layout(player_data, layout)
 	end
 	local body = refs.log_body
 	if body and body.valid then body.style.height = rows * ROW_HEIGHT end
+	local scroll = refs.log_scroll
+	if scroll and scroll.valid then scroll.style.height = rows * ROW_HEIGHT end
 	local empty = refs.log_empty_flow
 	if empty and empty.valid then empty.style.height = rows * ROW_HEIGHT end
 	if not old or old.station ~= station or old.message ~= message then
 		local parent = refs[ROWS]
 		if parent and parent.valid then parent.clear() end
 		local state = util.gui_state(player_data, ROWS)
-		state.keys, state.sigs, state.memo = nil, nil, nil
+		-- New widths rebuild the page in one update, as the first fill does (a resolution or scale change is rare).
+		state.keys, state.sigs, state.memo, state.elems, state.filled_once = nil, nil, nil, nil, nil
 	end
 end
 
 -- ---------------------------------------------------------------- rows
+
+--- The row of one ring row by its seq (a lint pass's member), nil once its ring has dropped it.
+--- @param seq uint
+--- @return LogGroup?
+local function find_ring_group(seq)
+	local d = storage.diag
+	if not d then return nil end
+	for _, r in ipairs({ d.ring_basic, d.full and d.ring_full or nil }) do
+		local k = diag.first_after(r, seq - 1)
+		if k < r.count then
+			local i = diag.ring_at(r, k)
+			if r.seq[i] == seq then return model.new_group(r, i) end
+		end
+	end
+	return nil
+end
+
+--- Follow takes nothing new while the pointer is over the rows (or their scroll pane) and while the window is
+--- paused.
+--- @param player_data PlayerData
+--- @return boolean
+function log_tab.held(player_data)
+	if player_data.paused then return true end
+	local hover = player_data.hover
+	return hover ~= nil and hover.scope == ROWS and game.tick - hover.tick < HOLD_TICKS
+end
 
 -- A pure function of the loaded prototypes, so the same in every Lua state.
 local sprite_ok = {}
@@ -566,8 +633,9 @@ local function row_cells(elem, m)
 	if cells and cells[1].valid then return cells end
 	cells = elem.children
 	m.cells = cells
-	local station = cells[5].children
-	m.slots, m.button = station[1].children, station[2]
+	m.icons = {}
+	-- build_row's train cell already has the link style and its width.
+	m.trs = m.trs or "cybersyn_log_link"
 	return cells
 end
 
@@ -577,9 +645,11 @@ end
 --- @param g LogGroup
 --- @param m table the row's memo, updated
 --- @param now uint
---- @param key uint
-local function write_cells(cells, g, m, now, key)
-	m.seq, m.n_, m.a_, m.b_, m.epoch = g.seq, g.n, g.a, g.b, name_epoch(key, now)
+--- @param key number
+--- @param expanded boolean? the row is a lint pass whose rows are shown below it
+--- @param child boolean? the row is one of an expanded lint pass's rows
+local function write_cells(cells, g, m, now, key, expanded, child)
+	m.seq, m.n_, m.a_, m.b_, m.epoch, m.x_ = g.seq, g.n, g.a, g.b, name_epoch(key, now), expanded
 	if prof then prof.written = prof.written + 1 end
 	local tsig = g.first_tick .. "|" .. g.tick .. "|" .. g.n
 	if m.t ~= tsig then
@@ -611,41 +681,20 @@ local function write_cells(cells, g, m, now, key)
 		end
 		m.tr = trsig
 	end
-	-- station: the icons only when the name or the target changed
+	-- station: lead icons · text · tail icons through name_cell, rewritten only when the name or the target changed
 	local view = station_view(g.station)
 	-- The other station of the event (the provider, the other end of a delivery) is named in this cell's tooltip.
 	local other = diag.STATION2_IS_STATION[g.kind] and g.station2 ~= 0 and station_view(g.station2) or nil
 	local ssig = g.station .. "|" .. (view and view.name or "") .. "|" .. (other and other.name or "")
 	if m.st ~= ssig then
-		local button, slots = m.button, m.slots
-		-- Three icon slots made with the row, shown as the name needs them: a row reused for another station
-		-- creates no elements.
-		local mi = m.icons
-		if not mi then
-			mi = {}
-			m.icons = mi
-		end
-		for i = 1, NAME_ICONS do
-			local icon = view and view.icons[i]
-			local sprite = icon and valid_sprite(icon.sprite) or false
-			local quality = sprite and icon.quality or nil
-			local isig = sprite and (sprite .. "|" .. (quality or "")) or false
-			if mi[i] ~= isig then
-				local slot = slots[i]
-				if sprite then
-					slot.sprite = sprite
-					slot.quality = quality
-				end
-				if (mi[i] or false) == false or sprite == false then slot.visible = sprite ~= false end
-				mi[i] = isig
-			end
-		end
+		local width = r_widths and r_widths.station or W.station
+		local button
 		if view then
-			button.caption = view.text
-		elseif g.station ~= 0 then
-			button.caption = { "cybersyn-gui.log-gone-station", tostring(g.station) }
+			button = name_cell.write_pooled(cells[5], m.icons, view.parts, view.name, width)
 		else
-			button.caption = ""
+			button = name_cell.write_pooled(cells[5], m.icons, nil, "", width)
+			button.caption = g.station ~= 0 and { "cybersyn-gui.log-gone-station", tostring(g.station) } or ""
+			m.icons.text = nil
 		end
 		if m.en ~= (view ~= nil) then
 			button.enabled = view ~= nil
@@ -679,110 +728,89 @@ local function write_cells(cells, g, m, now, key)
 		m.item = hash or ""
 	end
 	-- message, count
-	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n
+	local pass = g.pass and g.n > 1
+	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n ..
+		(pass and ("|" .. table.concat(g.lint, ",") .. (expanded and "x" or "")) or "") .. (child and "|c" or "")
 	if m.msg ~= msig then
-		cells[7].caption = log_tab.message(g)
+		local message = log_tab.message(g, expanded)
+		cells[7].caption = child and { "", CHILD_INDENT, message } or message
+		cells[7].tooltip = pass and { "cybersyn-gui.log-lint-pass-tooltip" } or ""
 		m.msg = msig
 	end
-	if m.n ~= g.n then
-		cells[8].caption = model.repeat_caption(g.n)
-		m.n = g.n
+	local count = pass and "" or model.repeat_caption(g.n)
+	if m.n ~= count then
+		cells[8].caption = count
+		m.n = count
 	end
 end
 
---- The cells of a row, empty; write_cells fills them.
---- @param widths {station: int, message: int}
---- @return flib.GuiElemDef[]
-local function cell_defs(widths)
-	-- Rows are reused for other events, so their link cells carry no target: the click finds it from the row.
-	local link = { [defines.events.on_gui_click] = log_tab.handle.log_link_click }
-	return {
-		hoverable({ type = "label", style = "cybersyn_log_age", style_mods = { width = W.age } }),
-		hoverable({ type = "sprite", style = "cybersyn_log_dot" }),
-		hoverable({ type = "sprite", style = "cybersyn_log_kind" }),
-		hoverable({
-			type = "button",
-			style = "cybersyn_log_link",
-			style_mods = { width = W.train },
-			mouse_button_filter = { "left", "right" },
-			tooltip = { "cybersyn-gui.link-footer" },
-			tags = { cell = "train" },
-			handler = link,
-		}),
-		{
-			type = "flow",
-			direction = "horizontal",
-			style = "cybersyn_log_cell_flow",
-			style_mods = { width = widths.station },
-			{
-				type = "flow",
-				direction = "horizontal",
-				style = "cybersyn_log_icon_flow",
-				-- Sprite buttons, not sprites: only a button draws an icon's quality badge.
-				{ type = "sprite-button", style = "cybersyn_name_icon", visible = false, ignored_by_interaction = true },
-				{ type = "sprite-button", style = "cybersyn_name_icon", visible = false, ignored_by_interaction = true },
-				{ type = "sprite-button", style = "cybersyn_name_icon", visible = false, ignored_by_interaction = true },
-			},
-			hoverable({
-				type = "button",
-				style = "cybersyn_log_link",
-				style_mods = { maximal_width = widths.station - NAME_ICONS * ICON - 8 },
-				mouse_button_filter = { "left", "right" },
-				tags = { cell = "station" },
-				handler = link,
-			}),
-		},
-		hoverable({
-			type = "sprite-button",
-			style = "cybersyn_log_item",
-			mouse_button_filter = { "left", "right" },
-			tooltip = { "cybersyn-gui.item-click-hint" },
-			tags = { cell = "item" },
-			handler = link,
-		}),
-		hoverable({ type = "label", style = "cybersyn_log_message", style_mods = { width = widths.message } }),
-		hoverable({ type = "label", style = "cybersyn_log_count", style_mods = { width = W.count } }),
-		hoverable({
-			type = "sprite-button",
-			style = "cybersyn_log_print",
-			sprite = "utility/center",
-			tooltip = { "cybersyn-gui.log-print-tooltip" },
-			handler = { [defines.events.on_gui_click] = log_tab.handle.log_print_click },
-		}),
+-- The tags of each part of a row (hover scope and handler names as flib writes them), made once: rows are built with
+-- plain LuaGuiElement.add calls, about three times cheaper than flib's gui.add per element.
+local row_tags
+
+local function hover_tags(handlers)
+	local h = { [defines.events.on_gui_hover] = util.handle.hover_enter, [defines.events.on_gui_leave] = util.handle.hover_leave }
+	for k, v in pairs(handlers or {}) do h[k] = v end
+	return gui.format_handlers(h, { hover_scope = ROWS })
+end
+
+local function make_row_tags()
+	local click = defines.events.on_gui_click
+	local link = log_tab.handle.log_link_click
+	local function with(t, extra)
+		for k, v in pairs(extra) do t[k] = v end
+		return t
+	end
+	row_tags = {
+		plain = hover_tags(),
+		train = with(hover_tags({ [click] = link }), { cell = "train" }),
+		station = with(hover_tags({ [click] = link }), { cell = "station" }),
+		item = with(hover_tags({ [click] = link }), { cell = "item" }),
+		message = hover_tags({ [click] = log_tab.handle.log_row_click }),
+		print = hover_tags({ [click] = log_tab.handle.log_print_click }),
 	}
 end
 
--- One set of row callbacks for every row (util.sync_children passes the entry); the render's context is in upvalues
--- set by render_rows, so a render allocates no closures.
+local LEFT_RIGHT = { "left", "right" }
+
+--- One empty row at `index` (nil = at the end); write_cells fills it. Rows are reused for other events, so their link
+--- cells carry no target: the click finds it from the row.
+--- @param parent LuaGuiElement
+--- @param index int?
+--- @param widths {station: int, message: int}
+--- @return LuaGuiElement
+local function build_row(parent, index, widths)
+	if not row_tags then make_row_tags() end
+	local t = row_tags
+	local row = parent.add({ type = "frame", direction = "horizontal", style = "cybersyn_log_row", index = index,
+		raise_hover_events = true, tags = t.plain })
+	row.add({ type = "label", style = "cybersyn_log_age", raise_hover_events = true, tags = t.plain }).style.width = W.age
+	row.add({ type = "sprite", style = "cybersyn_log_dot", raise_hover_events = true, tags = t.plain })
+	row.add({ type = "sprite", style = "cybersyn_log_kind", raise_hover_events = true, tags = t.plain })
+	row.add({ type = "button", style = "cybersyn_log_link", mouse_button_filter = LEFT_RIGHT,
+		tooltip = { "cybersyn-gui.link-footer" }, raise_hover_events = true, tags = t.train }).style.width = W.train
+	name_cell.pooled_add(row, widths.station, "cybersyn_log_cell_flow", { type = "button", style = "cybersyn_log_link",
+		mouse_button_filter = LEFT_RIGHT, raise_hover_events = true, tags = t.station })
+	row.add({ type = "sprite-button", style = "cybersyn_log_item", mouse_button_filter = LEFT_RIGHT,
+		tooltip = { "cybersyn-gui.item-click-hint" }, raise_hover_events = true, tags = t.item })
+	row.add({ type = "label", style = "cybersyn_log_message", raise_hover_events = true, tags = t.message }).style.width =
+		widths.message
+	row.add({ type = "label", style = "cybersyn_log_count", raise_hover_events = true, tags = t.plain }).style.width = W.count
+	row.add({ type = "sprite-button", style = "cybersyn_log_print", sprite = "utility/center",
+		tooltip = { "cybersyn-gui.log-print-tooltip" }, raise_hover_events = true, tags = t.print })
+	return row
+end
+
+-- The render's context in upvalues set by render_rows, so a render allocates no closures.
 local r_memo, r_widths, r_now
 
---- @param entry {key: uint, g: LogGroup}
-local function row_build(entry)
-	r_memo[entry.key] = nil
-	return hoverable({ type = "frame", direction = "horizontal", style = "cybersyn_log_row", children = cell_defs(r_widths) })
-end
-
-local function row_built(elem, entry)
-	if not entry.g then
-		elem.visible = false
-		r_memo[entry.key] = { hidden = true }
-		return
-	end
-	local m = { g = entry.g }
-	local cells = row_cells(elem, m)
-	write_cells(cells, entry.g, m, r_now, entry.key)
-	m.a = model.age_caption(r_now, entry.g, util.short_duration)
-	cells[1].caption = m.a
-	r_memo[entry.key] = m
-end
-
--- The element keeps what it showed for the vanished key, so its memo moves with it.
-local function row_reuse(elem, old_key, entry)
-	r_memo[entry.key] = r_memo[old_key] or {}
-	r_memo[old_key] = nil
-end
-
-local function row_update(elem, entry)
+--- Brings one row element to `entry` (a LogDisplayRow, or a placeholder without a group): its memo says what the
+--- element shows, so only what changed is written; the age only when `age` is set (the viewport and its slice).
+--- @param elem LuaGuiElement
+--- @param entry {key: number, g: LogGroup?, x: boolean?}
+--- @param age boolean?
+--- @param still boolean? held: the age only, no name refresh
+local function row_write(elem, entry, age, still)
 	local key, g, now = entry.key, entry.g, r_now
 	local m = r_memo[key]
 	if not m then
@@ -801,23 +829,198 @@ local function row_update(elem, entry)
 		elem.visible = true
 		m.hidden = nil
 	end
-	if m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.epoch ~= name_epoch(key, now) then
-		write_cells(row_cells(elem, m), g, m, now, key)
+	local cells = row_cells(elem, m)
+	local moved = m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.x_ ~= entry.x
+	if moved or (age and not still and m.epoch ~= name_epoch(key, now)) then
+		write_cells(cells, g, m, now, key, entry.x, entry.child)
 	end
-	local age = model.age_caption(now, g, util.short_duration)
-	if m.a ~= age then
-		row_cells(elem, m)[1].caption = age
-		m.a = age
+	if age or moved or not m.a then
+		local caption = model.age_caption(now, g, util.short_duration)
+		if m.a ~= caption then
+			cells[1].caption = caption
+			m.a = caption
+		end
+	end
+end
+
+--- Reconciles the rows table with `entries`. Moving a row costs one swap_children (about 0.5 µs) and writing one
+--- about 40 µs on pY (building one about 75 µs), so rows are moved, not rewritten: a key still shown is swapped into
+--- its place, a new key takes the element of a key that left (or a built one), and only those elements are written.
+--- Under Follow a new event is one element rewritten at the top and every other row swapped one place down; a lint
+--- pass moving up is swaps only. New keys below the viewport (a filter change, a burst after a hold) are hidden and
+--- written DEFER_ROWS per update, top down, so a burst costs about a viewport of writes at once.
+--- Each element's memo says what it shows, so a write touches only the cells that differ.
+--- @param parent LuaGuiElement
+--- @param entries {key: number, g: LogGroup?, x: boolean?}[]
+--- @param state table util.gui_state of the rows
+--- @param build_left int rows that may be built in this call; the rest of a long fill waits for the next update
+--- @param viewport int rows from the top written now, with their ages
+local function sync_rows(parent, entries, state, build_left, viewport)
+	local cur, elems = state.keys, state.elems
+	if not (cur and elems and #cur == #elems and (not elems[1] or elems[1].valid)) then
+		parent.clear()
+		cur, elems = {}, {}
+	end
+	local memo = r_memo
+	local n = #entries
+	local wanted = {}
+	for i = 1, n do wanted[entries[i].key] = true end
+	local pos_of, free = {}, {}
+	for j = 1, #cur do
+		local key = cur[j]
+		pos_of[key] = j
+		if not wanted[key] then free[#free + 1] = key end
+	end
+	local function swap(i, j)
+		parent.swap_children(i, j)
+		cur[i], cur[j] = cur[j], cur[i]
+		elems[i], elems[j] = elems[j], elems[i]
+		pos_of[cur[i]] = i
+		pos_of[cur[j]] = j
+	end
+	local defer = false
+	local built = 0
+	local i = 1
+	while i <= n do
+		local entry = entries[i]
+		local key = entry.key
+		local fresh = false
+		if cur[i] ~= key then
+			local j = pos_of[key]
+			if j then
+				swap(i, j)
+			elseif #free > 0 then
+				-- The lowest free element, so the rows above the change are not moved.
+				local old = table.remove(free)
+				local k = pos_of[old]
+				if k ~= i then swap(i, k) end
+				pos_of[old] = nil
+				memo[key] = memo[old] or {}
+				memo[old] = nil
+				cur[i] = key
+				pos_of[key] = i
+				fresh = true
+			else
+				if built >= build_left then break end
+				local elem = build_row(parent, i <= #cur and i or nil, r_widths)
+				table.insert(cur, i, key)
+				table.insert(elems, i, elem)
+				for p = i, #cur do pos_of[cur[p]] = p end
+				memo[key] = {}
+				built = built + 1
+				fresh = true
+			end
+		end
+		local m = memo[key]
+		if not m then
+			m = {}
+			memo[key] = m
+		end
+		if fresh and i > viewport and entry.g then
+			m.stale = true
+			defer = true
+			if not m.hidden then
+				elems[i].visible = false
+				m.hidden = true
+			end
+		elseif not m.stale then
+			row_write(elems[i], entry, i <= viewport)
+		elseif i <= viewport then
+			m.stale = nil
+			row_write(elems[i], entry, true)
+		else
+			defer = true
+		end
+		i = i + 1
+	end
+	for j = #cur, i, -1 do
+		elems[j].destroy()
+		memo[cur[j]] = nil
+		cur[j] = nil
+		elems[j] = nil
+	end
+	if defer then state.defer_from = viewport + 1 end
+	state.keys, state.elems = cur, elems
+end
+
+--- Writes up to DEFER_ROWS of the rows the last rewrite left hidden, top down.
+--- @param state table
+--- @param entries {key: number, g: LogGroup?, x: boolean?}[] the entries the keys were made from
+--- @param viewport int
+local function write_deferred(state, entries, viewport)
+	local from = state.defer_from
+	if not from then return end
+	local keys, elems, memo = state.keys, state.elems, r_memo
+	local n = #keys
+	local done = 0
+	local i = math.max(from, viewport + 1)
+	while i <= n and done < DEFER_ROWS do
+		local m = memo[keys[i]]
+		if m and m.stale then
+			m.stale = nil
+			row_write(elems[i], entries[i], false)
+			done = done + 1
+		end
+		i = i + 1
+	end
+	state.defer_from = i <= n and i or nil
+end
+
+--- Writes the ages of the next rows below the viewport (age only, no other cell), as many as the time since the last
+--- slice asks for, at most a viewport (see AGE_TICKS).
+--- @param state table
+--- @param entries {key: number, g: LogGroup?, x: boolean?}[]
+--- @param viewport int
+--- @param now uint
+local function age_slice(state, entries, viewport, now)
+	local keys, elems, memo = state.keys, state.elems, r_memo
+	local n = #keys
+	local below = n - viewport
+	if below <= 0 then return end
+	local last = state.age_tick
+	state.age_tick = now
+	-- The rows were just written with their ages.
+	if not last then return end
+	local elapsed = math.min(now - last, AGE_TICKS)
+	if elapsed <= 0 then return end
+	local count = math.ceil(below * elapsed / AGE_TICKS)
+	if count > viewport then count = viewport end
+	local cursor = state.age_cursor or viewport
+	for _ = 1, count do
+		cursor = (cursor >= n or cursor < viewport) and viewport + 1 or cursor + 1
+		local m = memo[keys[cursor]]
+		local e = entries[cursor]
+		if m and not m.stale and e and e.g then row_write(elems[cursor], e, true, true) end
+	end
+	state.age_cursor = cursor
+end
+
+--- While held: every row's age at once, once per AGE_TICKS (see there).
+--- @param state table
+--- @param entries {key: number, g: LogGroup?, x: boolean?}[]
+--- @param now uint
+local function held_ages(state, entries, now)
+	local last = state.held_age_tick
+	if last and now - last < AGE_TICKS then return end
+	state.held_age_tick = now
+	local keys, elems, memo = state.keys, state.elems, r_memo
+	for i = 1, #keys do
+		local m = memo[keys[i]]
+		local e = entries[i]
+		if m and not m.stale and e and e.g then row_write(elems[i], e, true, true) end
 	end
 end
 
 --- Rows live in a one-column table whose odd-row background gives the tint, so a row that moves needs no restyle.
---- The table always holds `limit` rows: those without a group are hidden placeholders, so a filter that shows few
+--- The table holds PAGE rows once filled: those without a group are hidden placeholders, so a filter that shows few
 --- rows destroys none and the next one that shows many creates none.
 --- @param player_data PlayerData
---- @param groups LogGroup[]
---- @param limit int
-local function render_rows(player_data, groups, limit, changed)
+--- @param display LogDisplayRow[]
+--- @param size int rows the table holds (PAGE; the prewarm grows it)
+--- @param changed boolean
+--- @param viewport int rows written every update
+--- @param held boolean? Follow is held: rows keep their contents, only ages move, the whole page at once every AGE_TICKS
+local function render_rows(player_data, display, size, changed, viewport, held)
 	local refs = player_data.refs
 	local parent = refs[ROWS]
 	local widths = player_data.log_widths
@@ -829,45 +1032,62 @@ local function render_rows(player_data, groups, limit, changed)
 		state.memo = memo
 	end
 	local now = game.tick
-	-- Nothing new and nothing held back: the rows stay, only the age column and the staggered name refresh move.
-	if not changed and state.groups == groups and state.limit == limit and state.widths == widths and not state.dirty
-		and state.keys then
-		local intact = true
-		for _, key in ipairs(state.keys) do
-			local m = memo[key]
-			local g = m and m.g
-			if g and not m.hidden then
-				local cells = m.cells
-				if not (cells and cells[1].valid) then
-					intact = false
-					break
-				end
-				view_cache = view_cache or {}
-				if m.epoch ~= name_epoch(key, now) then write_cells(cells, g, m, now, key) end
-				local age = model.age_caption(now, g, util.short_duration)
-				if m.a ~= age then
-					cells[1].caption = age
-					m.a = age
-				end
-			end
-		end
-		view_cache = nil
-		if intact then return end
-	end
-	state.groups, state.limit, state.widths = groups, limit, widths
 	r_memo, r_widths, r_now = memo, widths, now
 	view_cache = {}
-	local entries = {}
-	for i, g in ipairs(groups) do
-		entries[i] = { key = g.first, g = g, build = row_build, built = row_built, reuse = row_reuse, update = row_update }
+	local entries = state.entries
+	-- Nothing new: only the ages and the staggered name refresh move, for the viewport and one slice below it, and
+	-- the rows a rewrite left for later.
+	if not changed and entries and state.display == display and state.size == size and state.widths == widths and
+		state.keys and #state.keys == size and not state.filling then
+		local keys, elems = state.keys, state.elems
+		local intact = elems and #elems == #keys and (not elems[1] or elems[1].valid)
+		if intact then
+			-- Rows a rewrite left hidden are already in their final places, so showing them moves nothing even while
+			-- Follow is held.
+			write_deferred(state, entries, viewport)
+			if held then
+				-- The reader's rows keep their contents (PLAN4 D12), only ages move.
+				held_ages(state, entries, now)
+			else
+				for i = 1, math.min(viewport, #keys) do
+					local m = memo[keys[i]]
+					if m and not m.stale and display[i] then row_write(elems[i], display[i], true) end
+				end
+				age_slice(state, entries, viewport, now)
+			end
+			r_memo, r_widths, view_cache = nil, nil, nil
+			return
+		end
 	end
-	for i = #groups + 1, math.max(limit, #groups) do
-		entries[i] = { key = -i, build = row_build, built = row_built, reuse = row_reuse, update = row_update }
+	if prof and prof.sync then prof.entries.restart() end
+	state.display, state.size, state.widths = display, size, widths
+	entries = {}
+	for i, row in ipairs(display) do entries[i] = row end
+	local placeholders = state.placeholders
+	if not placeholders then
+		placeholders = {}
+		state.placeholders = placeholders
 	end
-	util.sync_children(parent, entries, state, util.hold_active(player_data, ROWS), true)
-	local keep = {}
-	for _, key in ipairs(state.keys or {}) do keep[key] = memo[key] end
-	state.memo = keep
+	for i = #display + 1, size do
+		local e = placeholders[i]
+		if not e then
+			e = { key = -i }
+			placeholders[i] = e
+		end
+		entries[i] = e
+	end
+	state.entries = entries
+	-- The first viewport is built in one go; a long fill below it continues over the next updates.
+	local have = state.keys and #state.keys or 0
+	local budget = math.max(viewport - have, 0) + FILL_ROWS
+	if not state.filled_once then budget = math.max(viewport, FIRST_FILL) end
+	if prof and prof.sync then prof.entries.stop() prof.sync.restart() end
+	sync_rows(parent, entries, state, budget, viewport)
+	write_deferred(state, entries, viewport)
+	if held then held_ages(state, entries, now) else age_slice(state, entries, viewport, now) end
+	if prof and prof.sync then prof.sync.stop() end
+	state.filled_once = true
+	state.filling = #state.keys < #entries or nil
 	r_memo, r_widths, view_cache = nil, nil, nil
 end
 
@@ -972,7 +1192,8 @@ local function header_line(d)
 	end
 	local per_cycle, cycle_ticks = cycle_figures()
 	local per = per_cycle and format.number(per_cycle) or "–"
-	return { "cybersyn-gui.log-header", covering, mode, tostring(cycle_ticks), per },
+	-- The plurals take the plain numbers: a grouped one ("1,234") is not a number to the locale engine.
+	return { "cybersyn-gui.log-header", covering, mode, tostring(cycle_ticks), per, tostring(per_cycle or 0) },
 		covering .. "|" .. basic_covering .. "|" .. cycle_ticks .. "|" .. per
 end
 
@@ -1055,7 +1276,12 @@ function log_tab.restore_widgets(player_data)
 	end
 	local window = refs.log_window_dropdown
 	if window and window.valid then window.selected_index = f.window or model.DEFAULT_WINDOW end
-	if refs.log_follow and refs.log_follow.valid then refs.log_follow.toggled = f.follow ~= false end
+	local follow = refs.log_follow
+	if follow and follow.valid then
+		local on = f.follow ~= false
+		follow.caption = on and { "cybersyn-gui.log-pause" } or { "cybersyn-gui.log-newest" }
+		follow.tooltip = on and { "cybersyn-gui.log-pause-tooltip" } or { "cybersyn-gui.log-newest-tooltip" }
+	end
 	if refs.log_summary_toggle and refs.log_summary_toggle.valid then refs.log_summary_toggle.toggled = f.summary == true end
 	local chip = refs.log_subject_chip
 	if chip and chip.valid then
@@ -1108,6 +1334,7 @@ function log_tab.forget(player_data)
 	player_data.log_counts = nil
 	player_data.log_summary = nil
 	player_data.log_cf = nil
+	player_data.log_expanded = nil
 end
 
 local PREWARM_ROWS = 6
@@ -1119,10 +1346,10 @@ function log_tab.prewarm(player_data)
 	if player_data.selected_tab == TAB or player_data.item_view then return end
 	local parent = player_data.refs[ROWS]
 	if not (parent and parent.valid and player_data.log_widths and collector.get().tick) then return end
-	local limit = row_limit(player_data)
-	local have = #parent.children
-	if have >= limit then return end
-	render_rows(player_data, {}, math.min(limit, have + PREWARM_ROWS), true)
+	local state = util.gui_state(player_data, ROWS)
+	local have = state.keys and #state.keys or #parent.children
+	if have >= PAGE then return end
+	render_rows(player_data, {}, math.min(PAGE, have + PREWARM_ROWS), true, row_limit(player_data))
 end
 
 --- Unread errors as the tab's badge (PLAN3 §4.6), and the row pool prewarmed.
@@ -1139,7 +1366,7 @@ function log_tab.refresh_badge(player_data)
 		player_data.log_badge = bs
 	end
 	local n = model.update_badge(bs, d, model.seen_seq(player_data.log_seen, d), BADGE_BUDGET, diag.inherit_threshold(d))
-	local caption = n > 0 and format.number(n) or ""
+	local caption = model.badge_caption(n)
 	if tab.badge_text ~= caption then
 		tab.badge_text = caption
 		tab.tooltip = n > 0 and { "cybersyn-gui.log-badge-tooltip", format.number(n), tostring(n) } or ""
@@ -1218,16 +1445,31 @@ function log_tab.build(map_data, player_data)
 			player_data.log_rows = rs
 		end
 		prof_start("rows")
-		local rows_changed, used = model.update_rows(rs, d, cf, limit, f.follow ~= false, left)
+		local held = log_tab.held(player_data)
+		local rows_changed, used = model.update_rows(rs, d, cf, PAGE, f.follow ~= false, left, held)
 		left = left - used
 		prof_stop("rows")
 		prof_start("render")
 		if summary_flow.visible then summary_flow.visible = false end
 		local any = #rs.groups > 0
+		local scroll = refs.log_scroll
+		if scroll.visible ~= any then scroll.visible = any end
 		if rows_flow.visible ~= any then rows_flow.visible = any end
 		-- With nothing to show the row elements stay (hidden), to be reused when rows come back.
-		if any then render_rows(player_data, rs.groups, limit, rows_changed) end
+		if any then
+			local expanded = player_data.log_expanded
+			local now_sig = player_data.log_expanded_v or 0
+			if rows_changed or not rs.display or rs.expanded_sig ~= now_sig then
+				if prof and prof.display then prof.display.restart() end
+				rs.display = model.display(rs.groups, expanded, find_ring_group, PAGE)
+				if prof and prof.display then prof.display.stop() end
+				rs.expanded_sig = now_sig
+				rows_changed = true
+			end
+			render_rows(player_data, rs.display, PAGE, rows_changed, limit, held)
+		end
 		prof_stop("render")
+		rs.held = held or nil
 		if not any then
 			if rs.below then
 				empty_sig, empty_caption = "scanning", { "cybersyn-gui.log-scanning" }
@@ -1241,6 +1483,9 @@ function log_tab.build(map_data, player_data)
 			status_sig = "paused" .. shown
 			status = { "cybersyn-gui.log-paused", shown, tostring(newer) }
 			seen = rs.anchor
+		elseif rs.held then
+			status_sig, status = "held", { "cybersyn-gui.log-held" }
+			seen = rs.top
 		else
 			status_sig, status = "", ""
 		end
@@ -1263,10 +1508,10 @@ function log_tab.build(map_data, player_data)
 	prof_stop("rest")
 end
 
---- Rows shown, for dev.rows.
+--- Rows the scroll pane holds and shows (up to PAGE; the viewport shows rows_by_tab of them), for dev.rows.
 --- @param player_data PlayerData
 --- @return int
-function log_tab.rendered_rows(player_data)
+function log_tab.page_rows(player_data)
 	local parent = player_data.refs[ROWS]
 	if not (parent and parent.valid and parent.visible) then return 0 end
 	local n = 0
@@ -1276,7 +1521,7 @@ function log_tab.rendered_rows(player_data)
 	return n
 end
 
-dev.register_rows(TAB, log_tab.rendered_rows)
+dev.register_rows(TAB, log_tab.page_rows)
 
 -- ---------------------------------------------------------------- export, chat print, the subject chip
 
@@ -1465,11 +1710,20 @@ function log_tab.handle.log_window_changed(player, player_data, refs, e)
 	changed(player, player_data)
 end
 
+--- Pause, or Newest: back to the top and following again.
+--- @param player_data PlayerData
+--- @param on boolean
+function log_tab.set_follow(player_data, on)
+	local f = get_filter(player_data)
+	f.follow = on
+	log_tab.restore_widgets(player_data)
+	local scroll = player_data.refs.log_scroll
+	if on and scroll and scroll.valid then scroll.scroll_to_top() end
+end
+
 --- @param e EventData.on_gui_click
 function log_tab.handle.log_follow_changed(player, player_data, refs, e)
-	local f = get_filter(player_data)
-	f.follow = f.follow == false
-	e.element.toggled = f.follow
+	log_tab.set_follow(player_data, get_filter(player_data).follow == false)
 	changed(player, player_data)
 end
 
@@ -1547,6 +1801,25 @@ end
 
 log_tab.cell_target = cell_target
 
+--- A lint pass's row opens and closes its rows.
+--- @param player_data PlayerData
+--- @param g LogGroup
+--- @return boolean toggled
+function log_tab.toggle_pass(player_data, g)
+	if not (g and g.pass and g.n > 1) then return false end
+	local expanded = player_data.log_expanded or {}
+	player_data.log_expanded = expanded
+	expanded[g.pass] = not expanded[g.pass] or nil
+	player_data.log_expanded_v = (player_data.log_expanded_v or 0) + 1
+	return true
+end
+
+--- @param e EventData.on_gui_click
+function log_tab.handle.log_row_click(player, player_data, refs, e)
+	util.touch_hover(e)
+	if log_tab.toggle_pass(player_data, row_group(player_data, e.element)) then changed(player, player_data) end
+end
+
 gui.add_handlers(log_tab.handle, log_tab.wrapper)
 
 -- ---------------------------------------------------------------- dev interface
@@ -1590,7 +1863,8 @@ dev.register_dump(TAB, function(player_data)
 	local parent = refs[ROWS]
 	-- What a row's link cells open, from the group shown at that position (rows are not held while dumping).
 	local function target(i, cell)
-		local g = rs and rs.groups[i]
+		local row = rs and rs.display and rs.display[i]
+		local g = row and row.g
 		if not g then return {} end
 		local k, id = cell_target(g, cell)
 		return { kind = k, id = id }
@@ -1600,7 +1874,10 @@ dev.register_dump(TAB, function(player_data)
 		for i, row in ipairs(parent.children) do
 			if not row.visible then break end
 			local c = row.children
-			local station = c[5].children[2]
+			local station, station_index
+			for k, child in ipairs(c[5].children) do
+				if child.type == "button" then station, station_index = child, k end
+			end
 			rows[i] = {
 				style = row.style.name,
 				height = row.style.maximal_height,
@@ -1612,6 +1889,8 @@ dev.register_dump(TAB, function(player_data)
 				train = c[4].caption,
 				train_tags = target(i, "train"),
 				station = station.caption,
+				station_index = station_index,
+				station_icons = #c[5].children - 1,
 				station_tags = target(i, "station"),
 				station_handler = station.tags[handler_tag] ~= nil,
 				item = target(i, "item").id,
@@ -1624,7 +1903,19 @@ dev.register_dump(TAB, function(player_data)
 	out.rows = rows
 	out.rows_style = parent and parent.valid and parent.style.name or nil
 	out.keys = util.gui_state(player_data, ROWS).keys
-	out.held = util.gui_state(player_data, ROWS).dirty == true
+	out.held = rs and rs.held == true or false
+	out.page = PAGE
+	out.pool = parent and parent.valid and #parent.children or 0
+	out.shown = log_tab.page_rows(player_data)
+	local scroll = refs.log_scroll
+	out.scroll = scroll and scroll.valid and { type = scroll.type, vertical = scroll.vertical_scroll_policy,
+		height = scroll.style.maximal_height, hover = scroll.raise_hover_events } or nil
+	out.follow_button = refs.log_follow.caption
+	out.display = {}
+	for i, row in ipairs(rs and rs.display or {}) do
+		out.display[i] = { key = row.key, child = row.child, x = row.x, seq = row.g.seq, n = row.g.n, pass = row.g.pass,
+			lint = row.g.lint }
+	end
 	out.header = refs.log_header.caption
 	out.status = refs.log_status.caption
 	out.empty = refs.log_empty_flow.visible and refs.log_empty.caption or nil
@@ -1713,14 +2004,63 @@ end)
 dev.add("log_profile", function(pi)
 	local player_data = storage.manager.players[pi]
 	prof = { written = 0 }
-	for _, k in ipairs({ "counts", "rows", "render", "rest" }) do prof[k] = game.create_profiler(true) end
+	for _, k in ipairs({ "counts", "rows", "render", "rest", "display", "entries", "sync" }) do
+		prof[k] = game.create_profiler(true)
+	end
 	local total = game.create_profiler()
 	log_tab.build(storage, player_data)
 	total.stop()
 	local p = prof
 	prof = nil
-	return { "", "total ", total, " | counts ", p.counts, " | rows ", p.rows, " | render ", p.render, " | rest ", p.rest,
-		" | rows written ", p.written }
+	return { "", "total ", total, " | counts ", p.counts, " | rows ", p.rows, " | render ", p.render, " (display ",
+		p.display, ", entries ", p.entries, ", sync ", p.sync, ") | rest ", p.rest, " | rows written ", p.written }
+end)
+
+--- Opens or closes the lint pass shown in display row `index` as a click on its message does; returns whether it
+--- toggled.
+dev.add("log_toggle_pass", function(pi, index)
+	local player = game.get_player(pi)
+	local player_data = storage.manager.players[pi]
+	local rs = player_data.log_rows
+	local row = rs and rs.display and rs.display[index]
+	local ok = log_tab.toggle_pass(player_data, row and row.g)
+	if ok and player and player_data.is_manager_open then util.rerender(player, player_data) end
+	return ok
+end)
+
+--- Row cost for budgets: builds `n` rows into a scratch table, writes the first `n` shown groups into them, writes them
+--- again (nothing changed), builds `n` bare frames; then destroys it all.
+dev.add("log_bench_rows", function(pi, n)
+	local player_data = storage.manager.players[pi]
+	local refs = player_data.refs
+	local parent = refs[ROWS].parent.add({ type = "table", column_count = 1 })
+	local rs = player_data.log_rows
+	r_widths, r_now, r_memo = player_data.log_widths, game.tick, {}
+	view_cache = {}
+	local p1 = game.create_profiler()
+	local elems = {}
+	for i = 1, n do elems[i] = build_row(parent, nil, r_widths) end
+	p1.stop()
+	local shown = #rs.display
+	local p2 = game.create_profiler()
+	for i = 1, n do
+		local row = rs.display[(i - 1) % shown + 1]
+		r_memo[-1000 - i] = {}
+		row_write(elems[i], { key = -1000 - i, g = row.g }, true)
+	end
+	p2.stop()
+	local p3 = game.create_profiler()
+	for i = 1, n do
+		local row = rs.display[(i - 1) % shown + 1]
+		row_write(elems[i], { key = -1000 - i, g = row.g }, true)
+	end
+	p3.stop()
+	local p4 = game.create_profiler()
+	for i = 1, n do parent.add({ type = "frame", direction = "horizontal", style = "cybersyn_log_row" }) end
+	p4.stop()
+	parent.destroy()
+	r_memo, r_widths, view_cache = nil, nil, nil
+	return { "", "build ", p1, " | first write ", p2, " | rewrite ", p3, " | bare frames ", p4 }
 end)
 
 --- Prints the row holding `seq` to player `pi` as the Print button does; returns the printed LocalisedString.

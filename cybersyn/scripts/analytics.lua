@@ -75,18 +75,30 @@ local interval_defs = {
 	{name = "1000h", ticks = 360000, steps = nil, length = 600},
 }
 
+--- The Breakdown tab's range buttons: each covers exactly the span its caption names (key = number + m or h).
+analytics.BREAKDOWN_RANGES = {
+	{ key = "1m", ticks = 3600 },
+	{ key = "10m", ticks = 36000 },
+	{ key = "1h", ticks = 216000 },
+	{ key = "10h", ticks = 2160000 },
+	{ key = "50h", ticks = 10800000 },
+}
+
+--- Ticks a range key names ("10m" = 36,000), nil for anything else.
+--- @param key string
+--- @return uint?
+function analytics.range_ticks(key)
+	local n, unit = string.match(key, "^(%d+)([mh])$")
+	if not n then return nil end
+	return tonumber(n) * (unit == "m" and 3600 or 216000)
+end
+
 local interval_map = {
 	["5s"] = 1, ["1m"] = 2, ["10m"] = 3, ["1h"] = 4,
 	["10h"] = 5, ["50h"] = 6, ["250h"] = 7, ["1000h"] = 8,
 }
 
 local SURFACE_NAME = "cybersyn_analytics"
-
----Create a new interval set (8 intervals for one graph)
----@return table[] intervals
-local function new_interval_set()
-	return charts.create_time_series(interval_defs)
-end
 
 ---Initialize analytics data structure
 ---@param map_data MapData
@@ -117,18 +129,18 @@ function analytics.init(map_data)
 		if not map_data.analytics.active_failures then
 			map_data.analytics.active_failures = {}
 		end
-		-- Clean up old data structures if present
+		-- Clean up old data structures if present: the Utilization chart's samples and two series no tab drew.
 		map_data.analytics.failed_dispatches = nil
 		map_data.analytics.last_failure_tick = nil
+		map_data.analytics.train_utilization = nil
+		map_data.analytics.fulfillment_times = nil
+		map_data.analytics.total_delivery_times = nil
 		return
 	end
 
 	map_data.analytics = {
 		surface = surface_data.surface,
 		surface_data = surface_data,
-		train_utilization = new_interval_set(),
-		fulfillment_times = new_interval_set(),
-		total_delivery_times = new_interval_set(),
 		delivery_starts = {},
 		fulfillment_ema = {},
 		total_time_ema = {},
@@ -139,6 +151,13 @@ function analytics.init(map_data)
 		breakdown_interval = nil,
 	}
 	debug_log("Analytics initialized, surface index: " .. surface_data.surface.index)
+end
+
+---The map setting alone: the Utilization tab needs nothing else.
+---@return boolean
+function analytics.setting_enabled()
+	local setting = settings.global["cybersyn-enable-analytics"]
+	return setting and setting.value == true or false
 end
 
 ---Check if analytics is enabled (requires both setting AND factorio-charts library)
@@ -188,25 +207,6 @@ end
 function analytics.interval_unregister_gui(map_data, interval, player)
 	interval.guis[player.index] = nil
 	interval.viewer_count = interval.viewer_count - 1
-end
-
----Render a graph to its chunk using the library
----@param map_data MapData
----@param intervals table[]
----@param interval_index number
----@param selected_series table?
----@param fixed_range table?
----@param label_format string?
----@return table? ordered_sums Series ordered by sum
----@return table? hit_regions Hit regions for interaction
-function analytics.render_graph(map_data, intervals, interval_index, selected_series, fixed_range, label_format, viewport_width, viewport_height)
-	return charts.render_time_series(map_data.analytics.surface, intervals, interval_index, {
-		selected_series = selected_series,
-		y_range = fixed_range,
-		label_format = label_format,
-		viewport_width = viewport_width,
-		viewport_height = viewport_height,
-	})
 end
 
 ---Record delivery start for time tracking
@@ -476,60 +476,6 @@ function analytics.get_active_failures(map_data, oldest_tick)
 	end
 
 	return results
-end
-
-local WORKING_STATUSES = {
-	[1] = true, [2] = true, [3] = true, [4] = true,
-}
-
----Called each tick to sample analytics data
----@param map_data MapData
-function analytics.tick(map_data)
-	if not analytics.is_enabled() then return end
-	if not map_data.analytics then return end
-
-	local data = map_data.analytics
-
-	local working_counts = {}
-	local total_counts = {}
-
-	for train_id, train in pairs(map_data.trains) do
-		local layout_id = train.layout_id
-		if layout_id then
-			local key = tostring(layout_id)
-			total_counts[key] = (total_counts[key] or 0) + 1
-			if WORKING_STATUSES[train.status] then
-				working_counts[key] = (working_counts[key] or 0) + 1
-			end
-		end
-	end
-
-	local utilization_value = {}
-	for layout_id, total in pairs(total_counts) do
-		local working = working_counts[layout_id] or 0
-		local utilization = (working / total) * 100
-		utilization_value[layout_id] = utilization
-	end
-
-	if next(utilization_value) then
-		charts.add_datapoint(data.train_utilization, utilization_value)
-	end
-
-	if data.fulfillment_ema and next(data.fulfillment_ema) then
-		local fulfillment_value = {}
-		for item_hash, ema in pairs(data.fulfillment_ema) do
-			fulfillment_value[item_hash] = ema
-		end
-		charts.add_datapoint(data.fulfillment_times, fulfillment_value)
-	end
-
-	if data.total_time_ema and next(data.total_time_ema) then
-		local total_value = {}
-		for item_hash, ema in pairs(data.total_time_ema) do
-			total_value[item_hash] = ema
-		end
-		charts.add_datapoint(data.total_delivery_times, total_value)
-	end
 end
 
 ---Get interval definitions

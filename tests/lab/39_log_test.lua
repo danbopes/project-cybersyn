@@ -1,8 +1,10 @@
--- PLAN3 phase 6: the Log tab. Diagnostics full on the dev save with the trace's events plus events written through
--- the dev hook: rows == the layout's rows, every filter against an oracle over diag_events (both rings), adjacent
--- identical rows collapsed, the window, Follow and the hover hold, the severity counts, Summary, the unread-error
--- badge, the export (filter, rows, chunked over ticks, with manager updates off, finished when diagnostics go off),
--- chat print tags, the right-click subject chip, and the tab hiding while diagnostics are off.
+-- PLAN3 phase 6 / PLAN4 D12: the Log tab. Diagnostics full on the dev save with the trace's events plus events
+-- written through the dev hook: a scroll pane of the newest 200 matching rows whose viewport shows the layout's rows,
+-- every filter against an oracle over diag_events (both rings), adjacent identical rows collapsed and one row per lint
+-- pass (expandable), the window, Follow with Pause / Newest, the hover hold over the pane,
+-- the severity counts, Summary, the unread-error badge (capped at 99+), the export (filter, rows, chunked over ticks,
+-- with manager updates off, finished when diagnostics go off), chat print tags, the right-click subject chip, and the
+-- tab hiding while diagnostics are off.
 
 local D, pi = lab.D, lab.pi
 
@@ -19,7 +21,9 @@ local function render()
 		dev("update", pi, 1)
 		d = dev("log_dump", pi)
 		local summary = d.filter and d.filter.summary
-		if not (d.counting or (not summary and d.complete == false)) then break end
+		-- The page's rows below the first viewport are built over a few updates (PLAN4 D12).
+		local filling = not summary and d.display and d.shown < #d.display
+		if not (d.counting or filling or (not summary and d.complete == false)) then break end
 	end
 	return d
 end
@@ -75,19 +79,25 @@ local function same_row(a, b)
 	return true
 end
 
---- Rows the Log must show: matching events newest first, adjacent identical ones collapsed, `limit` rows.
+--- Rows the Log must show: matching events newest first, adjacent identical ones collapsed, every lint row of one pass
+--- (its delivery column, else its tick) in that pass's row wherever it lies, `limit` rows.
 local function oracle_rows(fs, limit)
 	local pass = oracle_filter(fs, true)
-	local out = {}
+	local out, passes = {}, {}
 	for _, ev in ipairs(all_events()) do
 		if pass(ev) then
 			local last = out[#out]
-			if last and same_row(last.ev, ev) then
+			local key = ev.kind == "lint" and (ev.delivery ~= 0 and ev.delivery or -ev.tick) or nil
+			if key and passes[key] then
+				passes[key].n = passes[key].n + 1
+				passes[key].first = ev.seq
+			elseif not key and last and not last.pass and same_row(last.ev, ev) then
 				last.n = last.n + 1
 				last.first = ev.seq
 			else
 				if #out >= limit then break end
-				out[#out + 1] = { ev = ev, seq = ev.seq, first = ev.seq, n = 1 }
+				out[#out + 1] = { ev = ev, seq = ev.seq, first = ev.seq, n = 1, pass = key }
+				if key then passes[key] = out[#out] end
 			end
 		end
 	end
@@ -104,7 +114,7 @@ end
 local function check_rows(label)
 	local d = render()
 	local fs = dev("log_filter_state", pi)
-	local want = oracle_rows(fs, fs.limit)
+	local want = oracle_rows(fs, d.page)
 	local got = shape(d.groups)
 	local ok = got == shape(want) and #d.rows == #want
 	lab.check(label .. ": rows == oracle (" .. #want .. " rows)", ok, { got = got, want = shape(want), rendered = #d.rows })
@@ -164,8 +174,12 @@ lab.suite("39_log", {
 		end
 		local d = render()
 		local r = dev("rows", pi, "log")
-		lab.check("rows rendered == the layout's rows (4K at 1.5)", r.rendered == r.computed and r.computed == d.limit and
-			#d.groups == r.computed, r)
+		local total = #oracle_rows(dev("log_filter_state", pi), 100000)
+		lab.check("the viewport shows the layout's rows (4K at 1.5); the pane holds the newest 200",
+			r.rendered == #d.groups and r.computed == d.limit and #d.groups == math.min(d.page, total) and
+			d.shown == #d.groups and d.page == 200, { r = r, groups = #d.groups, shown = d.shown, total = total })
+		lab.check("the rows sit in a vertical scroll pane", d.scroll and d.scroll.type == "scroll-pane" and
+			d.scroll.vertical == "always" and d.scroll.height == r.computed * 28, d.scroll)
 		lab.check("every row is a 28 px row frame in the striped rows table", d.rows[1] and
 			d.rows[1].style == "cybersyn_log_row" and d.rows[2].style == "cybersyn_log_row" and
 			d.rows_style == "cybersyn_log_rows_table", { d.rows[1] and d.rows[1].style, d.rows_style })
@@ -260,21 +274,116 @@ lab.suite("39_log", {
 		dev("log_set_filter", pi, { follow = true })
 		d = render()
 		lab.check("Follow back on: the newest event is on top", d.groups[1].a == 9, d.groups[1])
-		-- Two findings that appear together on one stop are two rows, each with its own check and severity.
+		-- The pointer over the pane itself (its gaps, its scroll bar) holds as a row does.
+		h = dev("hover", pi, "log_body", 1)
+		keys = table.concat(d.keys, ",")
+		dev("diag_event", "station_limit", "info", { station = ctx.station_ids[5], a = 11, b = 11 })
+		d = render()
+		lab.check("the pointer over the scroll pane holds Follow and says so", table.concat(d.keys, ",") == keys and d.held and
+			type(d.status) == "table" and d.status[1] == "cybersyn-gui.log-held", { h = h, held = d.held, status = d.status })
+		dev("hover", pi, "log_body", 1, true)
+		d = render()
+		lab.check("leaving the pane lets the event in", d.groups[1].a == 11 and not d.held, d.groups[1])
+		-- Pause / Newest (the wheel cannot pause Follow: a custom input on it does not fire over a scroll pane; the phase
+		-- report has the client probe).
+		lab.check("following: the subheader control reads Pause", type(d.follow_button) == "table" and
+			d.follow_button[1] == "cybersyn-gui.log-pause", d.follow_button)
+		dev("click", pi, "log_follow")
+		d = render()
+		lab.check("Pause: the control reads Newest and the status counts newer events", d.filter.follow == false and
+			d.follow_button[1] == "cybersyn-gui.log-newest" and d.status[1] == "cybersyn-gui.log-paused", d.follow_button)
+		dev("click", pi, "log_follow")
+		d = render()
+		lab.check("Newest: following again", d.filter.follow ~= false and d.follow_button[1] == "cybersyn-gui.log-pause",
+			d.follow_button)
+		dev("log_set_filter", pi, { follow = true })
+		d = render()
+		-- PLAN4 (round-5 item 10): the findings of one lint pass are one row, "Lint: 2 errors, 1 warning ▸", whatever
+		-- lies between them; clicking it shows them below it.
 		local lsid = ctx.station_ids[7]
 		dev("diag_event", "lint", "warning", { code = 1, station = lsid, a = 5, b = lsid })
+		dev("diag_event", "station_limit", "info", { station = ctx.station_ids[8], a = 1, b = 1 })
 		dev("diag_event", "lint", "error", { code = 1, station = lsid, a = 3, b = lsid })
 		dev("diag_event", "lint", "error", { code = 1, station = lsid, a = 9, b = lsid })
 		d = check_rows("lint findings")
-		lab.check("xn: lint findings of different checks and severities are rows of their own", d.groups[1].a == 9 and
-			d.groups[1].n == 1 and d.groups[2].a == 3 and d.groups[2].n == 1 and d.groups[3].a == 5 and
-			d.groups[3].sev == "warning", { d.groups[1], d.groups[2], d.groups[3] })
+		local p = d.groups[1]
+		local msg = d.rows[1].message
+		lab.check("one row per lint pass with its counts by severity", p.kind == "lint" and p.n == 3 and
+			d.groups[2].kind == "station_limit" and type(msg) == "table" and msg[1] == "cybersyn-gui.log-lint-pass" and
+			msg[2][2][2] == "2" and msg[2][4][2] == "1" and msg[3] == "▸" and d.rows[1].count == "",
+			{ p, msg, d.rows[1].count })
+		dev("log_toggle_pass", pi, 1)
+		d = render()
+		local disp = d.display
+		lab.check("the pass row expands to its rows, newest first, below it, indented", d.rows[1].message[3] == "▾" and
+			disp[2].child and disp[3].child and disp[4].child and not disp[5].child and
+			#d.rows == math.min(d.page, #d.groups + 3) and
+			d.rows[2].message[1] == "" and d.rows[2].message[3][1] == "cybersyn-diag.msg-lint-appeared" and
+			disp[2].seq > disp[3].seq and d.rows[1].message[1] ~= "",
+			{ disp[1], disp[2], disp[3], disp[4], disp[5], rows = #d.rows })
+		dev("log_toggle_pass", pi, 1)
+		d = render()
+		lab.check("…and collapses again", #d.rows == #d.groups and d.rows[1].message[3] == "▸", #d.rows)
 		-- The header's cycle figures are storage.stats.cycle, as on the Overview.
 		local cycle = dev("cycle") or {}
-		lab.check("header: planner cycle ticks and dispatches per cycle == stats.cycle", type(d.header) == "table" and
-			d.header[4] == tostring(cycle.ticks_last or 0) and
-			d.header[5] == (cycle.dispatches_last and tostring(cycle.dispatches_last) or "–"), { d.header, cycle })
+		lab.check("header: planner cycle ticks and dispatches per cycle == stats.cycle, the plain count for the plural",
+			type(d.header) == "table" and d.header[4] == tostring(cycle.ticks_last or 0) and
+			d.header[5] == (cycle.dispatches_last and tostring(cycle.dispatches_last) or "–") and
+			d.header[6] == tostring(cycle.dispatches_last or 0), { d.header, cycle })
 		dev("set_setting", "cybersyn-enable-planner", true)
+	end,
+
+	-- PLAN4 D12 while Follow is held: the rows a rewrite left hidden below the viewport still come in (they are at their
+	-- final places), and the ages below the viewport keep moving, so a scrolled-to row never shows its age out of order.
+	function(ctx)
+		dev("set_setting", "cybersyn-enable-planner", false)
+		ctx.ups = settings.global["cybersyn-manager-updates-per-second"].value
+		dev("set_setting", "cybersyn-manager-updates-per-second", 0)
+		reset_filter()
+		for i = 1, 260 do
+			local even = i % 2 == 0
+			dev("diag_event", even and "station_limit" or "station_disabled", even and "info" or "warning",
+				{ station = ctx.station_ids[1 + i % 20], a = 2000 + i, b = 1 })
+		end
+		render()
+		dev("log_set_filter", pi, { kind = "station_disabled" }, true)
+		dev("hover", pi, "log_body", 1)
+		dev("update", pi, 1)
+		local d = dev("log_dump", pi)
+		local before = d.shown
+		for _ = 1, 20 do dev("update", pi, 1) end
+		d = dev("log_dump", pi)
+		lab.check("held: the rows a filter change left hidden still come in", before < #d.display and
+			d.shown == #d.display and d.held, { before = before, shown = d.shown, display = #d.display, held = d.held })
+		ctx.viewport = d.limit
+		lab.wait(240)
+	end,
+	function(ctx)
+		local function seconds(caption)
+			local t = 0
+			local scale = { d = 86400, h = 3600, m = 60, s = 1 }
+			for n, unit in string.gmatch(caption or "", "(%d+)([dhms])") do t = t + tonumber(n) * scale[unit] end
+			return t
+		end
+		dev("update", pi, 1)
+		local d = dev("log_dump", pi)
+		local prev, bad = -1, nil
+		for i, row in ipairs(d.rows) do
+			local s = seconds(row.age)
+			if s < prev then
+				bad = { i = i, age = row.age, above = d.rows[i - 1].age }
+				break
+			end
+			prev = s
+		end
+		lab.check("held: 4 s later one update brings every row's age in order down the page (the whole page moves together " ..
+			"every 2 s while held)", d.held and not bad and #d.rows > ctx.viewport and prev >= 4,
+			{ bad = bad, rows = #d.rows, viewport = ctx.viewport, last = prev, held = d.held })
+		dev("hover", pi, "log_body", 1, true)
+		reset_filter()
+		dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
+		dev("set_setting", "cybersyn-enable-planner", true)
+		render()
 	end,
 
 	-- Summary == the oracle's top stations and items in the window.
@@ -348,6 +457,11 @@ lab.suite("39_log", {
 		end
 		lab.check("badge == unread errors since the Log was last viewed", d.badge == tostring(unread) and unread == 4,
 			{ badge = d.badge, unread = unread })
+		for _ = 1, 96 do dev("diag_event", "dispatch_failed", "error", { code = 1 }) end
+		for _ = 1, 30 do dev("diag_event", "station_limit", "warning", {}) end
+		dev("tick", 1)
+		d = dev("log_dump", pi)
+		lab.check("badge: 100 unread errors read 99+, warnings never count", d.badge == "99+", d.badge)
 		dev("select_tab", pi, "log")
 		d = dev("log_dump", pi)
 		lab.check("viewing the Log clears the badge", d.badge == "", d.badge)
@@ -385,8 +499,12 @@ lab.suite("39_log", {
 		dev("select_tab", pi, "log")
 		local rows = find(screen, "log_rows")
 		local first = rows and rows.children[1]
+		local name_button
+		for _, c in ipairs(first and first.children[5].children or {}) do
+			if c.type == "button" then name_button = c end
+		end
 		lab.check("Log train and station links take right-clicks", first and first.children[4].mouse_button_filter.right and
-			first.children[5].children[2].mouse_button_filter.right, first and first.children[4].mouse_button_filter)
+			name_button and name_button.mouse_button_filter.right, first and first.children[4].mouse_button_filter)
 
 		-- Right-click on a station link anywhere sets the chip; the chip's click clears it.
 		dev("select_tab", pi, "overview")
@@ -400,19 +518,21 @@ lab.suite("39_log", {
 			if g.station ~= sid and g.station2 ~= sid then only = false end
 		end
 		lab.check("…and every row is about that stop", only and #d.groups > 0, #d.groups)
+		for _ = 1, 8 do d = render() dev("update", pi, 1) end
+		d = render()
 		local pool = find(screen, "log_rows")
-		lab.check("one row element per layout row; those without a group are hidden, none destroyed", pool and
-			#pool.children == d.limit and dev("rows", pi, "log").rendered == #d.groups,
-			{ children = pool and #pool.children, limit = d.limit, groups = #d.groups })
+		lab.check("one row element per page row; those without a group are hidden, none destroyed", pool and
+			#pool.children == d.page and d.shown == #d.groups,
+			{ children = pool and #pool.children, page = d.page, groups = #d.groups, shown = d.shown })
 		dev("click", pi, "log_subject_chip")
 		d = render()
 		lab.check("the chip's click clears it", d.filter.subject == nil and d.subject_chip == nil, d.filter.subject)
 		-- The same from a Log row's own station cell (rows are reused, so the cell finds its target from the row).
-		local idx, target
+		local idx, target, button
 		for i, row in ipairs(d.rows) do
-			if row.station_tags.kind == "station" then idx, target = i, row.station_tags.id break end
+			if row.station_tags.kind == "station" then idx, target, button = i, row.station_tags.id, row.station_index break end
 		end
-		local res = idx and dev("click", pi, "log_rows", { idx, 5, 2 }, { right = true })
+		local res = idx and dev("click", pi, "log_rows", { idx, 5, button }, { right = true })
 		d = render()
 		lab.check("right-click on a Log row's station cell sets the chip to that stop", idx ~= nil and
 			d.filter.subject and d.filter.subject.id == target, { idx = idx, res = res, subject = d.filter.subject })

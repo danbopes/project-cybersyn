@@ -1,6 +1,7 @@
 local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
 local dev = require("scripts.gui.dev")
+local util = require("scripts.gui.util")
 local utext = require("scripts.gui.unserved-text")
 
 -- Try to load the factorio-charts library for interaction support
@@ -14,7 +15,7 @@ local delivery_breakdown_tab = {}
 local CACHE_DURATION_TICKS = 300  -- 5 seconds at 60 UPS
 local MAX_BARS = 200  -- Limit bars rendered for performance
 
-local interval_names = {"1m", "10m", "1h", "10h", "50h"}
+local RANGES = analytics.BREAKDOWN_RANGES
 
 -- Graph dimensions (pixels) - sized to fill the manager window
 local GRAPH_WIDTH = 1100
@@ -48,29 +49,32 @@ local PHASE_ORDER = {"wait", "travel_to_p", "loading", "travel_to_r", "unloading
 -- Legend order matches visual top-to-bottom appearance in stacked bars
 local LEGEND_ORDER = {"unloading", "travel_to_r", "loading", "travel_to_p", "wait",
 	"fail_no_stock", "fail_no_train", "fail_capacity", "fail_layout"}
-local PHASE_LABELS = {
-	wait = "Matching",
-	travel_to_p = "Travel to P",
-	loading = "Loading",
-	travel_to_r = "Travel to R",
-	unloading = "Unloading",
-	fail_no_stock = "No Stock (F)",
-	fail_no_train = "No Train (F)",
-	fail_capacity = "Capacity (F)",
-	fail_layout = "Layout (F)",
-}
+--- @param phase string
+--- @return LocalisedString
+local function phase_label(phase)
+	return { "cybersyn-gui.breakdown-phase-" .. string.gsub(phase, "_", "-") }
+end
 
-local PHASE_TOOLTIPS = {
-	wait = "Time from request until a provider and train are matched",
-	travel_to_p = "Train traveling to provider station",
-	loading = "Loading cargo at provider station",
-	travel_to_r = "Train traveling to requester station",
-	unloading = "Unloading cargo at requester station",
-	fail_no_stock = "Failed: No provider had sufficient stock",
-	fail_no_train = "Failed: No train available on network",
-	fail_capacity = "Failed: Train capacity insufficient",
-	fail_layout = "Failed: Train layout mismatch",
-}
+--- @param phase string
+--- @return LocalisedString
+local function phase_tooltip(phase)
+	return { "cybersyn-gui.breakdown-phase-" .. string.gsub(phase, "_", "-") .. "-tooltip" }
+end
+
+--- The item line of a bar's tooltip and its bar icon: the icon, the localised name and the quality, from the hash.
+--- @param hash string
+--- @return LocalisedString? head
+--- @return string? sprite
+local function item_head(hash)
+	local name, quality = unhash_signal(hash)
+	if not name then return nil, nil end
+	local sprite, image, localised = util.generate_item_references(name)
+	if not sprite then return { "", name }, nil end
+	local q = quality and prototypes.quality[quality]
+	if q then return { "", image, " ", localised, " · ", q.localised_name }, sprite end
+	return { "", image, " ", localised }, sprite
+end
+delivery_breakdown_tab.item_head = item_head
 
 ---Compute statistics (min, max, avg, median, stddev) for each phase
 ---@param filtered table[] Array of delivery data
@@ -162,49 +166,26 @@ end
 ---@param phase_stats table? Optional phase statistics
 ---@return LocalisedString tooltip Formatted tooltip text
 local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_stats)
-	local label = PHASE_LABELS[phase] or phase
 	local fmt_time = charts and charts.format_time_detailed or function(d) return string.format("%.1fs", d) end
-	-- A stuck request's bar is labelled with the reason the dispatcher recorded for it (PLAN3 §11.5).
-	local reason_label = HATCHED_PHASES[phase] and failure_label(delivery.reason) or nil
-
-	local lines = {}
-
 	-- Show item icon and name when available (most useful when no item filter is set)
-	if delivery.item_hash then
-		local item_name = unhash_signal(delivery.item_hash)
-		if item_name then
-			local item_type = prototypes.item[item_name] and "item" or
-				prototypes.fluid[item_name] and "fluid" or "item"
-			lines[#lines + 1] = "[img=" .. item_type .. "/" .. item_name .. "] " .. item_name
-			lines[#lines + 1] = ""
-		end
-	end
-
-	local head
-	if reason_label then
-		head = table.concat(lines, "\n")
-		lines = {}
+	local head = delivery.item_hash and item_head(delivery.item_hash) or nil
+	-- A stuck request's bar is labelled with the reason the dispatcher recorded for it (PLAN3 §11.5).
+	local label
+	if HATCHED_PHASES[phase] then
+		local full = failure_name(delivery.reason)
+		label = { "", failure_label(delivery.reason), full and { "", " · ", full } or "" }
 	else
-		lines[#lines + 1] = label
+		label = phase_label(phase)
 	end
-	lines[#lines + 1] = "Duration: " .. fmt_time(duration)
-
+	-- Nested, so no level holds more than the engine's 20 parameters.
+	local body = { "", label, "\n", { "cybersyn-gui.breakdown-duration", fmt_time(duration) } }
 	local stats = phase_stats and phase_stats[phase]
 	if stats then
-		lines[#lines + 1] = ""
-		lines[#lines + 1] = string.format("Min: %s", fmt_time(stats.min))
-		lines[#lines + 1] = string.format("Max: %s", fmt_time(stats.max))
-		lines[#lines + 1] = string.format("Avg: %s", fmt_time(stats.avg))
-		lines[#lines + 1] = string.format("Median: %s", fmt_time(stats.median))
-		lines[#lines + 1] = string.format("StdDev: %s", fmt_time(stats.stddev))
+		body = { "", body, "\n\n", { "cybersyn-gui.breakdown-phase-stats", fmt_time(stats.min), fmt_time(stats.max),
+			fmt_time(stats.avg), fmt_time(stats.median), fmt_time(stats.stddev) } }
 	end
-
-	if reason_label then
-		local full = failure_name(delivery.reason)
-		return { "", head, head ~= "" and "\n" or "", reason_label, full and { "", " · ", full } or "", "\n",
-			table.concat(lines, "\n") }
-	end
-	return table.concat(lines, "\n")
+	if head then return { "", head, "\n\n", body } end
+	return body
 end
 
 ---Overlay button options for charts library
@@ -216,12 +197,13 @@ local OVERLAY_BUTTON_OPTIONS = {
 
 function delivery_breakdown_tab.create()
 	local interval_buttons = {}
-	for i, name in ipairs(interval_names) do
+	for i, range in ipairs(RANGES) do
 		interval_buttons[i] = {
 			type = "button",
-			caption = name,
+			caption = { "cybersyn-gui.breakdown-range-" .. range.key },
+			tooltip = { "cybersyn-gui.breakdown-range-tooltip-" .. range.key },
 			style = i == 1 and "flib_selected_tool_button" or "tool_button",
-			tags = { interval_name = name, interval_index = i },
+			tags = { interval_name = range.key, interval_index = i },
 			handler = delivery_breakdown_tab.handle.on_breakdown_interval_click,
 		}
 	end
@@ -245,8 +227,8 @@ function delivery_breakdown_tab.create()
 			},
 			{
 				type = "label",
-				caption = PHASE_LABELS[phase],
-				tooltip = PHASE_TOOLTIPS[phase],
+				caption = phase_label(phase),
+				tooltip = phase_tooltip(phase),
 				style_mods = { font = "default-small" },
 			},
 		}
@@ -543,6 +525,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 
 	-- Get selected interval
 	local interval_index = player_data.breakdown_interval or 1
+	if not RANGES[interval_index] then interval_index = 1 end
 
 	-- Update button styles to match current interval
 	local interval_buttons = refs.breakdown_interval_buttons
@@ -562,9 +545,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	end
 
 	-- Calculate time range based on interval (needed for cache key)
-	local interval_defs = analytics.get_interval_defs()
-	local interval_def = interval_defs[interval_index]
-	local interval_ticks = interval_def.ticks * interval_def.length
+	local interval_ticks = RANGES[interval_index].ticks
 	local current_tick = game.tick
 	local oldest_tick = current_tick - interval_ticks
 
@@ -657,6 +638,8 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	if #filtered == 0 then
 		-- Clear overlay buttons when no data
 		charts.create_overlay_buttons(refs.breakdown_camera, {}, OVERLAY_BUTTON_OPTIONS)
+		-- The stats of another range must not stay beside an empty one.
+		if refs.breakdown_stats_label then refs.breakdown_stats_label.caption = "" end
 		return
 	end
 
@@ -671,12 +654,8 @@ function delivery_breakdown_tab.build(map_data, player_data)
 			bar_icons = {}
 			for i, delivery in ipairs(filtered) do
 				if delivery.item_hash then
-					local item_name = unhash_signal(delivery.item_hash)
-					if item_name then
-						local item_type = prototypes.item[item_name] and "item" or
-							prototypes.fluid[item_name] and "fluid" or "item"
-						bar_icons[i] = item_type .. "/" .. item_name
-					end
+					local _, sprite = item_head(delivery.item_hash)
+					bar_icons[i] = sprite
 				end
 			end
 		end
@@ -712,18 +691,16 @@ function delivery_breakdown_tab.build(map_data, player_data)
 		if delivery_count > 0 then
 			local avg_total = (stats.total_wait + stats.total_travel_p + stats.total_loading +
 				stats.total_travel_r + stats.total_unloading) / delivery_count
-			lines[#lines + 1] = string.format("Deliveries: %d", delivery_count)
-			lines[#lines + 1] = string.format("Avg total: %s", charts.format_time_detailed(avg_total))
-			lines[#lines + 1] = string.format("Avg wait: %s", charts.format_time_detailed(stats.total_wait / delivery_count))
-			lines[#lines + 1] = string.format("Avg travel to P: %s", charts.format_time_detailed(stats.total_travel_p / delivery_count))
-			lines[#lines + 1] = string.format("Avg load: %s", charts.format_time_detailed(stats.total_loading / delivery_count))
-			lines[#lines + 1] = string.format("Avg travel to R: %s", charts.format_time_detailed(stats.total_travel_r / delivery_count))
-			lines[#lines + 1] = string.format("Avg unload: %s", charts.format_time_detailed(stats.total_unloading / delivery_count))
+			local t = charts.format_time_detailed
+			lines = { "cybersyn-gui.breakdown-stats", tostring(delivery_count), t(avg_total),
+				t(stats.total_wait / delivery_count), t(stats.total_travel_p / delivery_count),
+				t(stats.total_loading / delivery_count), t(stats.total_travel_r / delivery_count),
+				t(stats.total_unloading / delivery_count) }
 		end
 
-		local caption = table.concat(lines, "\n")
+		local caption = delivery_count > 0 and lines or ""
 		if fail_count > 0 then
-			caption = { "", caption, delivery_count > 0 and "\n\n" or "", string.format("Stuck: %d", fail_count) }
+			caption = { "", caption, delivery_count > 0 and "\n\n" or "", { "cybersyn-gui.breakdown-stuck", tostring(fail_count) } }
 			-- One line per reason code the dispatcher recorded, longest-waiting first; nested so no LocalisedString
 			-- exceeds the engine's 20 parameters.
 			local reasons = stats.fail_reasons or {}
@@ -844,5 +821,16 @@ dev.add("breakdown_failure_labels", function(item_name, failures)
 	return { bars = bars, reasons = reasons, fail_count = stats.fail_count }
 end)
 
+--- Dev: the tooltip of one bar segment of a delivery of `hash` (the lab has no charts, so the bar itself cannot show).
+dev.add("breakdown_tooltip", function(hash, phase, duration)
+	return get_segment_tooltip(1, phase or "travel_to_p", duration or 12, { item_hash = hash, reason = nil }, nil)
+end)
+
+--- Dev: each range button's caption key and the span it filters.
+dev.add("breakdown_ranges", function()
+	local out = {}
+	for i, r in ipairs(RANGES) do out[i] = { key = r.key, ticks = r.ticks, parsed = analytics.range_ticks(r.key) } end
+	return out
+end)
 
 return delivery_breakdown_tab

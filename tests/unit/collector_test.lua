@@ -32,7 +32,7 @@ end
 
 -- Six stations covering provider, requester, warming up, each-network + stack, missing combinator, secondary.
 local function scenario()
-	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, track_request_wait_times = true, tps = 30 }
+	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30 }
 	manager()
 	storage.stations = {
 		[1] = {
@@ -710,16 +710,6 @@ test("aggregate: provided, active requests and incoming deliveries over the acce
 	assert_eq(collector.aggregate(snapshot, function() return false end), { provided = {}, requested = {}, in_transit = {} })
 end)
 
-test("wait tracking off: no wait data copied", function()
-	scenario()
-	mod_settings.track_request_wait_times = false
-	collector.run_to_completion()
-	local st = collector.get().stations[2]
-	assert_eq(st.wait, {})
-	assert_nil(st.longest_wait_start)
-	assert_nil(collector.get().inventory_all.requested.coal.earliest_wait_start)
-end)
-
 test("thresholds: a request exactly at its threshold is active", function()
 	mod_settings = { r_threshold = 500 }
 	manager()
@@ -882,7 +872,7 @@ end)
 -- Primary and secondary combinators contributing to the same hashes, each-network secondaries, a stack station with
 -- a control combinator and two requesters of one item with different wait starts.
 local function merge_scenario()
-	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, track_request_wait_times = true, tps = 30 }
+	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30 }
 	manager()
 	storage.stations = {
 		[1] = {
@@ -1012,7 +1002,7 @@ test("merge: inventory_all keeps the earliest wait start across requesters", fun
 end)
 
 test("longest_wait_start: the earliest start over active requests, whatever the hash order", function()
-	mod_settings = { r_threshold = 10, track_request_wait_times = true }
+	mod_settings = { r_threshold = 10 }
 	manager()
 	storage.trains, storage.depots = {}, {}
 	local function requester(name, waits)

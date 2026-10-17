@@ -961,7 +961,7 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 		st.unserved = nil
 	end
 	refill(st.deliveries, station.deliveries)
-	refill(st.wait, mod_settings.track_request_wait_times and station.request_start_ticks or nil)
+	refill(st.wait, station.request_start_ticks)
 	local provided, requested = st.provided, st.requested
 	mark_counts(provided)
 	mark_requests(requested)

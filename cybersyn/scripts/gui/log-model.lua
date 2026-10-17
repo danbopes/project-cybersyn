@@ -15,6 +15,8 @@ local logic = require("scripts.gui.tab-logic")
 local model = {}
 
 model.BUDGET = 4096
+-- The Log's scroll pane holds the newest PAGE matching rows (PLAN4 D12), in Follow and paused alike.
+model.PAGE = 200
 model.BUCKET = 256
 -- Counts this far behind the head are rebuilt by the chunked backward scan rather than caught up in one call.
 model.COUNTS_BEHIND = 4096
@@ -26,6 +28,7 @@ model.DEFAULT_WINDOW = 3
 local at, first_after = diag.ring_at, diag.first_after
 local STATION2_IS_STATION = diag.STATION2_IS_STATION
 local KIND_ALERT = DIAG_KIND_ALERT
+local KIND_LINT = DIAG_KIND_LINT
 
 --- Kind groups of the drop-down. An alert belongs to the group of what it is about, by its code.
 model.GROUPS = {
@@ -37,8 +40,8 @@ model.GROUPS = {
 	},
 	{
 		name = "deliveries",
-		kinds = { DIAG_KIND_DISPATCH_FAILED, DIAG_KIND_DELIVERY_FAILED, DIAG_KIND_DISPATCHED, DIAG_KIND_ARRIVE_P,
-			DIAG_KIND_LEAVE_P, DIAG_KIND_ARRIVE_R, DIAG_KIND_LEAVE_R, DIAG_KIND_RETURNED },
+		kinds = { DIAG_KIND_DISPATCH_FAILED, DIAG_KIND_DELIVERY_FAILED, DIAG_KIND_SLOW_DELIVERY, DIAG_KIND_DISPATCHED,
+			DIAG_KIND_ARRIVE_P, DIAG_KIND_LEAVE_P, DIAG_KIND_ARRIVE_R, DIAG_KIND_LEAVE_R, DIAG_KIND_RETURNED },
 	},
 	{
 		name = "stations",
@@ -333,19 +336,80 @@ model.epoch = epoch
 --- @field a int
 --- @field b int
 --- @field full true? its events are in the full ring
+--- @field pass number? lint rows: the pass they belong to (every lint row of one pass is one row, ROUND-5 item 10)
+--- @field lint int[]? lint rows: {errors, warnings, infos} that appeared, then the findings that cleared
+--- @field seqs uint[]? lint rows: the seqs of the pass's rows, newest first (at most PAGE)
+--- @field row LogDisplayRow? its row in model.display, kept with it
+
+--- The pass a lint row belongs to: diag.lint writes the pass's start tick + 1 in the delivery column; rows written
+--- outside a pass (or before that column was used) group by their tick.
+--- @param r DiagRing
+--- @param i int
+--- @return number
+local function pass_key(r, i)
+	local p = r.delivery[i]
+	return p ~= 0 and p or -r.tick[i]
+end
+model.pass_key = pass_key
 
 --- @param r DiagRing
 --- @param i int
 --- @return LogGroup
 local function new_group(r, i)
 	local seq, tick = r.seq[i], r.tick[i]
-	return {
+	local kind = r.kind[i]
+	local g = {
 		seq = seq, first = seq, tick = tick, first_tick = tick, n = 1,
-		kind = r.kind[i], sev = r.sev[i], code = r.code[i], delivery = r.delivery[i], train = r.train[i],
+		kind = kind, sev = r.sev[i], code = r.code[i], delivery = r.delivery[i], train = r.train[i],
 		station = r.station[i], station2 = r.station2[i], item = r.item[i], a = r.a[i], b = r.b[i],
 	}
+	if kind == KIND_LINT then
+		g.pass = pass_key(r, i)
+		local c = { 0, 0, 0, 0 }
+		if g.code == DIAG_LINT_CLEARED then c[4] = 1 else c[g.sev] = 1 end
+		g.lint = c
+		g.seqs = { seq }
+	end
+	return g
 end
 model.new_group = new_group
+
+--- Adds a lint row to its pass's row: newer rows move the row's newest seq and tick, older ones its first.
+--- @param g LogGroup
+--- @param r DiagRing
+--- @param i int
+--- @param newer boolean
+local function pass_add(g, r, i, newer)
+	local sev, seq = r.sev[i], r.seq[i]
+	local c = g.lint
+	if r.code[i] == DIAG_LINT_CLEARED then c[4] = c[4] + 1 else c[sev] = c[sev] + 1 end
+	if sev < g.sev then g.sev = sev end
+	-- A pass about several stops or trains names none of them.
+	if g.station ~= r.station[i] then g.station = 0 end
+	if g.train ~= r.train[i] then g.train = 0 end
+	g.n = g.n + 1
+	local seqs = g.seqs
+	if newer then
+		g.seq, g.tick = seq, r.tick[i]
+		table.insert(seqs, 1, seq)
+		if #seqs > model.PAGE then seqs[#seqs] = nil end
+	else
+		g.first, g.first_tick = seq, r.tick[i]
+		if #seqs < model.PAGE then seqs[#seqs + 1] = seq end
+	end
+end
+model.pass_add = pass_add
+
+--- The row of each lint pass among `groups`, by pass key.
+--- @param groups LogGroup[]
+--- @return {[number]: LogGroup}
+local function pass_index(groups)
+	local ix = {}
+	for _, g in ipairs(groups) do
+		if g.pass then ix[g.pass] = g end
+	end
+	return ix
+end
 
 -- Kinds whose `a` (and `b`) name what the event is about rather than measure it: a lint finding's check and subject,
 -- a manual action and its target, the player who edited a schedule. Two such events differ when those differ.
@@ -353,10 +417,12 @@ local A_NAMES = { [DIAG_KIND_LINT] = true, [DIAG_KIND_MANUAL_ACTION] = true, [DI
 local B_NAMES = { [DIAG_KIND_LINT] = true, [DIAG_KIND_MANUAL_ACTION] = true }
 model.A_NAMES, model.B_NAMES = A_NAMES, B_NAMES
 
+--- Lint rows are not compared: they join their pass's row (pass_add).
 --- @param g LogGroup
 --- @return boolean
 local function identical(g, r, i)
 	local kind = g.kind
+	if kind == KIND_LINT then return false end
 	return kind == r.kind[i] and g.sev == r.sev[i] and g.code == r.code[i] and g.train == r.train[i]
 		and g.station == r.station[i] and g.station2 == r.station2[i] and g.item == r.item[i]
 		and (not A_NAMES[kind] or g.a == r.a[i]) and (not B_NAMES[kind] or g.b == r.b[i])
@@ -374,14 +440,20 @@ function model.collapse(events, limit)
 		for c, col in pairs(cols) do col[i] = ev[c] or 0 end
 	end
 	local out = {}
+	local passes = {}
 	for i = 1, #events do
 		local last = out[#out]
-		if last and identical(last, cols, i) then
+		local pg = cols.kind[i] == KIND_LINT and passes[pass_key(cols, i)]
+		if pg then
+			pass_add(pg, cols, i, false)
+		elseif last and identical(last, cols, i) then
 			last.n = last.n + 1
 			last.first, last.first_tick = cols.seq[i], cols.tick[i]
 		else
 			if limit and #out >= limit then break end
-			out[#out + 1] = new_group(cols, i)
+			local g = new_group(cols, i)
+			out[#out + 1] = g
+			if g.pass then passes[g.pass] = g end
 		end
 	end
 	return out
@@ -398,16 +470,19 @@ end
 
 --- Brings the rows up to date. Follow on: new events join at the top (an identical newest row counts them), rows
 --- older than the window drop off the bottom. Follow off: the rows stay as they are until a filter changes, and a
---- rescan then reads only rows up to the anchor (the seq at the moment Follow went off).
+--- rescan then reads only rows up to the anchor (the seq at the moment Follow went off). Held (the pointer is over
+--- the rows, or the window is paused): Follow takes in nothing new at the top, so no row moves under the reader;
+--- the bottom still fills.
 --- @param rs LogRowsState
 --- @param d DiagState
 --- @param cf LogCompiled
 --- @param limit int rows shown
 --- @param follow boolean
 --- @param budget int rows examined at most, both scans together
+--- @param held boolean?
 --- @return boolean changed
 --- @return int examined
-function model.update_rows(rs, d, cf, limit, follow, budget)
+function model.update_rows(rs, d, cf, limit, follow, budget, held)
 	local rb, rf = rings(d)
 	local head = d.seq
 	-- An anchor taken in an earlier diagnostics state is a seq of another numbering.
@@ -430,38 +505,78 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 	local groups = rs.groups
 	local sevs = cf.sevs
 	local used = 0
-	if follow and head > rs.top then
+	local passes
+	if follow and head > rs.top and not held then
 		if head - rs.top > budget then
 			-- Too far behind (a long pause): start again from the head.
 			rs.sig = nil
 			return model.update_rows(rs, d, cf, limit, follow, budget)
 		end
+		-- New rows are collected oldest first and put on top in one go (a burst after a hold is hundreds of rows).
 		local added = 0
+		local fresh, in_fresh, moved = {}, {}, nil
 		local _, _, n = scan_fwd(rb, rf, rs.top, budget, function(r, i)
 			if not (sevs[r.sev[i]] and match(r, i, cf)) then return end
 			if cf.min_tick and r.tick[i] < cf.min_tick then return end
 			added = added + 1
-			local g = groups[1]
-			if g and identical(g, r, i) then
+			local g = fresh[#fresh] or groups[1]
+			if r.kind[i] == KIND_LINT then
+				passes = passes or pass_index(groups)
+				local pg = passes[pass_key(r, i)]
+				if pg then
+					pass_add(pg, r, i, true)
+					-- The pass's row is about its newest finding, so it moves up to the top.
+					if pg ~= g then
+						if in_fresh[pg] then
+							for k = 1, #fresh do
+								if fresh[k] == pg then
+									table.remove(fresh, k)
+									break
+								end
+							end
+						else
+							moved = moved or {}
+							moved[pg] = true
+							in_fresh[pg] = true
+						end
+						fresh[#fresh + 1] = pg
+					end
+				else
+					pg = new_group(r, i)
+					passes[pg.pass] = pg
+					fresh[#fresh + 1] = pg
+					in_fresh[pg] = true
+				end
+			elseif g and identical(g, r, i) then
 				g.n = g.n + 1
 				g.seq, g.tick, g.sev, g.a, g.b, g.delivery = r.seq[i], r.tick[i], r.sev[i], r.a[i], r.b[i], r.delivery[i]
 			else
-				local g = new_group(r, i)
-				if r == rf then g.full = true end
-				table.insert(groups, 1, g)
+				local ng = new_group(r, i)
+				if r == rf then ng.full = true end
+				fresh[#fresh + 1] = ng
+				in_fresh[ng] = true
 			end
 		end)
 		used = n
 		rs.top = head
 		if added > 0 then
 			changed = true
-			if #groups > limit then
-				for k = #groups, limit + 1, -1 do groups[k] = nil end
-				rs.below = nil
+			if #fresh > 0 then
+				local out = {}
+				for k = #fresh, 1, -1 do out[#out + 1] = fresh[k] end
+				for _, og in ipairs(groups) do
+					if not (moved and moved[og]) then out[#out + 1] = og end
+				end
+				if #out > limit then
+					for k = #out, limit + 1, -1 do out[k] = nil end
+					rs.below = nil
+				end
+				rs.groups = out
+				groups = out
 			end
 		end
 	end
-	if follow and cf.min_tick then
+	if follow and cf.min_tick and not held then
 		while #groups > 0 and groups[#groups].tick < cf.min_tick do
 			groups[#groups] = nil
 			changed = true
@@ -469,7 +584,7 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 	end
 	-- Rows whose newest event its ring has since overwritten: the event can no longer be found (a click, Print), so
 	-- the row goes, and the backward scan refills from the other ring's older rows.
-	if follow then
+	if follow and not held then
 		local oldest_b = rb.count > 0 and rb.seq[at(rb, 0)] or math.huge
 		local oldest_f = rf and rf.count > 0 and rf.seq[at(rf, 0)] or math.huge
 		local trimmed = false
@@ -495,6 +610,14 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 		local ended, below, n = scan_back(rb, rf, rs.below, cf, budget - used, function(r, i)
 			if not sevs[r.sev[i]] then return false end
 			local last = groups[#groups]
+			if r.kind[i] == KIND_LINT then
+				passes = passes or pass_index(groups)
+				local pg = passes[pass_key(r, i)]
+				if pg then
+					pass_add(pg, r, i, false)
+					return false
+				end
+			end
 			if last and identical(last, r, i) then
 				last.n = last.n + 1
 				last.first, last.first_tick = r.seq[i], r.tick[i]
@@ -504,6 +627,10 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 			local g = new_group(r, i)
 			if r == rf then g.full = true end
 			groups[#groups + 1] = g
+			if g.pass then
+				passes = passes or pass_index(groups)
+				passes[g.pass] = g
+			end
 			changed = true
 			return false
 		end)
@@ -532,6 +659,58 @@ function model.update_rows(rs, d, cf, limit, follow, budget)
 		rs.newer_sig, rs.newer_hi, rs.newer_n = nil, nil, nil
 	end
 	return changed, used
+end
+
+--- @class LogDisplayRow
+--- @field key number the row element's key: a group's first seq, a pass member's seq + 0.5
+--- @field g LogGroup
+--- @field child true? a row of an expanded lint pass
+--- @field x true? an expanded lint pass's own row
+
+--- The rows on screen: every group, and below each expanded lint pass the pass's own rows, newest first; at most
+--- `limit` rows together.
+--- @param groups LogGroup[]
+--- @param expanded {[number]: true}? pass keys the player opened
+--- @param lookup fun(seq: uint): LogGroup? the row of one ring row (nil once its ring dropped it)
+--- @param limit int
+--- @return LogDisplayRow[]
+function model.display(groups, expanded, lookup, limit)
+	local out = {}
+	for _, g in ipairs(groups) do
+		if #out >= limit then break end
+		local open = g.pass and g.n > 1 and expanded and expanded[g.pass] or nil
+		-- Each group keeps its row, so a render with one new group makes one new row.
+		local row = g.row
+		if not row then
+			row = { g = g }
+			g.row = row
+		end
+		row.key, row.x = g.first, open
+		out[#out + 1] = row
+		if open then
+			for _, seq in ipairs(g.seqs) do
+				if #out >= limit then break end
+				local c = lookup(seq)
+				if c then out[#out + 1] = { key = seq + 0.5, g = c, child = true } end
+			end
+		end
+	end
+	return out
+end
+
+--- The parts of a lint pass's row caption: "25 errors, 6 warnings, 3 cleared" (zero counts left out).
+--- @param c int[] LogGroup.lint
+--- @return LocalisedString
+function model.pass_counts(c)
+	local out = { "" }
+	local keys = { "log-lint-errors", "log-lint-warnings", "log-lint-infos", "log-lint-cleared" }
+	for k = 1, 4 do
+		if c[k] > 0 then
+			if #out > 1 then out[#out + 1] = ", " end
+			out[#out + 1] = { "cybersyn-gui." .. keys[k], format.number(c[k]), tostring(c[k]) }
+		end
+	end
+	return out
 end
 
 --- While paused: how many events newer than the frozen rows the filter selects, and whether that count is complete.
@@ -700,6 +879,15 @@ function model.update_badge(bs, d, seen, budget, since_tick)
 	return bs.n
 end
 
+--- The tab's badge: unread errors, "99+" beyond 99 (ROUND-5 item 11; the tooltip has the number).
+--- @param n int
+--- @return string
+function model.badge_caption(n)
+	if n <= 0 then return "" end
+	if n > 99 then return "99+" end
+	return tostring(n)
+end
+
 -- ---------------------------------------------------------------- summary (B14)
 
 --- @class LogSummaryState per player while Summary is on (player_data.log_summary)
@@ -860,13 +1048,18 @@ local function amount(n)
 end
 
 --- The message column (PLAN3 §4.7): what happened, with the row's numbers; the severity dot carries the colour.
+--- A lint pass of several rows reads "Lint: 25 errors, 6 warnings ▸" (▾ while expanded).
 --- @param g LogGroup
 --- @param ctx LogTextContext
+--- @param expanded boolean?
 --- @return LocalisedString
-function model.message(g, ctx)
+function model.message(g, ctx, expanded)
 	local kind, code, a, b = g.kind, g.code, g.a, g.b
 	local key = DIAG_KIND_KEYS[kind]
 	if not key then return tostring(kind) end
+	if g.pass and g.n > 1 then
+		return { "cybersyn-gui.log-lint-pass", model.pass_counts(g.lint), expanded and "▾" or "▸" }
+	end
 	local msg = "cybersyn-diag.msg-" .. key
 	if kind == DIAG_KIND_UNSERVED_REASON then
 		local stock = ctx.stock(code, a, b)
@@ -926,6 +1119,8 @@ function model.message(g, ctx)
 		return { msg, amount(b), format.number(a) }
 	elseif kind == DIAG_KIND_ARRIVE_P or kind == DIAG_KIND_LEAVE_P or kind == DIAG_KIND_ARRIVE_R then
 		return { msg, amount(a) }
+	elseif kind == DIAG_KIND_SLOW_DELIVERY then
+		return { msg, ctx.duration(a), b > 0 and string.format("%.1f", a / b) or "–", ctx.duration(b) }
 	elseif kind == DIAG_KIND_TRAIN_STATE then
 		if code == defines.train_state.wait_signal then
 			return { msg .. "-wait-signal", ctx.duration(a) }

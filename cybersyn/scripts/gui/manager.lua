@@ -74,8 +74,10 @@ function manager.create(player)
 		add_header(trains_tab.create(widths), "trains_tab", header),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
 	}
-	if analytics.is_enabled() then
+	if analytics.setting_enabled() then
 		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
+	end
+	if analytics.is_enabled() then
 		tabs[#tabs + 1] = add_header(delivery_breakdown_tab.create(), "delivery_breakdown_tab", header)
 	end
 	local pane = {
