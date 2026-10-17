@@ -3,6 +3,7 @@ local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
 local lint = require("scripts.lint")
+local diag = require("scripts.diag")
 local rich_name = require("scripts.gui.rich-name")
 
 local util = {}
@@ -686,6 +687,101 @@ function util.station_passes(st, f, ignore_item)
 	return true
 end
 
+--- The filters the Overview applies (PLAN4 D2): network name, network ID, surface and item. It has no station search,
+--- so the terms are left out: a query typed on another tab would otherwise filter it invisibly.
+--- @param player_data PlayerData
+--- @return ManagerFilters
+function util.overview_filters(player_data)
+	local f = util.get_filters(player_data)
+	f.terms = nil
+	if f.item and not util.signal_hash_valid(f.item) then f.item = nil end
+	return f
+end
+
+--- A plain string of every filter field, for caches keyed on the filters.
+--- @param f ManagerFilters
+--- @return string
+function util.filter_signature(f)
+	return table.concat({
+		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
+	}, "\1")
+end
+
+--- Whether network name, network ID or surface is set: the filters that decide by a station's place, not its items.
+--- @param f ManagerFilters
+--- @return boolean
+function util.place_filters_active(f)
+	return f.network ~= nil or f.mask ~= -1 or f.surface ~= nil
+end
+
+--- Whether requester `r_id` of an Unserved entry passes the network name, network ID and surface filters (D2): read
+--- from its snapshot record, or from the live station while the first pass is still collecting. A requester that is
+--- gone passes only while none of those filters is set.
+--- @param r_id uint
+--- @param stations {[uint]: SnapshotStation}
+--- @param f ManagerFilters
+--- @return boolean
+function util.requester_passes(r_id, stations, f)
+	if not util.place_filters_active(f) then return true end
+	local st = stations[r_id]
+	if st then
+		if f.surface and st.surface_index ~= f.surface then return false end
+		return util.network_passes(st.network_name, st.network_mask, f)
+	end
+	local station = storage.stations[r_id]
+	local stop = station and station.entity_stop
+	if not (stop and stop.valid) then return false end
+	if f.surface and stop.surface_index ~= f.surface then return false end
+	return util.network_passes(station.network_name, station.network_mask, f)
+end
+
+local error_mask
+--- Lint bits of the checks whose findings are errors (LINT_SEVERITY).
+--- @return int
+function util.lint_error_mask()
+	if not error_mask then
+		local m = 0
+		for check = 1, LINT_COUNT do
+			if LINT_SEVERITY[check] == DIAG_SEV_ERROR then m = bit32.bor(m, LINT_BIT[check]) end
+		end
+		error_mask = m
+	end
+	return error_mask
+end
+
+--- The error-severity checks station `id` fails that are not acknowledged: the Overview's Misconfigured rule (PLAN4
+--- D7). The Stations Problems chip lists exactly the stations with a non-zero count while
+--- `player_data.stations_problems_scope == "errors"` (set by the Misconfigured jump), so the line and its rows agree.
+--- @param id uint station id
+--- @param bits int? the station's lint bits (SnapshotStation.lint)
+--- @param by_check {[int]: int}? adds 1 per open check
+--- @return int open
+function util.open_setup_errors(id, bits, by_check)
+	local mask = bit32.band(bits or 0, util.lint_error_mask())
+	local open, check = 0, 1
+	local is_acked = diag.is_acked
+	while mask ~= 0 do
+		if bit32.band(mask, 1) ~= 0 and not is_acked("lint", id, check) then
+			open = open + 1
+			if by_check then by_check[check] = (by_check[check] or 0) + 1 end
+		end
+		mask = bit32.rshift(mask, 1)
+		check = check + 1
+	end
+	return open
+end
+
+--- Whether surface `surface_index` holds a Cybersyn station (the manager's surface default falls back to All without).
+--- @param surface_index uint
+--- @return boolean
+function util.surface_has_station(surface_index)
+	for _, station in pairs(storage.stations) do
+		local stop = station.entity_stop
+		if stop and stop.valid and stop.surface_index == surface_index then return true end
+	end
+	return false
+end
+
 --- Station-name terms are not applied to trains.
 --- @param tr SnapshotTrain
 --- @param f ManagerFilters
@@ -931,6 +1027,8 @@ end
 function util.set_item_filter(player_data, hash)
 	if hash and not util.signal_hash_valid(hash) then hash = nil end
 	player_data.search_item = hash
+	-- No filter is ever hidden (PLAN4 D4): setting one opens the filter row; the manager's render shows it.
+	if hash then player_data.filter_row_open = true end
 	local elem = player_data.refs and player_data.refs.manager_item_filter
 	if elem and elem.valid then
 		elem.elem_value = hash and util.signalid_from_hash(hash) or nil

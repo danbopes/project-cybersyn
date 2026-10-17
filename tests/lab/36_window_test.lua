@@ -1,7 +1,10 @@
 -- PLAN3 phase 3: the window sized from the screen (whole rows on every tab for four emulated screens, never above
 -- 85 % of the screen), the Overview's Unserved table and tiles against the diagnostics state, acknowledge with expiry,
 -- the dispatch-paused banner, search with pattern characters and rich text, the item chip on every tab, Ctrl+F only
--- while open, Esc in the search field, the filter row and the reset command.
+-- while open, Esc in the search field, the filter row and the reset command. Round 4 (PLAN4 D2-D4, D7, D16, round 5
+-- items 1, 2, 5, 7, 14): the Overview under network / network ID / surface filters with each tile agreeing with its
+-- jump, the filter button as the row's switch and reset, the surface default at open, the Misconfigured line, the
+-- Setup marker, empty columns hidden, and the hand-back after remote view.
 
 local D, pi = lab.D, lab.pi
 local HOUR = 216000
@@ -102,10 +105,13 @@ lab.suite("36_window", {
 				old = old + 1
 			end
 		end
-		lab.check("Unserved > 1 min tile == entries older than a minute", d.tiles.unserved.headline == old,
-			{ tile = d.tiles.unserved.headline, rows = old })
-		lab.check("Unserved tile caption names the setting", key_of(d.rendered_tiles.unserved.caption) == "cybersyn-gui.overview-tile-unserved"
-			and d.rendered_tiles.unserved.caption[2] == "1", d.rendered_tiles.unserved.caption)
+		lab.check("Unserved tile's Waiting > 1 min line == entries older than a minute", d.tiles.unserved.old == old,
+			{ tile = d.tiles.unserved.old, rows = old })
+		local rt = d.rendered_tiles.unserved
+		lab.check("Unserved tile: the headline is its station count, the first line names the setting",
+			key_of(rt.caption) == "cybersyn-gui.overview-tile-unserved" and d.tiles.unserved.headline == d.tiles.unserved.stations
+			and rt.headline == tostring(d.tiles.unserved.stations)
+			and key_of(rt.lines[1][1]) == "cybersyn-gui.overview-unserved-old" and rt.lines[1][1][2] == "1", rt)
 		lab.check("table caption counts shown of total", key_of(u.caption) == "cybersyn-gui.unserved-count", u.caption)
 		local r1 = u.rendered[1]
 		local tip = r1 and r1.chip_tooltip
@@ -125,23 +131,36 @@ lab.suite("36_window", {
 		lab.check("unserved table dump identical across a render in the same tick (sig-guarded)", a == b)
 	end,
 
-	-- Misconfigured == stations whose st.lint is not 0. The lint job (phase 2b) fills most of them on this save; one
-	-- clean record is set by hand on top of that and the tile must follow it up and back down.
+	-- Misconfigured (PLAN4 D7) == stations with an unacknowledged error-severity lint finding; stations whose errors are
+	-- all acknowledged read "(+n acked)". Checked against an oracle over the findings list after a real pass, then a
+	-- clean record is marked by hand, acknowledged, unacknowledged and cleared.
 	function()
+		lab.dev("lint_run")
+		local d = overview()
+		local em = d.lint_error_mask
 		local function count()
 			local n = 0
 			for _, st in pairs(lab.read("manager").snapshot.stations) do
-				if (st.lint or 0) ~= 0 then n = n + 1 end
+				if bit32.band(st.lint or 0, em) ~= 0 then n = n + 1 end
 			end
 			return n
 		end
+		local oracle = lab.dev("overview_setup_oracle", pi)
+		local t = d.tiles.failing
+		lab.check("misconfigured == stations with an open error finding (oracle over the findings list)",
+			t.misconfigured == oracle.stations and t.misconfigured_acked == oracle.acked and t.findings == oracle.findings,
+			{ tile = t, oracle = oracle })
+		lab.check("after the first lint pass the tile shows numbers, not '–'", t.lint_pending == nil
+			and d.rendered_tiles.failing.headline ~= "–", { pending = t.lint_pending, headline = d.rendered_tiles.failing.headline })
 		local id
 		for sid, st in pairs(lab.read("manager").snapshot.stations) do
 			if (st.lint or 0) == 0 and (not id or sid < id) then id = sid end
 		end
-		local before = count()
-		lab.check("a station without a lint finding exists to mark by hand", id ~= nil, { flagged = before })
+		local before, before_acked = t.misconfigured, t.misconfigured_acked
+		lab.check("a station without a lint finding exists to mark by hand", id ~= nil and em ~= 0, { em = em })
 		if not id then return end
+		local check = 1
+		while bit32.band(em, bit32.lshift(1, check - 1)) == 0 do check = check + 1 end
 		-- As lint writes a mask (set_station_lint): the record, then the collector's change log the per-player counts
 		-- follow.
 		local function mark(mask)
@@ -149,17 +168,43 @@ lab.suite("36_window", {
 			local ids = lab.read("manager").collect_log.ids
 			remote.call("cybersyn", "write_global", id, "manager", "collect_log", "ids", #ids + 1)
 		end
-		mark(5)
-		local d = overview()
-		local n = count()
-		lab.check("misconfigured == stations with st.lint ~= 0", d.tiles.failing.misconfigured == n and n == before + 1,
-			{ tile = d.tiles.failing.misconfigured, lint = n, before = before })
+		mark(bit32.lshift(1, check - 1))
+		d = overview()
+		lab.check("an error bit on one more station: misconfigured + 1", d.tiles.failing.misconfigured == before + 1
+			and count() == before + before_acked + 1, { tile = d.tiles.failing, before = before })
 		local tip = serpent.line(d.rendered_tiles.failing.tooltip, { comment = false })
-		lab.check("failing tooltip splits misconfigured by check, named by the check caption", string.find(tip, "overview-failing-lint-check", 1, true) ~= nil and string.find(tip, "cybersyn-diag.lint-", 1, true) ~= nil, tip)
+		lab.check("failing tooltip counts stations and findings and splits them by check",
+			string.find(tip, "overview-misconfigured-count", 1, true) ~= nil and string.find(tip, "overview-failing-lint-check", 1, true) ~= nil
+			and string.find(tip, "cybersyn-diag.lint-", 1, true) ~= nil, tip)
+		lab.dev("diag_ack", "lint", id, check, nil, pi)
+		d = overview()
+		local line = d.rendered_tiles.failing.lines[4]
+		lab.check("acknowledged: not counted, read as (+n acked)", d.tiles.failing.misconfigured == before
+			and d.tiles.failing.misconfigured_acked == before_acked + 1
+			and string.find(serpent.line(line[2], { comment = false }), "overview-acked-note", 1, true) ~= nil,
+			{ tile = d.tiles.failing, line = line })
+		lab.dev("diag_unack", "lint", id, check, pi)
 		mark(0)
 		d = overview()
-		lab.check("misconfigured back to the lint job's own count once the hand-written finding is cleared",
-			d.tiles.failing.misconfigured == before and count() == before, { tile = d.tiles.failing, before = before })
+		lab.check("misconfigured back once the hand-written finding is cleared",
+			d.tiles.failing.misconfigured == before and d.tiles.failing.misconfigured_acked == before_acked,
+			{ tile = d.tiles.failing, before = before })
+		-- The line is a link of its own: Stations with the Problems chip (stations.lua reads it once phase p3 lands).
+		local res = lab.dev("click", pi, "overview_failing_line4_label")
+		lab.check("the Misconfigured line jumps to the Stations tab", res == true
+			and remote.call(D, "state", pi).selected_tab == "stations_tab", res)
+		local chip = lab.read("manager", "players", pi, "stations_chip")
+		lab.check("the Misconfigured jump narrows the Problems chip to open errors",
+			lab.read("manager", "players", pi, "stations_problems_scope") == "errors", chip)
+		-- Line == rows needs the Problems chip (phase p3) to honour the scope; until it lands stations.lua drops the chip.
+		if chip == "problems" then
+			local rows = remote.call(D, "dump", pi, "stations").ids
+			lab.check("Misconfigured line == rows of its jump", #rows == before, { line = before, rows = #rows })
+		else
+			lab.skip("Misconfigured line == rows of its jump", "stations.lua has no Problems chip on this branch")
+		end
+		remote.call(D, "clear_filters", pi)
+		remote.call(D, "select_tab", pi, "overview")
 	end,
 
 	-- Acknowledge: the row leaves the open rows, shows greyed at the bottom with the toggle on, the tile reads
@@ -184,7 +229,8 @@ lab.suite("36_window", {
 			and d.lists.unserved.total == u.total - 1, { before = u.total, after = d.lists.unserved.total })
 		if old_row then
 			lab.check("tile reads (+1 acked)", d.tiles.unserved.acked == before.acked + 1
-				and key_of(d.rendered_tiles.unserved.note) == "cybersyn-gui.overview-acked-note", d.rendered_tiles.unserved)
+				and string.find(serpent.line(d.rendered_tiles.unserved.lines[1][2], { comment = false }),
+					"overview-acked-note", 1, true) ~= nil, d.rendered_tiles.unserved)
 		else
 			lab.skip("tile reads (+1 acked)", "the first row is younger than a minute")
 		end
@@ -267,13 +313,13 @@ lab.suite("36_window", {
 		r1 = d.lists.unserved.rendered[1]
 		lab.check("provider back in place: the link has its target and its click handler", r1.provider_id == e.p_station_id
 			and r1.provider_handler and serpent.line(d.lists.unserved.shown_keys, { comment = false }) == keys, r1)
-		local tbl_child = { COLUMNS + 4, 2 }
+		local tbl_child = { COLUMNS + 4, r1.provider_button_index }
 		local res = lab.dev("click", pi, TABLE, tbl_child, { right = true })
 		lab.check("a click on the provider link reaches its handler", res == true, res)
-		-- Hover hold: the chip of row 2 is under the cursor; a row that would move to the top waits.
+		-- Hover hold: the item of row 2 is under the cursor; a row that would move to the top waits.
 		local rendered = d.lists.unserved.rendered
 		local last = rendered[#rendered]
-		local h = remote.call(D, "hover", pi, TABLE, COLUMNS * 2 + 3)
+		local h = remote.call(D, "hover", pi, TABLE, COLUMNS * 2 + 1)
 		lab.check("hovering an Unserved row starts the hold", h.handled and h.hold, h)
 		local last_ix = lab.read("diag", "item_ix", last.item)
 		local last_first = lab.read("diag", "unserved", last.requester_id, last_ix, "first_tick")
@@ -281,7 +327,7 @@ lab.suite("36_window", {
 		d = overview()
 		lab.check("while hovered the row order is held", d.lists.unserved.held
 			and serpent.line(d.lists.unserved.shown_keys, { comment = false }) == keys, d.lists.unserved.held)
-		remote.call(D, "hover", pi, TABLE, COLUMNS * 2 + 3, true)
+		remote.call(D, "hover", pi, TABLE, COLUMNS * 2 + 1, true)
 		d = overview()
 		lab.check("after the leave the moved row is first", not d.lists.unserved.held
 			and d.lists.unserved.shown_keys[1] == last.requester_id .. "|" .. last.item, d.lists.unserved.shown_keys[1])
@@ -465,28 +511,340 @@ lab.suite("36_window", {
 		lab.dev("click", pi, "manager_pin_button")
 	end,
 
-	-- The filter row: hidden until toggled, kept open while one of its filters is set, and it costs rows.
+	-- The filter button is the row's switch and its reset (PLAN4 D4): lit = open, closing clears item, network,
+	-- network ID, surface and the Stations/Trains chips but not the station search; every path that sets a filter
+	-- opens the row, so no filter is ever hidden; the row costs a row while open.
 	function(ctx)
 		remote.call(D, "set_layout", pi, 3840, 2160, 1.5)
+		remote.call(D, "clear_filters", pi)
+		local LIT, UNLIT = "flib_selected_frame_action_button", "frame_action_button"
+		local function hdr() return remote.call(D, "header", pi) end
+		local function filters() return remote.call(D, "state", pi).filters end
 		local plain = remote.call(D, "rows", pi, "overview")
-		lab.check("filter row hidden by default", not remote.call(D, "header", pi).filter_row)
+		local h = hdr()
+		lab.check("filter row hidden by default, button unlit", not h.filter_row and h.filter_button == UNLIT, h)
 		lab.dev("click", pi, "manager_filter_button")
 		local open = remote.call(D, "rows", pi, "overview")
-		lab.check("filter toggle shows the row, which takes a row", remote.call(D, "header", pi).filter_row
-			and open.computed < plain.computed and open.window_height <= open.max_height, { plain = plain, open = open })
-		remote.call(D, "set_filter", pi, { network = "signal-A" })
+		h = hdr()
+		local f = filters()
+		lab.check("the button opens the row and is lit with no filter set", h.filter_row and h.filter_button == LIT
+			and f.item == nil and f.network == nil and f.mask == -1 and f.surface == nil, { h = h, f = f })
+		lab.check("the open row takes a row", open.computed < plain.computed and open.window_height <= open.max_height,
+			{ plain = plain, open = open })
+		local bench = game.surfaces["cyb-bench"].index
+		local item = remote.call(D, "dump", pi, "inventory").provided.hashes[1]
+		remote.call(D, "set_filter", pi, { network = "signal-A", mask = 3, surface = bench, item = item, query = "stn" })
+		remote.call("cybersyn", "write_global", "unserved", "manager", "players", pi, "stations_chip")
+		remote.call("cybersyn", "write_global", "parked", "manager", "players", pi, "trains_chip")
 		lab.dev("click", pi, "manager_filter_button")
-		lab.check("the row stays while a network filter is set", remote.call(D, "header", pi).filter_row)
-		remote.call(D, "clear_filters", pi)
-		lab.check("the row hides once the filters are cleared", not remote.call(D, "header", pi).filter_row)
+		h, f = hdr(), filters()
+		lab.check("closing the row clears item, network, network ID and surface, the button unlit",
+			not h.filter_row and h.filter_button == UNLIT and f.item == nil and f.network == nil and f.mask == -1
+			and f.surface == nil, { h = h, f = f })
+		lab.check("closing the row clears the Stations and Trains chips", lab.read("manager", "players", pi, "stations_chip") == nil
+			and lab.read("manager", "players", pi, "trains_chip") == nil)
+		lab.check("the item chip is gone from every tab", not h.overview_tab.chip and not h.stations_tab.chip, h)
+		lab.check("the station search is not part of the reset", f.terms ~= nil and f.terms[1] == "stn", f.terms)
 		lab.check("rows back", remote.call(D, "rows", pi, "overview").computed == plain.computed)
+		remote.call(D, "set_filter", pi, { query = false })
+
+		-- Every path that sets a filter opens the row.
+		remote.call(D, "set_filter", pi, { surface = bench })
+		h = hdr()
+		lab.check("dev set_filter opens the row, lit", h.filter_row and h.filter_button == LIT, h)
+		lab.dev("click", pi, "manager_filter_button")
+		lab.check("and closing it again leaves no filter", not hdr().filter_row and filters().surface == nil)
+		remote.call(D, "select_tab", pi, "overview")
+		local d = overview()
+		if #d.lists.unserved.rendered > 0 then
+			lab.dev("click", pi, TABLE, COLUMNS + 1, { shift = true })
+			-- A click holds the table's row order like a hover; the pointer leaves it again.
+			remote.call(D, "hover", pi, TABLE, COLUMNS + 1, true)
+			h, f = hdr(), filters()
+			lab.check("a shift-click on an item filters Stations by it and opens the row", h.filter_row and h.filter_button == LIT
+				and f.item == d.lists.unserved.rendered[1].item and remote.call(D, "state", pi).selected_tab == "stations_tab",
+				{ h = h, f = f })
+			lab.dev("click", pi, "manager_filter_button")
+		else
+			lab.skip("a shift-click on an item filters Stations by it and opens the row", "no Unserved row")
+		end
+		remote.call(D, "select_tab", pi, "overview")
+		lab.dev("click", pi, "overview_tile_fleet")
+		h, f = hdr(), filters()
+		if f.network then
+			lab.check("the Fleet headroom jump sets its network and opens the row", h.filter_row and h.filter_button == LIT, h)
+		else
+			lab.skip("the Fleet headroom jump sets its network and opens the row", "no network in the fleet counters")
+		end
+		lab.dev("click", pi, "manager_filter_button")
+		remote.call(D, "set_filter", pi, { network = "signal-B" })
+		lab.dev("click", pi, "manager_clear_filters_button")
+		h, f = hdr(), filters()
+		lab.check("the row's own reset clears it and closes it", not h.filter_row and h.filter_button == UNLIT
+			and f.network == nil, { h = h, f = f })
+		remote.call(D, "set_filter", pi, { network = "signal-A" })
+		ctx.reset_with_filter = true
 	end,
 
-	-- /cybersyn-reset-gui forgets the position and the emulated screen.
+	-- PLAN4 D2: the table and tiles 1 and 3 follow network, network ID and surface on the requester; each tile's
+	-- number equals the rows its jump lists (Unserved: the stations behind it, the Stations tab's Unserved chip; Stations
+	-- failing: the Failing chip), with a surface filter, a network filter and both. Fleet headroom follows the network.
+	function(ctx)
+		lab.big_screen(pi)
+		remote.call(D, "clear_filters", pi)
+		lab.dev("lint_run")
+		local stations = lab.read("stations")
+		local bench = game.surfaces["cyb-bench"].index
+		local function mask_ok(f, mask)
+			return type(mask) == "number" and bit32.btest(f.mask or -1, mask)
+		end
+		-- The requester's place (surface, network name, network ID), from the live station.
+		local function passes(id, f)
+			local st = stations[id]
+			if not st then return false end
+			local stop = st.entity_stop
+			if f.surface and not (stop and stop.valid and stop.surface_index == f.surface) then return false end
+			if f.network then
+				local mask = st.network_name == "signal-each" and type(st.network_mask) == "table" and st.network_mask[f.network]
+					or (st.network_name == f.network and st.network_mask) or nil
+				if not mask_ok(f, mask) then return false end
+			elseif f.mask then
+				if type(st.network_mask) == "table" then
+					local any = false
+					for _, m in pairs(st.network_mask) do any = any or mask_ok(f, m) end
+					if not any then return false end
+				elseif not mask_ok(f, st.network_mask) then
+					return false
+				end
+			end
+			return true
+		end
+		local function entries(f)
+			local n = 0
+			for _, row in ipairs(lab.dev("diag_unserved_rows", 5000)) do
+				if passes(row.r_station_id, f) and (not f.item or row.hash == f.item) then n = n + 1 end
+			end
+			return n
+		end
+		-- The Stations tab's Unserved chip rule, independently: a snapshot record with an unserved entry (any item) that
+		-- passes the place filters and provides, requests or delivers the filtered item.
+		local function unserved_stations(f)
+			local n = 0
+			for id, st in pairs(lab.read("manager").snapshot.stations) do
+				if st.unserved and st.unserved.count > 0 and passes(id, f) and (not f.item or st.provided[f.item]
+					or st.requested[f.item] or st.deliveries[f.item]) then
+					n = n + 1
+				end
+			end
+			return n
+		end
+		local function jump(tile)
+			remote.call(D, "select_tab", pi, "overview")
+			lab.dev("click", pi, "overview_tile_" .. tile)
+			return remote.call(D, "dump", pi, "stations").ids
+		end
+		remote.call(D, "select_tab", pi, "overview")
+		lab.dev("collect")
+		local all = overview()
+		-- An item filter where the two rules differ when one can be found: a station that handles the item with an
+		-- unserved entry for another item only (the case a per-entry count got wrong).
+		local item, differs
+		local by_item = {}
+		for _, row in ipairs(lab.dev("diag_unserved_rows", 5000)) do
+			by_item[row.hash] = by_item[row.hash] or {}
+			by_item[row.hash][row.r_station_id] = true
+		end
+		for hash, ids in pairs(by_item) do
+			local d = unserved_stations({ item = hash }) ~= table_size(ids)
+			if not item or (d and not differs) or (d == differs and hash < item) then item, differs = hash, d end
+		end
+		lab.info("item case " .. tostring(item) .. (differs and " (a station handles it with another item unserved)" or ""))
+		local cases = {
+			{ "surface cyb-bench", { surface = bench } },
+			{ "network signal-A", { network = "signal-A" } },
+			{ "surface cyb-bench + network signal-B", { surface = bench, network = "signal-B" } },
+			{ "item " .. tostring(item), { item = item } },
+			{ "network ID 1", { mask = 1 } },
+			{ "network signal-A + network ID 2", { network = "signal-A", mask = 2 } },
+			{ "surface cyb-bench + a station search typed elsewhere", { surface = bench, query = "stn-1" } },
+			{ "surface nauvis (no stops)", { surface = 1 } },
+		}
+		for _, case in ipairs(cases) do
+			local name, f = case[1], case[2]
+			remote.call(D, "clear_filters", pi)
+			remote.call(D, "set_filter", pi, f)
+			remote.call(D, "select_tab", pi, "overview")
+			lab.dev("collect")
+			local d = overview()
+			local u = d.tiles.unserved
+			local n, n_stations = entries(f), unserved_stations(f)
+			lab.check(name .. ": Unserved table counts the requests whose requester passes, the tile the chip's stations",
+				u.total + u.acked_total == n and u.stations == n_stations and u.headline == u.stations,
+				{ tile = u, entries = n, stations = n_stations })
+			local ok = true
+			for _, r in ipairs(d.lists.unserved.rendered) do
+				if not passes(r.requester_id, f) then ok = false end
+			end
+			lab.check(name .. ": every listed row's requester passes", ok)
+			local failing = d.tiles.failing.headline
+			local unserved_ids = jump("unserved")
+			lab.check(name .. ": Unserved tile stations == rows of its jump", u.stations == #unserved_ids,
+				{ tile = u.stations, rows = #unserved_ids })
+			if f.query then remote.call(D, "set_filter", pi, { query = f.query }) end
+			local failing_ids = jump("failing")
+			lab.check(name .. ": Stations failing tile == rows of its jump", failing == #failing_ids,
+				{ tile = failing, rows = #failing_ids })
+			local st = remote.call(D, "state", pi).filters
+			lab.check(name .. ": the jumps keep the filter and the row open and drop the station search",
+				remote.call(D, "header", pi).filter_row and st.surface == f.surface and st.item == f.item
+				and st.mask == (f.mask or -1) and st.terms == nil, st)
+			lab.info(name .. ": unserved " .. u.total .. " + " .. u.acked_total .. " acked at " .. u.stations
+				.. " stations, failing " .. tostring(failing) .. " (unfiltered " .. all.tiles.unserved.total .. ", "
+				.. tostring(all.tiles.failing.headline) .. ")")
+			if f.network and not f.surface then
+				local fl = d.tiles.fleet
+				lab.check(name .. ": Fleet headroom shows the filtered network", fl.network == f.network
+					and (fl.worst == nil or fl.worst == f.network), fl)
+				local tip = serpent.line(d.rendered_tiles.fleet.tooltip, { comment = false })
+				lab.check(name .. ": its tooltip says network ID and surface do not apply",
+					string.find(tip, "overview-fleet-scope", 1, true) ~= nil, tip)
+			end
+		end
+		local d = overview()
+		lab.check("surface nauvis: nothing listed, an empty state that names the filters", d.tiles.unserved.total == 0
+			and #d.lists.unserved.rendered == 0 and key_of(d.lists.unserved.empty) == "cybersyn-gui.unserved-empty-filtered",
+			d.lists.unserved.empty)
+		remote.call(D, "clear_filters", pi)
+		remote.call(D, "select_tab", pi, "overview")
+		d = overview()
+		lab.check("unfiltered again: the counts are back", d.tiles.unserved.total == all.tiles.unserved.total)
+		local hud = lab.dev("hud", pi)
+		lab.check("Fleet headroom's Now line is the HUD's free trains", d.tiles.fleet.now == (hud.values and hud.values.headroom),
+			{ tile = d.tiles.fleet.now, hud = hud.values })
+		local rt = d.rendered_tiles
+		lab.check("Fleet headroom labelled 'min · <period>' with a Now line", key_of(rt.fleet.note) == "cybersyn-gui.overview-fleet-min"
+			and key_of(rt.fleet.lines[1][1]) == "cybersyn-gui.overview-fleet-now", rt.fleet)
+		lab.check("Throughput says it covers all networks, the wait lines say dispatch wait",
+			string.find(serpent.line(rt.throughput.caption, { comment = false }), "overview-all-networks", 1, true) ~= nil
+			and key_of(rt.throughput.lines[2][1]) == "cybersyn-gui.overview-throughput-wait-avg", rt.throughput)
+	end,
+
+	-- PLAN4 D3: every open starts on the player's surface; a surface without Cybersyn stops falls back to All.
+	function(ctx)
+		remote.call(D, "clear_filters", pi)
+		local p = game.get_player(pi)
+		local bench = game.surfaces["cyb-bench"]
+		local function dropdown()
+			local function find(elem)
+				if elem.name == "manager_surface_dropdown" then return elem end
+				for _, c in pairs(elem.children) do
+					local e = find(c)
+					if e then return e end
+				end
+			end
+			local dd = find(p.gui.screen)
+			return dd and dd.items[dd.selected_index]
+		end
+		local home = { surface = p.surface, position = p.position }
+		remote.call(D, "close", pi)
+		p.teleport({ 0, 0 }, bench)
+		remote.call(D, "open", pi)
+		local f = remote.call(D, "state", pi).filters
+		local h = remote.call(D, "header", pi)
+		lab.check("open on a surface with stops: the surface filter is the player's surface, the row open and lit",
+			f.surface == bench.index and h.filter_row and h.filter_button == "flib_selected_frame_action_button", { f = f, h = h })
+		lab.check("the drop-down shows the resolved surface", dropdown() == bench.name, dropdown())
+		remote.call(D, "set_filter", pi, { surface = false })
+		remote.call(D, "close", pi)
+		remote.call(D, "open", pi)
+		lab.check("a surface changed afterwards lasts only until the window closes",
+			remote.call(D, "state", pi).filters.surface == bench.index)
+		local empty = game.create_surface("p1-no-stops")
+		remote.call(D, "close", pi)
+		p.teleport({ 0, 0 }, empty)
+		remote.call(D, "open", pi)
+		f, h = remote.call(D, "state", pi).filters, remote.call(D, "header", pi)
+		lab.check("open on a surface without stops: All, the row closed", f.surface == nil and not h.filter_row, { f = f, h = h })
+		remote.call(D, "close", pi)
+		p.teleport(home.position, home.surface)
+		game.delete_surface(empty)
+		remote.call(D, "open", pi)
+		lab.check("back on this save's player surface (no stops there): All", remote.call(D, "state", pi).filters.surface == nil)
+	end,
+
+	-- Round 5 items 5 and 14: a Setup marker in the Why cell when the requester has an open error finding for the item
+	-- (or the whole station); a column the visible rows leave empty is hidden and Requester takes its width.
+	function(ctx)
+		remote.call(D, "clear_filters", pi)
+		remote.call(D, "select_tab", pi, "overview")
+		lab.dev("lint_run")
+		local d = overview()
+		local rendered = d.lists.unserved.rendered
+		local any_stock, any_lost, rows_ok = false, false, true
+		for _, r in ipairs(rendered) do
+			if r.stock ~= "–" and r.stock ~= "" then any_stock = true end
+			if r.lost ~= "" then any_lost = true end
+			if r.stock_visible ~= not d.hidden.stock or r.lost_visible ~= not d.hidden.lost then rows_ok = false end
+		end
+		lab.check("Stock / needed and Lost to are hidden exactly when no visible row fills them", #rendered > 0 and rows_ok
+			and d.hidden.stock == not any_stock and d.hidden.lost == not any_lost, { hidden = d.hidden, stock = any_stock, lost = any_lost })
+		local widths = lab.read("manager", "players", pi, "overview_widths")
+		local extra = (d.hidden.stock and 110 or 0) + (d.hidden.lost and 96 or 0)
+		lab.check("Requester takes the hidden columns' width", rendered[1] and rendered[1].requester_width == widths.requester + extra,
+			{ cell = rendered[1] and rendered[1].requester_width, base = widths.requester, extra = extra })
+		local r = rendered[1]
+		if not r then return end
+		lab.check("no Setup marker without a finding", not r.setup or lab.dev("overview_setup_oracle", pi).stations > 0, r.setup)
+		local findings = lab.read("manager", "lint", "findings")
+		local n = #findings
+		local check = 1
+		while bit32.band(d.lint_error_mask, bit32.lshift(1, check - 1)) == 0 do check = check + 1 end
+		remote.call("cybersyn", "write_global", { subject = 1, id = r.requester_id, check = check, a = 0, b = 0, item = r.item },
+			"manager", "lint", "findings", n + 1)
+		d = overview()
+		local r1
+		for _, row in ipairs(d.lists.unserved.rendered) do
+			if row.requester_id == r.requester_id and row.item == r.item then r1 = row end
+		end
+		lab.check("an open error finding for the requester and item: a Setup marker beside the chip", r1 and r1.setup
+			and string.find(serpent.line(r1.setup_tooltip, { comment = false }), "cybersyn-diag.lint-", 1, true) ~= nil, r1)
+		lab.dev("diag_ack", "lint", r.requester_id, check, nil, pi)
+		d = overview()
+		r1 = nil
+		for _, row in ipairs(d.lists.unserved.rendered) do
+			if row.requester_id == r.requester_id and row.item == r.item then r1 = row end
+		end
+		lab.check("acknowledged: no marker", r1 and not r1.setup, r1)
+		lab.dev("diag_unack", "lint", r.requester_id, check, pi)
+		remote.call("cybersyn", "write_global", nil, "manager", "lint", "findings", n + 1)
+		d = overview()
+	end,
+
+	-- PLAN4 D16: back from remote view with a pinned window's overlay open, the hand-back to player.opened is armed
+	-- for the manager tick.
+	function(ctx)
+		remote.call(D, "select_tab", pi, "trains")
+		local tid = next(lab.read("trains"))
+		remote.call(D, "select_train", pi, tid)
+		lab.dev("controller_changed", pi)
+		local ro = lab.read("manager", "players", pi, "restore_opened")
+		lab.check("pinned + pane, controller back from remote view: the hand-back is armed", ro ~= nil
+			and ro.controller == game.get_player(pi).controller_type, ro)
+		remote.call(D, "deselect_train", pi)
+		lab.dev("tick", 1)
+		lab.check("with no overlay left the pending hand-back is dropped",
+			lab.read("manager", "players", pi, "restore_opened") == nil)
+		remote.call(D, "select_tab", pi, "overview")
+	end,
+
+	-- /cybersyn-reset-gui forgets the position and the emulated screen, and closes the filter row with its filters.
 	function(ctx)
 		remote.call("cybersyn", "write_global", { x = -5000, y = 10 }, "manager", "players", pi, "location")
+		remote.call(D, "set_filter", pi, { network = "signal-A" })
 		local h = lab.dev("reset_gui", pi)
 		lab.check("reset forgets the stored position", h.location == nil, h.location)
+		lab.check("reset closes the filter row and clears its filters", not h.filter_row
+			and remote.call(D, "state", pi).filters.network == nil, h.filter_row)
 		lab.check("reset drops the emulated screen", lab.read("manager").players[pi].layout_override == nil)
 		lab.big_screen(pi)
 		lab.dev("set_setting", "cybersyn-enable-planner", ctx.planner)

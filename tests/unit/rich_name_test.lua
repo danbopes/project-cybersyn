@@ -95,3 +95,20 @@ test("util.parse_rich_name is the same function", function()
 	local util = H.load("scripts.gui.util")
 	assert_eq(util.parse_rich_name("[item=coal] C"), parts({ icon("item/coal") }, "C"))
 end)
+
+test("separators between icons join the icon run (pY names)", function()
+	assert_eq(parse("[item=iron-plate] / [item=copper-plate] Requestor for [fluid=water]"),
+		parts({ icon("item/iron-plate"), icon("item/copper-plate") }, "Requestor for", { icon("fluid/water") }))
+	assert_eq(parse("[item=coal],[item=stone] | [item=wood] Mix"),
+		parts({ icon("item/coal"), icon("item/stone"), icon("item/wood") }, "Mix"))
+	assert_eq(parse("Drop [item=coal] / [item=stone]"), parts({}, "Drop", { icon("item/coal"), icon("item/stone") }))
+	assert_eq(parse("[item=coal] / [item=stone]"), parts({ icon("item/coal"), icon("item/stone") }, ""))
+end)
+
+test("separators outside a run stay in the text", function()
+	-- Before the first icon, between the last lead icon and the text, after the last tail icon: text, not run.
+	assert_eq(parse("/ [item=coal] Coal"), parts({}, "/ [item=coal] Coal"))
+	assert_eq(parse("[item=coal] / Coal"), parts({ icon("item/coal") }, "/ Coal"))
+	assert_eq(parse("Coal [item=coal] /"), parts({}, "Coal [item=coal] /"))
+	assert_eq(parse("A / B [item=coal]"), parts({}, "A / B", { icon("item/coal") }))
+end)

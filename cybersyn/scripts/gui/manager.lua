@@ -206,18 +206,48 @@ function manager.dispatch_paused()
 	return settings.global["cybersyn-enable-planner"].value == false
 end
 
---- Network, network id and surface live only in the filter row; while one is set the row stays open.
+--- The filters the title bar's filter button resets (PLAN4 D4): item, network, network ID and surface. The station
+--- search has its own button and is not one of them.
 --- @param player_data PlayerData
 --- @return boolean
 local function row_filters_active(player_data)
-	return player_data.search_network_name ~= nil or (player_data.search_network_mask or -1) ~= -1
-		or player_data.search_surface_idx ~= nil
+	return player_data.search_item ~= nil or player_data.search_network_name ~= nil
+		or (player_data.search_network_mask or -1) ~= -1 or player_data.search_surface_idx ~= nil
 end
 
+--- The filter button is the row's switch: lit while the row is open, and closing it clears the row's filters, so a
+--- filter is never active with the row hidden.
 --- @param player_data PlayerData
 --- @return boolean
 function manager.filter_row_shown(player_data)
-	return player_data.filter_row_open == true or row_filters_active(player_data)
+	return player_data.filter_row_open == true
+end
+
+--- Clears what closing the filter row clears (PLAN4 D4): the row's filters and the Stations/Trains chips.
+--- @param player_data PlayerData
+local function clear_row_filters(player_data)
+	player_data.search_item = nil
+	player_data.search_network_name = nil
+	player_data.search_network_mask = -1
+	player_data.search_surface_idx = nil
+	player_data.stations_status_filter = nil
+	player_data.stations_chip = nil
+	player_data.stations_problems_scope = nil
+	player_data.trains_chip = nil
+	util.reset_pages(player_data)
+end
+
+--- PLAN4 D3: every open starts on the player's surface (player.surface, which follows remote view), or on All when
+--- that surface holds no Cybersyn station (a space platform) or the game has a single surface.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.apply_surface_default(player, player_data)
+	local index = player.surface.index
+	if #game.surfaces > 1 and util.surface_has_station(index) then
+		player_data.search_surface_idx = index
+	else
+		player_data.search_surface_idx = nil
+	end
 end
 
 --- The window size for this player's screen (or the screen dev.set_layout emulates); stored in player_data.layout.
@@ -383,12 +413,6 @@ function manager.refresh_chips(player_data)
 	end
 end
 
---- @param player_data PlayerData
---- @return boolean
-local function any_filter(player_data)
-	return row_filters_active(player_data) or player_data.search_item ~= nil
-end
-
 --- Shows or hides the filter row; a change of its visibility changes the rows that fit.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
@@ -402,7 +426,7 @@ function manager.refresh_filter_row(player, player_data)
 		refs.manager_surface_label.visible = multi
 		refs.manager_surface_dropdown.visible = multi
 	end
-	set_frame_toggle(refs.manager_filter_button, any_filter(player_data))
+	set_frame_toggle(refs.manager_filter_button, shown)
 	if row.visible ~= shown then
 		row.visible = shown
 		manager.apply_layout(player, player_data)
@@ -531,6 +555,8 @@ function manager.restore_filter_widgets(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
+	-- Every path that sets a filter ends here or in manager.render: the row opens with it.
+	if row_filters_active(player_data) then player_data.filter_row_open = true end
 	refs.manager_item_filter.elem_value = player_data.search_item and util.signalid_from_hash(player_data.search_item) or nil
 	refs.network.elem_value = player_data.search_network_name and util.signalid_from_name(player_data.search_network_name) or nil
 	refs.manager_network_mask_field.text = tostring(player_data.search_network_mask or -1)
@@ -615,6 +641,13 @@ end
 --- @param player_data PlayerData
 function manager.render(player, player_data)
 	if not player_data.is_manager_open then return end
+	-- A filter set from outside the row (a shift-click on an item, a tile jump) opens the row before the tab renders.
+	if row_filters_active(player_data) then player_data.filter_row_open = true end
+	local row = player_data.refs.manager_filter_row
+	if row and row.valid and row.visible ~= (player_data.filter_row_open == true) then
+		player = player or game.get_player(player_data.player_index)
+		if player then manager.refresh_filter_row(player, player_data) end
+	end
 	log_tab.refresh_visibility(player_data)
 	manager.update(storage, player_data)
 	player_data.last_update_tick = game.tick
@@ -677,6 +710,9 @@ function manager.handle.manager_open(player, player_data, refs)
 
 	player_data.page_size = nil
 	player_data.hover = nil
+	manager.apply_surface_default(player, player_data)
+	-- The row opens with the window exactly when a filter is set, so it never shows lit and empty from an earlier open.
+	player_data.filter_row_open = row_filters_active(player_data) or nil
 	manager.restore_filter_widgets(player_data)
 	manager.refresh_toggles(player_data)
 	manager.refresh_sort_headers(player_data)
@@ -980,8 +1016,18 @@ end
 --- @param player_data PlayerData
 function manager.on_controller_changed(player, player_data)
 	manager.interrupt_pane_escape(player, player_data)
-	if not player_data.auto_pinned or player.controller_type == defines.controllers.remote then return end
-	manager.unpin_after_map(player, player_data)
+	if player.controller_type == defines.controllers.remote then return end
+	if player_data.auto_pinned then
+		manager.unpin_after_map(player, player_data)
+		return
+	end
+	-- Back from remote view with a pinned window's overlays still open: the manager tick hands player.opened back once
+	-- no GUI holds it (manager.restore_opened), so Escape peels them again (PLAN4 D16).
+	-- Only the return to the character (D16); a hand-back already pending keeps its entity.
+	if player.controller_type == defines.controllers.character and not player_data.restore_opened
+		and player_data.is_manager_open and player_data.pinning and manager.top_overlay(player_data) then
+		player_data.restore_opened = { controller = player.controller_type }
+	end
 end
 
 --- The window "show on map" pinned is unpinned and takes player.opened again.
@@ -1192,9 +1238,27 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_toggle_filter_row(player, player_data, refs)
-	player_data.filter_row_open = not player_data.filter_row_open
-	manager.refresh_filter_row(player, player_data)
+	if player_data.filter_row_open then
+		player_data.filter_row_open = nil
+		clear_row_filters(player_data)
+		manager.restore_filter_widgets(player_data)
+	else
+		player_data.filter_row_open = true
+		manager.refresh_filter_row(player, player_data)
+	end
 	manager.render(player, player_data)
+end
+
+--- /cybersyn-reset-gui and the like: the row closes the way its button closes it.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+function manager.close_filter_row(player, player_data)
+	player_data.filter_row_open = nil
+	clear_row_filters(player_data)
+	local refs = player_data.refs
+	if refs and refs.manager_filter_row and refs.manager_filter_row.valid then
+		manager.restore_filter_widgets(player_data)
+	end
 end
 
 --- @param player LuaPlayer
@@ -1202,14 +1266,9 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_clear_filters(player, player_data, refs)
 	util.set_search_query(player_data, nil)
-	player_data.search_item = nil
-	player_data.search_network_name = nil
-	player_data.search_network_mask = -1
-	player_data.search_surface_idx = nil
-	player_data.stations_status_filter = nil
-	player_data.stations_chip = nil
-	player_data.trains_chip = nil
-	util.reset_pages(player_data)
+	-- The row's own reset leaves what the filter button leaves: the row closed with its filters gone (PLAN4 D4).
+	player_data.filter_row_open = nil
+	clear_row_filters(player_data)
 	manager.restore_filter_widgets(player_data)
 	manager.render(player, player_data)
 end

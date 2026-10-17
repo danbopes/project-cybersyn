@@ -75,6 +75,12 @@ local function only_space(name, from, to)
 	return from > to or string.find(string.sub(name, from, to), "^%s*$") ~= nil
 end
 
+-- "/", "," and "|" between two icons join them into one run, so "[a] / [b] Requestor" draws [b] as a sprite rather
+-- than inline at glyph size beside a stray slash (pY names, round 5 item 1).
+local function only_separators(name, from, to)
+	return from > to or string.find(string.sub(name, from, to), "^[%s/,|]*$") ~= nil
+end
+
 --- @param parts RichNameParts
 --- @param side "lead"|"tail"
 --- @param icon RichNameIcon
@@ -106,9 +112,9 @@ function rich_name.parse(name)
 	local n = #found
 	local max = rich_name.MAX_ICONS
 
-	-- Leading run: icons separated from each other and from the start by whitespace only.
+	-- Leading run: icons separated from the start by whitespace, from each other by whitespace or separators.
 	local lead_n, prev_end = 0, 0
-	while lead_n < n and only_space(name, prev_end + 1, found[lead_n + 1].s - 1) do
+	while lead_n < n and (lead_n == 0 and only_space or only_separators)(name, prev_end + 1, found[lead_n + 1].s - 1) do
 		lead_n = lead_n + 1
 		prev_end = found[lead_n].e
 	end
@@ -116,7 +122,8 @@ function rich_name.parse(name)
 
 	-- Trailing run, never overlapping the leading one.
 	local tail_first, next_start = n + 1, #name + 1
-	while tail_first - 1 > lead_n and only_space(name, found[tail_first - 1].e + 1, next_start - 1) do
+	while tail_first - 1 > lead_n
+		and (tail_first == n + 1 and only_space or only_separators)(name, found[tail_first - 1].e + 1, next_start - 1) do
 		tail_first = tail_first - 1
 		next_start = found[tail_first].s
 	end
