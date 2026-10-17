@@ -1569,12 +1569,13 @@ local function render_alert(state, body)
 			direction = "horizontal",
 			style_mods = { vertical_align = "center", horizontal_spacing = 4 },
 			{ type = "sprite", sprite = "utility/warning_icon", resize_to_sprite = false, style_mods = { size = 20 } },
+			-- A label, not a chip button: it has no action (PLAN4 D7 removes dead chips).
 			{
-				type = "button",
+				type = "label",
 				name = "alert_chip",
-				style = "cybersyn_chip_orange",
 				caption = name and { "cybersyn-diag.alert-" .. string.gsub(name, "_", "-") } or { "cybersyn-gui.overview-alert-0" },
 				tooltip = { "cybersyn-gui.relative-alert-tooltip" },
+				style_mods = { font = "default-bold", font_color = { 1, 0.6, 0.15 } },
 			},
 		} }
 	end)

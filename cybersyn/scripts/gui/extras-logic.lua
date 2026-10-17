@@ -179,7 +179,9 @@ local R_SIDE = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, 
 --- create_delivery counts a train at both stations and adds the manifest to the requester's `deliveries` and
 --- subtracts it from the provider's; leaving the provider undoes the provider side, leaving the requester the
 --- requester side. So the provider side counts TO_P/P trains and the requester side TO_P..R trains, the same rule
---- the lint pass's occupancy index uses.
+--- the lint pass's occupancy index uses. Two limits, shared with the lint: a train under a custom status (>=
+--- STATUS_CUSTOM, other mods') is not counted, and a net-zero amount (one train at both ends of the station) is dropped
+--- where create_delivery would keep a 0 entry; remove_manifest then skips that key, which is harmless.
 --- @param trains {[uint]: {status: int?, p_station_id: uint?, r_station_id: uint?, manifest: {name: string, quality: string?, count: int}[]?}}
 --- @param station_id uint
 --- @param hash fun(name: string, quality: string?): string

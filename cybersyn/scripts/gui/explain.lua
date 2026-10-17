@@ -1,6 +1,7 @@
 -- "Explain" for one Unserved row (PLAN3 §11.8, B3): what the dispatcher recorded for a (requester, item) key, the
--- requester's setup findings and the recent confirmed reason changes and who it lost to. It reads storage.diag and the lint result only: it never evaluates eligibility itself (the lint engine and the reason
--- codes stay the only two models).
+-- requester's setup findings and the recent confirmed reason changes and who it lost to. It reads storage.diag and
+-- the lint result only: it never evaluates eligibility itself (the lint engine and the reason codes stay the only two
+-- models).
 -- Mounted as a screen frame beside the manager window, so the Overview's whole-row sizing never changes.
 
 local gui = require("__flib__.gui")

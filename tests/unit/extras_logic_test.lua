@@ -182,6 +182,9 @@ test("recount: provider side counts TO_P/P, requester side TO_P..R; manifests si
 		[5] = { status = STATUS_TO_D, p_station_id = 10, r_station_id = 20 },
 		[6] = { status = STATUS_F },
 		[7] = { status = STATUS_D },
+		-- Going home past a requester, or to a refueler, with stale ids from the last delivery: not bound.
+		[8] = { status = STATUS_TO_D_BYPASS, p_station_id = 10, r_station_id = 20, manifest = { { name = "coal", count = 5 } } },
+		[9] = { status = STATUS_TO_F, p_station_id = 10, r_station_id = 20, manifest = { { name = "coal", count = 5 } } },
 	}
 	local total, d, ids = l.recount(trains, 10, hash)
 	assert_eq(total, 2)
@@ -201,6 +204,23 @@ test("recount: a train bound at both ends of the same station counts twice and i
 		manifest = { { name = "coal", count = 10 } } } }, 5, hash)
 	assert_eq(total, 2)
 	assert_eq(d, {})
+end)
+
+test("old Log rows: the retired action codes 5 and 7 and the new 8 still read their names", function()
+	storage.trains = storage.trains or {}
+	storage.stations = storage.stations or {}
+	settings.global["cybersyn-diagnostics"] = { value = "basic" }
+	settings.global["cybersyn-diagnostics-ring"] = { value = 16384 }
+	H.load("scripts.diag").apply()
+	local model = H.load("scripts.gui.log-model")
+	local ctx = { player = function() return "Daniel" end }
+	local want = { [ACTION_RESCAN_STATION] = "rescan-station", [ACTION_TEST_PATH] = "test-path",
+		[ACTION_RECOUNT_DELIVERIES] = "recount-deliveries" }
+	assert_eq({ ACTION_RESCAN_STATION, ACTION_TEST_PATH, ACTION_RECOUNT_DELIVERIES }, { 5, 7, 8 })
+	for a, name in pairs(want) do
+		local g = { kind = DIAG_KIND_MANUAL_ACTION, code = 0, a = a, b = 0, station2 = 1, tick = 0, seq = 1, n = 1 }
+		assert_eq(model.message(g, ctx), { "cybersyn-diag.msg-manual-action", { "cybersyn-diag.action-" .. name }, "Daniel" })
+	end
 end)
 
 test("is_counter_leak: only a phantom finding that counts more deliveries than bound trains", function()

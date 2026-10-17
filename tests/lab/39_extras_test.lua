@@ -264,9 +264,9 @@ local STEPS = {
 		lab.check("HUD unserved = diag counts", hud.values.unserved == total, { hud = hud.values, counts = total })
 		lab.check("HUD free trains = fewest available now", hud.values.headroom == min, { hud = hud.values, avail = avail })
 		-- PLAN4 D16: two labelled numbers, the keys the Overview's Fleet headroom "Now" line reads too.
-		lab.check("HUD caption: 'Unserved now n · Free trains n'", type(hud.line1) == "table" and hud.line1[1] == ""
-			and key_of(hud.line1[2]) == "cybersyn-gui.hud-unserved" and hud.line1[2][2] == tostring(total)
-			and key_of(hud.line1[4]) == "cybersyn-gui.hud-headroom-now" and hud.line1[4][2] == tostring(min), hud.line1)
+		lab.check("HUD caption: 'Unserved now n · Free trains now n'", type(hud.line1) == "table" and hud.line1[1] == ""
+			and key_of(hud.line1[2]) == "cybersyn-gui.hud-unserved" and hud.line1[4] == tostring(total)
+			and key_of(hud.line1[6]) == "cybersyn-gui.hud-headroom-now" and hud.line1[8] == tostring(min), hud.line1)
 		local loc = dev("hud_move", PI, 100, 200)
 		lab.check("HUD position persisted", loc and loc.x == 100 and loc.y == 200, loc)
 		hud = dev("hud", PI)
@@ -489,11 +489,20 @@ local STEPS = {
 		lab.check("Recount force line names the counts before and after", key_of(audit) == "cybersyn-gui.action-recount-done"
 			and audit[4] == tostring(ctx.good.total + 1) and audit[5] == tostring(ctx.good.total), audit)
 		lab.check("Recount leaves the requester alone", read("stations", case.r.id, "deliveries_total") == ctx.counts.r)
-		dev("relative_close", PI)
 		dev("collect")
 		dev("lint_run")
 		lab.check("the finding clears on the next pass", dev("lint_findings", p, "phantom")[1] == nil,
 			dev("lint_findings", p, "phantom"))
+		-- The panel has not refreshed since that pass, so its button outlives the finding: the click checks again.
+		local w = function(v, ...) remote.call("cybersyn", "write_global", v, ...) end
+		w(ctx.good.total + 1, "stations", p, "deliveries_total")
+		seq = seq_now()
+		local stale = dev("action_click", PI, "recount_deliveries")
+		lab.check("a Recount button left over from a cleared finding is refused", stale.before ~= nil
+			and stale.confirm == nil and #actions_after(seq, ACTION_RECOUNT) == 0
+			and read("stations", p, "deliveries_total") == ctx.good.total + 1, stale)
+		w(ctx.good.total, "stations", p, "deliveries_total")
+		dev("relative_close", PI)
 
 		dev("set_admin", PI, ctx.admin)
 

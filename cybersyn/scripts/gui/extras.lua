@@ -331,13 +331,14 @@ local function train_networks(keep)
 	return set
 end
 
---- The HUD's two labelled numbers. The Overview's Fleet headroom tile reads the same two keys for its "Now" line, so
---- both say one thing in the same words.
+--- The HUD's two labelled numbers. The keys are bare labels, not "label __1__" templates, because the Overview's Fleet
+--- headroom tile sets its "Now" line as a separate label and value: it uses `hud-headroom-now` as that label, so the
+--- tile and the HUD say one thing in the same words.
 --- @param unserved string
 --- @param free string
 --- @return LocalisedString
 function extras.hud_line(unserved, free)
-	return { "", { "cybersyn-gui.hud-unserved", unserved }, " · ", { "cybersyn-gui.hud-headroom-now", free } }
+	return { "", { "cybersyn-gui.hud-unserved" }, " ", unserved, " · ", { "cybersyn-gui.hud-headroom-now" }, " ", free }
 end
 
 --- The HUD's two captions, from diag.counts_by_reason(), the available-train counters and the cached network set;

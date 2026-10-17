@@ -12,6 +12,7 @@ local gui = require("__flib__.gui")
 local util = require("scripts.gui.util")
 local logic = require("scripts.gui.extras-logic")
 local actions = require("scripts.actions")
+local lint = require("scripts.lint")
 local dev = require("scripts.gui.dev")
 
 --- @class PlayerData
@@ -49,12 +50,26 @@ function repair.can_fail(id)
 	return train ~= nil and train.manifest ~= nil and DELIVERY_STATUSES[train.status] == true
 end
 
---- Whether Recount deliveries has a station to act on.
+--- Whether Recount deliveries has a station to act on. The combinators too: recount writes comb2's output, and an
+--- invalid comb1/comb2 still attached is the state in which on_failed_delivery skips its decrement.
 --- @param id uint
 --- @return boolean
 function repair.can_recount(id)
 	local station = storage.stations[id]
-	return station ~= nil and station.entity_stop ~= nil and station.entity_stop.valid
+	if not (station and station.entity_stop and station.entity_stop.valid) then return false end
+	local comb1, comb2 = station.entity_comb1, station.entity_comb2
+	return comb1 ~= nil and comb1.valid and (comb2 == nil or comb2.valid)
+end
+
+--- Whether the last lint pass still has a counter-leak finding on the station. The click checks it again because the
+--- button can outlive the finding until the panel's next refresh.
+--- @param id uint
+--- @return boolean
+function repair.has_leak(id)
+	for _, f in ipairs(lint.findings()) do
+		if f.id == id and f.subject ~= LINT_SUBJECT_TRAIN and logic.is_counter_leak(f) then return true end
+	end
+	return false
 end
 
 -- ---------------------------------------------------------------- the actions
@@ -283,7 +298,16 @@ end
 function repair.handle.repair_recount_click(player, pd, e)
 	local kind, id = repair.subject(e.element)
 	if kind ~= "stop" then return end
+	if not repair.has_leak(id) then
+		pd.confirm = nil
+		util.error_flying_text(player, { "cybersyn-gui.action-recount-no-leak" })
+		return
+	end
 	confirm_click(player, pd, e, "recount deliveries", function()
+		if not repair.has_leak(id) then
+			util.error_flying_text(player, { "cybersyn-gui.action-recount-no-leak" })
+			return
+		end
 		local stop = storage.stations[id] and storage.stations[id].entity_stop
 		local before, after = repair.recount(id)
 		if not (before and after) then
