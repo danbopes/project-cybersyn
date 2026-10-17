@@ -315,10 +315,11 @@ lab.suite("39_log", {
 		dev("log_toggle_pass", pi, 1)
 		d = render()
 		local disp = d.display
-		lab.check("the pass row expands to its rows, newest first, below it", d.rows[1].message[3] == "▾" and
+		lab.check("the pass row expands to its rows, newest first, below it, indented", d.rows[1].message[3] == "▾" and
 			disp[2].child and disp[3].child and disp[4].child and not disp[5].child and
 			#d.rows == math.min(d.page, #d.groups + 3) and
-			d.rows[2].message[1] == "cybersyn-diag.msg-lint-appeared" and disp[2].seq > disp[3].seq,
+			d.rows[2].message[1] == "" and d.rows[2].message[3][1] == "cybersyn-diag.msg-lint-appeared" and
+			disp[2].seq > disp[3].seq and d.rows[1].message[1] ~= "",
 			{ disp[1], disp[2], disp[3], disp[4], disp[5], rows = #d.rows })
 		dev("log_toggle_pass", pi, 1)
 		d = render()
@@ -330,6 +331,59 @@ lab.suite("39_log", {
 			d.header[5] == (cycle.dispatches_last and tostring(cycle.dispatches_last) or "–") and
 			d.header[6] == tostring(cycle.dispatches_last or 0), { d.header, cycle })
 		dev("set_setting", "cybersyn-enable-planner", true)
+	end,
+
+	-- PLAN4 D12 while Follow is held: the rows a rewrite left hidden below the viewport still come in (they are at their
+	-- final places), and the ages below the viewport keep moving, so a scrolled-to row never shows its age out of order.
+	function(ctx)
+		dev("set_setting", "cybersyn-enable-planner", false)
+		ctx.ups = settings.global["cybersyn-manager-updates-per-second"].value
+		dev("set_setting", "cybersyn-manager-updates-per-second", 0)
+		reset_filter()
+		for i = 1, 260 do
+			local even = i % 2 == 0
+			dev("diag_event", even and "station_limit" or "station_disabled", even and "info" or "warning",
+				{ station = ctx.station_ids[1 + i % 20], a = 2000 + i, b = 1 })
+		end
+		render()
+		dev("log_set_filter", pi, { kind = "station_disabled" }, true)
+		dev("hover", pi, "log_body", 1)
+		dev("update", pi, 1)
+		local d = dev("log_dump", pi)
+		local before = d.shown
+		for _ = 1, 20 do dev("update", pi, 1) end
+		d = dev("log_dump", pi)
+		lab.check("held: the rows a filter change left hidden still come in", before < #d.display and
+			d.shown == #d.display and d.held, { before = before, shown = d.shown, display = #d.display, held = d.held })
+		ctx.viewport = d.limit
+		lab.wait(240)
+	end,
+	function(ctx)
+		local function seconds(caption)
+			local t = 0
+			local scale = { d = 86400, h = 3600, m = 60, s = 1 }
+			for n, unit in string.gmatch(caption or "", "(%d+)([dhms])") do t = t + tonumber(n) * scale[unit] end
+			return t
+		end
+		dev("update", pi, 1)
+		local d = dev("log_dump", pi)
+		local prev, bad = -1, nil
+		for i, row in ipairs(d.rows) do
+			local s = seconds(row.age)
+			if s < prev then
+				bad = { i = i, age = row.age, above = d.rows[i - 1].age }
+				break
+			end
+			prev = s
+		end
+		lab.check("held: 4 s later one update brings every row's age in order down the page (the whole page moves together " ..
+			"every 2 s while held)", d.held and not bad and #d.rows > ctx.viewport and prev >= 4,
+			{ bad = bad, rows = #d.rows, viewport = ctx.viewport, last = prev, held = d.held })
+		dev("hover", pi, "log_body", 1, true)
+		reset_filter()
+		dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
+		dev("set_setting", "cybersyn-enable-planner", true)
+		render()
 	end,
 
 	-- Summary == the oracle's top stations and items in the window.

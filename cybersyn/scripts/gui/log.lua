@@ -48,9 +48,16 @@ local HOLD_TICKS = 3600
 -- 50-70 µs to build and write), then per update until the page is full, inside the Log's 1 ms. The prewarm builds
 -- the pool while another tab shows, so the first look at the Log seldom builds anything.
 local FIRST_FILL = 80
-local FILL_ROWS = 10
--- Rows below the viewport a rewrite writes per update.
-local DEFER_ROWS = 16
+local FILL_ROWS = 8
+-- Rows below the viewport a rewrite writes per update (at 16 a catch-up update measured 1.01-1.10 ms on pY).
+local DEFER_ROWS = 12
+-- PLAN4 D12's 2 s timer. While Follow is held the whole page's ages are written together once per AGE_TICKS and not
+-- in between: a reader scrolled anywhere sees ages in order (a slice spread over updates left rows a second apart, the
+-- older above the newer). Under Follow the reader is at the top: the viewport every update, and below it a slice
+-- that would pass the page once per AGE_TICKS, capped at a viewport per update (the Follow path's 1 ms).
+local AGE_TICKS = 120
+-- A lint pass's own rows are indented under its row.
+local CHILD_INDENT = "      "
 -- Logical px at the 1,392 px content width of a 1,440 px window; the message takes the rest.
 local W = { age = 60, dot = 16, kind = 20, train = 56, station = 300, item = 28, count = 44, print = 28 }
 local BASE_CONTENT_WIDTH = 1392
@@ -640,7 +647,8 @@ end
 --- @param now uint
 --- @param key number
 --- @param expanded boolean? the row is a lint pass whose rows are shown below it
-local function write_cells(cells, g, m, now, key, expanded)
+--- @param child boolean? the row is one of an expanded lint pass's rows
+local function write_cells(cells, g, m, now, key, expanded, child)
 	m.seq, m.n_, m.a_, m.b_, m.epoch, m.x_ = g.seq, g.n, g.a, g.b, name_epoch(key, now), expanded
 	if prof then prof.written = prof.written + 1 end
 	local tsig = g.first_tick .. "|" .. g.tick .. "|" .. g.n
@@ -722,9 +730,10 @@ local function write_cells(cells, g, m, now, key, expanded)
 	-- message, count
 	local pass = g.pass and g.n > 1
 	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n ..
-		(pass and ("|" .. table.concat(g.lint, ",") .. (expanded and "x" or "")) or "")
+		(pass and ("|" .. table.concat(g.lint, ",") .. (expanded and "x" or "")) or "") .. (child and "|c" or "")
 	if m.msg ~= msig then
-		cells[7].caption = log_tab.message(g, expanded)
+		local message = log_tab.message(g, expanded)
+		cells[7].caption = child and { "", CHILD_INDENT, message } or message
 		cells[7].tooltip = pass and { "cybersyn-gui.log-lint-pass-tooltip" } or ""
 		m.msg = msig
 	end
@@ -794,8 +803,6 @@ end
 
 -- The render's context in upvalues set by render_rows, so a render allocates no closures.
 local r_memo, r_widths, r_now
--- Entries of the rows without a group, by position (read only).
-local PLACEHOLDERS = {}
 
 --- Brings one row element to `entry` (a LogDisplayRow, or a placeholder without a group): its memo says what the
 --- element shows, so only what changed is written; the age only when `age` is set (the viewport and its slice).
@@ -825,7 +832,7 @@ local function row_write(elem, entry, age, still)
 	local cells = row_cells(elem, m)
 	local moved = m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.x_ ~= entry.x
 	if moved or (age and not still and m.epoch ~= name_epoch(key, now)) then
-		write_cells(cells, g, m, now, key, entry.x)
+		write_cells(cells, g, m, now, key, entry.x, entry.child)
 	end
 	if age or moved or not m.a then
 		local caption = model.age_caption(now, g, util.short_duration)
@@ -959,6 +966,51 @@ local function write_deferred(state, entries, viewport)
 	state.defer_from = i <= n and i or nil
 end
 
+--- Writes the ages of the next rows below the viewport (age only, no other cell), as many as the time since the last
+--- slice asks for, at most a viewport (see AGE_TICKS).
+--- @param state table
+--- @param entries {key: number, g: LogGroup?, x: boolean?}[]
+--- @param viewport int
+--- @param now uint
+local function age_slice(state, entries, viewport, now)
+	local keys, elems, memo = state.keys, state.elems, r_memo
+	local n = #keys
+	local below = n - viewport
+	if below <= 0 then return end
+	local last = state.age_tick
+	state.age_tick = now
+	-- The rows were just written with their ages.
+	if not last then return end
+	local elapsed = math.min(now - last, AGE_TICKS)
+	if elapsed <= 0 then return end
+	local count = math.ceil(below * elapsed / AGE_TICKS)
+	if count > viewport then count = viewport end
+	local cursor = state.age_cursor or viewport
+	for _ = 1, count do
+		cursor = (cursor >= n or cursor < viewport) and viewport + 1 or cursor + 1
+		local m = memo[keys[cursor]]
+		local e = entries[cursor]
+		if m and not m.stale and e and e.g then row_write(elems[cursor], e, true, true) end
+	end
+	state.age_cursor = cursor
+end
+
+--- While held: every row's age at once, once per AGE_TICKS (see there).
+--- @param state table
+--- @param entries {key: number, g: LogGroup?, x: boolean?}[]
+--- @param now uint
+local function held_ages(state, entries, now)
+	local last = state.held_age_tick
+	if last and now - last < AGE_TICKS then return end
+	state.held_age_tick = now
+	local keys, elems, memo = state.keys, state.elems, r_memo
+	for i = 1, #keys do
+		local m = memo[keys[i]]
+		local e = entries[i]
+		if m and not m.stale and e and e.g then row_write(elems[i], e, true, true) end
+	end
+end
+
 --- Rows live in a one-column table whose odd-row background gives the tint, so a row that moves needs no restyle.
 --- The table holds PAGE rows once filled: those without a group are hidden placeholders, so a filter that shows few
 --- rows destroys none and the next one that shows many creates none.
@@ -967,7 +1019,7 @@ end
 --- @param size int rows the table holds (PAGE; the prewarm grows it)
 --- @param changed boolean
 --- @param viewport int rows written every update
---- @param held boolean? Follow is held: only the viewport's ages move (the reader's rows stay as they are)
+--- @param held boolean? Follow is held: rows keep their contents, only ages move, the whole page at once every AGE_TICKS
 local function render_rows(player_data, display, size, changed, viewport, held)
 	local refs = player_data.refs
 	local parent = refs[ROWS]
@@ -989,29 +1041,20 @@ local function render_rows(player_data, display, size, changed, viewport, held)
 		state.keys and #state.keys == size and not state.filling then
 		local keys, elems = state.keys, state.elems
 		local intact = elems and #elems == #keys and (not elems[1] or elems[1].valid)
-		if intact and held then
-			-- The reader's rows stay as they are: only the viewport's ages move (PLAN4 D12; the rows below get theirs
-			-- again from the slice once the hold ends).
-			for i = 1, math.min(viewport, #keys) do
-				local m = memo[keys[i]]
-				if m and not m.stale and display[i] then row_write(elems[i], display[i], true, true) end
-			end
-			r_memo, r_widths, view_cache = nil, nil, nil
-			return
-		end
 		if intact then
+			-- Rows a rewrite left hidden are already in their final places, so showing them moves nothing even while
+			-- Follow is held.
 			write_deferred(state, entries, viewport)
-			local n = #keys
-			local cursor = state.age_cursor or viewport
-			if cursor >= n then cursor = viewport end
-			local stop = math.min(n, cursor + viewport)
-			local function refresh(i)
-				local m = memo[keys[i]]
-				if m and not m.stale and display[i] then row_write(elems[i], display[i], true) end
+			if held then
+				-- The reader's rows keep their contents (PLAN4 D12), only ages move.
+				held_ages(state, entries, now)
+			else
+				for i = 1, math.min(viewport, #keys) do
+					local m = memo[keys[i]]
+					if m and not m.stale and display[i] then row_write(elems[i], display[i], true) end
+				end
+				age_slice(state, entries, viewport, now)
 			end
-			for i = 1, math.min(viewport, n) do refresh(i) end
-			for i = cursor + 1, stop do refresh(i) end
-			state.age_cursor = stop
 			r_memo, r_widths, view_cache = nil, nil, nil
 			return
 		end
@@ -1020,11 +1063,16 @@ local function render_rows(player_data, display, size, changed, viewport, held)
 	state.display, state.size, state.widths = display, size, widths
 	entries = {}
 	for i, row in ipairs(display) do entries[i] = row end
+	local placeholders = state.placeholders
+	if not placeholders then
+		placeholders = {}
+		state.placeholders = placeholders
+	end
 	for i = #display + 1, size do
-		local e = PLACEHOLDERS[i]
+		local e = placeholders[i]
 		if not e then
 			e = { key = -i }
-			PLACEHOLDERS[i] = e
+			placeholders[i] = e
 		end
 		entries[i] = e
 	end
@@ -1036,17 +1084,7 @@ local function render_rows(player_data, display, size, changed, viewport, held)
 	if prof and prof.sync then prof.entries.stop() prof.sync.restart() end
 	sync_rows(parent, entries, state, budget, viewport)
 	write_deferred(state, entries, viewport)
-	-- Below the viewport a row's age moves only here, one slice per update, whatever else changed.
-	local keys, elems = state.keys, state.elems
-	local n = #keys
-	local cursor = state.age_cursor or viewport
-	if cursor >= n then cursor = viewport end
-	local stop = math.min(n, cursor + viewport)
-	for i = cursor + 1, stop do
-		local m = memo[keys[i]]
-		if m and not m.stale and entries[i].g then row_write(elems[i], entries[i], true, true) end
-	end
-	state.age_cursor = stop
+	if held then held_ages(state, entries, now) else age_slice(state, entries, viewport, now) end
 	if prof and prof.sync then prof.sync.stop() end
 	state.filled_once = true
 	state.filling = #state.keys < #entries or nil
