@@ -43,6 +43,83 @@ function model.mask_rank(mask)
 	return best
 end
 
+-- A station whose findings are all acknowledged ranks after every open one: past the worst severity's ranks.
+local ACKED_RANK = (DIAG_SEV_INFO + 1) * RANK_STEP
+
+local error_mask
+
+--- The bits of the error-severity checks.
+--- @return int
+function model.error_mask()
+	if not error_mask then
+		local m = 0
+		for check = 1, LINT_COUNT do
+			if LINT_SEVERITY[check] == DIAG_SEV_ERROR then m = bit32.bor(m, LINT_BIT[check]) end
+		end
+		error_mask = m
+	end
+	return error_mask
+end
+
+--- The bits of a station's lint mask whose finding is not acknowledged.
+--- @param id uint station id (lint.subject_key of a station)
+--- @param bits int? the station's lint bits (SnapshotStation.lint)
+--- @param is_acked fun(kind: string, id: uint, check: int): any diag.is_acked
+--- @return int
+function model.open_mask(id, bits, is_acked)
+	local open = bits or 0
+	local rest, check = open, 1
+	while rest ~= 0 do
+		if bit32.btest(rest, 1) and is_acked("lint", id, check) then open = open - LINT_BIT[check] end
+		rest = bit32.rshift(rest, 1)
+		check = check + 1
+	end
+	return open
+end
+
+--- The Overview's Misconfigured rule (PLAN4 D7) for one station: how many of its error-severity checks are not
+--- acknowledged. The Stations Problems view ranks exactly these stations first and counts them in its subfooter, so
+--- the line and the rows it jumps to agree.
+--- @param id uint
+--- @param bits int?
+--- @param is_acked fun(kind: string, id: uint, check: int): any diag.is_acked
+--- @param by_check {[int]: int}? adds 1 per open check
+--- @return int open
+function model.open_errors(id, bits, is_acked, by_check)
+	local mask = bit32.band(bits or 0, model.error_mask())
+	local open, check = 0, 1
+	while mask ~= 0 do
+		if bit32.btest(mask, 1) and not is_acked("lint", id, check) then
+			open = open + 1
+			if by_check then by_check[check] = (by_check[check] or 0) + 1 end
+		end
+		mask = bit32.rshift(mask, 1)
+		check = check + 1
+	end
+	return open
+end
+
+--- A station's place in the Problems view: its worst open check, so stations with an open error lead (the ones the
+--- Overview's Misconfigured line counts), then open warnings and info; a station whose findings are all acknowledged
+--- follows every open one, by its worst check. nil when the mask is clean.
+--- @param id uint
+--- @param bits int?
+--- @param is_acked fun(kind: string, id: uint, check: int): any diag.is_acked
+--- @return int?
+function model.station_rank(id, bits, is_acked)
+	if not bits or bits == 0 then return nil end
+	local r = model.mask_rank(model.open_mask(id, bits, is_acked))
+	if r then return r end
+	return ACKED_RANK + model.mask_rank(bits)
+end
+
+--- Whether a station_rank is that of an open error (DIAG_SEV_ERROR's band).
+--- @param rank int?
+--- @return boolean
+function model.is_open_error_rank(rank)
+	return rank ~= nil and rank < (DIAG_SEV_ERROR + 1) * RANK_STEP
+end
+
 --- @class ProblemEntry
 --- @field f LintFinding
 --- @field sev int DIAG_SEV_*

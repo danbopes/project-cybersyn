@@ -288,13 +288,14 @@ end
 
 --- True while no train has been dispatched to or from the station since it was built: Cybersyn starts
 --- last_delivery_tick at the build tick, which the station record keeps as created_tick (stations built before that
---- field existed cannot tell and show their age).
---- @param id uint
+--- field existed cannot tell and show their age). The tick is the snapshot's, as the age and the sort key are, so the
+--- three agree during a pass; created_tick never changes and is read live.
+--- @param st SnapshotStation
 --- @return boolean
-local function never_dispatched(id)
+local function never_dispatched(st)
 	local stations = storage.stations
-	local station = stations and stations[id]
-	return station ~= nil and station.created_tick ~= nil and station.last_delivery_tick == station.created_tick
+	local station = stations and stations[st.id]
+	return station ~= nil and station.created_tick ~= nil and st.last_delivery_tick == station.created_tick
 end
 stations_tab.never_dispatched = never_dispatched
 
@@ -318,11 +319,13 @@ local sort_keys = {
 	end,
 	last_delivery = function(st)
 		local last = st.last_delivery_tick
-		if not last or never_dispatched(st.id) then return nil end
+		if not last or never_dispatched(st) then return nil end
 		return -last
 	end,
-	-- Worst severity, then check: the order the Problems tab grouped its findings in.
-	problems = function(st) return pm.mask_rank(st.lint) end,
+	-- Open errors first (the Overview's Misconfigured stations), then open warnings and info, then stations whose
+	-- findings are all acknowledged; by worst check within each. Acknowledgements change without a change-log entry,
+	-- so query refreshes these keys when storage.acks.lint_version moves (diag.expire_acks bumps it as well).
+	problems = function(st) return pm.station_rank(st.id, st.lint, diag.is_acked) end,
 }
 
 --- The toggled chip: a status, one of the flag chips, or nil (All). A stale value from an older version is dropped.
@@ -377,6 +380,56 @@ local function count_flags(counts, flags, d)
 	if band(flags, logic.FLAG_UNSERVED) ~= 0 then counts.unserved = counts.unserved + d end
 	if band(flags, logic.FLAG_SETUP) ~= 0 then counts.problems = counts.problems + d end
 	if band(flags, logic.FAILING) ~= 0 then counts.failing = counts.failing + d end
+end
+
+--- @return int
+local function lint_ack_version()
+	local acks = storage.acks
+	return acks and acks.lint_version or 0
+end
+
+--- Re-reads the Problems sort key of every listed station with a finding after an acknowledgement changed; the
+--- stations whose place moved are merged into the order on this render: one explicit click, not a data-driven
+--- reshuffle that waits for the pass.
+--- @param cache table
+--- @param stations {[uint]: SnapshotStation}
+local function refresh_problem_keys(cache, stations)
+	local keys, key_fn = cache.keys, sort_keys.problems
+	local changed = cache.changed
+	if not changed then
+		changed = {}
+		cache.changed = changed
+	end
+	for id, fl in pairs(cache.flags) do
+		local st = stations[id]
+		if st and band(fl, FLAG_SETUP) ~= 0 then
+			local key = key_fn(st)
+			if keys[id] ~= key then
+				keys[id] = key
+				changed[id] = true
+				cache.dirty = true
+				cache.sort_now = true
+			end
+		end
+	end
+end
+
+--- Stations of the filtered set with an error nobody acknowledged, and those whose errors are all acknowledged: the
+--- Overview's Misconfigured line and its "+n acked" under the same filters (pm.open_errors is its rule).
+--- @param cache table
+--- @return int open
+--- @return int acked
+local function open_error_counts(cache)
+	local stations = collector.get().stations
+	local error_mask, open_errors, is_acked = pm.error_mask(), pm.open_errors, diag.is_acked
+	local open, acked = 0, 0
+	for id, fl in pairs(cache.flags) do
+		local st = stations[id]
+		if st and band(fl, FLAG_SETUP) ~= 0 and band(st.lint or 0, error_mask) ~= 0 then
+			if open_errors(id, st.lint, is_acked) > 0 then open = open + 1 else acked = acked + 1 end
+		end
+	end
+	return open, acked
 end
 
 --- Rescans every snapshot station into a fresh per-player query cache.
@@ -600,11 +653,17 @@ function stations_tab.query(player_data)
 	if cache and cache.fsig == fsig and cache.column == column and cache.flags and cache.nat then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
 	end
+	local av = column == "problems" and lint_ack_version() or nil
 	if ids then
 		apply_changes(cache, snapshot, f, ids, first, last)
 		cache.pos = pos
 	else
 		cache = rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
+		cache.av = av
+	end
+	if av and cache.av ~= av then
+		refresh_problem_keys(cache, stations)
+		cache.av = av
 	end
 	if first_build then
 		cache.defer_sort = true
@@ -623,7 +682,8 @@ function stations_tab.query(player_data)
 	local resort = not cache.order or cache.ascending ~= ascending or (cache.dirty and #cache.order == 0)
 	-- A data-driven re-sort waits for the update after the one that completed the pass, which carries the pass's
 	-- last collector batch; the next one carries only the cheap start of a new pass.
-	if resort or (cache.dirty and cache.sorted_tick ~= snapshot.tick and snapshot.tick ~= game.tick) then
+	if resort or cache.sort_now or (cache.dirty and cache.sorted_tick ~= snapshot.tick and snapshot.tick ~= game.tick) then
+		cache.sort_now = nil
 		local order = not resort and merge_changes(cache, stations, ascending) or nil
 		cache.sort_kind = order and "merged" or "full"
 		if not order then
@@ -897,7 +957,8 @@ local function registry_rows(px, f)
 		else
 			name = "#" .. e.f.id
 		end
-		local pass = not (f.surface and entity and entity.surface_index ~= f.surface)
+		-- Without its entity a row cannot tell its surface: a surface filter hides it.
+		local pass = not (f.surface and (not entity or entity.surface_index ~= f.surface))
 		if pass and f.terms then pass = util.terms_match(helpers.multilingual_to_lower(name), f.terms) end
 		if pass then out[#out + 1] = { e = e, entity = entity, name = name } end
 		::continue::
@@ -1061,7 +1122,7 @@ local function row_model(st, ctx)
 	m.wait_full = start and util.format_duration(now - start) or nil
 
 	local age = collector.delivery_age(st)
-	if age and never_dispatched(st.id) then
+	if age and never_dispatched(st) then
 		m.last_caption, m.last_sig, m.last_never = NEVER_CAPTION, "never", true
 	elseif age then
 		m.last_caption = util.short_duration(age)
@@ -1699,8 +1760,8 @@ function stations_tab.build(map_data, player_data)
 	local size = math.max(1, util.page_size(player_data, TAB) - (wrapped and 1 or 0))
 	local n_rows = #rows
 	local first, last = util.paginate(player_data, TAB, n_rows + #registry, size)
-	-- A column the page leaves empty gives its width to the name (PLAN4 D15 item 14).
-	local hide_wait = not ctx.pending
+	-- A column the page leaves empty gives its width to the name (PLAN4 D15 item 14), unless it carries the sort.
+	local hide_wait = not ctx.pending and column ~= "wait"
 	for i = first, math.min(last, n_rows) do
 		if rows[i].longest_wait_start then
 			hide_wait = false
@@ -1811,15 +1872,30 @@ function stations_tab.build(map_data, player_data)
 	state.result = result
 
 	if summary and summary.valid then
-		local sig = counts.all .. "|" .. n_rows .. "|" .. #registry .. "|" .. summary.index
+		local open, acked
+		if problems then open, acked = open_error_counts(player_data.stations_query) end
+		local sig = counts.all .. "|" .. n_rows .. "|" .. #registry .. "|" .. summary.index .. "|" .. tostring(open)
+			.. "|" .. tostring(acked)
 		if state.summary ~= sig then
+			local caption
 			if #registry > 0 then
-				summary.caption = { "cybersyn-gui.stations-summary-registry", format.number(n_rows), format.number(counts.all),
+				caption = { "cybersyn-gui.stations-summary-registry", format.number(n_rows), format.number(counts.all),
 					format.number(#registry) }
 			else
-				summary.caption = { "cybersyn-gui.stations-summary", format.number(n_rows), format.number(counts.all) }
+				caption = { "cybersyn-gui.stations-summary", format.number(n_rows), format.number(counts.all) }
 			end
+			-- The Overview's Misconfigured number, under the same filters: the stations this view lists first.
+			if open then
+				caption = { "", caption, " · ", acked > 0
+					and { "cybersyn-gui.stations-open-errors-acked", format.number(open), format.number(acked) }
+					or { "cybersyn-gui.stations-open-errors", format.number(open) } }
+				summary.tooltip = { "cybersyn-gui.stations-open-errors-tooltip" }
+			else
+				summary.tooltip = ""
+			end
+			summary.caption = caption
 			state.summary = sig
+			state.open_errors = open and { open, acked } or nil
 		end
 	end
 
@@ -1830,9 +1906,13 @@ function stations_tab.build(map_data, player_data)
 		warning.visible = empty
 		if empty then
 			local caption
-			if problems then
-				caption = { "cybersyn-gui.stations-problems-none" }
-			elseif counts.all > 0 or util.filters_active(util.get_filters(player_data)) then
+			local pending = problems and lint_pending()
+			local filtered = util.filters_active(util.get_filters(player_data))
+			if pending then
+				caption = { "cybersyn-gui.problems-pending-progress", tostring(pending) }
+			elseif problems then
+				caption = { filtered and "cybersyn-gui.stations-problems-none-filtered" or "cybersyn-gui.stations-problems-none" }
+			elseif counts.all > 0 or filtered then
 				caption = { "cybersyn-gui.stations-no-match" }
 			else
 				caption = { "cybersyn-gui.no-stations" }
@@ -2008,6 +2088,7 @@ dev.register_dump(TAB, function(player_data)
 		stripes_ok = stripes_ok,
 		widths = util.gui_state(player_data, HEADER).cw,
 		summary = player_data.refs.manager_stations_summary.caption,
+		open_errors = util.gui_state(player_data, SCROLL).open_errors,
 	}
 end)
 

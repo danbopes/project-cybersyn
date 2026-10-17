@@ -282,6 +282,26 @@ test("chips: unserved, problems, stuck and failing count what they show", functi
 	assert_eq({ narrowed.unserved, narrowed.problems }, { 1, 1 })
 end)
 
+-- PLAN4 D2/D7: the Overview's Misconfigured line counts stations with an error nobody acknowledged; the Problems view
+-- it jumps to lists those first, so a station whose findings are all acknowledged moves behind the open ones as soon
+-- as the acknowledgement changes (storage.acks.lint_version), without waiting for a collector pass.
+test("problems view: acknowledged stations sort after the open ones, at once", function()
+	local stations_tab, _, snap = setup()
+	snap.stations[6].lint = 8
+	snap.stations[8].lint = 1
+	local pd = {}
+	stations_tab.set_chip(pd, "problems")
+	assert_eq(ids((stations_tab.query(pd))), { 8, 6 })
+	storage.acks = { request = {}, station = {}, lint = { [8] = { [1] = { player_index = 1 } } }, lint_version = 1 }
+	local rows, counts = stations_tab.query(pd)
+	assert_eq(ids(rows), { 6, 8 }, "the fully acknowledged station goes last")
+	assert_eq(counts.problems, 2, "the chip still counts every station with a finding")
+	storage.acks.lint[8] = nil
+	storage.acks.lint_version = 2
+	assert_eq(ids((stations_tab.query(pd))), { 8, 6 }, "ending the acknowledgement puts it back")
+	storage.acks = nil
+end)
+
 test("chips: a refilled record moves between chip counts with the change log", function()
 	local stations_tab, collector, snap = setup()
 	local pd = {}
@@ -355,9 +375,9 @@ test("last dispatch: never while last_delivery_tick is still the build tick; sor
 	}
 	for _, id in ipairs({ 1, 2, 3, 4, 5, 6, 8 }) do snap.stations[id].last_delivery_tick = nil end
 	snap.stations[5].last_delivery_tick = 1000
-	assert_true(stations_tab.never_dispatched(5))
-	assert_false(stations_tab.never_dispatched(7))
-	assert_false(stations_tab.never_dispatched(9))
+	assert_true(stations_tab.never_dispatched(snap.stations[5]))
+	assert_false(stations_tab.never_dispatched(snap.stations[7]))
+	assert_false(stations_tab.never_dispatched(snap.stations[9]))
 	local pd = { sort = { stations_tab = { column = "last_delivery", ascending = true } } }
 	local order = ids((stations_tab.query(pd)))
 	assert_eq({ order[1], order[2] }, { 7, 9 })

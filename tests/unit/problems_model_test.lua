@@ -28,6 +28,44 @@ test("rank / mask_rank: severity first, then the check index; a clean mask has n
 	assert_eq(model.mask_rank(LINT_BIT[LINT_NEVER_REFUELLED]), model.rank(LINT_NEVER_REFUELLED))
 end)
 
+-- The Overview's Misconfigured line counts the stations with an error nobody acknowledged; the Problems view ranks
+-- exactly those first, so the line and the rows it jumps to agree.
+test("open_errors / station_rank: acknowledgements move a station behind every open one", function()
+	local model = pm()
+	local acked = {}
+	local function is_acked(kind, id, check)
+		assert_eq(kind, "lint")
+		return acked[id .. ":" .. check]
+	end
+	local cap, layout, limit, refuel = LINT_BIT[LINT_CAPACITY], LINT_BIT[LINT_LAYOUT], LINT_BIT[LINT_LIMIT_ZERO],
+		LINT_BIT[LINT_NEVER_REFUELLED]
+	assert_eq(bit32.band(model.error_mask(), cap + layout), cap + layout, "both errors in the error mask")
+	assert_eq(bit32.band(model.error_mask(), limit + refuel), 0, "warning and info are not")
+	local by_check = {}
+	assert_eq(model.open_errors(7, cap + layout + limit, is_acked, by_check), 2)
+	assert_eq(by_check[LINT_CAPACITY], 1)
+	assert_nil(by_check[LINT_LIMIT_ZERO], "warnings are not counted")
+	assert_eq(model.open_errors(7, limit, is_acked), 0)
+	assert_eq(model.open_errors(7, nil, is_acked), 0)
+	assert_nil(model.station_rank(7, 0, is_acked))
+	assert_eq(model.station_rank(7, cap + limit, is_acked), model.rank(LINT_CAPACITY))
+	assert_true(model.is_open_error_rank(model.station_rank(7, cap + limit, is_acked)))
+
+	acked["7:" .. LINT_CAPACITY] = { player_index = 1 }
+	assert_eq(model.open_mask(7, cap + limit, is_acked), limit)
+	assert_eq(model.open_errors(7, cap + limit, is_acked), 0, "the acknowledged error leaves the count")
+	-- The open warning now decides the place: behind every open error, before any fully acknowledged station.
+	local warn_rank = model.station_rank(7, cap + limit, is_acked)
+	assert_eq(warn_rank, model.rank(LINT_LIMIT_ZERO))
+	assert_false(model.is_open_error_rank(warn_rank))
+	assert_true(model.station_rank(8, layout, is_acked) < warn_rank, "another station's open error leads")
+	acked["7:" .. LINT_LIMIT_ZERO] = { player_index = 1 }
+	local all_acked = model.station_rank(7, cap + limit, is_acked)
+	assert_true(all_acked > model.station_rank(9, refuel, is_acked), "fully acknowledged after an open info")
+	assert_false(model.is_open_error_rank(all_acked))
+	assert_eq(model.open_mask(7, cap + limit, is_acked), 0)
+end)
+
 test("order: open before acknowledged, then severity, check, item and subject", function()
 	local model = pm()
 	local list = {
@@ -140,7 +178,8 @@ test("locale: every lint caption, fix and detail key, and the Problems column's 
 	end
 	for _, k in ipairs({ "problems-predicts", "problems-predicts-none", "problems-chip-tooltip", "problems-ack-tooltip",
 		"problems-ack-until-clear", "problems-pending-progress", "stations-chip-problems", "stations-chip-problems-tooltip",
-		"stations-problems", "stations-sort-problems", "stations-problems-more", "stations-problems-none",
+		"stations-problems", "stations-sort-problems", "stations-problems-more", "stations-problems-none", "stations-problems-none-filtered", "stations-open-errors",
+		"stations-open-errors-acked", "stations-open-errors-tooltip",
 		"stations-registry-stop", "stations-registry-combinator", "stations-registry-tooltip", "stations-summary-registry",
 		"stations-last-dispatch", "stations-sort-last-dispatch", "stations-last-dispatch-never" }) do
 		keys[#keys + 1] = k

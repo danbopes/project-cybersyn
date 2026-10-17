@@ -223,8 +223,60 @@ lab.suite("37_tabs", {
 		lab.check("registry row: the combinator links to its entity and names its check", reg ~= nil and reg.link[1] == "entity"
 			and reg.link[2] == comb.unit_number and reg.problems and key_of(reg.problems.chip) == "cybersyn-diag.lint-chip-derelict-comb",
 			reg)
-		lab.check("Problems view: the subfooter counts the registry rows", key_of(d.summary) == "cybersyn-gui.stations-summary-registry",
+		local summary = d.summary
+		if type(summary) == "table" and summary[1] == "" then summary = summary[2] end
+		lab.check("Problems view: the subfooter counts the registry rows", key_of(summary) == "cybersyn-gui.stations-summary-registry",
 			d.summary)
+
+		-- PLAN4 D2/D7: the Overview's Misconfigured line and the view it jumps to agree on one number. The oracle is the
+		-- findings themselves: a station with an error-severity finding nobody acknowledged counts, one whose errors are
+		-- all acknowledged is "+n acked". Those stations lead the view, and the subfooter carries both numbers.
+		local function misconfigured_oracle(surface)
+			local view = remote.call(D, "stations_lint_view")
+			local snap = snapshot()
+			local open, acked = {}, 0
+			for _, row in ipairs(view.stations) do
+				local st = snap.stations[row.id]
+				if st and (not surface or st.surface_index == surface) then
+					local errors, open_errors = 0, 0
+					for _, e in ipairs(row.entries) do
+						if e.sev == 1 then
+							errors = errors + 1
+							if not e.acked then open_errors = open_errors + 1 end
+						end
+					end
+					if open_errors > 0 then open[row.id] = true elseif errors > 0 then acked = acked + 1 end
+				end
+			end
+			return open, acked
+		end
+		local function check_misconfigured(label, surface)
+			local open, acked = misconfigured_oracle(surface)
+			local m = stations_dump()
+			local lead = 0
+			while m.ids[lead + 1] and open[m.ids[lead + 1]] do lead = lead + 1 end
+			local n = lab.count(open)
+			lab.check("Misconfigured agrees with the Problems view (" .. label .. "): the leading rows are the stations "
+				.. "with an open error, the subfooter says how many (+ acked)", m.chip == "problems" and lead == n
+				and m.open_errors ~= nil and m.open_errors[1] == n and m.open_errors[2] == acked,
+				{ lead = lead, oracle = n, acked = acked, subfooter = m.open_errors, ids = m.ids })
+			return n, acked
+		end
+		local n_open = check_misconfigured("no filter")
+		lab.check("layout-dev has a station with an open error to jump to", n_open > 0, n_open)
+		-- The Overview's own number: after the filters phase it counts open errors (misconfigured_acked exists); before,
+		-- it counted every station with a finding, as the chip does.
+		local ov = remote.call(D, "dump", pi, "overview").tiles.failing
+		remote.call(D, "select_tab", pi, "stations")
+		if ov and ov.misconfigured_acked ~= nil then
+			local _, acked0 = misconfigured_oracle()
+			lab.check("the Overview's Misconfigured line == the open-error rows of its jump", ov.misconfigured == n_open
+				and ov.misconfigured_acked == acked0, { overview = ov.misconfigured, acked = ov.misconfigured_acked,
+				view = n_open, view_acked = acked0 })
+		else
+			lab.check("the Overview's Misconfigured line == the Problems chip", ov and ov.misconfigured == d.chip_counts.problems,
+				{ overview = ov and ov.misconfigured, chip = d.chip_counts.problems })
+		end
 
 		-- With a surface filter: the chip counts that surface's stations and lists them; registry rows of other surfaces go.
 		for _, name in ipairs({ "nauvis", "cyb-bench" }) do
@@ -243,6 +295,7 @@ lab.suite("37_tabs", {
 				if string.find(r.key, ":" .. comb.unit_number .. ":", 1, true) then has_derelict = true end
 			end
 			lab.check("registry rows obey the surface filter (" .. name .. ")", has_derelict == (name == "cyb-bench"), f.registry)
+			check_misconfigured("surface " .. name, game.surfaces[name].index)
 		end
 		remote.call(D, "set_filter", pi, { network = "signal-A" })
 		lab.check("a network filter hides the registry rows (they belong to no network)", #stations_dump().registry == 0)
@@ -267,6 +320,15 @@ lab.suite("37_tabs", {
 		lab.check("acknowledge: the row's findings are acknowledged and its cell greys out", acked_all and pos ~= nil
 			and after.problems[pos] and after.problems[pos].ack == true and after.problems[pos].chip_style == "cybersyn_chip_acked",
 			{ pos = pos, cell = pos and after.problems[pos], acks = acks and acks.lint })
+		-- The first row had an open error: it leaves the count for "+1 acked" and moves behind every open station.
+		local open_after, acked_after = check_misconfigured("one station acknowledged")
+		local open_station_after = 0
+		for i, id in ipairs(after.ids) do
+			if after.problems[i] and after.problems[i].ack == false then open_station_after = i end
+		end
+		lab.check("acknowledge: the station moves behind every open one", open_after == n_open - 1 and acked_after >= 1
+			and pos ~= nil and pos > open_station_after, { pos = pos, last_open = open_station_after, open = open_after,
+			before = n_open })
 		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { pos or 1, 4, 6 })
 		after = stations_dump()
 		lab.check("acknowledge: a second click ends them", after.problems[pos or 1] and after.problems[pos or 1].ack == false,
@@ -344,6 +406,11 @@ lab.suite("37_tabs", {
 				{ ids = f.ids, last = f.last })
 			-- One station with no wait on the page: the Wait column hides and gives its width to the name.
 			lab.check("Wait column hidden when the page has no wait", f.hidden[1] == "wait" and #f.hidden == 1, f.hidden)
+			-- Unless it carries the sort: its header holds the sort arrow.
+			remote.call(D, "set_sort", pi, "stations", "wait", false)
+			f = stations_dump()
+			lab.check("Wait column stays while the list sorts by it", #f.hidden == 0 and f.column == "wait", f.hidden)
+			remote.call(D, "set_sort", pi, "stations", "name", true)
 			remote.call(D, "clear_filters", pi)
 			pcall(case.cleanup or function() cases.destroy(case) end)
 			lab.dev("collect")
