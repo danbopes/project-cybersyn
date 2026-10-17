@@ -779,9 +779,16 @@ lab.suite("37_tabs", {
 		end
 		lab.check("group rows: parked (residue included) / limit, inbound and trains from the listed trains (" .. checked .. ")",
 			nums_ok and checked > 0, { groups = d.groups, oracle = oracle })
+		local run_ok = true
+		for _, g in ipairs(d.groups) do
+			if by_name[g.name] and not (g.run and g.pusher) then run_ok = false end
+		end
+		lab.check("group rows: the stats are one run beside the name, the compositions pushed to the right end", run_ok, d.groups)
 		lab.check("collapsed groups list no trains", #d.ids == 0, d.ids)
 		local pager = d.pager
-		lab.check("the pager counts the group rows", key_of(pager) == "cybersyn-gui.pager-range" and pager[4] == tostring(#d.groups), pager)
+		lab.check("the pager counts the group rows and says rows; the summary beside it counts trains",
+			key_of(pager) == "cybersyn-gui.pager-range-rows" and pager[4] == tostring(#d.groups)
+			and type(d.summary) == "table" and d.summary[1] == "cybersyn-gui.trains-summary", { pager = pager, summary = d.summary })
 
 		local first = names[1]
 		remote.call(DT, "set_grouped", pi, true, { [first] = true })

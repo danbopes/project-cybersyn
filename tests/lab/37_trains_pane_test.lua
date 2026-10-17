@@ -100,6 +100,8 @@ lab.suite("37_trains_pane", {
 		lab.check("select: the panel's own subheader, banner and Open in manager are hidden in the pane",
 			p.panel_subheader == false and p.panel_banner == false and p.open_manager == false,
 			{ p.panel_subheader, p.panel_banner, p.open_manager })
+		lab.check("select: the panel fills the pane, a pusher docks its footer at the bottom", p.footer_docked == true,
+			p.footer_docked)
 		lab.check("select: no full rebuild of the rows", trains_dump().last_result ~= "rebuilt", trains_dump().last_result)
 	end,
 

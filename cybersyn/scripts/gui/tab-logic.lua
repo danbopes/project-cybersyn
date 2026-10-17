@@ -97,10 +97,14 @@ end
 -- ---------------------------------------------------------------- Trains table widths
 
 local TRAIN_SLOT = 32
---- A depot group row's compositions slot and its Problems marker, in px.
+--- A depot group row's compositions slot, its Problems marker and its stats run ("Parked 3 / 4 · Inbound 1 ·
+--- Trains 5"), in px; the depot name is cut at GROUP_NAME_MAX so the run starts in the row's left part.
 logic.GROUP_COMPS = 220
 logic.GROUP_MARKER = 110
 logic.GROUP_MARKER_ICON = 28
+logic.GROUP_STATS = 300
+logic.GROUP_BYPASS = 90
+logic.GROUP_NAME_MAX = 200
 -- Row padding and frame borders, and the gap between two shown columns.
 local ROW_PADDING, COLUMN_GAP = 20, 8
 
@@ -164,9 +168,11 @@ function logic.train_widths(content_width, hidden, pane)
 	end
 	w.cw = cw
 	w.dropped = dropped
-	-- Group row: toggle 28, Problems marker 110, Parked 110, Inbound 100, Trains 100, Bypassed 90, compositions 220,
-	-- the name the rest. Below 120 px of name the compositions go, then Bypassed, then the marker keeps its icon only.
-	local name = cw - ROW_PADDING - 8 * COLUMN_GAP - 28 - logic.GROUP_MARKER - 110 - 100 - 100 - 90 - logic.GROUP_COMPS
+	-- Group row: toggle 28, name, Problems marker 110, the stats run 300, Bypassed 90, a pusher, compositions 220 at the
+	-- right end; the name takes the rest up to GROUP_NAME_MAX. Below 120 px of name the compositions go, then
+	-- Bypassed, then the marker keeps its icon only.
+	local name = cw - ROW_PADDING - 6 * COLUMN_GAP - 28 - logic.GROUP_MARKER - logic.GROUP_STATS - logic.GROUP_BYPASS
+		- logic.GROUP_COMPS
 	w.group_comps, w.group_bypass, w.group_marker = true, true, logic.GROUP_MARKER
 	if name < 120 then
 		w.group_comps = false
@@ -174,13 +180,13 @@ function logic.train_widths(content_width, hidden, pane)
 	end
 	if name < 120 then
 		w.group_bypass = false
-		name = name + 90
+		name = name + logic.GROUP_BYPASS
 	end
 	if name < 120 then
 		w.group_marker = logic.GROUP_MARKER_ICON
 		name = name + logic.GROUP_MARKER - logic.GROUP_MARKER_ICON
 	end
-	w.group_name = math.min(360, name)
+	w.group_name = math.min(logic.GROUP_NAME_MAX, name)
 	return w
 end
 

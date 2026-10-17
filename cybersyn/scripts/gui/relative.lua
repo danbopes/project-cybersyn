@@ -2059,6 +2059,11 @@ function relative.mount(pd, parent, kind, id, body_height)
 		panel.subheader.visible = false
 		-- The scrollbar then sits inside the panel instead of widening it.
 		panel.scroll.style.horizontally_stretchable = true
+		-- The panel fills the pane and its footer sits at the pane's bottom, however short the body.
+		panel.style.vertically_stretchable = true
+		local pusher = panel.add({ type = "empty-widget", name = "footer_pusher",
+			index = panel.scroll.get_index_in_parent() + 1, ignored_by_interaction = true })
+		pusher.style.vertically_stretchable = true
 		state = nil
 	end
 	if not (state and state.kind == kind and state.id == id) then

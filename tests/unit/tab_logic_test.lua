@@ -498,3 +498,13 @@ test("duration axis: gridlines on whole durations that format exactly, at most f
 		end
 	end
 end)
+
+test("train_widths: the group row's stats run beside a name of at most GROUP_NAME_MAX", function()
+	local l = logic()
+	for _, cw in ipairs({ 1000, 1104, 1392, 2000 }) do
+		local w = l.train_widths(cw, {}, false)
+		assert_true(w.group_name <= l.GROUP_NAME_MAX and w.group_name >= 120, "name " .. w.group_name .. " at " .. cw)
+		local used = 20 + 6 * 8 + 28 + w.group_name + l.GROUP_MARKER + l.GROUP_STATS + l.GROUP_BYPASS + l.GROUP_COMPS
+		assert_true(used <= cw, "group row fits at " .. cw .. ": " .. used)
+	end
+end)

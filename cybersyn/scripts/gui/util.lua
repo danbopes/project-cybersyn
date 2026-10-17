@@ -895,11 +895,13 @@ end
 --- @param total integer
 --- @param size integer? rows per page when the tab gives up some of its rows (default util.page_size)
 --- @param fewer integer? rows the page gives up to a strip the tab shows above its list (Trains: wrapped chips)
+--- @param range_key string? the range caption's locale key when the rows are not what the tab's summary counts
+--- (Trains grouped by depot: "pager-range-rows", group rows included)
 --- @return integer first
 --- @return integer last
 --- @return integer page
 --- @return integer pages
-function util.paginate(player_data, tab, total, size, fewer)
+function util.paginate(player_data, tab, total, size, fewer, range_key)
 	size = math.max((size or util.page_size(player_data, tab)) - (fewer or 0), 1)
 	local pages = math.max(1, math.ceil(total / size))
 	player_data.page = player_data.page or {}
@@ -915,7 +917,7 @@ function util.paginate(player_data, tab, total, size, fewer)
 		if total == 0 then
 			caption = { "cybersyn-gui.pager-empty" }
 		else
-			caption = { "cybersyn-gui.pager-range", format.number(first), format.number(last), format.number(total) }
+			caption = { range_key or "cybersyn-gui.pager-range", format.number(first), format.number(last), format.number(total) }
 		end
 		label.caption = caption
 		local back, forward = page > 1, page < pages

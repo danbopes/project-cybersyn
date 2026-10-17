@@ -221,7 +221,7 @@ function trains_tab.create()
 							name = PANE_MOUNT,
 							type = "flow",
 							direction = "vertical",
-							style_mods = { padding = PANE_PADDING },
+							style_mods = { padding = PANE_PADDING, vertically_stretchable = true },
 						},
 					},
 				},
@@ -1611,27 +1611,38 @@ local function group_children(view, w, ctx)
 	end
 	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]\n",
 		{ "cybersyn-gui.trains-group-tooltip", tostring(view.depots) }, "\n", util.LINK_FOOTER }
+	-- The stats read as one run beside the name, not as cells under the train columns' headers.
+	local dot = { type = "label", style = "cybersyn_subheader_note", caption = "·", style_mods = { left_padding = 6, right_padding = 6 } }
 	local out = {
 		toggle,
 		name_cell.def(view.parts, view.name, { kind = "depot", id = view.id }, math.max(w.group_name, 120), tooltip, SCROLL),
 		marker_def(view, w),
-		{ type = "label", style = "cybersyn_cell_value", style_mods = { width = 110 },
-			caption = { "cybersyn-gui.trains-group-parked", tostring(view.parked), view.limit },
-			tooltip = { "cybersyn-gui.trains-group-parked-tooltip" } },
-		{ type = "label", style = "cybersyn_cell_value", style_mods = { width = 100 },
-			caption = { "cybersyn-gui.trains-group-inbound", tostring(view.inbound) } },
-		{ type = "label", style = "cybersyn_cell_value", style_mods = { width = 100 },
-			caption = { "cybersyn-gui.trains-group-bound", tostring(view.bound) },
-			tooltip = { "cybersyn-gui.trains-group-bound-tooltip", tostring(view.n) } },
+		{
+			type = "flow",
+			name = "group_stats",
+			direction = "horizontal",
+			style_mods = { vertical_align = "center", horizontal_spacing = 0 },
+			{ type = "label", style = "cybersyn_cell_label",
+				caption = { "cybersyn-gui.trains-group-parked", tostring(view.parked), view.limit },
+				tooltip = { "cybersyn-gui.trains-group-parked-tooltip" } },
+			dot,
+			{ type = "label", style = "cybersyn_cell_label",
+				caption = { "cybersyn-gui.trains-group-inbound", tostring(view.inbound) } },
+			dot,
+			{ type = "label", style = "cybersyn_cell_label",
+				caption = { "cybersyn-gui.trains-group-bound", tostring(view.bound) },
+				tooltip = { "cybersyn-gui.trains-group-bound-tooltip", tostring(view.n) } },
+		},
 		-- A label, not a chip: it says something about the depot, there is nothing to click.
 		{
 			type = "label",
 			style = "cybersyn_marker_grey",
-			style_mods = { width = 90, horizontal_align = "center" },
+			style_mods = { left_margin = 8, horizontal_align = "center" },
 			caption = { "cybersyn-gui.trains-group-bypassed" },
 			tooltip = { "cybersyn-gui.trains-group-bypassed-tooltip", tostring(view.bypass) },
 			visible = view.bypass > 0 and w.group_bypass,
 		},
+		{ type = "empty-widget", style = "flib_horizontal_pusher", ignored_by_interaction = true },
 	}
 	if w.group_comps then out[#out + 1] = compositions_def(view, ctx) end
 	return out
@@ -2044,7 +2055,9 @@ function trains_tab.build(map_data, player_data)
 	else
 		seq = rows
 	end
-	local first, last = util.paginate(player_data, TAB, #seq, nil, wrapped and 1 or 0)
+	-- Grouped, the pager counts rows (group rows too) and says so; the summary beside it counts trains.
+	local first, last = util.paginate(player_data, TAB, #seq, nil, wrapped and 1 or 0,
+		grouped and "cybersyn-gui.pager-range-rows" or nil)
 
 	-- Fuel is read for the trains on the page only, again every FUEL_EVERY renders.
 	local fuel = state.fuel or {}
@@ -2257,10 +2270,17 @@ dev.register_dump(TAB, function(player_data)
 					for _, c in ipairs(child.children) do
 						g.comps[#g.comps + 1] = c.type == "sprite-button" and { c.sprite, c.number or 1 } or c.caption
 					end
+				elseif child.name == "group_stats" then
+					g.run = true
+					for _, c in ipairs(child.children) do
+						if c.caption ~= "·" then g.captions[#g.captions + 1] = c.caption end
+					end
 				elseif child.type == "label" and child.style.name == "cybersyn_marker_grey" then
 					g.bypassed = child.visible
 				elseif child.type == "label" then
 					g.captions[#g.captions + 1] = child.caption
+				elseif child.type == "empty-widget" and child.style.name == "flib_horizontal_pusher" then
+					g.pusher = true
 				end
 			end
 			groups[#groups + 1] = g
@@ -2555,6 +2575,12 @@ local function pane_dump(pi)
 		out.open_manager = buttons and buttons.open_manager and buttons.open_manager.visible or false
 		out.panel_subheader = open.panel.subheader.visible
 		out.panel_banner = open.panel.banner.visible
+		local pusher = open.panel.footer_pusher
+		out.footer = { panel = open.panel.style.vertically_stretchable, mount = refs[PANE_MOUNT].style.vertically_stretchable,
+			pusher = pusher and pusher.style.vertically_stretchable, scroll = open.panel.scroll.get_index_in_parent(),
+			at = pusher and pusher.get_index_in_parent(), footer = open.panel.footer.get_index_in_parent() }
+		local f = out.footer
+		out.footer_docked = f.panel == true and f.mount == true and f.pusher == true and f.at == f.scroll + 1 and f.footer == f.at + 1
 	end
 	local pending = storage.manager.pane_escapes
 	out.escape_pending = pending and pending[pi] ~= nil or false
