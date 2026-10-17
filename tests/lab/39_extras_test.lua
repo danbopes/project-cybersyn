@@ -84,7 +84,8 @@ local MATRIX = {
 	{ "nobody", true, false }, { "nobody", false, false },
 }
 
-lab.suite("39_extras", {
+
+local STEPS = {
 	function(ctx)
 		ctx.actions = settings.global["cybersyn-manager-actions"].value
 		ctx.admin = game.get_player(PI).admin
@@ -302,12 +303,17 @@ lab.suite("39_extras", {
 	end,
 
 	function(ctx)
-		-- A train kept on a delivery for the actions: provider, requester, depot and one train on a row of its own; the
-		-- train is unfuelled at its depot so the dispatch holds it there (cases.lua's rule for a delivery in progress).
+		-- Trains kept on a delivery for the actions: provider, requester and three depots with a train each on a row of
+		-- their own; the trains are unfuelled at their depots so the dispatch holds them there (cases.lua's rule for a
+		-- delivery in progress). Three, because each Send home that runs ends one delivery for good.
 		local ok, case = pcall(function()
 			local c = cases.base("EXTRAS", { k = CASE_K }, { network = CASE_NET })
+			c.d2 = cases.depot(c, cases.X_D2, "rc-EXTRAS-depot-2")
+			c.t2 = cases.train(c, cases.X_D2 + 6, c.d2)
+			c.d3 = cases.depot(c, cases.X_D3, "rc-EXTRAS-depot-3")
+			c.t3 = cases.train(c, cases.X_D3 + 6, c.d3)
 			c.p = cases.station(c, { name = cases.sname(c, "p"), x = cases.X_P[1], bits = 1 + 4,
-				signals = cases.provide(c, 5000) })
+				signals = cases.provide(c, 30000) })
 			c.r = cases.station(c, { name = cases.sname(c, "r"), x = cases.X_R[1], bits = 2 + 4 })
 			return cases.finish(c)
 		end)
@@ -319,83 +325,27 @@ lab.suite("39_extras", {
 	function(ctx)
 		local case = ctx.case
 		if not case then return end
-		lab.check("delivery case: train parked", cases.trains_ready(case))
-		cases.unfuel(case.t1)
-		cases.set_signals(case.r, cases.request(case, -2000, 1000))
-		lab.wait_until(function() return cases.dispatched(case, { 1 }, "r_station_id", case.r.id) end, 3600, SPEED)
+		lab.check("delivery case: trains parked", cases.trains_ready(case))
+		for _, t in ipairs(case.train_entities) do cases.unfuel(t) end
+		-- Three trains' worth (40 stacks of 100 each) above the threshold, so the planner sends all three in turn.
+		cases.set_signals(case.r, cases.request(case, -12000, 1000))
+		lab.wait_until(function() return cases.dispatched(case, { 1, 2, 3 }, "r_station_id", case.r.id) end, 7200, SPEED)
 	end,
 
 	function(ctx)
 		local case = ctx.case
 		if not case then return end
-		local tid = case.trains[1]
-		ctx.tid = tid
-		if not lab.check("delivery case: the train is dispatched and held", cases.dispatched(case, { 1 }, "r_station_id",
-			case.r.id), read("trains", tid)) then
-			ctx.case_failed = true
+		cases.set_signals(case.r, {})
+		ctx.tids = { case.trains[1], case.trains[2], case.trains[3] }
+		if not lab.check("delivery case: the three trains are dispatched and held",
+			cases.dispatched(case, { 1, 2, 3 }, "r_station_id", case.r.id)) then
 			return
 		end
-		-- No further request: a train sent home is not dispatched again, and arm() alone puts it back on a delivery.
-		cases.set_signals(case.r, {})
-		local t0 = read("trains", tid)
-		ctx.manifest = t0.manifest
+		ctx.held = true
 		ctx.counts = { p = read("stations", case.p.id, "deliveries_total"), r = read("stations", case.r.id, "deliveries_total") }
-		lab.check("delivery case: each end counts the delivery", ctx.counts.p == 1 and ctx.counts.r == 1, ctx.counts)
+		lab.check("delivery case: each end counts the three deliveries", ctx.counts.p == 3 and ctx.counts.r == 3, ctx.counts)
+		local tid = ctx.tids[1]
 
-		--- Puts the train back on the case's delivery with the bookkeeping create_delivery writes (status, ids,
-		--- manifest, both counters and both per-item amounts), after a Send home took it off.
-		local function arm()
-			if read("trains", tid, "manifest") then return end
-			local w = function(v, ...) remote.call("cybersyn", "write_global", v, ...) end
-			w(STATUS_TO_P, "trains", tid, "status")
-			w(case.p.id, "trains", tid, "p_station_id")
-			w(case.r.id, "trains", tid, "r_station_id")
-			w(ctx.manifest, "trains", tid, "manifest")
-			for _, side in ipairs({ { case.p.id, -1 }, { case.r.id, 1 } }) do
-				local st = read("stations", side[1])
-				w((st.deliveries_total or 0) + 1, "stations", side[1], "deliveries_total")
-				for _, item in ipairs(ctx.manifest) do
-					local h = item.name
-					w(((st.deliveries or {})[h] or 0) + side[2] * item.count, "stations", side[1], "deliveries", h)
-				end
-			end
-		end
-		ctx.arm = arm
-
-		-- Send home under the permission matrix: may_act, the button state, the handler's own check (a disabled
-		-- button clicked anyway), the confirm step and the audit.
-		for _, m in ipairs(MATRIX) do
-			local setting, admin, allowed = m[1], m[2], m[3]
-			local tag = setting .. "/" .. (admin and "admin" or "player")
-			dev("set_setting", "cybersyn-manager-actions", setting)
-			dev("set_admin", PI, admin)
-			arm()
-			dev("relative_open", PI, "train", tid)
-			lab.check(tag .. ": may_act", dev("may_act", PI) == allowed)
-			local b = dev("action_button", PI, "fail_delivery")
-			lab.check(tag .. ": Send home enabled only with the right", b and b.enabled == allowed
-				and (allowed or key_of(b.tooltip) == "cybersyn-gui.action-admin-only"), b)
-			local seq = seq_now()
-			dev("action_click", PI, "fail_delivery", true)
-			local armed = dev("action_button", PI, "fail_delivery")
-			lab.check(tag .. ": first click arms 'Confirm?' only with the right",
-				(key_of(armed.caption) == "cybersyn-gui.action-confirm") == allowed
-				and (armed.style == "red_button") == allowed, armed)
-			dev("action_click", PI, "fail_delivery", true)
-			local evs = actions_after(seq, ACTION_FAIL)
-			lab.check(tag .. ": second click runs and audits only with the right", #evs == (allowed and 1 or 0)
-				and (not allowed or (evs[1].train == tid and evs[1].station2 == PI)), evs)
-			local t = read("trains", tid)
-			lab.check(tag .. ": the delivery ends only with the right", (t.manifest == nil) == allowed,
-				{ status = t.status, manifest = t.manifest })
-			if allowed then
-				lab.check(tag .. ": audit line to the force",
-					key_of(dev("last_audit")) == "cybersyn-messages.audit-fail-delivery", dev("last_audit"))
-				lab.check(tag .. ": both ends stop counting the delivery", read("stations", case.p.id, "deliveries_total")
-					== ctx.counts.p - 1 and read("stations", case.r.id, "deliveries_total") == ctx.counts.r - 1)
-			end
-			dev("relative_close", PI)
-		end
 		local footer = dev("relative_open", PI, "train", tid).sections.buttons
 		local names = {}
 		local function walk(node)
@@ -412,7 +362,7 @@ lab.suite("39_extras", {
 
 		-- Expiry: an armed button falls back after 180 ticks, driven by the manager tick.
 		dev("set_setting", "cybersyn-manager-actions", "everyone")
-		arm()
+		dev("set_admin", PI, false)
 		dev("relative_open", PI, "train", tid)
 		dev("action_click", PI, "fail_delivery")
 		lab.check("armed before the expiry",
@@ -421,8 +371,8 @@ lab.suite("39_extras", {
 	end,
 
 	function(ctx)
-		if not ctx.arm then return end
-		local tid = ctx.tid
+		if not ctx.held then return end
+		local tid = ctx.tids[1]
 		local b = dev("action_button", PI, "fail_delivery")
 		lab.check("the armed button expired after 180 ticks (manager tick)", b
 			and key_of(b.caption) == "cybersyn-gui.action-fail-delivery" and b.style == "button", b)
@@ -430,16 +380,19 @@ lab.suite("39_extras", {
 		local seq = seq_now()
 		dev("action_click", PI, "fail_delivery")
 		lab.check("a click after the expiry and its grace arms again instead of running",
-			#actions_after(seq, ACTION_FAIL) == 0 and read("trains", tid, "manifest") ~= nil)
+			#actions_after(seq, ACTION_FAIL) == 0 and read("trains", tid, "manifest") ~= nil, read("trains", tid))
 		lab.check("an armed button turns the expiry walk on", read("manager", "confirm_any") == true)
 		dev("relative_close", PI)
 
 		-- Named alerts (PLAN4 D15 item 9): an alert row in Last events reads the alert's name, not "Alert"; the
 		-- train's warning triangle gets a chip with the same name.
 		local case = ctx.case
+		local tid = ctx.tids[1]
 		dev("diag_event", "alert", "warning", { code = 1, train = tid })
 		dev("diag_event", "alert", "warning", { code = 11, station = case.r.id })
-		remote.call("cybersyn", "write_global", { case.t1, 1, read("total_ticks") }, "active_alerts", tid)
+		-- active_alerts exists once Cybersyn raised its first alert; this run may not have one yet.
+		if not read("active_alerts") then remote.call("cybersyn", "write_global", {}, "active_alerts") end
+		remote.call("cybersyn", "write_global", { case.train_entities[1], 1, read("total_ticks") }, "active_alerts", tid)
 		local td = dev("relative_open", PI, "train", tid)
 		local ev = serpent.line(td.sections.events, { comment = false })
 		lab.check("train Last events names the alert (Train stuck), not 'Alert'", mentions(ev, "cybersyn-diag.alert-stuck")
@@ -488,7 +441,6 @@ lab.suite("39_extras", {
 
 		-- Recount deliveries (PLAN4 D10): a leaked counter at the provider, one delivery too many in total and the
 		-- per-item amount pushed 150 further, both written behind the dispatcher's back.
-		ctx.arm()
 		local p = case.p.id
 		ctx.good = { total = read("stations", p, "deliveries_total"), item = read("stations", p, "deliveries", case.item) }
 		local w = function(v, ...) remote.call("cybersyn", "write_global", v, ...) end
@@ -500,12 +452,12 @@ lab.suite("39_extras", {
 	end,
 
 	function(ctx)
-		if not ctx.arm then return end
+		if not ctx.held then return end
 		local case, p = ctx.case, ctx.case.p.id
 		dev("collect")
 		dev("lint_run")
 		local f = dev("lint_findings", p, "phantom")[1]
-		lab.check("the leak is a phantom finding after two passes: 2 counted, 1 bound", f ~= nil and f.a == ctx.good.total + 1
+		lab.check("the leak is a phantom finding after two passes: one delivery more counted than trains bound", f ~= nil and f.a == ctx.good.total + 1
 			and f.b == ctx.good.total, f)
 		dev("set_setting", "cybersyn-manager-actions", "admins")
 		dev("set_admin", PI, false)
@@ -536,35 +488,61 @@ lab.suite("39_extras", {
 		local audit = dev("last_audit")
 		lab.check("Recount force line names the counts before and after", key_of(audit) == "cybersyn-gui.action-recount-done"
 			and audit[4] == tostring(ctx.good.total + 1) and audit[5] == tostring(ctx.good.total), audit)
-		lab.check("Recount leaves the requester alone", read("stations", case.r.id, "deliveries_total") == 1)
+		lab.check("Recount leaves the requester alone", read("stations", case.r.id, "deliveries_total") == ctx.counts.r)
 		dev("relative_close", PI)
 		dev("collect")
 		dev("lint_run")
 		lab.check("the finding clears on the next pass", dev("lint_findings", p, "phantom")[1] == nil,
 			dev("lint_findings", p, "phantom"))
 
-		-- Send home refused under nobody, then run as an admin under admins.
-		local tid = ctx.tid
-		dev("set_setting", "cybersyn-manager-actions", "nobody")
-		dev("relative_open", PI, "train", tid)
-		local fb = dev("action_button", PI, "fail_delivery")
-		lab.check("Send home disabled under nobody", fb and fb.enabled == false, fb)
-		dev("action_click", PI, "fail_delivery", true)
-		dev("action_click", PI, "fail_delivery", true)
-		lab.check("Send home refused under nobody (handler check)", read("trains", tid).manifest ~= nil)
-		dev("set_setting", "cybersyn-manager-actions", "admins")
-		dev("relative_open", PI, "train", tid)
-		local seq2 = seq_now()
-		dev("action_click", PI, "fail_delivery")
-		dev("action_click", PI, "fail_delivery")
-		local t = read("trains", tid)
-		lab.check("Send home: delivery failed, train heading to its depot", t.manifest == nil and t.p_station_id == nil
-			and t.r_station_id == nil and (t.status == STATUS_TO_D or t.status == 0), { status = t.status, manifest = t.manifest })
-		local evs2 = actions_after(seq2, ACTION_FAIL)
-		lab.check("Send home audited with the train", #evs2 == 1 and evs2[1].train == tid and evs2[1].station2 == PI, evs2)
-		local fa = dev("action_button", PI, "fail_delivery")
-		lab.check("Send home disabled once the train has no delivery", fa and fa.enabled == false, fa)
-		dev("relative_close", PI)
+		dev("set_admin", PI, ctx.admin)
+
+		-- Send home under the permission matrix: may_act, the button state, the handler's own check (a disabled
+		-- button clicked anyway), the confirm step and the audit. A run ends that train's delivery, so each setting
+		-- takes the next train still on one; the refused settings go first, the three allowed ones take a train each.
+		local order = {}
+		for _, m in ipairs(MATRIX) do if not m[3] then order[#order + 1] = m end end
+		for _, m in ipairs(MATRIX) do if m[3] then order[#order + 1] = m end end
+		for _, m in ipairs(order) do
+			local setting, admin, allowed = m[1], m[2], m[3]
+			local tag = setting .. "/" .. (admin and "admin" or "player")
+			local tid
+			for _, id in ipairs(ctx.tids) do
+				if not tid and read("trains", id, "manifest") then tid = id end
+			end
+			if not lab.check(tag .. ": a train of the case is still on its delivery", tid ~= nil) then break end
+			dev("set_setting", "cybersyn-manager-actions", setting)
+			dev("set_admin", PI, admin)
+			local before = { p = read("stations", case.p.id, "deliveries_total"), r = read("stations", case.r.id, "deliveries_total") }
+			dev("relative_open", PI, "train", tid)
+			lab.check(tag .. ": may_act", dev("may_act", PI) == allowed)
+			local b = dev("action_button", PI, "fail_delivery")
+			lab.check(tag .. ": Send home enabled only with the right", b and b.enabled == allowed
+				and (allowed or key_of(b.tooltip) == "cybersyn-gui.action-admin-only"), b)
+			local seq = seq_now()
+			dev("action_click", PI, "fail_delivery", true)
+			local armed = dev("action_button", PI, "fail_delivery")
+			lab.check(tag .. ": first click arms 'Confirm?' only with the right",
+				(key_of(armed.caption) == "cybersyn-gui.action-confirm") == allowed
+				and (armed.style == "red_button") == allowed, armed)
+			dev("action_click", PI, "fail_delivery", true)
+			local evs = actions_after(seq, ACTION_FAIL)
+			lab.check(tag .. ": second click runs and audits only with the right", #evs == (allowed and 1 or 0)
+				and (not allowed or (evs[1].train == tid and evs[1].station2 == PI)), evs)
+			local t = read("trains", tid)
+			lab.check(tag .. ": the delivery ends only with the right", (t.manifest == nil) == allowed,
+				{ status = t.status, manifest = t.manifest })
+			if allowed then
+				lab.check(tag .. ": audit line to the force",
+					key_of(dev("last_audit")) == "cybersyn-messages.audit-fail-delivery", dev("last_audit"))
+				lab.check(tag .. ": both ends stop counting the delivery, the train heads home", t.p_station_id == nil
+					and t.r_station_id == nil and read("stations", case.p.id, "deliveries_total") == before.p - 1
+					and read("stations", case.r.id, "deliveries_total") == before.r - 1, before)
+				local after = dev("action_button", PI, "fail_delivery")
+				lab.check(tag .. ": Send home disabled once the train has no delivery", after and after.enabled == false, after)
+			end
+			dev("relative_close", PI)
+		end
 		case.cleanup()
 		ctx.case = nil
 	end,
@@ -633,4 +611,6 @@ lab.suite("39_extras", {
 		if ctx.case then ctx.case.cleanup() end
 		if not ctx.was_open then dev("close", PI) end
 	end,
-})
+}
+
+lab.suite("39_extras", STEPS)

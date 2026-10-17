@@ -1383,11 +1383,13 @@ end
 --- The footer rows: `row` (the panel's own buttons) with the phase-10 tool buttons appended, and for a train the
 --- action row below.
 --- @return flib.GuiElemDef[]
-local function extras_rows(player, pd, kind, id, row)
+local function extras_rows(player, pd, kind, id, row, lead)
 	local rows = { row }
 	if kind == "train" then
-		-- Open in manager and Locate fill the train panel's first row; the tools share the action row.
-		rows[#rows + 1] = repair.train_row(player, pd, id, extras.train_tools(pd, id))
+		-- Open in manager and Locate fill the train panel's first row; the tools share the action row. In the Trains
+		-- pane (no Open in manager) Locate leads the action row: one row, not a lone button above it.
+		if lead then rows = {} end
+		rows[#rows + 1] = repair.train_row(player, pd, id, extras.train_tools(pd, id), lead)
 	else
 		for _, def in ipairs(extras.stop_tools()) do row[#row + 1] = def end
 	end
@@ -1704,6 +1706,15 @@ local function render_train_buttons(state, body, m, pd)
 	local buttons_sig = (state.pane and "pane" or "train") .. extras_sig(player, pd, "train", state.id)
 	if state.sigs["buttons"] ~= buttons_sig then
 		section(state, body, "buttons", buttons_sig, function()
+			local locate = {
+				type = "button",
+				name = "locate",
+				caption = { "cybersyn-gui.relative-locate" },
+				tooltip = { "cybersyn-gui.relative-locate-train-tooltip" },
+				style_mods = state.pane and { minimal_width = 0, left_padding = 8, right_padding = 8 } or nil,
+				handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
+			}
+			if state.pane then return extras_rows(player, pd, "train", state.id, nil, locate) end
 			return extras_rows(player, pd, "train", state.id,
 				{
 					type = "flow",
@@ -1714,16 +1725,9 @@ local function render_train_buttons(state, body, m, pd)
 						name = "open_manager",
 						caption = { "cybersyn-gui.relative-open-manager" },
 						tooltip = { "cybersyn-gui.relative-open-manager-train-tooltip" },
-						visible = not state.pane,
 						handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
 					},
-					{
-						type = "button",
-						name = "locate",
-						caption = { "cybersyn-gui.relative-locate" },
-						tooltip = { "cybersyn-gui.relative-locate-train-tooltip" },
-						handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
-					},
+					locate,
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
 				})
 		end)

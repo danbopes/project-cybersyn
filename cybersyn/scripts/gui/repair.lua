@@ -180,13 +180,14 @@ function repair.confirm_button(player, pd, name, key, caption, tooltip, handler,
 	}
 end
 
---- Second footer row of the train panel: Send home, then `tools` (read-only, extras.lua).
+--- Second footer row of the train panel: `lead` (the pane's Locate), Send home, then `tools` (read-only, extras.lua).
 --- @param player LuaPlayer
 --- @param pd PlayerData
 --- @param train_id uint
 --- @param tools flib.GuiElemDef[]?
+--- @param lead flib.GuiElemDef?
 --- @return flib.GuiElemDef
-function repair.train_row(player, pd, train_id, tools)
+function repair.train_row(player, pd, train_id, tools, lead)
 	local row = {
 		type = "flow",
 		name = "actions",
@@ -198,6 +199,7 @@ function repair.train_row(player, pd, train_id, tools)
 		{ type = "empty-widget", style = "flib_horizontal_pusher" },
 	}
 	for _, def in ipairs(tools or {}) do row[#row + 1] = def end
+	if lead then table.insert(row, 1, lead) end
 	return row
 end
 
