@@ -813,8 +813,8 @@ function diag.is_acked(kind, id, sub)
 	return ack
 end
 
---- Ends the acknowledgement of a setup finding that is gone (scripts/lint.lua): the finding cleared, its subject left,
---- or a world scan no longer found it.
+--- Ends the acknowledgement of a setup finding that is gone (scripts/lint.lua): the finding cleared or its subject
+--- left.
 --- @param key int lint.subject_key of the subject
 --- @param check int LINT_*
 function diag.resolve_lint_ack(key, check)

@@ -1409,7 +1409,7 @@ end
 --- control + shift = a map pin, right on an item = clear the item filter, right on a train or a stop = the Log's
 --- "this train/stop" chip.
 --- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
---- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the last world scan found it. The
+--- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it. The
 --- older tag shapes of the Stations and Trains rows are read too.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
@@ -1456,7 +1456,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		return
 	end
 	if kind == "entity" then
-		local entity = lint.world_entity(id)
+		local entity = lint.registry_entity(id)
 		if not (entity and entity.valid) then
 			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 		elseif e.shift then

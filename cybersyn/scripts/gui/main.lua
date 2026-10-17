@@ -459,7 +459,7 @@ end
 manager_gui.hud_tick = extras.hud_tick
 manager_gui.HUD_TICKS = extras.HUD_TICKS
 
---- The Refresh allow-lists job while manager updates are off (scripts/main.lua's world-scan tick).
+--- The Refresh allow-lists job while manager updates are off (scripts/main.lua's REPAIR_JOB_NTH handler).
 manager_gui.job_tick = repair.job_tick
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.

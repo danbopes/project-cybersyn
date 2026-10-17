@@ -929,10 +929,8 @@ end
 local function entity_of(f)
 	local e = f.entity
 	if e and e.valid then return e end
-	if lint.world_entity then
-		e = lint.world_entity(f.id)
-		if e and e.valid then return e end
-	end
+	e = lint.registry_entity(f.id)
+	if e and e.valid then return e end
 	return nil
 end
 
@@ -946,7 +944,7 @@ local function registry_rows(px, f)
 	if #px.registry == 0 or f.network or f.item or (f.mask and f.mask ~= -1) then return out end
 	for _, e in ipairs(px.registry) do
 		local gone = e.f.entity
-		-- A world-scan finding whose entity was removed since: no row (the scan is not repeated to prune it).
+		-- The entity went without an event the registry hears (a script destroy that raised none): no row.
 		if gone and not gone.valid then goto continue end
 		local entity = entity_of(e.f)
 		local name

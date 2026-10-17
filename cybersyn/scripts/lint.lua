@@ -1568,7 +1568,6 @@ function lint.registry_entity(unit)
 	if e and e.valid then return e end
 	return nil
 end
-lint.world_entity = lint.registry_entity
 
 --- @param entity LuaEntity
 local function gps_text(entity)

@@ -200,12 +200,11 @@ lab.suite("37_tabs", {
 		remote.call(D, "clear_filters", pi)
 		lab.set_status_filter(pi, nil)
 		lab.big_screen(pi)
-		-- A combinator with no stop in reach: the registry reports it (before the registry existed, the world scan did).
+		-- A combinator with no stop in reach: the registry reports it.
 		local s = game.surfaces["cyb-bench"]
 		local comb = s.create_entity({ name = "cybersyn-combinator", position = { 0.5, -60.5 }, force = game.forces.player })
 		script.raise_script_built({ entity = comb })
 		ctx.derelict = comb
-		if remote.interfaces[D].lint_scan_world then lab.dev("lint_scan_world", nil, true) end
 		lab.dev("lint_run")
 		lab.dev("collect")
 		local v = lab.problems_verify("37_tabs Problems view")
@@ -386,7 +385,6 @@ lab.suite("37_tabs", {
 			and d.column == "problems" and d.total == d.chip_counts.problems, { chip = d.chip, column = d.column })
 		remote.call(DS, "set_chip", pi, "all")
 		comb.destroy({ raise_destroy = true })
-		if remote.interfaces[D].lint_scan_world then lab.dev("lint_scan_world", nil, true) end
 		lab.dev("lint_run")
 	end,
 

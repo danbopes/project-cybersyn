@@ -129,7 +129,7 @@ function repair.start_allow_job(player)
 		refreshed = 0, chunk = m.repair_job_chunk, budget = m.repair_job_budget }
 end
 
---- One chunk of the Refresh allow-lists job (manager tick, or the world-scan tick while manager updates are off).
+--- One chunk of the Refresh allow-lists job (manager tick, or its own nth handler while manager updates are off).
 function repair.job_tick()
 	local m = storage.manager
 	local job = m and m.repair_job
