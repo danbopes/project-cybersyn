@@ -81,6 +81,7 @@ local HEADER_HEIGHT = 36
 local NETWORK_COLUMNS = 3
 
 local TRAIN_CHIPS = logic.TRAIN_CHIPS
+local NO_FINDINGS = {}
 -- Widths of the chips with their names and a one-digit count (English, measured at UI scale 1.0); each further digit
 -- adds DIGIT_WIDTH. The group toggle takes 32 more.
 local CHIP_WIDTH = {
@@ -595,6 +596,8 @@ function trains_tab.query(map_data, player_data)
 	end
 	local layout_keys, comps, icons, runs = cache.layout_keys, cache.comps, cache.icons, cache.runs
 	local findings = lint.findings()
+	-- Before the first lint pass lint.findings() is a new empty table per call; one shared empty keeps the caches hit.
+	if next(findings) == nil then findings = NO_FINDINGS end
 	local found = cache.findings
 	if not (found and found.of == findings and found.depots_by_name == snapshot.depots_by_name) then
 		found = index_findings(findings, snapshot)
@@ -1434,8 +1437,9 @@ local function group_tooltip(title, stats, comps, ctx)
 		local n = stats.states[b]
 		if n and n > 0 then
 			parts[#parts + 1] = (on_line % STATES_PER_LINE == 0) and "\n" or "    "
-			parts[#parts + 1] = "[img=" .. logic.BUCKET_SPRITE[b] .. "] "
-			parts[#parts + 1] = { "cybersyn-gui.trains-group-state-" .. string.gsub(b, "_", "-") }
+			local chip = logic.bucket_chip(b)
+			parts[#parts + 1] = "[img=" .. chip.sprite .. "] "
+			parts[#parts + 1] = chip.caption
 			parts[#parts + 1] = " " .. format.number(n)
 			on_line = on_line + 1
 		end
@@ -1554,7 +1558,8 @@ local function compositions_def(view, ctx)
 	for i = 1, view.comps_shown do
 		local c = view.comps[i]
 		if i > 1 then
-			children[#children + 1] = { type = "label", style = "cybersyn_subheader_note", caption = "·", tooltip = view.tip }
+			children[#children + 1] = { type = "label", style = "cybersyn_subheader_note", caption = "·", tooltip = view.tip,
+				style_mods = { left_padding = 4 } }
 		end
 		for _, r in ipairs(ctx.runs[c.id] or {}) do
 			children[#children + 1] = {
@@ -2699,7 +2704,7 @@ if dev.enabled() and not remote.interfaces["cybersyn-manager-dev-trains"] then
 			for name in pairs(defines.train_state) do add("state", name, logic.state_chip(name, 0, 0).sprite) end
 			add("state", "residue", logic.state_chip("wait_station", 0, 0, "residue").sprite)
 			add("state", "refuel", logic.state_chip("wait_station", 0, 0, "refuel").sprite)
-			for _, b in ipairs(logic.STATE_BUCKETS) do add("bucket", b, logic.BUCKET_SPRITE[b]) end
+			for _, b in ipairs(logic.STATE_BUCKETS) do add("bucket", b, logic.bucket_chip(b).sprite) end
 			for class, sprite in pairs(logic.CLASS_SPRITE) do add("class", tostring(class), sprite) end
 			for key, sprite in pairs(CHIP_ICON) do add("chip", key, sprite) end
 			return out

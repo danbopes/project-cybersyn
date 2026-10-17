@@ -308,8 +308,9 @@ function logic.state_chip(state, since, now, status)
 	}
 end
 
---- The Trains tab's In trouble chip: every state whose icon is red or orange (no path, path lost, no schedule,
---- destination full, manual control, a signal of at least WAIT_SIGNAL_MIN), so a coloured row is always counted.
+--- The Trains tab's In trouble chip: every engine state whose icon is red or orange (no path, path lost, no schedule,
+--- destination full, manual control, a signal of at least WAIT_SIGNAL_MIN). Residue is orange too but is cargo, not
+--- a state: Cybersyn's nonempty_in_depot alert brings those trains in (trains.lua train_in_trouble).
 --- @param state string?
 --- @param waited number ticks in that state
 --- @return boolean
@@ -332,39 +333,25 @@ function logic.state_sort_key(state)
 	return "4" .. state
 end
 
---- The buckets of a depot group tooltip's "Trains by state", in display order, with their icons.
-logic.STATE_BUCKETS = { "moving", "station", "signal", "manual", "no_path", "path_lost", "no_schedule",
-	"destination_full", "unknown" }
-logic.BUCKET_SPRITE = {
-	moving = "item/locomotive",
-	station = "item/train-stop",
-	signal = "item/rail-signal",
-	manual = "utility/hand",
-	no_path = "utility/no_path_icon",
-	path_lost = "fluid/cybersyn-lost-train",
-	no_schedule = "utility/rail_path_not_possible",
-	destination_full = "utility/destination_full_icon",
-	unknown = "utility/questionmark",
-}
-local BUCKET_OF = {
-	on_the_path = "moving",
-	arrive_station = "station",
-	wait_station = "station",
-	arrive_signal = "signal",
-	wait_signal = "signal",
-	manual_control = "manual",
-	manual_control_stop = "manual",
-	no_path = "no_path",
-	path_lost = "path_lost",
-	no_schedule = "no_schedule",
-	destination_full = "destination_full",
-}
+--- The lines of a depot group tooltip's "Trains by state", in display order: one per engine state, worded and drawn
+--- by state_chip like everywhere else, plus "unknown" for a train without one, so every train counts on one line.
+logic.STATE_BUCKETS = { "on_the_path", "arrive_station", "wait_station", "arrive_signal", "wait_signal",
+	"manual_control_stop", "manual_control", "no_path", "path_lost", "no_schedule", "destination_full", "unknown" }
+local IS_BUCKET = {}
+for _, b in ipairs(logic.STATE_BUCKETS) do IS_BUCKET[b] = true end
 
---- The tooltip bucket of a LuaTrain state; every state falls in exactly one, so the buckets sum to the group.
+--- The tooltip line of a LuaTrain state; a state the list does not know (a newer engine) counts as unknown.
 --- @param state string?
 --- @return string
 function logic.state_bucket(state)
-	return state and BUCKET_OF[state] or "unknown"
+	return (state and IS_BUCKET[state]) and state or "unknown"
+end
+
+--- The state_chip of a tooltip line.
+--- @param bucket string
+--- @return StateChip
+function logic.bucket_chip(bucket)
+	return logic.state_chip(bucket ~= "unknown" and bucket or nil)
 end
 
 --- Composition string of a Cybersyn layout (0 = locomotive or any other carriage, 1 = cargo wagon, 2 = fluid wagon):
@@ -435,7 +422,7 @@ function logic.composition_icons(layout)
 end
 
 -- A group row's composition: its icons, the "×273" label after them (px per character at the row font) and the gap.
-local COMP_LABEL_PAD, COMP_CHAR, COMP_GAP, COMP_MORE = 4, 7, 8, 28
+local COMP_LABEL_PAD, COMP_CHAR, COMP_GAP, COMP_MORE = 4, 7, 12, 28
 
 --- How many of a depot group's compositions (most trains first) its row shows as icon runs in `budget` px, at most
 --- `max`; the rest go to a "+n" label. One is always shown when there is any.

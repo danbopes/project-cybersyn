@@ -44,14 +44,14 @@ local function leaves(ls, out)
 	return out
 end
 
---- The "Trains by state" counts of a group row's hover box: {bucket = n}, and their sum.
+--- The "Trains by state" counts of a group row's hover box: {train-state key suffix = n}, and their sum.
 local function tooltip_states(tip)
 	local out, sum = {}, 0
 	local l = leaves(tip)
 	for i, v in ipairs(l) do
-		if type(v) == "table" and v.key:find("^cybersyn%-gui%.trains%-group%-state%-") then
+		if type(v) == "table" and v.key:find("^cybersyn%-diag%.train%-state%-") then
 			local n = tonumber(((l[i + 1] or ""):gsub("[^%d]", "")))
-			out[v.key:gsub("^cybersyn%-gui%.trains%-group%-state%-", "")] = n
+			out[(v.key:gsub("^cybersyn%-diag%.train%-state%-", ""))] = n
 			sum = sum + (n or 0)
 		end
 	end
@@ -627,7 +627,7 @@ lab.suite("37_tabs", {
 		if row1 then states1, sum1 = tooltip_states(row1.tooltip) end
 		local bound = row1 and row1.captions[3] and tonumber(row1.captions[3][2])
 		lab.check("a state change moves the group hover box's count (" .. tostring(group) .. ")", row1 ~= nil
-			and (states1.signal or 0) == (states0.signal or 0) + 1 and sum1 == bound, { before = states0, after = states1, bound = bound })
+			and (states1["wait-signal"] or 0) == (states0["wait-signal"] or 0) + 1 and sum1 == bound, { before = states0, after = states1, bound = bound })
 		lab.check("the group rows were updated in place, not rebuilt", after.last_result ~= "rebuilt", after.last_result)
 		remote.call(DT, "set_grouped", pi, false, nil)
 		lab.dev("collect")

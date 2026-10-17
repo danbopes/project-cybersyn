@@ -192,15 +192,18 @@ test("state sprites: every defines.train_state, residue and refuel map to a spri
 	assert_eq(l.STATE_SPRITE.no_schedule, "utility/rail_path_not_possible")
 	assert_eq(l.STATE_SPRITE.residue, "fluid/cybersyn-nonempty-train")
 	assert_eq(l.STATE_SPRITE.refuel, "virtual-signal/signal-fuel")
-	for _, b in ipairs(l.STATE_BUCKETS) do assert_true(l.BUCKET_SPRITE[b] ~= nil, b .. " bucket sprite") end
+	for _, b in ipairs(l.STATE_BUCKETS) do
+		local c = l.bucket_chip(b)
+		assert_eq(c.sprite, l.STATE_SPRITE[b] or "utility/questionmark", b .. " bucket sprite")
+		assert_eq(c.caption, { "cybersyn-diag.train-state-" .. b:gsub("_", "-") }, b .. " bucket words are train-state-*")
+	end
 end)
 
-test("state locale: one train-state-* set in every manager.cfg; the trains-state-* and relative-state-* sets are gone", function()
+test("state locale: one train-state-* set in every manager.cfg; the trains-state-*, relative-state-* and trains-group-state-* sets are gone", function()
 	local l = logic()
 	local keys = {}
 	for _, name in ipairs(ALL_STATES) do keys[#keys + 1] = "train-state-" .. name:gsub("_", "-") end
 	for _, k in ipairs({ "residue", "refuel", "unknown" }) do keys[#keys + 1] = "train-state-" .. k end
-	for _, b in ipairs(l.STATE_BUCKETS) do keys[#keys + 1] = "trains-group-state-" .. b:gsub("_", "-") end
 	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
 		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
 		local text = f:read("*a")
@@ -210,6 +213,7 @@ test("state locale: one train-state-* set in every manager.cfg; the trains-state
 		end
 		assert_nil(text:find("\ntrains%-state%-"), loc .. " still has trains-state-*")
 		assert_nil(text:find("\nrelative%-state%-"), loc .. " still has relative-state-*")
+		assert_nil(text:find("\ntrains%-group%-state%-"), loc .. " still has trains-group-state-*")
 	end
 end)
 
@@ -218,9 +222,9 @@ test("state_bucket: every state in exactly one bucket of the group tooltip", fun
 	local known = {}
 	for _, b in ipairs(l.STATE_BUCKETS) do known[b] = true end
 	for _, name in ipairs(ALL_STATES) do assert_true(known[l.state_bucket(name)], name) end
-	assert_eq(l.state_bucket("wait_signal"), "signal")
-	assert_eq(l.state_bucket("arrive_station"), "station")
-	assert_eq(l.state_bucket("manual_control_stop"), "manual")
+	assert_eq(l.state_bucket("wait_signal"), "wait_signal")
+	assert_eq(l.state_bucket("manual_control_stop"), "manual_control_stop")
+	assert_eq(l.state_bucket("some_future_state"), "unknown")
 	assert_eq(l.state_bucket(nil), "unknown")
 end)
 
