@@ -107,11 +107,12 @@ function text.why(reason, a, b, network, rej, surface_name)
 end
 
 --- @param reason int
+--- @param network LocalisedString? the requester's network, __1__ in the fix keys that name it
 --- @return LocalisedString
-function text.fix(reason)
+function text.fix(reason, network)
 	local key = REASON_KEYS[reason]
 	if not key then return "" end
-	return { "cybersyn-diag.fix-" .. key }
+	return { "cybersyn-diag.fix-" .. key, network or "?" }
 end
 
 --- @class UnservedTipArgs
@@ -148,7 +149,7 @@ function text.chip_tooltip(args, duration)
 	return {
 		"", asked,
 		"\n", { "cybersyn-gui.unserved-why", text.why(args.reason, args.a, args.b, args.network, args.rej, args.surface_name) },
-		"\n", { "cybersyn-gui.unserved-fix", text.fix(args.reason) },
+		"\n", { "cybersyn-gui.unserved-fix", text.fix(args.reason, args.network) },
 		"\n", since,
 	}
 end

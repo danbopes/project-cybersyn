@@ -89,7 +89,7 @@ local function body_defs(r_id, hash, e)
 			label(utext.stock_caption(e.reason, e.a, e.b), true),
 		}
 		out[#out + 1] = label({ "cybersyn-gui.unserved-why", utext.why(e.reason, e.a, e.b, network, e.rej, util.surface_name) })
-		out[#out + 1] = label({ "cybersyn-gui.unserved-fix", utext.fix(e.reason) }, true)
+		out[#out + 1] = label({ "cybersyn-gui.unserved-fix", utext.fix(e.reason, network) }, true)
 		out[#out + 1] = label({ inherited and "cybersyn-gui.unserved-since-load" or "cybersyn-gui.unserved-since",
 			util.format_duration(wait), tostring(e.n or 0) }, true)
 		if e.p_station_id and e.reason ~= REASON_NO_PROVIDER then

@@ -67,7 +67,7 @@ test("chip_tooltip: four lines, asked / why / fix / since, with the since-load w
 	assert_eq(tip[2], { "cybersyn-gui.unserved-asked", "[item=coal] Coal", "400", "Req" })
 	assert_eq(tip[3], "\n")
 	assert_eq(tip[4], { "cybersyn-gui.unserved-why", { "cybersyn-diag.why-no-provider", "0", "0", "A", "0", "0", "0" } })
-	assert_eq(tip[6], { "cybersyn-gui.unserved-fix", { "cybersyn-diag.fix-no-provider" } })
+	assert_eq(tip[6], { "cybersyn-gui.unserved-fix", { "cybersyn-diag.fix-no-provider", "A" } })
 	assert_eq(tip[8], { "cybersyn-gui.unserved-since-load", "460s", "41" })
 	assert_eq(#tip, 8)
 end)
@@ -90,4 +90,50 @@ test("read_ago and read_step: rounded down to 10 s so tooltips are not rebuilt e
 	assert_eq(t.read_step(599), 0)
 	assert_eq(t.read_step(600), 1)
 	assert_eq(t.read_step(nil), -1)
+end)
+
+--- Values of one section of a cfg file, by key.
+local function cfg_section(path, section)
+	local f = assert(io.open(path, "r"))
+	local out, current = {}, nil
+	for line in f:lines() do
+		local head = line:match("^%[(.-)%]")
+		if head then
+			current = head
+		elseif current == section then
+			local k, v = line:match("^([^=;#]+)=(.*)$")
+			if k then out[k] = v end
+		end
+	end
+	f:close()
+	return out
+end
+
+--- Highest __n__ a locale value refers to.
+local function max_param(value)
+	local n = 0
+	for d in value:gmatch("__(%d+)__") do n = math.max(n, tonumber(d)) end
+	return n
+end
+
+test("locale: every reason's chip, why and fix line gets every __n__ it names, in every manager.cfg", function()
+	local t = text()
+	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+		local cfg = cfg_section(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "cybersyn-diag")
+		for code, key in pairs(REASON_KEYS) do
+			local rendered = {
+				t.chip_caption(code),
+				t.why(code, 1, 2, "[virtual-signal=signal-A]"),
+				t.fix(code, "[virtual-signal=signal-A]"),
+			}
+			for _, ls in ipairs(rendered) do
+				local value = cfg[ls[1]:gsub("^cybersyn%-diag%.", "")]
+				assert_true(value ~= nil, loc .. " lacks " .. ls[1])
+				assert_true(max_param(value) <= #ls - 1,
+					loc .. " " .. ls[1] .. " names __" .. max_param(value) .. "__ but gets " .. (#ls - 1) .. " parameters")
+			end
+		end
+	end
+	assert_eq(t.fix(REASON_NO_TRAINS_ON_NETWORK, "N"), { "cybersyn-diag.fix-no-trains-on-network", "N" })
+	assert_eq(t.fix(REASON_NO_PROVIDER, nil), { "cybersyn-diag.fix-no-provider", "?" })
 end)
