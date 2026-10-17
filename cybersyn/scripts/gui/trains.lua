@@ -1,6 +1,8 @@
--- Trains tab (PLAN3 §4.7): chips in the tab's subheader, one 36 px row per train (id link, status with the stop as a
--- link, network, composition, depot, state chip, time in state, last refuel, fuel, shipment), columns whose value is
--- the same for every listed train hidden, optionally grouped by depot name. Exactly as many rows as the window fits.
+-- Trains tab (PLAN3 §4.7, PLAN4 D11): chips in the tab's subheader, one 36 px row per train (id link, status with the
+-- stop as a link, network, composition icons, depot, state icon, time in state, last refuel, fuel, shipment), columns
+-- whose value is the same for every listed train hidden, optionally grouped by depot name (group rows with their
+-- compositions, a hover box with every composition and the trains by state, and a marker for setup findings).
+-- Exactly as many rows as the window fits.
 -- A row click selects the train and opens the detail pane right of the table (PLAN3 §4.11): a camera on the train and
 -- the train panel of scripts/gui/relative.lua, mounted in the window.
 
@@ -18,6 +20,7 @@ local name_cell = require("scripts.gui.name-cell")
 local rich_name = require("scripts.gui.rich-name")
 local stations_tab = require("scripts.gui.stations")
 local extras = require("scripts.gui.extras")
+local lint = require("scripts.lint")
 
 local trains_tab = {}
 
@@ -50,6 +53,10 @@ local CAMERA = "manager_trains_pane_camera"
 local CAMERA_WIDTH, CAMERA_ZOOM = 300, 0.5
 local PANE_PADDING = logic.PANE_CAMERA_GAP
 local CHIPS = "manager_trains_chip_flow"
+-- Chips that do not fit the subheader wrap onto this strip above the column header; it is one row tall, so the page
+-- has one row fewer while it shows.
+local CHIP_STRIP = "manager_trains_chip_strip"
+local CHIPS_WRAPPED = "manager_trains_chip_flow_2"
 local DEFAULT_COLUMN = "train_id"
 local ROW_HEIGHT = sizing.ROW_HEIGHT[TAB]
 local SLOT = 32
@@ -78,19 +85,26 @@ local TRAIN_CHIPS = logic.TRAIN_CHIPS
 -- adds DIGIT_WIDTH. The group toggle takes 32 more.
 local CHIP_WIDTH = {
 	all = 46, parked = 75, to_p = 98, loading = 78, to_r = 106, unloading = 92, returning = 92, refuel = 95,
-	interrupt = 99, not_refuelled = 145, in_group = 123, trouble = 91,
+	interrupt = 99, not_refuelled = 145, in_group = 123, trouble = 91, problems = 92,
 }
 local DIGIT_WIDTH = 8
-
---- @param counts {[string]: int}
---- @return int
-local function full_chips_width(counts)
-	local w = 32
-	for _, key in ipairs(TRAIN_CHIPS) do
-		w = w + CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(counts[key] or 0) - 1)
-	end
-	return w
-end
+-- The [img=] prefix of a chip caption: a 16 px icon at the default font and its space.
+local ICON_WIDTH = 22
+-- The icon each chip's caption starts with, like the Stations chips (stations.lua CHIP_ICON).
+local CHIP_ICON = {
+	parked = "item/train-stop",
+	to_p = "virtual-signal/signal-output",
+	loading = "virtual-signal/signal-output",
+	to_r = "virtual-signal/signal-input",
+	unloading = "virtual-signal/signal-input",
+	returning = "item/train-stop",
+	refuel = "virtual-signal/signal-fuel",
+	interrupt = "virtual-signal/signal-alarm",
+	not_refuelled = "utility/fuel_icon",
+	in_group = "item/locomotive",
+	trouble = "utility/warning_icon",
+	problems = "utility/status_yellow",
+}
 
 local ALERT_MESSAGE = {
 	[1] = "cybersyn-messages.stuck-train",
@@ -158,6 +172,19 @@ function trains_tab.create()
 						type = "flow",
 						direction = "vertical",
 						style_mods = { vertical_spacing = 0, horizontally_stretchable = true, vertically_stretchable = true },
+						{
+							name = CHIP_STRIP,
+							type = "frame",
+							style = "subheader_frame",
+							visible = false,
+							style_mods = { height = ROW_HEIGHT, horizontally_stretchable = true },
+							{
+								name = CHIPS_WRAPPED,
+								type = "flow",
+								direction = "horizontal",
+								style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+							},
+						},
 						header,
 						{ name = SCROLL, type = "flow", direction = "vertical", style = "cybersyn_list_rows" },
 					},
@@ -315,15 +342,16 @@ end
 --- @return {[uint]: string} sort keys (carriage count first, so short trains group together)
 --- @return {[uint]: string} composition strings
 --- @return {[uint]: string} rich-text icons per car
+--- @return {[uint]: {class: int, n: int}[]} carriage-class runs (logic.composition_runs)
 local function layout_strings(map_data)
-	local keys, comps, icons = {}, {}, {}
+	local keys, comps, icons, runs = {}, {}, {}, {}
 	for id, layout in pairs(map_data.layouts) do
-		local raw = table.concat(layout, "")
-		keys[id] = string.format("%03d", #layout) .. raw
+		keys[id] = string.format("%03d", #layout) .. table.concat(layout, "")
 		comps[id] = logic.composition(layout)
-		icons[id] = raw:gsub("0", "[item=locomotive]"):gsub("1", "[item=cargo-wagon]"):gsub("2", "[item=fluid-wagon]")
+		icons[id] = logic.composition_icons(layout)
+		runs[id] = logic.composition_runs(layout)
 	end
-	return keys, comps, icons
+	return keys, comps, icons, runs
 end
 
 --- @param mask integer
@@ -382,7 +410,7 @@ local function key_fn_for(column, names, layout_keys)
 	elseif column == "shipment" then
 		return shipment_total
 	elseif column == "state" then
-		return function(tr) return tr.state and STATE_NAME[tr.state] or nil end
+		return function(tr) return logic.state_sort_key(tr.state and STATE_NAME[tr.state]) end
 	elseif column == "time_in_state" then
 		return function(tr) return tr.state_since end
 	elseif column == "last_refuel" then
@@ -460,8 +488,9 @@ end
 --- @param hours number
 --- @param to_refuelers table?
 --- @param alerts {[uint]: int}
+--- @param problems {[uint]: int} trains with setup findings (their count)
 --- @return boolean
-local function count_train(tr, counts, wanted, now, hours, to_refuelers, alerts)
+local function count_train(tr, counts, wanted, now, hours, to_refuelers, alerts, problems)
 	local member = wanted == nil
 	local s = status_chip(tr)
 	if s then
@@ -484,6 +513,10 @@ local function count_train(tr, counts, wanted, now, hours, to_refuelers, alerts)
 		counts.trouble = counts.trouble + 1
 		if wanted == "trouble" then member = true end
 	end
+	if problems[tr.id] then
+		counts.problems = counts.problems + 1
+		if wanted == "problems" then member = true end
+	end
 	return member
 end
 
@@ -495,6 +528,41 @@ local function alerts_by_train(snapshot)
 		out[alert.train_id] = alert.kind
 	end
 	return out
+end
+
+--- The setup findings of the last lint pass by what the Trains tab shows them on: trains (the Problems chip), depot
+--- groups by name and the refuelers group (the group row markers). Built once per pass: lint.findings() is a new
+--- array every pass.
+--- @param findings LintFinding[]
+--- @param snapshot Snapshot
+--- @return {of: LintFinding[], trains: {[uint]: int}, groups: {[string]: LintFinding[]}}
+local function index_findings(findings, snapshot)
+	local trains, groups = {}, {}
+	local depot_name = {}
+	for name, g in pairs(snapshot.depots_by_name or {}) do
+		for _, id in ipairs(g.ids or {}) do depot_name[id] = name end
+	end
+	for _, f in ipairs(findings) do
+		local key
+		if f.subject == LINT_SUBJECT_TRAIN then
+			trains[f.id] = (trains[f.id] or 0) + 1
+		elseif f.subject == LINT_SUBJECT_DEPOT then
+			key = depot_name[f.id]
+		elseif f.subject == LINT_SUBJECT_REFUELER then
+			key = REFUELERS
+		end
+		if key then
+			local list = groups[key]
+			if not list then
+				list = {}
+				groups[key] = list
+			end
+			list[#list + 1] = f
+		end
+	end
+	local s = storage.manager.lint
+	return { of = findings, depots_by_name = snapshot.depots_by_name, trains = trains, groups = groups,
+		pass = s and s.pass or 0 }
 end
 
 --- Filtered and sorted trains, cached until the fleet is summarised again or the filters or sort change; chip
@@ -516,16 +584,22 @@ function trains_tab.query(map_data, player_data)
 	}, "\1")
 	local cache = player_data.trains_query
 	if not (cache and cache.sig == qsig) then
-		local layout_keys, comps, icons = layout_strings(map_data)
+		local layout_keys, comps, icons, runs = layout_strings(map_data)
 		local all = {}
 		for _, tr in pairs(snapshot.trains) do
 			if util.train_passes(tr, f) then all[#all + 1] = tr end
 		end
 		util.sort_by(all, key_fn_for(column, names, layout_keys), ascending, train_id_of)
-		cache = { sig = qsig, all = all, layout_keys = layout_keys, comps = comps, icons = icons }
+		cache = { sig = qsig, all = all, layout_keys = layout_keys, comps = comps, icons = icons, runs = runs }
 		player_data.trains_query = cache
 	end
-	local layout_keys, comps, icons = cache.layout_keys, cache.comps, cache.icons
+	local layout_keys, comps, icons, runs = cache.layout_keys, cache.comps, cache.icons, cache.runs
+	local findings = lint.findings()
+	local found = cache.findings
+	if not (found and found.of == findings and found.depots_by_name == snapshot.depots_by_name) then
+		found = index_findings(findings, snapshot)
+		cache.findings = found
+	end
 	local key_fn = key_fn_for(column, names, layout_keys)
 	local now = game.tick
 	local hours = refuel_hours(player_data)
@@ -539,22 +613,23 @@ function trains_tab.query(map_data, player_data)
 	-- Trouble and refuel age move with time: the counts hold until the first train whose chips time alone changes
 	-- (logic.chip_change_tick), a new pass (a new query cache) or another chip or refuel setting.
 	local chips = cache.chips
-	if not (chips and chips.wanted == wanted and chips.hours == hours and not (chips.next and chips.next <= now)) then
+	if not (chips and chips.wanted == wanted and chips.hours == hours and chips.findings == findings
+			and not (chips.next and chips.next <= now)) then
 		local counts = { all = #cache.all }
 		for _, key in ipairs(TRAIN_CHIPS) do if key ~= "all" then counts[key] = 0 end end
 		local rows = {}
 		local next_change
 		for _, tr in ipairs(cache.all) do
-			if count_train(tr, counts, wanted, now, hours, to_refuelers, alerts) then rows[#rows + 1] = tr end
+			if count_train(tr, counts, wanted, now, hours, to_refuelers, alerts, found.trains) then rows[#rows + 1] = tr end
 			local at = logic.chip_change_tick(now, tr.state and STATE_NAME[tr.state], tr.state_since,
 				tr.refuel_tick or tr.refuel_from, hours, has_refueler(tr, to_refuelers))
 			if at and (not next_change or at < next_change) then next_change = at end
 		end
-		chips = { wanted = wanted, hours = hours, next = next_change, counts = counts, rows = rows }
+		chips = { wanted = wanted, hours = hours, findings = findings, next = next_change, counts = counts, rows = rows }
 		cache.chips = chips
 	end
 	return chips.rows, snapshot, {
-		names = names, layout_keys = layout_keys, comps = comps, icons = icons, key_fn = key_fn,
+		names = names, layout_keys = layout_keys, comps = comps, icons = icons, runs = runs, found = found, key_fn = key_fn,
 		sprite_of = new_sprite_cache(), counts = chips.counts, all = cache.all, hours = hours, now = now, column = column,
 		ascending = ascending, to_refuelers = to_refuelers, cache = cache, chips = chips, alerts = alerts,
 	}
@@ -824,7 +899,10 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 	local state = tr.state and STATE_NAME[tr.state]
 	local in_state = now - (tr.state_since or now)
 	local residue = tr.status == STATUS_D and next(tr.manifest_hashes) ~= nil
-	local chip, chip_style = logic.state_chip(state, in_state, residue)
+	local sc = logic.state_chip(state, tr.state_since or now, now,
+		residue and "residue" or (tr.status == STATUS_F and "refuel" or nil))
+	local chip = sc.style and sc or nil
+	local layout_cap = w.layout and math.max(math.floor(w.layout / logic.COMPOSITION_ICON), 1) or 0
 	local view = {
 		id = tr.id,
 		tr = tr,
@@ -839,11 +917,13 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 		net_sig = net_sig,
 		layout = tr.layout_id and ctx.comps[tr.layout_id] or "",
 		layout_icons = tr.layout_id and ctx.icons[tr.layout_id] or "",
+		layout_runs = tr.layout_id and ctx.runs[tr.layout_id] or nil,
+		layout_sig = tostring(tr.layout_id) .. "|" .. layout_cap,
+		layout_cap = layout_cap,
 		depot_id = tr.depot_id,
 		depot_name = tr.depot_name,
 		chip = chip,
-		chip_style = chip_style,
-		chip_sig = chip and (chip .. "|" .. chip_style) or "",
+		chip_sig = chip and (chip.key .. "|" .. chip.style) or "",
 		state = state,
 		in_state = util.short_duration(in_state),
 		refuel = logic.age_caption(now, tr.refuel_tick, util.short_duration),
@@ -890,11 +970,66 @@ local function parts_of(name)
 	return parts
 end
 
+--- "<state> · <age>" and what a click on the icon does.
 --- @param view table
 --- @return LocalisedString
 local function state_tooltip(view)
-	if view.chip == "residue" then return { "cybersyn-gui.trains-state-residue" } end
-	return { "cybersyn-gui.trains-state-" .. string.gsub(view.chip or "", "_", "-") }
+	return { "", view.chip.tooltip, "\n", { "cybersyn-gui.trains-slot-footer" } }
+end
+
+-- Sprite paths checked once per Lua state: a pure function of the loaded prototypes.
+local sprite_ok = {}
+
+--- The state's icon, or the fallback where an install lacks it (signal-fuel predates 2.0 in no install, but a mod
+--- may hide it).
+--- @param chip StateChip
+--- @return string
+local function state_sprite(chip)
+	local sprite = chip.sprite
+	local ok = sprite_ok[sprite]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(sprite)
+		sprite_ok[sprite] = ok
+	end
+	if ok then return sprite end
+	return chip.key == "refuel" and logic.REFUEL_FALLBACK or "utility/questionmark"
+end
+
+--- @param view table
+--- @return string
+local function state_style(view)
+	return "cybersyn_state_slot_" .. (view.chip and view.chip.style or "grey")
+end
+
+--- The composition cell: one icon per run of one carriage class with the run's length as its badge; the last icon
+--- becomes "+n" when the runs do not fit the column.
+--- @param view table
+--- @return flib.GuiElemDef[]
+local function composition_children(view)
+	local runs = view.layout_runs
+	if not runs or view.layout_cap == 0 then return {} end
+	local shown, over = logic.fit_slots(#runs, view.layout_cap)
+	local children = {}
+	for i = 1, shown do
+		local r = runs[i]
+		children[i] = {
+			type = "sprite-button",
+			style = "cybersyn_composition_icon",
+			sprite = logic.CLASS_SPRITE[r.class],
+			number = r.n > 1 and r.n or nil,
+			tooltip = view.layout_icons,
+		}
+	end
+	if over > 0 then
+		children[#children + 1] = {
+			type = "label",
+			style = "cybersyn_overflow_label",
+			style_mods = { width = logic.COMPOSITION_ICON, vertical_align = "center" },
+			caption = "+" .. over,
+			tooltip = view.layout_icons,
+		}
+	end
+	return children
 end
 
 --- @param view table
@@ -924,6 +1059,7 @@ local function row_memo(view, color, w)
 	return {
 		sig = view.sig, net = view.net_sig, ship = view.ship_sig, color = color, chip = view.chip_sig,
 		in_state = view.in_state, refuel = refuel_sig(view), fuel = view.fuel, wsig = w.sig, cap = view.capacity,
+		lay = view.layout_sig,
 	}
 end
 
@@ -981,11 +1117,10 @@ local function build_row(view, color, w)
 			children = network_children(view.net),
 		}),
 		cell("layout", {
-			type = "label",
-			style = "cybersyn_cell_label",
-			style_mods = { width = w.layout },
-			caption = view.layout,
-			tooltip = view.layout_icons,
+			type = "flow",
+			style = "cybersyn_cell_flow",
+			style_mods = { width = w.layout, horizontal_spacing = 0 },
+			children = composition_children(view),
 		}),
 		cell("depot", name_cell.def(parts_of(view.depot_name), view.depot_name, { kind = "depot", id = view.depot_id },
 			w.depot or 150, stop_tooltip(view.depot_name), SCROLL)),
@@ -996,11 +1131,13 @@ local function build_row(view, color, w)
 			{ type = "sprite", sprite = "utility/warning_icon", resize_to_sprite = false, style_mods = { size = 20 },
 				visible = view.alert ~= nil, tooltip = alert_tooltip(view) },
 			util.hoverable({
-				type = "button",
-				style = "cybersyn_small_chip_" .. (view.chip_style or "grey"),
-				caption = view.chip and { "cybersyn-gui.trains-state-" .. string.gsub(view.chip, "_", "-") } or "",
+				type = "sprite-button",
+				style = state_style(view),
+				sprite = view.chip and state_sprite(view.chip) or nil,
 				tooltip = view.chip and state_tooltip(view) or nil,
 				visible = view.chip ~= nil,
+				tags = { state_train = view.id },
+				handler = { [defines.events.on_gui_click] = trains_tab.handle.on_state_click },
 			}, SCROLL),
 		},
 		cell("time_in_state", { type = "label", style = "cybersyn_cell_value", style_mods = { width = w.time_in_state }, caption = view.in_state }),
@@ -1035,6 +1172,11 @@ local function resize_row(row, view, m, w)
 		name_cell.resize(target, view.target_parts or parts_of(view.target_name), math.max(w.train_status - 160, 80), true)
 	end
 	if w.depot then name_cell.resize(c[5], parts_of(view.depot_name), w.depot) end
+	if m.lay ~= view.layout_sig then
+		c[4].clear()
+		gui.add(c[4], composition_children(view))
+		m.lay = view.layout_sig
+	end
 	local ship = c[10]
 	if m.cap ~= view.capacity then
 		ship.clear()
@@ -1076,8 +1218,10 @@ local function update_row(row, view, m, color, w, budget)
 			net.clear()
 			gui.add(net, network_children(view.net))
 		end
-		c[4].caption = view.layout
-		c[4].tooltip = view.layout_icons
+		if not (m and m.lay == view.layout_sig) then
+			c[4].clear()
+			gui.add(c[4], composition_children(view))
+		end
 		name_cell.update(c[5], parts_of(view.depot_name), view.depot_name, { kind = "depot", id = view.depot_id }, w.depot or 150,
 			stop_tooltip(view.depot_name), SCROLL)
 		local alert = c[6].children[1]
@@ -1089,7 +1233,7 @@ local function update_row(row, view, m, color, w, budget)
 			gui.add(ship, shipment_table(view))
 		end
 		local old = m
-		m = { sig = view.sig, net = view.net_sig, ship = view.ship_sig }
+		m = { sig = view.sig, net = view.net_sig, ship = view.ship_sig, lay = view.layout_sig }
 		if old then
 			m.color, m.chip, m.in_state, m.refuel, m.fuel = old.color, old.chip, old.in_state, old.refuel, old.fuel
 			m.wsig = old.wsig
@@ -1105,19 +1249,22 @@ local function update_row(row, view, m, color, w, budget)
 		end
 		m.color = color
 	end
-	if m.chip ~= view.chip_sig then
+	local chip_changed = m.chip ~= view.chip_sig
+	if chip_changed then
 		local chip = row.children[6].children[2]
 		chip.visible = view.chip ~= nil
 		if view.chip then
-			local style = "cybersyn_small_chip_" .. view.chip_style
+			local style = state_style(view)
 			if chip.style.name ~= style then chip.style = style end
-			chip.caption = { "cybersyn-gui.trains-state-" .. string.gsub(view.chip, "_", "-") }
+			chip.sprite = state_sprite(view.chip)
 			chip.tooltip = state_tooltip(view)
 		end
 		m.chip = view.chip_sig
 	end
 	if m.in_state ~= view.in_state then
 		row.children[7].caption = view.in_state
+		-- The icon's tooltip carries the same age.
+		if view.chip and not chip_changed then row.children[6].children[2].tooltip = state_tooltip(view) end
 		m.in_state = view.in_state
 	end
 	local rsig = refuel_sig(view)
@@ -1148,10 +1295,11 @@ local function group_key(tr)
 end
 
 --- Per group, over the trains the filters show (the chip aside), the numbers its row shows: parked (status parked,
---- residue included, as the Parked chip counts), inbound, bound (listed under the group), and how many of those may
---- bypass their depot. Counted from the same trains as the group's members, so the row agrees with its expansion.
+--- residue included, as the Parked chip counts), inbound, bound (listed under the group), how many of those may
+--- bypass their depot, their compositions (layout id -> trains) and their states (logic.state_bucket -> trains).
+--- Counted from the same trains as the group's members, so the row agrees with its expansion.
 --- @param all SnapshotTrain[]
---- @return {[string]: {parked: int, inbound: int, bound: int, bypass: int}}
+--- @return {[string]: {parked: int, inbound: int, bound: int, bypass: int, layouts: {[uint]: int}, states: {[string]: int}}}
 local function group_stats(all)
 	local out = {}
 	local trains = storage.trains
@@ -1159,7 +1307,7 @@ local function group_stats(all)
 		local key = group_key(tr)
 		local g = out[key]
 		if not g then
-			g = { parked = 0, inbound = 0, bound = 0, bypass = 0 }
+			g = { parked = 0, inbound = 0, bound = 0, bypass = 0, layouts = {}, states = {} }
 			out[key] = g
 		end
 		g.bound = g.bound + 1
@@ -1172,6 +1320,10 @@ local function group_stats(all)
 		-- Cybersyn's train.disable_bypass false = the train may skip its depot.
 		local train = trains[tr.id]
 		if train and not train.disable_bypass then g.bypass = g.bypass + 1 end
+		local layout = tr.layout_id
+		if layout then g.layouts[layout] = (g.layouts[layout] or 0) + 1 end
+		local bucket = logic.state_bucket(tr.state and STATE_NAME[tr.state])
+		g.states[bucket] = (g.states[bucket] or 0) + 1
 	end
 	return out
 end
@@ -1210,23 +1362,103 @@ local function depot_groups(rows, snapshot, filtering)
 	return names, members
 end
 
---- Top compositions of a group, "L<CC>L ×12 · L<C> ×2".
---- @param compositions {[uint]: int}
---- @param comps {[uint]: string}
---- @return string
-local function composition_line(compositions, comps)
-	local list = {}
-	for id, n in pairs(compositions or {}) do list[#list + 1] = { id, n } end
-	table.sort(list, function(a, b)
-		if a[2] ~= b[2] then return a[2] > b[2] end
-		return a[1] < b[1]
-	end)
-	local out = {}
-	for i = 1, math.min(#list, 3) do
-		out[i] = (comps[list[i][1]] or "?") .. " ×" .. list[i][2]
+local EMPTY_STATS = { parked = 0, inbound = 0, bound = 0, bypass = 0, layouts = {}, states = {} }
+-- A tooltip lists this many compositions and findings at most; LocalisedStrings take 20 parameters per table.
+local TIP_COMPOSITIONS, TIP_FINDINGS, STATES_PER_LINE = 12, 8, 4
+
+--- A LocalisedString of any number of parts, nested so no table has more than 20 parameters.
+--- @param parts LocalisedString[]
+--- @return LocalisedString
+local function joined(parts)
+	if #parts <= 19 then
+		local out = { "" }
+		for i, p in ipairs(parts) do out[i + 1] = p end
+		return out
 	end
-	if #list > 3 then out[#out + 1] = "+" .. (#list - 3) end
-	return table.concat(out, " · ")
+	local chunks = {}
+	for i = 1, #parts, 19 do
+		local chunk = { "" }
+		for j = i, math.min(i + 18, #parts) do chunk[#chunk + 1] = parts[j] end
+		chunks[#chunks + 1] = chunk
+	end
+	return joined(chunks)
+end
+
+--- A group's compositions, most trains first: {id, n, runs}.
+--- @param layouts {[uint]: int}
+--- @param runs {[uint]: {class: int, n: int}[]}
+--- @return {id: uint, n: int, runs: int}[]
+local function composition_list(layouts, runs)
+	local list = {}
+	for id, n in pairs(layouts) do list[#list + 1] = { id = id, n = n, runs = runs[id] and #runs[id] or 1 } end
+	table.sort(list, function(a, b)
+		if a.n ~= b.n then return a.n > b.n end
+		return a.id < b.id
+	end)
+	return list
+end
+
+--- The worst severity among findings (DIAG_SEV_ERROR is the lowest number).
+--- @param findings LintFinding[]
+--- @return int
+local function worst_severity(findings)
+	local worst = DIAG_SEV_INFO
+	for _, f in ipairs(findings) do
+		local sev = LINT_SEVERITY[f.check] or DIAG_SEV_WARNING
+		if sev < worst then worst = sev end
+	end
+	return worst
+end
+
+--- The hover box of a group row: name and trains, every composition with its count, the trains by state.
+--- @param title string|LocalisedString
+--- @param stats table group_stats entry
+--- @param comps {id: uint, n: int}[]
+--- @param ctx table
+--- @return LocalisedString
+local function group_tooltip(title, stats, comps, ctx)
+	local parts = { "[font=default-semibold]", { "cybersyn-gui.trains-group-head", title, tostring(stats.bound) }, "[/font]" }
+	for i, c in ipairs(comps) do
+		if i > TIP_COMPOSITIONS then
+			parts[#parts + 1] = "\n"
+			parts[#parts + 1] = { "cybersyn-gui.trains-group-more", tostring(#comps - TIP_COMPOSITIONS) }
+			break
+		end
+		parts[#parts + 1] = "\n" .. (ctx.icons[c.id] or "?") .. "  ×" .. format.number(c.n)
+	end
+	parts[#parts + 1] = "\n\n[font=default-semibold]"
+	parts[#parts + 1] = { "cybersyn-gui.trains-group-by-state" }
+	parts[#parts + 1] = "[/font]"
+	local on_line = 0
+	for _, b in ipairs(logic.STATE_BUCKETS) do
+		local n = stats.states[b]
+		if n and n > 0 then
+			parts[#parts + 1] = (on_line % STATES_PER_LINE == 0) and "\n" or "    "
+			parts[#parts + 1] = "[img=" .. logic.BUCKET_SPRITE[b] .. "] "
+			parts[#parts + 1] = { "cybersyn-gui.trains-group-state-" .. string.gsub(b, "_", "-") }
+			parts[#parts + 1] = " " .. format.number(n)
+			on_line = on_line + 1
+		end
+	end
+	return joined(parts)
+end
+
+--- The marker's tooltip: every finding of the group as the stop panel words it (relative.finding_text).
+--- @param head string locale key
+--- @param findings LintFinding[]
+--- @return LocalisedString
+local function findings_tooltip(head, findings)
+	local parts = { "[font=default-semibold]", { head }, "[/font]" }
+	for i, f in ipairs(findings) do
+		if i > TIP_FINDINGS then
+			parts[#parts + 1] = "\n"
+			parts[#parts + 1] = { "cybersyn-gui.relative-more", tostring(#findings - TIP_FINDINGS) }
+			break
+		end
+		parts[#parts + 1] = "\n"
+		parts[#parts + 1] = relative.finding_text(f)
+	end
+	return joined(parts)
 end
 
 --- @param name string
@@ -1237,19 +1469,36 @@ end
 --- @return table view
 local function group_view(name, snapshot, members, ctx, expanded)
 	local n = members and #members or 0
+	local stats = ctx.group_stats[name] or EMPTY_STATS
+	local findings = ctx.found.groups[name]
+	local states = {}
+	for i, b in ipairs(logic.STATE_BUCKETS) do states[i] = stats.states[b] or 0 end
+	local marker = findings and {
+		count = #findings,
+		sev = worst_severity(findings),
+		tooltip = findings_tooltip(name == REFUELERS and "cybersyn-gui.trains-group-problems-refuelers"
+			or "cybersyn-gui.trains-group-problems-head", findings),
+	} or nil
+	local marker_sig = marker and (marker.count .. "|" .. marker.sev .. "|" .. ctx.found.pass) or "-"
 	if name == REFUELERS then
 		local refuelers = 0
 		for _ in pairs(storage.refuelers or {}) do refuelers = refuelers + 1 end
+		local caption = { "cybersyn-gui.trains-group-refuelers", tostring(refuelers) }
 		return {
-			key = name, refuelers = true, expanded = expanded, n = n,
-			caption = { "cybersyn-gui.trains-group-refuelers", tostring(refuelers) },
-			sig = "r|" .. refuelers .. "|" .. n .. "|" .. tostring(expanded),
+			key = name, refuelers = true, expanded = expanded, n = n, marker = marker,
+			caption = caption,
+			tip = group_tooltip(caption, stats, {}, ctx),
+			struct = "r|" .. refuelers .. "|" .. n .. "|" .. tostring(expanded) .. "|" .. marker_sig,
+			tip_sig = table.concat(states, ","),
 		}
 	end
 	local g = (snapshot.depots_by_name or {})[name] or {}
-	local stats = ctx.group_stats[name] or { parked = 0, inbound = 0, bound = 0, bypass = 0 }
 	local limit = g.limit or 0
-	local comps = composition_line(g.compositions, ctx.comps)
+	local comps = composition_list(stats.layouts, ctx.runs)
+	local shown, more = logic.fit_compositions(comps, logic.GROUP_COMPS, 2)
+	local comp_sig = {}
+	for i, c in ipairs(comps) do comp_sig[i] = c.id .. "=" .. c.n end
+	comp_sig = table.concat(comp_sig, ",")
 	return {
 		key = name,
 		name = name,
@@ -1262,16 +1511,82 @@ local function group_view(name, snapshot, members, ctx, expanded)
 		bound = stats.bound,
 		bypass = stats.bypass,
 		comps = comps,
+		comps_shown = shown,
+		comps_more = more,
+		marker = marker,
 		expanded = expanded,
 		n = n,
-		sig = table.concat({ name, tostring(g.ids and g.ids[1]), g.ids and #g.ids or 0, stats.parked, limit, stats.inbound,
-			stats.bound, stats.bypass, comps, tostring(expanded), n }, "\1"),
+		tip = group_tooltip(name, stats, comps, ctx),
+		struct = table.concat({ name, tostring(g.ids and g.ids[1]), g.ids and #g.ids or 0, stats.parked, limit,
+			stats.inbound, stats.bound, stats.bypass, comp_sig, tostring(expanded), n, marker_sig }, "\1"),
+		tip_sig = table.concat(states, ","),
+	}
+end
+
+--- The Problems marker of a group row: icon and count of the setup findings at its depots (or refuelers), detail in
+--- the tooltip; a plain label, nothing to click. Empty but as wide where there is none, so group rows stay aligned.
+--- @param view table
+--- @param w table
+--- @return flib.GuiElemDef
+local function marker_def(view, w)
+	local m = view.marker
+	local width = w.group_marker or logic.GROUP_MARKER
+	if not m then
+		return { type = "empty-widget", style_mods = { width = width } }
+	end
+	local icon = m.sev == DIAG_SEV_ERROR and "utility/danger_icon" or "utility/warning_icon"
+	return {
+		type = "label",
+		name = "group_marker",
+		style = m.sev == DIAG_SEV_ERROR and "cybersyn_marker_red" or "cybersyn_marker_orange",
+		style_mods = { width = width },
+		caption = width >= logic.GROUP_MARKER and { "", "[img=" .. icon .. "] ", { "cybersyn-gui.trains-group-problems", tostring(m.count) } }
+			or "[img=" .. icon .. "]",
+		tooltip = m.tooltip,
+	}
+end
+
+--- A group row's compositions: up to two as icon runs with their train count, then "+n".
+--- @param view table
+--- @return flib.GuiElemDef
+local function compositions_def(view, ctx)
+	local children = {}
+	for i = 1, view.comps_shown do
+		local c = view.comps[i]
+		if i > 1 then
+			children[#children + 1] = { type = "label", style = "cybersyn_subheader_note", caption = "·", tooltip = view.tip }
+		end
+		for _, r in ipairs(ctx.runs[c.id] or {}) do
+			children[#children + 1] = {
+				type = "sprite-button",
+				style = "cybersyn_composition_icon",
+				sprite = logic.CLASS_SPRITE[r.class],
+				number = r.n > 1 and r.n or nil,
+				tooltip = view.tip,
+			}
+		end
+		children[#children + 1] = { type = "label", style = "cybersyn_cell_label", caption = "×" .. format.number(c.n),
+			tooltip = view.tip, style_mods = { left_padding = 4 } }
+	end
+	if view.comps_more > 0 then
+		children[#children + 1] = { type = "label", style = "cybersyn_cell_label", style_mods = { left_padding = 8 },
+			caption = { "cybersyn-gui.trains-group-more", tostring(view.comps_more) },
+			tooltip = view.tip }
+	end
+	return {
+		type = "flow",
+		name = "group_comps",
+		direction = "horizontal",
+		style_mods = { vertical_align = "center", horizontal_spacing = 2 },
+		children = children,
 	}
 end
 
 --- @param view table
+--- @param w table
+--- @param ctx table
 --- @return flib.GuiElemDef[]
-local function group_children(view, w)
+local function group_children(view, w, ctx)
 	local toggle = util.hoverable({
 		type = "sprite-button",
 		style = "cybersyn_sort_tool_button",
@@ -1283,15 +1598,18 @@ local function group_children(view, w)
 	if view.refuelers then
 		return {
 			toggle,
-			{ type = "label", style = "subheader_caption_label", caption = view.caption },
-			{ type = "label", style = "cybersyn_cell_label", caption = { "cybersyn-gui.trains-group-refuelling", tostring(view.n) } },
+			{ type = "label", name = "group_caption", style = "subheader_caption_label", caption = view.caption, tooltip = view.tip },
+			marker_def(view, w),
+			{ type = "label", name = "group_count", style = "cybersyn_cell_label",
+				caption = { "cybersyn-gui.trains-group-refuelling", tostring(view.n) }, tooltip = view.tip },
 		}
 	end
 	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]\n",
 		{ "cybersyn-gui.trains-group-tooltip", tostring(view.depots) }, "\n", util.LINK_FOOTER }
-	return {
+	local out = {
 		toggle,
 		name_cell.def(view.parts, view.name, { kind = "depot", id = view.id }, math.max(w.group_name, 120), tooltip, SCROLL),
+		marker_def(view, w),
 		{ type = "label", style = "cybersyn_cell_value", style_mods = { width = 110 },
 			caption = { "cybersyn-gui.trains-group-parked", tostring(view.parked), view.limit },
 			tooltip = { "cybersyn-gui.trains-group-parked-tooltip" } },
@@ -1300,30 +1618,71 @@ local function group_children(view, w)
 		{ type = "label", style = "cybersyn_cell_value", style_mods = { width = 100 },
 			caption = { "cybersyn-gui.trains-group-bound", tostring(view.bound) },
 			tooltip = { "cybersyn-gui.trains-group-bound-tooltip", tostring(view.n) } },
+		-- A label, not a chip: it says something about the depot, there is nothing to click.
 		{
-			type = "button",
-			style = "cybersyn_small_chip_grey",
+			type = "label",
+			style = "cybersyn_marker_grey",
+			style_mods = { width = 90, horizontal_align = "center" },
 			caption = { "cybersyn-gui.trains-group-bypassed" },
 			tooltip = { "cybersyn-gui.trains-group-bypassed-tooltip", tostring(view.bypass) },
 			visible = view.bypass > 0 and w.group_bypass,
 		},
-		{ type = "label", style = "cybersyn_subheader_note", caption = view.comps, tooltip = { "cybersyn-gui.trains-group-compositions" },
-			visible = w.group_comps },
 	}
+	if w.group_comps then out[#out + 1] = compositions_def(view, ctx) end
+	return out
+end
+
+--- Writes a group row's hover box into the elements that carry it, without rebuilding the row.
+--- @param elem LuaGuiElement the group row
+--- @param tip LocalisedString
+local function write_group_tip(elem, tip)
+	elem.tooltip = tip
+	local comps = elem.group_comps
+	if comps then
+		for _, child in ipairs(comps.children) do child.tooltip = tip end
+	end
+	-- Child names that are not LuaGuiElement properties: elem.caption would be the row's own caption.
+	for _, name in ipairs({ "group_caption", "group_count" }) do
+		local child = elem[name]
+		if child then child.tooltip = tip end
+	end
 end
 
 -- ---------------------------------------------------------------- chips
 
+-- Chip icons checked once per Lua state (prototype data only).
+local chip_icon_ok = {}
+
+--- @param key string
+--- @return string?
+local function chip_icon(key)
+	local icon = CHIP_ICON[key]
+	if not icon then return nil end
+	local ok = chip_icon_ok[icon]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(icon)
+		chip_icon_ok[icon] = ok
+	end
+	return ok and icon or nil
+end
+
+--- "[img] Name  n": the icon, the whole name (never shortened, D15 item 13) and the count.
 --- @param key string
 --- @param count int
---- @param compact boolean
 --- @param hours number
-local function chip_caption(key, count, compact, hours)
-	local locale = logic.train_chip_locale(key, compact)
-	if key == "not_refuelled" then
-		return { "", { locale, logic.hours_caption(hours) }, "  ", format.number(count) }
-	end
-	return { "", { locale }, "  ", format.number(count) }
+local function chip_caption(key, count, hours)
+	local locale = logic.train_chip_locale(key)
+	local name = key == "not_refuelled" and { locale, logic.hours_caption(hours) } or { locale }
+	local icon = chip_icon(key)
+	return { "", icon and ("[img=" .. icon .. "] ") or "", name, "  ", format.number(count) }
+end
+
+--- The px a chip takes in the subheader with its spacing.
+--- @param key string
+--- @param count int
+--- @return int
+local function chip_width(key, count)
+	return CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(count) - 1) + (CHIP_ICON[key] and ICON_WIDTH or 0)
 end
 
 --- The subheader gets the chips and the group toggle at its right end on first use.
@@ -1368,31 +1727,28 @@ local function chip_space(player_data)
 	return space
 end
 
---- @param player_data PlayerData
+--- @param keys string[]
 --- @param counts {[string]: int}
+--- @param wanted string
 --- @param hours number
-local function render_chips(player_data, counts, hours)
-	local flow = chip_flow(player_data)
-	if not flow then return end
-	local toggle = player_data.refs.manager_trains_group_toggle
-	if toggle and toggle.valid then toggle.toggled = player_data.trains_group_by_depot == true end
-	local wanted = active_chip(player_data) or "all"
-	local compact = logic.chip_mode(chip_space(player_data), full_chips_width(counts)) == "compact"
+--- @return table[] entries for util.sync_children
+local function chip_entries(keys, counts, wanted, hours)
 	local entries = {}
-	for i, key in ipairs(TRAIN_CHIPS) do
+	for i, key in ipairs(keys) do
 		local count = counts[key] or 0
 		local selected = wanted == key
 		local enabled = selected or count > 0
 		local locale = string.gsub(key, "_", "-")
+		local tooltip = key ~= "all" and { "cybersyn-gui.trains-chip-" .. locale .. "-tooltip", logic.hours_caption(hours) } or nil
 		entries[i] = {
 			key = key,
-			sig = count .. (selected and "+" or "-") .. (compact and "c" or "f") .. hours,
+			sig = count .. (selected and "+" or "-") .. hours,
 			build = function()
 				return {
 					type = "button",
 					style = "cybersyn_filter_chip",
-					caption = chip_caption(key, count, compact, hours),
-					tooltip = key ~= "all" and { "cybersyn-gui.trains-chip-" .. locale .. "-tooltip", logic.hours_caption(hours) } or nil,
+					caption = chip_caption(key, count, hours),
+					tooltip = tooltip,
 					toggled = selected,
 					enabled = enabled,
 					tags = { trains_chip = key },
@@ -1400,14 +1756,47 @@ local function render_chips(player_data, counts, hours)
 				}
 			end,
 			update = function(elem)
-				elem.caption = chip_caption(key, count, compact, hours)
+				elem.caption = chip_caption(key, count, hours)
 				elem.toggled = selected
 				elem.enabled = enabled
-				elem.tooltip = key ~= "all" and { "cybersyn-gui.trains-chip-" .. locale .. "-tooltip", logic.hours_caption(hours) } or nil
+				elem.tooltip = tooltip
 			end,
 		}
 	end
-	util.sync_children(flow, entries, util.gui_state(player_data, CHIPS), false)
+	return entries
+end
+
+--- The chips with their names in the subheader; when they do not fit, the zero-count ones go (All and the toggled
+--- one stay), and what still does not fit wraps onto the strip above the column header (logic.chip_lines).
+--- @param player_data PlayerData
+--- @param counts {[string]: int}
+--- @param hours number
+--- @return boolean wrapped the strip shows: the page has one row fewer
+local function render_chips(player_data, counts, hours)
+	local flow = chip_flow(player_data)
+	if not flow then return false end
+	local refs = player_data.refs
+	local toggle = refs.manager_trains_group_toggle
+	if toggle and toggle.valid then toggle.toggled = player_data.trains_group_by_depot == true end
+	local wanted = active_chip(player_data) or "all"
+	local list = {}
+	for i, key in ipairs(TRAIN_CHIPS) do
+		local count = counts[key] or 0
+		list[i] = { key = key, width = chip_width(key, count), count = count, keep = key == "all" or key == wanted }
+	end
+	-- The group toggle sits right of the chips.
+	local _, lines = logic.chip_lines(list, chip_space(player_data) - 32)
+	util.sync_children(flow, chip_entries(lines[1] or {}, counts, wanted, hours), util.gui_state(player_data, CHIPS), false)
+	local rest = {}
+	for i = 2, #lines do
+		for _, key in ipairs(lines[i]) do rest[#rest + 1] = key end
+	end
+	local strip, wrapped_flow = refs[CHIP_STRIP], refs[CHIPS_WRAPPED]
+	if not (strip and strip.valid and wrapped_flow and wrapped_flow.valid) then return false end
+	local wrapped = #rest > 0
+	if strip.visible ~= wrapped then strip.visible = wrapped end
+	util.sync_children(wrapped_flow, chip_entries(rest, counts, wanted, hours), util.gui_state(player_data, CHIPS_WRAPPED), false)
+	return wrapped
 end
 
 -- ---------------------------------------------------------------- render
@@ -1618,7 +2007,7 @@ function trains_tab.build(map_data, player_data)
 	if not (list and list.valid) then return end
 
 	local rows, snapshot, ctx = trains_tab.query(map_data, player_data)
-	stations_tab.fix_heights(refs, { TAB .. "_banner", TAB .. "_subheader", HEADER, "manager_trains_subfooter" })
+	stations_tab.fix_heights(refs, { TAB .. "_banner", TAB .. "_subheader", HEADER, "manager_trains_subfooter", CHIP_STRIP })
 	local selected = player_data.selected_train
 	local front = selected and front_stock_of(selected)
 	if selected and not front then
@@ -1627,7 +2016,7 @@ function trains_tab.build(map_data, player_data)
 	end
 	sync_pane(player_data, selected, front)
 	selected = player_data.selected_train
-	render_chips(player_data, ctx.counts, ctx.hours)
+	local wrapped = render_chips(player_data, ctx.counts, ctx.hours)
 	local alerts = ctx.alerts
 	local filter_item = player_data.search_item
 	local state = util.gui_state(player_data, SCROLL)
@@ -1650,7 +2039,7 @@ function trains_tab.build(map_data, player_data)
 	else
 		seq = rows
 	end
-	local first, last = util.paginate(player_data, TAB, #seq)
+	local first, last = util.paginate(player_data, TAB, #seq, wrapped and 1 or 0)
 
 	-- Fuel is read for the trains on the page only, again every FUEL_EVERY renders.
 	local fuel = state.fuel or {}
@@ -1760,21 +2149,31 @@ function trains_tab.build(map_data, player_data)
 				end
 				if view.wsig ~= w.sig then
 					view.wsig = w.sig
-					view.full_sig = view.sig .. "\1" .. w.sig
+					view.struct_w = view.struct .. "\1" .. w.sig
 					view.key_g = "g\1" .. item.group
 				end
+				-- The row is rebuilt when what it shows changed; the hover box alone (trains changing state) is
+				-- written into the row as it is.
+				local key = view.key_g
 				entries[#entries + 1] = {
-					key = view.key_g,
-					sig = view.full_sig,
+					key = key,
+					sig = view.struct_w .. "\2" .. view.tip_sig,
 					build = function()
+						cells[key] = view.struct_w
 						local def = { type = "frame", style = "cybersyn_group_row", style_mods = { height = ROW_HEIGHT },
-							tags = { depot_group = item.group } }
-						for k, child in ipairs(group_children(view, w)) do def[k] = child end
+							tags = { depot_group = item.group }, tooltip = view.tip }
+						for k, child in ipairs(group_children(view, w, ctx)) do def[k] = child end
 						return util.hoverable(def, SCROLL)
 					end,
 					update = function(elem)
+						if cells[key] == view.struct_w then
+							write_group_tip(elem, view.tip)
+							return
+						end
+						cells[key] = view.struct_w
 						elem.clear()
-						for _, child in ipairs(group_children(view, w)) do gui.add(elem, child) end
+						for _, child in ipairs(group_children(view, w, ctx)) do gui.add(elem, child) end
+						elem.tooltip = view.tip
 					end,
 				}
 			end
@@ -1825,7 +2224,7 @@ dev.register_dump(TAB, function(player_data)
 	for _, tr in ipairs(rows) do
 		key_of[tr.id] = ctx.key_fn(tr)
 	end
-	local ids, keys, statuses, targets, groups, chips_shown, states = {}, {}, {}, {}, {}, {}, {}
+	local ids, keys, statuses, targets, groups, chips_shown, states, layouts = {}, {}, {}, {}, {}, {}, {}, {}
 	for _, row in ipairs(list.children) do
 		local id = row.tags.train_id
 		if id then
@@ -1836,11 +2235,28 @@ dev.register_dump(TAB, function(player_data)
 			statuses[n] = status_flow[1].caption
 			targets[n] = status_flow[2].visible and name_cell.button(status_flow[2]).caption or false
 			local chip = row.children[6].children[2]
-			states[n] = chip.visible and chip.caption or false
+			states[n] = chip.visible and { sprite = chip.sprite, style = chip.style.name, tooltip = chip.tooltip,
+				type = chip.type } or false
+			local runs = {}
+			for _, icon in ipairs(row.children[4].children) do
+				runs[#runs + 1] = icon.type == "sprite-button" and { icon.sprite, icon.number or 1 } or icon.caption
+			end
+			layouts[n] = runs
 		elseif row.tags.depot_group then
-			local g = { name = row.tags.depot_group, captions = {} }
+			local g = { name = row.tags.depot_group, captions = {}, tooltip = row.tooltip }
 			for _, child in ipairs(row.children) do
-				if child.type == "label" then g.captions[#g.captions + 1] = child.caption end
+				if child.name == "group_marker" then
+					g.marker = { caption = child.caption, tooltip = child.tooltip, type = child.type, style = child.style.name }
+				elseif child.name == "group_comps" then
+					g.comps = {}
+					for _, c in ipairs(child.children) do
+						g.comps[#g.comps + 1] = c.type == "sprite-button" and { c.sprite, c.number or 1 } or c.caption
+					end
+				elseif child.type == "label" and child.style.name == "cybersyn_marker_grey" then
+					g.bypassed = child.visible
+				elseif child.type == "label" then
+					g.captions[#g.captions + 1] = child.caption
+				end
 			end
 			groups[#groups + 1] = g
 		end
@@ -1869,6 +2285,7 @@ dev.register_dump(TAB, function(player_data)
 		statuses = statuses,
 		targets = targets,
 		states = states,
+		layouts = layouts,
 		groups = groups,
 		hidden = hidden,
 		status_tooltip = status_tip,
@@ -2024,6 +2441,16 @@ function trains_tab.on_row_click(e)
 		end
 		elem = parent
 	end
+end
+
+--- The state icon: a click selects the row like any other cell, a shift-click shows the train on the map.
+--- @param e EventData.on_gui_click
+function trains_tab.handle.on_state_click(player, player_data, refs, e)
+	if e.shift and e.button == defines.mouse_button_type.left then
+		util.handle_link_click(player, player_data, e, "train", e.element.tags.state_train)
+		return
+	end
+	trains_tab.on_row_click(e)
 end
 
 --- @param player_data PlayerData
@@ -2254,6 +2681,41 @@ if dev.enabled() and not remote.interfaces["cybersyn-manager-dev-trains"] then
 		composition = function(layout_id)
 			local layout = storage.layouts[layout_id]
 			return layout and logic.composition(layout) or nil
+		end,
+		--- Carriage-class runs of a layout as the Composition column draws them: {{sprite, n}, ...}.
+		runs = function(layout_id)
+			local layout = storage.layouts[layout_id]
+			if not layout then return nil end
+			local out = {}
+			for i, r in ipairs(logic.composition_runs(layout)) do out[i] = { logic.CLASS_SPRITE[r.class], r.n } end
+			return out
+		end,
+		--- Every sprite the tab draws, by what it stands for, with helpers.is_valid_sprite_path of each.
+		sprites = function()
+			local out = {}
+			local function add(kind, name, sprite)
+				out[#out + 1] = { kind = kind, name = name, sprite = sprite, valid = helpers.is_valid_sprite_path(sprite) }
+			end
+			for name in pairs(defines.train_state) do add("state", name, logic.state_chip(name, 0, 0).sprite) end
+			add("state", "residue", logic.state_chip("wait_station", 0, 0, "residue").sprite)
+			add("state", "refuel", logic.state_chip("wait_station", 0, 0, "refuel").sprite)
+			for _, b in ipairs(logic.STATE_BUCKETS) do add("bucket", b, logic.BUCKET_SPRITE[b]) end
+			for class, sprite in pairs(logic.CLASS_SPRITE) do add("class", tostring(class), sprite) end
+			for key, sprite in pairs(CHIP_ICON) do add("chip", key, sprite) end
+			return out
+		end,
+		--- The chips the subheader shows, and those wrapped onto the strip.
+		chip_lines = function(pi)
+			local refs = storage.manager.players[pi].refs
+			local function keys(flow)
+				local out = {}
+				if flow and flow.valid then
+					for i, c in ipairs(flow.children) do out[i] = c.tags.trains_chip end
+				end
+				return out
+			end
+			local strip = refs[CHIP_STRIP]
+			return { line = keys(refs[CHIPS]), wrapped = keys(refs[CHIPS_WRAPPED]), strip = strip and strip.visible or false }
 		end,
 	})
 end

@@ -53,7 +53,9 @@ test("train_widths: closed, the table takes the content width; narrow windows dr
 		assert_true(l.train_columns_total(w) <= cw, "columns fit at " .. cw)
 		-- Phase 7: the closed table drops columns (pane order) rather than squeeze the status below its minimum.
 		assert_true(w.train_status >= l.TRAIN_STATUS_MIN, "status keeps its minimum at " .. cw)
-		assert_true(w.group_comps and w.group_bypass and w.group_name >= 120, "group row whole at " .. cw)
+		assert_true(w.group_name >= 120 and w.group_bypass and w.group_marker == l.GROUP_MARKER, "group row at " .. cw)
+		-- Round 4: the Problems marker takes room from the compositions on the narrowest windows.
+		assert_eq(w.group_comps, cw >= 1000, "group compositions at " .. cw)
 	end
 	local w = l.train_widths(912, {}, false)
 	assert_true(w.dropped.last_refuel == true, "the first column to go is Last refuel")
@@ -61,28 +63,33 @@ test("train_widths: closed, the table takes the content width; narrow windows dr
 	assert_eq(l.train_widths(1392, {}, false).shipment, 192)
 end)
 
-test("train_widths: with the pane, Shipment goes and the columns fit down to the narrowest window", function()
+test("train_widths: with the pane, Shipment goes first but only when the status needs the room", function()
 	local l = logic()
-	-- Content widths: 912 = the 960 px window floor (table 580), 1104 = 1080p/1.25 (772), 1231 = 1440p/1.5 (899),
-	-- 1392 = 4K/1.5 and 1080p/1.0 (1060).
+	-- Content widths: 912 = the 960 px window floor (table 576), 1104 = 1080p/1.25 (768), 1231 = 1440p/1.5 (895),
+	-- 1392 = 4K/1.5 and 1080p/1.0 (1056).
 	for _, cw in ipairs({ 912, 1000, 1104, 1231, 1300, 1392, 2000 }) do
 		for _, hidden in ipairs({ {}, { network = true, layout = true, depot = true }, { fuel = true, last_refuel = true } }) do
 			local w = l.train_widths(cw, hidden, true)
 			local at = cw .. " " .. tostring(next(hidden))
 			assert_eq(w.cw, cw - 336, at)
-			assert_eq(w.shipment, nil, "Shipment dropped at " .. at)
-			assert_true(w.dropped.shipment, at)
 			assert_true(l.train_columns_total(w) <= w.cw, "columns fit at " .. at .. ": " .. l.train_columns_total(w))
 			assert_true(w.train_status >= l.TRAIN_STATUS_MIN, "status " .. w.train_status .. " at " .. at)
 			assert_true(w.train_id ~= nil and w.state ~= nil, "id and state stay at " .. at)
 			assert_true(w.group_name >= 120, "group name " .. w.group_name .. " at " .. at)
 			for k in pairs(hidden) do assert_eq(w[k], nil, k .. " stays hidden at " .. at) end
+			-- Shipment is the first to go: nothing else is dropped while it shows.
+			if w.shipment then assert_eq(next(w.dropped), nil, "only after Shipment at " .. at) end
 		end
 	end
-	-- 4K/1.5: only Shipment goes; Network gives up a little width.
-	local w = l.train_widths(1392, {}, true)
+	-- D15 item 15: a wide window keeps Shipment beside the pane instead of a status 700 px wide.
+	local w = l.train_widths(2000, {}, true)
+	assert_eq(w.shipment, 192)
+	-- 4K/1.5: Shipment stays with four slots, the shrinkable columns give up their room first.
+	w = l.train_widths(1392, {}, true)
+	assert_eq(w.shipment, 128)
 	assert_eq(w.network ~= nil and w.layout ~= nil and w.depot ~= nil and w.last_refuel ~= nil and w.fuel ~= nil, true)
-	assert_eq(w.train_status, 260)
+	-- 1300: Shipment goes, nothing else.
+	assert_eq(l.train_widths(1300, {}, true).dropped, { shipment = true })
 	-- The 960 px floor: refuel, fuel, layout, network and depot go too; id, status, state and time in state stay.
 	w = l.train_widths(912, {}, true)
 	local dropped = {}
@@ -90,15 +97,16 @@ test("train_widths: with the pane, Shipment goes and the columns fit down to the
 	table.sort(dropped)
 	assert_eq(dropped, { "depot", "fuel", "last_refuel", "layout", "network", "shipment" })
 	assert_eq(w.time_in_state, 72)
-	-- 1080p/1.25 (table 772): Shipment, refuel, fuel and layout.
+	-- 1080p/1.25 (table 768): Shipment, refuel and fuel.
 	dropped = {}
 	for k in pairs(l.train_widths(1104, {}, true).dropped) do dropped[#dropped + 1] = k end
 	table.sort(dropped)
-	assert_eq(dropped, { "fuel", "last_refuel", "layout", "shipment" })
-	-- The group row drops its compositions note, then the Bypassed chip, before its name gets under 120.
-	assert_true(not w.group_comps and not w.group_bypass, "group at 912")
+	assert_eq(dropped, { "fuel", "last_refuel", "shipment" })
+	-- The group row drops its compositions, then the Bypassed chip, then the marker's caption, before its name gets
+	-- under 120.
+	assert_true(not w.group_comps and not w.group_bypass and w.group_marker == l.GROUP_MARKER_ICON, "group at 912")
 	w = l.train_widths(1104, {}, true)
-	assert_true(not w.group_comps and w.group_bypass, "group at 1104")
+	assert_true(not w.group_comps and w.group_bypass and w.group_marker == l.GROUP_MARKER, "group at 1104")
 end)
 
 test("pane_split: the body keeps its minimum, the camera shrinks and then goes", function()
@@ -128,40 +136,127 @@ test("fit_slots: one line, the last slot turns into the overflow count", functio
 	assert_eq({ l.fit_slots(3, 0) }, { 0, 3 })
 end)
 
-test("state_chip: quiet states show none, trouble states are coloured, residue wins", function()
+local ALL_STATES = { "on_the_path", "path_lost", "no_schedule", "no_path", "arrive_signal", "wait_signal",
+	"arrive_station", "wait_station", "manual_control_stop", "manual_control", "destination_full" }
+
+test("state_chip: one wording, icon and colour; quiet states uncoloured, a long signal orange, residue wins", function()
 	local l = logic()
-	assert_eq({ l.state_chip("on_the_path", 9999, false) }, { nil, nil })
-	assert_eq({ l.state_chip("wait_station", 0, false) }, { nil, nil })
-	assert_eq({ l.state_chip("arrive_station", 0, false) }, { nil, nil })
-	assert_eq({ l.state_chip("no_path", 0, false) }, { "no_path", "red" })
-	assert_eq({ l.state_chip("destination_full", 0, false) }, { "destination_full", "orange" })
-	assert_eq({ l.state_chip("manual_control", 0, false) }, { "manual_control", "orange" })
-	assert_eq({ l.state_chip("wait_signal", 599, false) }, { "wait_signal", "grey" })
-	assert_eq({ l.state_chip("wait_signal", 600, false) }, { "wait_signal", "orange" })
-	assert_eq({ l.state_chip("wait_station", 0, true) }, { "residue", "orange" })
-	assert_eq({ l.state_chip(nil, 0, false) }, { nil, nil })
+	local function style(state, since, now, status) return l.state_chip(state, since, now, status).style end
+	assert_nil(style("on_the_path", 0, 9999))
+	assert_nil(style("wait_station", 0, 0))
+	assert_nil(style("arrive_station", 0, 0))
+	assert_eq(style("no_path", 0, 0), "red")
+	assert_eq(style("path_lost", 0, 0), "red")
+	assert_eq(style("no_schedule", 0, 0), "red")
+	assert_eq(style("destination_full", 0, 0), "orange")
+	assert_eq(style("manual_control", 0, 0), "orange")
+	assert_eq(style("manual_control_stop", 0, 0), "orange")
+	-- PLAN4 D11: a signal approach counts like a signal wait (was: arrive_signal always grey).
+	for _, s in ipairs({ "wait_signal", "arrive_signal" }) do
+		assert_eq(style(s, 1, 600), "grey", s .. " 599")
+		assert_eq(style(s, 0, 600), "orange", s .. " 600")
+		assert_eq(style(s, nil, nil), "grey", s .. " no age")
+	end
+	local residue = l.state_chip("wait_station", 0, 0, "residue")
+	assert_eq({ residue.key, residue.style, residue.sprite }, { "residue", "orange", "fluid/cybersyn-nonempty-train" })
+	assert_eq(l.state_chip("no_path", 0, 0, "residue").key, "residue", "residue wins over any state")
+	local refuel = l.state_chip("wait_station", 0, 0, "refuel")
+	assert_eq({ refuel.key, refuel.style, refuel.sprite }, { "refuel", "grey", "virtual-signal/signal-fuel" })
+	assert_eq(l.state_chip("no_path", 0, 0, "refuel").key, "no_path", "refuel only replaces a quiet state")
+	local none = l.state_chip(nil, nil, nil)
+	assert_eq({ none.key, none.style }, { "unknown", nil })
+	-- Caption and tooltip: the [cybersyn-diag] train-state-* set, the age after a middle dot.
+	local c = l.state_chip("wait_signal", 1000, 1000 + 384 * 60)
+	assert_eq(c.caption, { "cybersyn-diag.train-state-wait-signal" })
+	assert_eq(c.tooltip, { "", { "cybersyn-diag.train-state-wait-signal" }, " · ", "6m 24s" })
+	assert_eq(l.state_chip("manual_control_stop").tooltip, { "cybersyn-diag.train-state-manual-control-stop" })
 end)
 
-test("in_trouble: every state with a red or orange chip, signal wait from 10 s", function()
+test("state sprites: every defines.train_state, residue and refuel map to a sprite; the map is the D11 one", function()
+	local l = logic()
+	local n = 0
+	for name in pairs(defines.train_state) do
+		n = n + 1
+		local c = l.state_chip(name, 0, 0)
+		assert_eq(c.key, name)
+		assert_true(l.STATE_SPRITE[name] ~= nil and c.sprite == l.STATE_SPRITE[name], name .. " has a sprite")
+	end
+	assert_eq(n, #ALL_STATES, "the harness knows every engine state")
+	for _, name in ipairs(ALL_STATES) do assert_true(l.STATE_SPRITE[name] ~= nil, name) end
+	assert_eq(l.STATE_SPRITE.no_path, "utility/no_path_icon")
+	assert_eq(l.STATE_SPRITE.path_lost, "fluid/cybersyn-lost-train")
+	assert_eq(l.STATE_SPRITE.destination_full, "utility/destination_full_icon")
+	assert_eq(l.STATE_SPRITE.arrive_signal, "item/rail-signal")
+	assert_eq(l.STATE_SPRITE.wait_signal, "item/rail-signal")
+	assert_eq(l.STATE_SPRITE.manual_control, "utility/hand")
+	assert_eq(l.STATE_SPRITE.no_schedule, "utility/rail_path_not_possible")
+	assert_eq(l.STATE_SPRITE.residue, "fluid/cybersyn-nonempty-train")
+	assert_eq(l.STATE_SPRITE.refuel, "virtual-signal/signal-fuel")
+	for _, b in ipairs(l.STATE_BUCKETS) do assert_true(l.BUCKET_SPRITE[b] ~= nil, b .. " bucket sprite") end
+end)
+
+test("state locale: one train-state-* set in every manager.cfg; the trains-state-* and relative-state-* sets are gone", function()
+	local l = logic()
+	local keys = {}
+	for _, name in ipairs(ALL_STATES) do keys[#keys + 1] = "train-state-" .. name:gsub("_", "-") end
+	for _, k in ipairs({ "residue", "refuel", "unknown" }) do keys[#keys + 1] = "train-state-" .. k end
+	for _, b in ipairs(l.STATE_BUCKETS) do keys[#keys + 1] = "trains-group-state-" .. b:gsub("_", "-") end
+	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
+		local text = f:read("*a")
+		f:close()
+		for _, k in ipairs(keys) do
+			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
+		end
+		assert_nil(text:find("\ntrains%-state%-"), loc .. " still has trains-state-*")
+		assert_nil(text:find("\nrelative%-state%-"), loc .. " still has relative-state-*")
+	end
+end)
+
+test("state_bucket: every state in exactly one bucket of the group tooltip", function()
+	local l = logic()
+	local known = {}
+	for _, b in ipairs(l.STATE_BUCKETS) do known[b] = true end
+	for _, name in ipairs(ALL_STATES) do assert_true(known[l.state_bucket(name)], name) end
+	assert_eq(l.state_bucket("wait_signal"), "signal")
+	assert_eq(l.state_bucket("arrive_station"), "station")
+	assert_eq(l.state_bucket("manual_control_stop"), "manual")
+	assert_eq(l.state_bucket(nil), "unknown")
+end)
+
+test("state_sort_key: red, orange, signals, quiet, none; fixed while a wait ages", function()
+	local l = logic()
+	local order = { "no_path", "manual_control", "wait_signal", "on_the_path" }
+	for i = 1, #order - 1 do
+		assert_true(l.state_sort_key(order[i]) < l.state_sort_key(order[i + 1]), order[i])
+	end
+	assert_true(l.state_sort_key("wait_station") < l.state_sort_key(nil))
+end)
+
+test("short_duration: the same two-unit captions as util.short_duration", function()
+	local l = logic()
+	assert_eq(l.short_duration(0), "0s")
+	assert_eq(l.short_duration(42 * 60), "42s")
+	assert_eq(l.short_duration(185 * 60), "3m 05s")
+	assert_eq(l.short_duration(3900 * 60), "1h 05m")
+	assert_eq(l.short_duration(183600 * 60), "2d 03h")
+end)
+
+test("in_trouble: every state with a red or orange icon, a signal from 10 s", function()
 	local l = logic()
 	assert_true(l.in_trouble("path_lost", 0))
 	assert_true(l.in_trouble("no_schedule", 0))
 	assert_false(l.in_trouble(nil, 0))
-	for _, state in ipairs({ "no_path", "path_lost", "no_schedule", "destination_full", "manual_control",
-		"manual_control_stop", "arrive_signal", "wait_signal", "on_the_path", "wait_station" }) do
+	for _, state in ipairs(ALL_STATES) do
 		for _, waited in ipairs({ 0, 599, 600 }) do
-			local _, style = l.state_chip(state, waited, false)
+			local style = l.state_chip(state, 0, waited).style
 			assert_eq(l.in_trouble(state, waited), style == "red" or style == "orange", state .. " " .. waited)
 		end
 	end
-	assert_true(l.in_trouble("no_path", 0))
-	assert_true(l.in_trouble("destination_full", 0))
-	assert_true(l.in_trouble("manual_control", 0))
-	assert_true(l.in_trouble("manual_control_stop", 0))
 	assert_false(l.in_trouble("wait_signal", 599))
 	assert_true(l.in_trouble("wait_signal", 600))
+	assert_true(l.in_trouble("arrive_signal", 600), "PLAN4 D11: a long approach is trouble too")
 	assert_false(l.in_trouble("on_the_path", 1e6))
-	assert_false(l.in_trouble("arrive_signal", 1e6))
 end)
 
 test("composition: locomotives as L, wagon runs in angle brackets", function()
@@ -171,6 +266,29 @@ test("composition: locomotives as L, wagon runs in angle brackets", function()
 	assert_eq(l.composition({ 0, 2, 1, 0, 1 }), "L<FC>L<C>")
 	assert_eq(l.composition({ 0 }), "L")
 	assert_eq(l.composition({}), "")
+end)
+
+test("composition_runs: one run per class, artillery and unknown classes as locomotives", function()
+	local l = logic()
+	assert_eq(l.composition_runs({ 0, 1, 1 }), { { class = 0, n = 1 }, { class = 1, n = 2 } })
+	assert_eq(l.composition_runs({ 0, 1, 1, 0 }), { { class = 0, n = 1 }, { class = 1, n = 2 }, { class = 0, n = 1 } })
+	assert_eq(l.composition_runs({ 0, 0, 2, 2, 2, 2 }), { { class = 0, n = 2 }, { class = 2, n = 4 } })
+	assert_eq(l.composition_runs({ 0, 7 }), { { class = 0, n = 2 } })
+	assert_eq(l.composition_runs({}), {})
+	assert_eq(l.composition_icons({ 0, 1, 2 }), "[item=locomotive][item=cargo-wagon][item=fluid-wagon]")
+	for class = 0, 2 do assert_true(l.CLASS_SPRITE[class] ~= nil) end
+end)
+
+test("fit_compositions: up to max as icon runs, the rest as +n, at least one", function()
+	local l = logic()
+	-- pY 123's "Depot": three two-run compositions (×272, ×226, ×37) in the 220 px slot: two shown, +1.
+	local py = { { runs = 2, n = 272 }, { runs = 2, n = 226 }, { runs = 2, n = 37 } }
+	assert_eq({ l.fit_compositions(py, l.GROUP_COMPS, 2) }, { 2, 1 })
+	assert_eq({ l.fit_compositions({ { runs = 2, n = 5 } }, l.GROUP_COMPS, 2) }, { 1, 0 })
+	assert_eq({ l.fit_compositions({ { runs = 9, n = 5 }, { runs = 2, n = 1 } }, l.GROUP_COMPS, 2) }, { 1, 1 },
+		"one long composition takes the slot")
+	assert_eq({ l.fit_compositions({}, l.GROUP_COMPS, 2) }, { 0, 0 })
+	assert_eq({ l.fit_compositions(py, 80, 2) }, { 1, 2 }, "one at least")
 end)
 
 test("age, not_refuelled and age_caption", function()
@@ -236,6 +354,26 @@ test("chip_mode: names when they fit, else compact", function()
 	assert_eq(l.chip_mode(800, 900), "compact")
 end)
 
+test("chip_lines: all with names when they fit, else zero counts hidden (All and the toggled one kept), then wrap", function()
+	local l = logic()
+	local chips = {
+		{ key = "all", width = 60, count = 6, keep = true },
+		{ key = "a", width = 100, count = 0 },
+		{ key = "b", width = 100, count = 3 },
+		{ key = "c", width = 100, count = 0, keep = true },
+		{ key = "d", width = 100, count = 2 },
+	}
+	local hidden, lines = l.chip_lines(chips, 500)
+	assert_eq(hidden, {})
+	assert_eq(lines, { { "all", "a", "b", "c", "d" } })
+	hidden, lines = l.chip_lines(chips, 400)
+	assert_eq(hidden, { a = true })
+	assert_eq(lines, { { "all", "b", "c", "d" } })
+	hidden, lines = l.chip_lines(chips, 300)
+	assert_eq(hidden, { a = true })
+	assert_eq(lines, { { "all", "b", "c" }, { "d" } }, "what still does not fit wraps; nothing is shortened")
+end)
+
 test("deficit: requested minus in transit minus unpromised stock, never below 0", function()
 	local l = logic()
 	assert_eq(l.deficit(-1000, 300, 200), 500)
@@ -246,17 +384,15 @@ test("deficit: requested minus in transit minus unpromised stock, never below 0"
 	assert_eq(l.deficit(-1000, 400, -400), 600, "stock all promised (negative) counts as none")
 end)
 
-test("train chips: every caption key, full and compact, in every manager.cfg", function()
+test("train chips: every caption and tooltip key in every manager.cfg, no short captions left", function()
 	local l = logic()
 	local keys = {}
 	for _, key in ipairs(l.TRAIN_CHIPS) do
-		for _, compact in ipairs({ false, true }) do
-			keys[#keys + 1] = l.train_chip_locale(key, compact):gsub("^cybersyn%-gui%.", "")
-		end
+		keys[#keys + 1] = l.train_chip_locale(key):gsub("^cybersyn%-gui%.", "")
 		if key ~= "all" then keys[#keys + 1] = "trains-chip-" .. key:gsub("_", "-") .. "-tooltip" end
 	end
-	assert_eq(l.train_chip_locale("all", true), "cybersyn-gui.trains-chip-all")
-	assert_eq(l.train_chip_locale("to_p", true), "cybersyn-gui.trains-chip-to-p-short")
+	assert_eq(l.train_chip_locale("to_p"), "cybersyn-gui.trains-chip-to-p")
+	assert_eq(l.train_chip_locale("to_p", true), "cybersyn-gui.trains-chip-to-p", "D15 item 13: never abbreviated")
 	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
 		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
 		local text = f:read("*a")
@@ -264,6 +400,7 @@ test("train chips: every caption key, full and compact, in every manager.cfg", f
 		for _, k in ipairs(keys) do
 			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
 		end
+		assert_nil(text:find("\ntrains%-chip%-[%w%-]+%-short="), loc .. " still has a short chip caption")
 	end
 end)
 
@@ -308,8 +445,9 @@ end)
 
 test("chip_change_tick: the first tick at which time alone changes a train's In trouble or Not refuelled chip", function()
 	local l = logic()
-	-- A signal wait turns into trouble WAIT_SIGNAL_MIN after it began.
+	-- A signal wait or approach turns into trouble WAIT_SIGNAL_MIN after it began.
 	assert_eq(l.chip_change_tick(1000, "wait_signal", 900, nil, 1, false), 900 + l.WAIT_SIGNAL_MIN)
+	assert_eq(l.chip_change_tick(1000, "arrive_signal", 900, nil, 1, false), 900 + l.WAIT_SIGNAL_MIN)
 	assert_nil(l.chip_change_tick(2000, "wait_signal", 900, nil, 1, false), "already in trouble")
 	assert_nil(l.chip_change_tick(1000, "on_the_path", 900, nil, 1, false))
 	-- Not refuelled: the tick after `hours` have passed since the last refuel, only where a refueler exists.

@@ -10,6 +10,7 @@
 
 local format = require("__flib__.format")
 local diag = require("scripts.diag")
+local logic = require("scripts.gui.tab-logic")
 
 local model = {}
 
@@ -840,8 +841,8 @@ function model.age_tooltip(g, long)
 	return { "cybersyn-gui.log-age-tooltip", tostring(g.tick), long(g.tick) }
 end
 
-local STATE_KEYS = {}
-for name, v in pairs(defines.train_state) do STATE_KEYS[v] = string.gsub(name, "_", "-") end
+local STATE_NAMES = {}
+for name, v in pairs(defines.train_state) do STATE_NAMES[v] = name end
 
 --- @class LogTextContext name lookups the message needs; all pure reads
 --- @field station fun(id: uint): string? a station's (or depot's) name
@@ -929,8 +930,8 @@ function model.message(g, ctx)
 		if code == defines.train_state.wait_signal then
 			return { msg .. "-wait-signal", ctx.duration(a) }
 		end
-		local state = STATE_KEYS[code]
-		return { msg, state and { "cybersyn-diag.train-state-" .. state } or tostring(code) }
+		local state = STATE_NAMES[code]
+		return { msg, state and logic.state_chip(state).caption or tostring(code) }
 	end
 	return { msg }
 end

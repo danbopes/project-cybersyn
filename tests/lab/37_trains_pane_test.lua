@@ -69,8 +69,10 @@ lab.suite("37_trains_pane", {
 		lab.check("select: the columns fill the narrower table", p.columns_total <= p.table_width and
 			p.columns_total >= p.table_width - 8, { p.columns_total, p.table_width })
 		local w0, w1 = widths(p0), widths(p)
-		lab.check("select: the Shipment column goes (the pane shows the cargo), nothing else", w0.shipment and
-			w1.shipment == nil and line(p.dropped) == line({ "shipment" }), { w0.shipment, p.dropped })
+		-- PLAN4 D15 item 15 (was: Shipment always went with the pane): a table wide enough keeps Shipment beside the
+		-- pane; it is the first column to go only when the status would fall under its minimum.
+		lab.check("select: Shipment stays beside the pane while the status has room, nothing dropped",
+			w0.shipment and w1.shipment == w0.shipment and line(p.dropped) == line({}), { w0.shipment, w1.shipment, p.dropped })
 		local others = true
 		for col, w in pairs(w1) do
 			if col ~= "train_status" and w ~= w0[col] then others = false end
@@ -83,9 +85,9 @@ lab.suite("37_trains_pane", {
 			local want = r.id == id and "cybersyn_train_row_selected" or
 				(i % 2 == 0 and "cybersyn_train_row_dark" or "cybersyn_train_row_light")
 			if r.style ~= want then styles_ok = false end
-			if r.shipment_visible ~= false or r.cells ~= p0.rows[i].cells:gsub(",shipment$", "") then rows_ok = false end
+			if r.shipment_visible ~= true or r.cells ~= p0.rows[i].cells then rows_ok = false end
 		end
-		lab.check("select: rows stay whole, same order, their Shipment cells hidden in place", rows_ok, p.rows)
+		lab.check("select: rows stay whole, same order, their Shipment cells kept", rows_ok, p.rows)
 		lab.check("select: only the selected row has the selected style", styles_ok, p.rows)
 		local rows = remote.call(D, "rows", pi, "trains")
 		lab.check("select: rows measured with the pane (no -1) == rows listed", rows.rendered == #d.ids, rows)
@@ -260,6 +262,9 @@ lab.suite("37_trains_pane", {
 				local name = sc[1] .. (strips and " with the filter row" or "")
 				lab.check(name .. ": the columns fit the table and the status keeps 260 px", p.columns_total <= p.table_width and
 					(w.train_status or 0) >= 260, { p.columns_total, p.table_width, p.columns, p.dropped })
+				local dropped = lab.set_of(p.dropped or {})
+				lab.check(name .. ": Shipment is the first column the pane drops", next(dropped) == nil or dropped.shipment == true,
+					{ dropped = p.dropped, shipment = w.shipment })
 				local cam = p.camera and p.camera.visible and (p.camera.height + p.camera_gap) or 0
 				lab.check(name .. ": camera, panel chrome and body fit the pane", p.visible and p.body_max and p.body_max >= 0 and
 					p.fixed + cam + p.body_max <= p.height and (cam == 0 or p.body_max >= 120),
