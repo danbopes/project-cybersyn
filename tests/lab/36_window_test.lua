@@ -723,7 +723,7 @@ lab.suite("36_window", {
 			{ tile = d.tiles.fleet.now, hud = hud.values })
 		local rt = d.rendered_tiles
 		lab.check("Fleet headroom labelled 'min · <period>' with a Now line", key_of(rt.fleet.note) == "cybersyn-gui.overview-fleet-min"
-			and key_of(rt.fleet.lines[1][1]) == "cybersyn-gui.overview-fleet-now", rt.fleet)
+			and key_of(rt.fleet.lines[1][1]) == "cybersyn-gui.hud-headroom-now", rt.fleet)
 		lab.check("Throughput says it covers all networks, the wait lines say dispatch wait",
 			string.find(serpent.line(rt.throughput.caption, { comment = false }), "overview-all-networks", 1, true) ~= nil
 			and key_of(rt.throughput.lines[2][1]) == "cybersyn-gui.overview-throughput-wait-avg", rt.throughput)

@@ -855,7 +855,7 @@ local function render_fleet_tile(refs, cache, model)
 	local headline = f.headline and count_text(f.headline) or NO_VALUE
 	if f.headline == 0 then headline = "[color=255,90,90]0[/color]" end
 	set_caption(cache, refs.overview_fleet_headline, headline, headline)
-	set_line(refs, cache, "fleet", 1, "now", { "cybersyn-gui.overview-fleet-now" }, f.now and count_text(f.now) or NO_VALUE)
+	set_line(refs, cache, "fleet", 1, "now", { "cybersyn-gui.hud-headroom-now" }, f.now and count_text(f.now) or NO_VALUE)
 	set_line(refs, cache, "fleet", 2, "fail", { "cybersyn-gui.overview-fleet-failures" }, red_if(f.failures, count_text(f.failures)))
 	set_line(refs, cache, "fleet", 3, f.network and "net" or "worst",
 		{ f.network and "cybersyn-gui.overview-fleet-network-filtered" or "cybersyn-gui.overview-fleet-worst" },

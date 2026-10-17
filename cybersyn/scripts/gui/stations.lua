@@ -622,6 +622,9 @@ function stations_tab.query(player_data)
 	local f = util.get_filters(player_data)
 	local wanted = active_chip(player_data)
 	local problems = wanted == "problems"
+	-- The Overview's Misconfigured jump narrows the Problems view to the stations its line counts (p1's contract).
+	if not problems then player_data.stations_problems_scope = nil end
+	local errors_only = problems and player_data.stations_problems_scope == "errors"
 	if problems ~= (player_data.stations_problems_view == true) then
 		-- The Problems view opens worst first; leaving it drops its sort.
 		player_data.stations_problems_view = problems or nil
@@ -702,10 +705,16 @@ function stations_tab.query(player_data)
 	-- update allocated tens of KB per render on a large base.
 	local rows = cache.rows
 	local want_sig = (wanted or "") .. (wanted == "stuck" and ("\1" .. stuck_sig) or "")
+	if errors_only then
+		local ls = storage.manager.lint
+		want_sig = want_sig .. "\2" .. lint_ack_version() .. ":" .. (ls and ls.pass or 0)
+	end
 	if not rows or cache.rows_order ~= cache.order or cache.rows_wanted ~= want_sig or cache.rows_version ~= cache.version then
 		rows = {}
+		local open_errors = util.open_setup_errors
 		for _, id in ipairs(cache.order) do
-			if status[id] and chip_passes(wanted, id, cache, stuck) then
+			if status[id] and chip_passes(wanted, id, cache, stuck)
+				and (not errors_only or open_errors(id, stations[id].lint) > 0) then
 				rows[#rows + 1] = stations[id]
 			end
 		end
@@ -739,7 +748,6 @@ local NOT_REGISTRY = {
 
 --- @class StationsProblems
 --- @field src LintFinding[] lint.findings() it was built from
---- @field world LintFinding[]? the world scan's findings it was built from, while that scan exists
 --- @field av int storage.acks.lint_version it was built at
 --- @field expiry uint? the earliest end of an acknowledgement it shows
 --- @field by_id {[uint]: ProblemEntry[]} a station's findings in the order its cell shows them
@@ -1736,6 +1744,8 @@ local function view_registry(player_data, rows, ctx)
 	local cache = player_data.stations_query
 	if not cache then return {} end
 	ctx.lint = problem_index(cache)
+	-- The Misconfigured jump's scope counts stations only.
+	if player_data.stations_problems_scope == "errors" then return {} end
 	return registry_rows(ctx.lint, util.get_filters(player_data))
 end
 
@@ -2205,6 +2215,7 @@ function stations_tab.set_chip(player_data, chip)
 	if chip == "all" or chip == active_chip(player_data) then chip = nil end
 	player_data.stations_status_filter = nil
 	player_data.stations_chip = nil
+	player_data.stations_problems_scope = nil
 	if chip and STATUS_RANK[chip] then
 		player_data.stations_status_filter = chip
 	elseif chip and (FLAG_CHIPS[chip] or chip == "stuck") then
