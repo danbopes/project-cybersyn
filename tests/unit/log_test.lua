@@ -120,7 +120,8 @@ test("collapse: never across severities, nor across the numbers that name a lint
 		return { seq = seq, tick = seq, kind = kind, sev = sev, code = 0, delivery = 0, train = 0, station = 5,
 			station2 = 0, item = 0, a = a, b = b }
 	end
-	-- Two findings that appeared together on one stop: two rows, each with its own check and severity.
+	-- PLAN4 (round-5 item 10): lint rows group by pass, never as identical rows. Written on different ticks outside a
+	-- pass (delivery 0), each is a pass of its own.
 	local rows = model.collapse({
 		e(6, DIAG_KIND_LINT, DIAG_SEV_ERROR, 3, 5),
 		e(5, DIAG_KIND_LINT, DIAG_SEV_WARNING, 7, 5),
@@ -131,8 +132,8 @@ test("collapse: never across severities, nor across the numbers that name a lint
 	})
 	local shape = {}
 	for i, g in ipairs(rows) do shape[i] = { g.seq, g.n, g.sev, g.a } end
-	assert_eq(shape, { { 6, 1, DIAG_SEV_ERROR, 3 }, { 5, 2, DIAG_SEV_WARNING, 7 }, { 3, 1, DIAG_SEV_INFO, 1 },
-		{ 2, 2, DIAG_SEV_WARNING, 1 } })
+	assert_eq(shape, { { 6, 1, DIAG_SEV_ERROR, 3 }, { 5, 1, DIAG_SEV_WARNING, 7 }, { 4, 1, DIAG_SEV_WARNING, 7 },
+		{ 3, 1, DIAG_SEV_INFO, 1 }, { 2, 2, DIAG_SEV_WARNING, 1 } })
 	local edits = model.collapse({ e(2, DIAG_KIND_SCHEDULE_EDITED, 3, 1, 1), e(1, DIAG_KIND_SCHEDULE_EDITED, 3, 2, 1) })
 	assert_eq(#edits, 2)
 	local actions = model.collapse({ e(2, DIAG_KIND_MANUAL_ACTION, 3, 1, 10), e(1, DIAG_KIND_MANUAL_ACTION, 3, 1, 11) })
@@ -537,7 +538,8 @@ test("locale: a plural parameter is never one the code fills with a grouped numb
 	-- Keys whose shown number is format.number's: the plural reads a later, plain parameter.
 	local plain = {
 		["msg-served"] = 4, ["log-summary-count-tooltip"] = 2, ["log-summary-status"] = 3, ["log-paused"] = 2,
-		["log-badge-tooltip"] = 2,
+		["log-badge-tooltip"] = 2, ["log-lint-errors"] = 2, ["log-lint-warnings"] = 2, ["log-lint-infos"] = 2,
+		["log-header"] = 3,
 	}
 	for _, lang in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
 		local f = assert(io.open(H.mod_root .. "/locale/" .. lang .. "/manager.cfg", "r"))
@@ -623,6 +625,8 @@ test("locale: every key the Log builds exists in en and in the six fallback loca
 		collect_keys(model.message({ kind = DIAG_KIND_UNACKNOWLEDGED, code = 1, a = 0, b = b, station2 = 1, tick = 0 }, ctx),
 			used)
 	end
+	collect_keys(model.message({ kind = DIAG_KIND_LINT, code = 1, a = 1, b = 0, tick = 0, n = 4, pass = 1,
+		lint = { 1, 1, 1, 1 } }, ctx), used)
 	for _, g in ipairs(model.GROUPS) do used["cybersyn-gui.log-group-" .. g.name] = true end
 	for _, k in ipairs({ "error", "warning", "info" }) do used["cybersyn-diag.sev-" .. k] = true end
 	-- The GUI's own keys: every "cybersyn-gui.log-..." and "cybersyn-diag...." literal in log.lua.
@@ -645,4 +649,120 @@ test("locale: every key the Log builds exists in en and in the six fallback loca
 		table.sort(missing)
 		assert_eq(missing, {}, loc)
 	end
+end)
+
+test("lint passes: one row per pass whatever lies between its rows, counts by severity, cleared apart", function()
+	at(1000)
+	local d = setup()
+	local P = 501
+	local function lint(sev, code, station, a, pass)
+		return ev(d, DIAG_KIND_LINT, sev, { code = code, delivery = pass or P, station = station, b = station, a = a })
+	end
+	lint(DIAG_SEV_ERROR, DIAG_LINT_APPEARED, 1, 3)                        -- seq 1
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 9, a = 1 })  -- seq 2, between the pass's rows
+	lint(DIAG_SEV_WARNING, DIAG_LINT_APPEARED, 2, 5)                      -- seq 3
+	lint(DIAG_SEV_INFO, DIAG_LINT_CLEARED, 1, 7)                          -- seq 4
+	local rs = { groups = {} }
+	local cf = model.compile(filter(), 1000)
+	model.update_rows(rs, d, cf, model.PAGE, true, 100)
+	local g = rs.groups[1]
+	assert_eq(#rs.groups, 2, "the pass and the station row")
+	assert_eq({ g.pass, g.n, g.lint, g.seqs, g.seq, g.first, g.sev, g.station }, { P, 3, { 1, 1, 0, 1 }, { 4, 3, 1 }, 4, 1,
+		DIAG_SEV_ERROR, 0 })
+	assert_eq(rs.groups[2].kind, DIAG_KIND_STATION_LIMIT)
+	-- Following: the pass's next row joins it and moves it back to the top over a newer event.
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 8, a = 2 })  -- seq 5
+	model.update_rows(rs, d, cf, model.PAGE, true, 100)
+	assert_eq(rs.groups[1].kind, DIAG_KIND_STATION_LIMIT)
+	lint(DIAG_SEV_ERROR, DIAG_LINT_APPEARED, 3, 3)                        -- seq 6
+	model.update_rows(rs, d, cf, model.PAGE, true, 100)
+	assert_eq({ #rs.groups, rs.groups[1].pass, rs.groups[1].n, rs.groups[1].lint }, { 3, P, 4, { 2, 1, 0, 1 } })
+	-- Another pass is another row; a row written outside a pass groups by its tick.
+	lint(DIAG_SEV_ERROR, DIAG_LINT_APPEARED, 4, 3, 777)
+	at(1001)
+	lint(DIAG_SEV_WARNING, DIAG_LINT_APPEARED, 4, 3, 0)
+	lint(DIAG_SEV_WARNING, DIAG_LINT_APPEARED, 5, 3, 0)
+	model.update_rows(rs, d, cf, model.PAGE, true, 100)
+	assert_eq({ rs.groups[1].pass, rs.groups[1].n, rs.groups[2].pass, rs.groups[2].n }, { -1001, 2, 777, 1 })
+	-- The same rows from a backward scan (a fresh filter) give the same rows.
+	local fresh = { groups = {} }
+	model.update_rows(fresh, d, model.compile(filter({ window = 3 }), 1001), model.PAGE, true, 100)
+	local function shape(groups)
+		local out = {}
+		for i, x in ipairs(groups) do out[i] = (x.pass or "-") .. ":" .. x.n .. ":" .. x.seq .. ":" .. x.first end
+		return table.concat(out, ",")
+	end
+	assert_eq(shape(fresh.groups), shape(rs.groups))
+	-- Only errors: the pass shows its errors only.
+	local errs = { groups = {} }
+	model.update_rows(errs, d, model.compile(filter({ sev = { true, false, false } }), 1001), model.PAGE, true, 100)
+	assert_eq({ errs.groups[2].pass, errs.groups[2].n, errs.groups[2].lint }, { P, 2, { 2, 0, 0, 0 } })
+end)
+
+test("lint passes: the caption counts the pass; a pass of one row reads as that finding", function()
+	setup()
+	local ctx = { player = function() return "p" end, duration = function() return "1s" end,
+		stock = function() return "1/2" end, chip = function() return "chip" end }
+	local g = { kind = DIAG_KIND_LINT, code = DIAG_LINT_APPEARED, a = 3, b = 0, tick = 0, n = 3, pass = 1,
+		lint = { 25, 6, 0, 2 } }
+	local m = model.message(g, ctx)
+	assert_eq(m[1], "cybersyn-gui.log-lint-pass")
+	assert_eq(m[3], "▸")
+	assert_eq(model.message(g, ctx, true)[3], "▾")
+	assert_eq(m[2], { "", { "cybersyn-gui.log-lint-errors", "25", "25" }, ", ",
+		{ "cybersyn-gui.log-lint-warnings", "6", "6" }, ", ", { "cybersyn-gui.log-lint-cleared", "2", "2" } })
+	g.n = 1
+	assert_eq(model.message(g, ctx)[1], "cybersyn-diag.msg-lint-appeared")
+end)
+
+test("display: an expanded pass lists its rows below it, newest first, within the page", function()
+	local pass = { first = 10, seq = 14, n = 3, pass = 7, seqs = { 14, 12, 10 } }
+	local other = { first = 9, seq = 9, n = 1 }
+	local function lookup(seq)
+		if seq == 12 then return nil end
+		return { seq = seq, first = seq, n = 1 }
+	end
+	local rows = model.display({ pass, other }, nil, lookup, 200)
+	assert_eq({ #rows, rows[1].key, rows[1].x, rows[2].key }, { 2, 10, nil, 9 })
+	rows = model.display({ pass, other }, { [7] = true }, lookup, 200)
+	local keys = {}
+	for i, r in ipairs(rows) do keys[i] = r.key .. (r.child and "c" or "") .. (r.x and "x" or "") end
+	assert_eq(keys, { "10x", "14.5c", "10.5c", "9" }, "a row its ring dropped is left out")
+	assert_eq(#model.display({ pass, other }, { [7] = true }, lookup, 2), 2)
+	-- A pass of one row has nothing to expand.
+	assert_eq(#model.display({ { first = 1, seq = 1, n = 1, pass = 3, seqs = { 1 } } }, { [3] = true }, lookup, 9), 1)
+end)
+
+test("rows: held (pointer over the rows, window paused), Follow takes nothing in at the top; release catches up", function()
+	at(1000)
+	local d = setup()
+	for s = 1, 3 do ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = s, a = s }) end
+	local rs = { groups = {} }
+	local cf = model.compile(filter(), 1000)
+	model.update_rows(rs, d, cf, model.PAGE, true, 100)
+	assert_eq(#rs.groups, 3)
+	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 7, a = 7 })
+	assert_false(model.update_rows(rs, d, cf, model.PAGE, true, 100, true))
+	assert_eq({ #rs.groups, rs.groups[1].a }, { 3, 3 })
+	assert_true(model.update_rows(rs, d, cf, model.PAGE, true, 100, false))
+	assert_eq({ #rs.groups, rs.groups[1].a }, { 4, 7 })
+	assert_eq(model.PAGE, 200)
+end)
+
+test("badge: unread errors, capped at 99+", function()
+	assert_eq({ model.badge_caption(0), model.badge_caption(7), model.badge_caption(99), model.badge_caption(100),
+		model.badge_caption(4321) }, { "", "7", "99", "99+", "99+" })
+end)
+
+test("names: lead · text · tail; when the cell is short the lead icons go before the tail's", function()
+	local name_cell = require("scripts.gui.name-cell")
+	local parts = { lead = { "item/a", "item/b", "item/c" }, tail = { "item/x", "item/y" }, text = "Requestor for" }
+	-- 5 icons × 22 px + 120 px of text + 4 fit 234 px.
+	assert_eq({ name_cell.fit(parts, 300) }, { 3, 2 })
+	assert_eq({ name_cell.fit(parts, 234) }, { 3, 2 })
+	assert_eq({ name_cell.fit(parts, 233) }, { 2, 2 })
+	assert_eq({ name_cell.fit(parts, 168) }, { 0, 2 })
+	assert_eq({ name_cell.fit(parts, 140) }, { 0, 0 })
+	assert_eq({ name_cell.fit({ lead = { "a", "b", "c", "d" } }, 1000) }, { 3, 0 }, "at most POOL_ICONS a side")
+	assert_eq({ name_cell.fit(nil, 300) }, { 0, 0 })
 end)

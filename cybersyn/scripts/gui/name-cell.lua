@@ -146,4 +146,125 @@ function name_cell.resize(cell, parts, width, shrink)
 	if button then button.style.maximal_width = math.max(width - icons_width(parts) - 4, 24) end
 end
 
+-- ---------------------------------------------------------------- pooled cells (rows reused for other names)
+
+-- Icons per side a pooled cell holds; a name with more shows the first ones.
+name_cell.POOL_ICONS = 3
+-- Logical px the text keeps before icons are dropped.
+name_cell.MIN_TEXT = 120
+
+--- How many lead and tail icons a name shows in a cell `width` px wide: lead · text · tail, and when that is short
+--- the lead icons go first (the tail is what tells a base's similar names apart), then the tail's.
+--- @param parts RichNameParts?
+--- @param width int
+--- @param max_icons int? per side, default POOL_ICONS
+--- @return int lead
+--- @return int tail
+function name_cell.fit(parts, width, max_icons)
+	max_icons = max_icons or name_cell.POOL_ICONS
+	local lead = parts and parts.lead and math.min(#parts.lead, max_icons) or 0
+	local tail = parts and parts.tail and math.min(#parts.tail, max_icons) or 0
+	local room = width - 4 - name_cell.MIN_TEXT
+	while lead + tail > 0 and (lead + tail) * (ICON + ICON_GAP) > room do
+		if lead > 0 then lead = lead - 1 else tail = tail - 1 end
+	end
+	return lead, tail
+end
+
+--- A cell that is written in place for whatever name its row shows next: a flow holding the text button; icon slots
+--- are added beside it the first time a name needs them and hidden, never destroyed, when the next one does not.
+--- Plain LuaGuiElement.add (no flib definition), so a long list of these is cheap to build.
+--- @param parent LuaGuiElement
+--- @param width int
+--- @param flow_style string
+--- @param button LuaGuiElement.add_param the text button: type, style, tags as the list needs
+--- @return LuaGuiElement flow
+function name_cell.pooled_add(parent, width, flow_style, button)
+	local flow = parent.add({ type = "flow", direction = "horizontal", style = flow_style })
+	local style = flow.style
+	style.width = width
+	style.horizontal_spacing = ICON_GAP
+	flow.add(button)
+	return flow
+end
+
+-- Icon slots are sprite buttons, not sprites: only a button draws an icon's quality badge.
+local SLOT = { type = "sprite-button", style = "cybersyn_name_icon", ignored_by_interaction = true }
+-- A pure function of the loaded prototypes, so the same in every Lua state.
+local valid_sprite = {}
+
+--- @param sprite string
+--- @return string
+local function checked(sprite)
+	local ok = valid_sprite[sprite]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(sprite)
+		valid_sprite[sprite] = ok
+	end
+	return ok and sprite or "utility/questionmark"
+end
+
+--- Writes a pooled cell's icons and text for `parts`, each part only when what it shows changed. `memo` (one per cell,
+--- kept by the caller) remembers the elements and what they show. Returns the text button.
+--- @param flow LuaGuiElement made by name_cell.pooled_add
+--- @param memo table
+--- @param parts RichNameParts?
+--- @param name string the full name (shown when the name has no text of its own or no icon fits)
+--- @param width int
+--- @return LuaGuiElement button
+function name_cell.write_pooled(flow, memo, parts, name, width)
+	local button = memo.button
+	if not (button and button.valid) then
+		button = flow.children[1]
+		memo.button, memo.lead, memo.tail, memo.shown = button, {}, {}, {}
+	end
+	local lead, tail = name_cell.fit(parts, width)
+	local shown = memo.shown
+	local function side(list, n, sprites, qualities, prefix, before)
+		for i = 1, math.max(n, #list) do
+			local key = prefix .. i
+			local sprite = i <= n and sprites[i] or false
+			local quality = sprite and qualities and qualities[i] or nil
+			local sig = sprite and (sprite .. "|" .. (quality or "")) or false
+			if shown[key] ~= sig then
+				local elem = list[i]
+				if not elem then
+					-- Lead slots go in front of the button, tail slots after the last one; made with their icon.
+					SLOT.index = before and i or nil
+					SLOT.sprite, SLOT.quality = checked(sprite), quality
+					elem = flow.add(SLOT)
+					SLOT.sprite, SLOT.quality = nil, nil
+					list[i] = elem
+					shown["q" .. key] = quality
+				elseif sprite then
+					elem.sprite = checked(sprite)
+					if shown["q" .. key] ~= quality then
+						elem.quality = quality
+						shown["q" .. key] = quality
+					end
+					if not shown[key] then elem.visible = true end
+				elseif shown[key] then
+					elem.visible = false
+				end
+				shown[key] = sig
+			end
+		end
+	end
+	side(memo.lead, lead, parts and parts.lead, parts and parts.lead_quality, "l", true)
+	side(memo.tail, tail, parts and parts.tail, parts and parts.tail_quality, "t", false)
+	SLOT.index = nil
+	local text = parts and parts.text
+	if text == nil or text == "" then text = (lead + tail) > 0 and "" or name end
+	if memo.text ~= text then
+		button.caption = text
+		memo.text = text
+	end
+	local maximal = math.max(width - (lead + tail) * (ICON + ICON_GAP) - 4, 24)
+	if memo.width ~= maximal then
+		button.style.maximal_width = maximal
+		memo.width = maximal
+	end
+	return button
+end
+
 return name_cell

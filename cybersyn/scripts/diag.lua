@@ -1580,6 +1580,7 @@ function diag.schedule_edited(d, train_id, train, player_index, group)
 end
 
 --- A lint finding appeared or cleared (`a` = check, `b` = subject id; trains also in `train`, stops in `station`).
+--- The delivery column holds the running pass's start tick + 1 (0 outside a pass), so the Log shows a pass as one row.
 --- @param check int LINT_*
 --- @param subject int LINT_SUBJECT_*
 --- @param id uint
@@ -1588,8 +1589,11 @@ function diag.lint(check, subject, id, appeared)
 	local d = storage.diag
 	if not d then return end
 	local is_train = subject == LINT_SUBJECT_TRAIN
+	local s = storage.manager and storage.manager.lint
+	local job = s and s.job
+	local pass = job and job.started_tick and job.started_tick + 1 or 0
 	diag.event(d, DIAG_KIND_LINT, appeared and (LINT_SEVERITY[check] or DIAG_SEV_WARNING) or DIAG_SEV_INFO,
-		appeared and DIAG_LINT_APPEARED or DIAG_LINT_CLEARED, 0, is_train and id or 0, is_train and 0 or id, subject, 0,
+		appeared and DIAG_LINT_APPEARED or DIAG_LINT_CLEARED, pass, is_train and id or 0, is_train and 0 or id, subject, 0,
 		check, id)
 end
 

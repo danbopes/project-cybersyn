@@ -74,7 +74,9 @@ lab.suite("36_window", {
 			local ld = remote.call(D, "dump", pi, "log")
 			summary.log = lr.computed .. "/" .. tostring(lr.rendered)
 			lab.check(screen[1] .. " log: rows rendered == rows computed (or all there are)",
-				lr.rendered == #ld.groups and (#ld.groups == lr.computed or ld.complete) and lr.computed >= 3,
+				-- PLAN4 D12 (p5-log): the Log scrolls a page of up to 200 rows; its viewport is the layout's rows.
+				lr.rendered >= math.min(#ld.groups, lr.computed) and (#ld.groups >= lr.computed or ld.complete) and
+				lr.computed >= 3,
 				{ r = lr, groups = #ld.groups, complete = ld.complete })
 			local r = remote.call(D, "rows", pi, "overview")
 			lab.check(screen[1] .. ": window height within 85 % of the screen", r.window_height <= r.max_height, r)
