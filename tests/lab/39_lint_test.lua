@@ -482,6 +482,37 @@ lab.suite("39_lint", {
 		lx.w.r2.stop.train_stop_priority = 50
 		if lab.problems_verify then lab.problems_verify("39_lint registry") end
 
+		-- The Stations Problems view lists them once each, after every station row, linked to the entity: shift shows
+		-- the derelict combinator, the stop the ghost waits at and the combinator facing away on the map.
+		dev("open", 1)
+		dev("clear_filters", 1)
+		lab.big_screen(1)
+		dev("collect")
+		remote.call("cybersyn-manager-dev-stations", "set_chip", 1, "problems")
+		dev("select_tab", 1, "stations")
+		local d = dev("dump", 1, "stations")
+		for _, c in ipairs({ { "derelict combinator", w.derelict, "derelict-combinator" },
+			{ "ghost combinator", w.ghost_stop, "ghost-combinator" },
+			{ "wrong-side combinator", w.wrong, "wrong-side-combinator" } }) do
+			local label, entity, message = c[1], c[2], c[3]
+			local suffix = ":" .. entity.unit_number .. ":" .. message
+			local rows = {}
+			for _, r in ipairs(d.registry) do
+				if r.key:sub(-#suffix) == suffix then rows[#rows + 1] = r end
+			end
+			local r = rows[1]
+			lab.check("Stations Problems view: the " .. label .. " is one registry row after the stations, linked to it",
+				#rows == 1 and d.registry_last and r.link[1] == "entity" and r.link[2] == entity.unit_number,
+				{ rows = rows, last = d.registry_last })
+			local res = r and dev("link_click", 1, r.link[1], r.link[2], { shift = true })
+			lab.check("Stations Problems view: the " .. label .. "'s link shows it on the map", res ~= nil
+				and res.controller == defines.controllers.remote and res.markers ~= nil and #res.markers == 2, res)
+			local player = game.get_player(1)
+			if player.controller_type == defines.controllers.remote then player.exit_remote_view() end
+		end
+		remote.call("cybersyn-manager-dev-stations", "set_chip", 1, "all")
+		dev("close", 1)
+
 		-- Fixed in the world: each finding goes with the event that fixed it. A turn by 90° changes which stop a
 		-- combinator reaches (the engine allows it in place only to scripts; see dev raise_rotated).
 		local player = game.get_player(1)
