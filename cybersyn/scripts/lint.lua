@@ -485,10 +485,11 @@ end
 local function occupancy_index(job, s)
 	local watch = s.phantom_since
 	local dest, bound, named = {}, {}, {}
+	local TO_P, AT_P, TO_R, AT_R, TO_F, AT_F = STATUS_TO_P, STATUS_P, STATUS_TO_R, STATUS_R, STATUS_TO_F, STATUS_F
 	for train_id, train in pairs(storage.trains) do
 		local status = train.status
 		local p, r = train.p_station_id, train.r_station_id
-		if status == STATUS_TO_P or status == STATUS_P then
+		if status == TO_P or status == AT_P then
 			if p then
 				dest[p] = (dest[p] or 0) + 1
 				bound[p] = (bound[p] or 0) + 1
@@ -498,13 +499,13 @@ local function occupancy_index(job, s)
 				bound[r] = (bound[r] or 0) + 1
 				if watch[r] then named[r] = named[r] or train_id end
 			end
-		elseif status == STATUS_TO_R or status == STATUS_R then
+		elseif status == TO_R or status == AT_R then
 			if r then
 				dest[r] = (dest[r] or 0) + 1
 				bound[r] = (bound[r] or 0) + 1
 				if watch[r] then named[r] = named[r] or train_id end
 			end
-		elseif status == STATUS_TO_F or status == STATUS_F then
+		elseif status == TO_F or status == AT_F then
 			local f = train.refueler_id
 			if f then dest[f] = (dest[f] or 0) + 1 end
 		end
@@ -518,8 +519,9 @@ local function occupancy_index(job, s)
 end
 
 --- A pass is set up over three updates, so no update lists thousands of ids and indexes them as well: the station
---- and depot ids (the snapshot's own sorted lists), then the refueler and train ids, then the occupancy index and
---- the names every depot and refueler is known by.
+--- and depot ids (the snapshot's own sorted lists), then the refueler and train ids with the names every depot and
+--- refueler is known by, then the occupancy index alone (its counters must be read in the update that walks the
+--- trains; the names need no such instant, and the index update is the most expensive of the three).
 --- @param s LintState
 --- @param snap Snapshot
 --- @return LintJob
@@ -539,16 +541,30 @@ local function start_job(s, snap)
 	return job
 end
 
+-- Dev (dev lint_profile): while samples are taken, the setup updates' parts, {name, profiler, ...}, handed to the
+-- update's sample by lint.tick.
+local setup_parts = nil
+
+--- @param name string
+--- @return LuaProfiler?
+local function part_start(name)
+	if not setup_parts then return nil end
+	local p = game.create_profiler()
+	setup_parts[#setup_parts + 1] = name
+	setup_parts[#setup_parts + 1] = p
+	return p
+end
+
 --- @param job LintJob
 --- @param snap Snapshot
 local function setup_job(job, snap)
 	if job.setup == 1 then
+		local p = part_start("ids")
 		job.dids = snap.depot_ids or keys_into(storage.depots, {})
 		job.fids = keys_into(storage.refuelers, {})
 		job.tids = keys_into(storage.trains, {})
-		job.setup = 2
-	else
-		occupancy_index(job, lint.state())
+		if p then p.stop() end
+		p = part_start("names")
 		-- The names schedules use are the depots', the refuelers' and the stations' (seeded from the station list in
 		-- later updates, before the train checks start); any other name is looked up once per pass (stop_exists).
 		local names = {}
@@ -559,6 +575,12 @@ local function setup_job(job, snap)
 		end
 		job.names = names
 		job.seeded = 0
+		if p then p.stop() end
+		job.setup = 2
+	else
+		local p = part_start("index")
+		occupancy_index(job, lint.state())
+		if p then p.stop() end
 		job.setup = nil
 	end
 end
@@ -1016,8 +1038,9 @@ function lint.step(records, trains)
 	return false
 end
 
--- Dev (dev lint_profile): while set, one {update, profiler} per manager-tick update of the setup job, so the budget
--- is measured where it is spent (after the collector's step in the same update), not in a synchronous loop.
+-- Dev (dev lint_profile): while set, one {update, profiler, parts?} per manager-tick update of the setup job (parts: a
+-- setup update's own split, see setup_parts), so the budget is measured where it is spent (after the collector's step
+-- in the same update), not in a synchronous loop.
 lint.samples = nil
 
 --- One manager update of the setup job (only while a window is open; see collector.tick).
@@ -1029,10 +1052,12 @@ function lint.tick()
 	end
 	local s = lint.state()
 	local k = s.job and s.job.updates or 0
+	setup_parts = {}
 	local p = game.create_profiler()
 	lint.step()
 	p.stop()
-	samples[#samples + 1] = { k + 1, p }
+	samples[#samples + 1] = { k + 1, p, setup_parts[1] and setup_parts or nil }
+	setup_parts = nil
 end
 
 --- Runs a whole fresh pass now (dev and tests).
