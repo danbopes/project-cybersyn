@@ -921,7 +921,7 @@ function interface.growth_sample(pi)
 	end
 	local ls = lint.state()
 	out.lint = { pass = ls.pass, findings = #ls.findings, running = ls.job ~= nil,
-		world = ls.world and #ls.world.findings or nil }
+		registry = #lint.registry_findings() }
 	local s = storage.stats
 	out.stats_json = s and #helpers.table_to_json(s) or 0
 	out.cycle = s and s.cycle or nil

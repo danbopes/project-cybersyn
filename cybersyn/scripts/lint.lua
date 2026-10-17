@@ -109,7 +109,6 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field train_logged {[uint]: int}?
 --- @field occupancy_since {[uint]: uint} stop -> tick the occupancy gap was first seen (cleared when it closes)
 --- @field phantom_since {[uint]: uint}
---- @field world {tick: uint, findings: LintFinding[]}? the registry as scripts/gui/problems.lua reads it (lint.state)
 --- @field merged {pass: LintFinding[], registry: LintFinding[], list: LintFinding[]}? lint.findings' last result
 
 --- @return LintState
@@ -121,8 +120,6 @@ function lint.state()
 		manager.lint = s
 	end
 	if not s.train_live then s.train_live = {} end
-	-- scripts/gui/problems.lua lists s.world beside the pass; it reads the registry through it until that tab goes.
-	s.world = lint.registry_view()
 	return s
 end
 
@@ -1079,7 +1076,6 @@ end
 --- @field entries {[uint]: LintRegistryEntry} by the stop's or combinator's unit number
 --- @field version int counts the changes (caches and render sigs)
 --- @field findings LintFinding[]? built from the entries on demand, dropped on every change
---- @field view {tick: int, findings: LintFinding[]}? the same findings in the shape of the old world scan
 
 --- @class LintRegistryEntry
 --- @field entity LuaEntity the stop or combinator
@@ -1143,7 +1139,6 @@ end
 local function changed(reg)
 	reg.version = reg.version + 1
 	reg.findings = nil
-	reg.view = nil
 end
 
 --- Ends the acknowledgements of `checks` on `unit` that no remaining message still finds.
@@ -1513,7 +1508,7 @@ function lint.registry_seed()
 	resolve_registry_acks()
 	local manager = storage.manager
 	local s = manager and manager.lint
-	if s then s.world_job = nil end
+	if s then s.world_job, s.world = nil, nil end
 	return { orphans = orphans, ghosts = ghosts, names = n, entries = table_size(storage.lint_registry.entries) }
 end
 
@@ -1559,23 +1554,7 @@ function lint.registry_findings()
 		end
 	end
 	reg.findings = list
-	reg.view = nil
 	return list
-end
-
---- The registry as the old world scan's result ({tick, findings}; `tick` is the registry's version), nil while it is
---- empty (the Problems tab shows a result only once there is one).
---- @return {tick: int, findings: LintFinding[]}?
-function lint.registry_view()
-	local findings = lint.registry_findings()
-	local reg = storage.lint_registry
-	if not reg or #findings == 0 then return nil end
-	local view = reg.view
-	if not (view and view.findings == findings) then
-		view = { tick = reg.version, findings = findings }
-		reg.view = view
-	end
-	return view
 end
 
 --- The registry's stop or combinator with this unit number (most entities cannot be looked up by unit number, so
@@ -1679,25 +1658,6 @@ function lint.station_removed(id)
 	if not hit then return end
 	s.findings = kept
 	s.removed = (s.removed or 0) + 1
-end
-
--- ---------------------------------------------------------------- scripts/gui/problems.lua's world-scan calls
--- That tab goes in this round (PLAN4 D7); until it does it keeps rendering on the registry. Delete with it.
-
---- @return nil
-function lint.world_progress() return nil end
-
---- @return int
-function lint.prune_world()
-	local reg = storage.lint_registry
-	return reg and reg.version or 0
-end
-
---- @return int
-function lint.scan_world() return #lint.registry_findings() end
-
-function lint.scan_world_now()
-	return lint.registry_view()
 end
 
 return lint

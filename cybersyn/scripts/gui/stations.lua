@@ -745,18 +745,16 @@ local NOT_REGISTRY = {
 --- @field by_id {[uint]: ProblemEntry[]} a station's findings in the order its cell shows them
 --- @field registry ProblemEntry[] findings about stops and combinators that are not a station
 
---- The last lint pass's findings by station, and the registry's, rebuilt only when the pass, the world scan or an
+--- The last lint pass's findings by station, and the registry's, rebuilt only when the pass, the registry or an
 --- acknowledgement changed (or one of the acknowledgements shown ran out).
 --- @param cache table the player's stations query cache
 --- @return StationsProblems
 local function problem_index(cache)
 	local findings = lint.findings()
-	local s = storage.manager.lint
-	local world = s and s.world and s.world.findings or nil
 	local acks = storage.acks
 	local av = acks and acks.lint_version or 0
 	local px = cache.problems
-	if px and px.src == findings and px.world == world and px.av == av and not (px.expiry and game.tick >= px.expiry) then
+	if px and px.src == findings and px.av == av and not (px.expiry and game.tick >= px.expiry) then
 		return px
 	end
 	local by_station, registry = {}, {}
@@ -773,9 +771,6 @@ local function problem_index(cache)
 		end
 	end
 	for _, f in ipairs(findings) do add(f) end
-	if world then
-		for _, f in ipairs(world) do add(f) end
-	end
 	local expiry
 	local function is_acked(f)
 		local a = diag.is_acked("lint", lint.subject_key(f.subject, f.id), f.check)
@@ -784,7 +779,7 @@ local function problem_index(cache)
 	end
 	local by_id = {}
 	for id, list in pairs(by_station) do by_id[id] = pm.order(list, is_acked) end
-	px = { src = findings, world = world, av = av, by_id = by_id, registry = pm.order(registry, is_acked) }
+	px = { src = findings, av = av, by_id = by_id, registry = pm.order(registry, is_acked) }
 	px.expiry = expiry
 	cache.problems = px
 	return px
@@ -794,7 +789,7 @@ end
 --- @return int?
 local function lint_pending()
 	local s = storage.manager.lint
-	if s and ((s.pass or 0) > 0 or s.world) then return nil end
+	if s and (s.pass or 0) > 0 then return nil end
 	local job = s and s.job
 	if not job then return 0 end
 	local n = #(job.sids or {}) + #(job.dids or {}) + #(job.fids or {}) + #(job.tids or {})
@@ -2125,7 +2120,6 @@ local function lint_view()
 	for i, r in ipairs(registry_rows(px, { mask = -1 })) do
 		out.registry[i] = { key = registry_key(r.e.f), name = r.name, entity = r.entity ~= nil, entry = entry_view(r.e) }
 	end
-	local s = storage.manager.lint
 	local function raw(list)
 		for _, f in ipairs(list or {}) do
 			local sev = LINT_SEVERITY[f.check] or DIAG_SEV_WARNING
@@ -2137,7 +2131,6 @@ local function lint_view()
 		end
 	end
 	raw(lint.findings())
-	raw(s and s.world and s.world.findings)
 	return out
 end
 
