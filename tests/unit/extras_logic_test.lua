@@ -77,11 +77,11 @@ test("confirm: first click arms, second fires, another key re-arms", function()
 	assert_false(fire)
 	assert_eq(s, { key = "fail:1", tick = 100 })
 	assert_true(l.confirm_armed(s, "fail:1", 150))
-	assert_false(l.confirm_armed(s, "rescan:2", 150))
-	local s2, fire2 = l.confirm_click(s, "rescan:2", 150)
+	assert_false(l.confirm_armed(s, "recount:2", 150))
+	local s2, fire2 = l.confirm_click(s, "recount:2", 150)
 	assert_false(fire2)
-	assert_eq(s2.key, "rescan:2")
-	local s3, fire3 = l.confirm_click(s2, "rescan:2", 200)
+	assert_eq(s2.key, "recount:2")
+	local s3, fire3 = l.confirm_click(s2, "recount:2", 200)
 	assert_true(fire3)
 	assert_eq(s3, nil)
 end)
@@ -104,7 +104,7 @@ test("confirm: a click applied within the grace after the expiry still fires (mu
 	local s3, fire3 = l.confirm_click(s, "fail:1", 285)
 	assert_true(fire3)
 	assert_nil(s3)
-	local _, fire4 = l.confirm_click(s, "rescan:2", 285)
+	local _, fire4 = l.confirm_click(s, "recount:2", 285)
 	assert_false(fire4, "another key arms that one")
 	local s5, fire5 = l.confirm_click(s, "fail:1", 310)
 	assert_false(fire5, "past the grace the click arms again")
@@ -164,17 +164,62 @@ test("hud_values: totals, worst network, top reason with ties by lowest code", f
 	assert_eq({ v.headroom, v.network }, { 0, "signal-A" }, "a network with trains but no counter is at 0")
 end)
 
-test("pick_train: named first, then fits + available + largest, ties by id", function()
+local function hash(name, quality)
+	if quality == nil or quality == "normal" then return name end
+	return name .. "|" .. quality
+end
+
+test("recount: provider side counts TO_P/P, requester side TO_P..R; manifests signed by side", function()
 	local l = logic()
-	local c = {
-		{ id = 5, available = true, fits = false, capacity = 100 },
-		{ id = 3, available = false, fits = true, capacity = 50 },
-		{ id = 9, available = true, fits = true, capacity = 40 },
-		{ id = 2, available = true, fits = true, capacity = 40 },
+	local trains = {
+		[1] = { status = STATUS_TO_P, p_station_id = 10, r_station_id = 20, manifest = { { name = "iron-plate", count = 400 } } },
+		[2] = { status = STATUS_P, p_station_id = 10, r_station_id = 30, manifest = { { name = "copper-plate", count = 100 } } },
+		-- Left the provider: counts at the requester only.
+		[3] = { status = STATUS_TO_R, p_station_id = 10, r_station_id = 20, manifest = { { name = "iron-plate", count = 50 } } },
+		[4] = { status = STATUS_R, p_station_id = 40, r_station_id = 20,
+			manifest = { { name = "iron-plate", count = 7, quality = "rare" } } },
+		-- Back from a delivery, refuelling, parked: no station ids count.
+		[5] = { status = STATUS_TO_D, p_station_id = 10, r_station_id = 20 },
+		[6] = { status = STATUS_F },
+		[7] = { status = STATUS_D },
 	}
-	assert_eq(l.pick_train(c), 2)
-	assert_eq(l.pick_train(c, 5), 5)
-	assert_eq(l.pick_train(c, 77), 2)
-	assert_eq(l.pick_train({ { id = 4, available = false, fits = false, capacity = 1 } }), 4)
-	assert_eq(l.pick_train({}), nil)
+	local total, d, ids = l.recount(trains, 10, hash)
+	assert_eq(total, 2)
+	assert_eq(d, { ["iron-plate"] = -400, ["copper-plate"] = -100 })
+	assert_eq(ids, { 1, 2 })
+	total, d, ids = l.recount(trains, 20, hash)
+	assert_eq(total, 3)
+	assert_eq(d, { ["iron-plate"] = 450, ["iron-plate|rare"] = 7 })
+	assert_eq(ids, { 1, 3, 4 })
+	total, d, ids = l.recount(trains, 99, hash)
+	assert_eq({ total, d, ids }, { 0, {}, {} }, "a station no train is bound to counts nothing")
+end)
+
+test("recount: a train bound at both ends of the same station counts twice and its manifest nets to zero", function()
+	local l = logic()
+	local total, d = l.recount({ [1] = { status = STATUS_P, p_station_id = 5, r_station_id = 5,
+		manifest = { { name = "coal", count = 10 } } } }, 5, hash)
+	assert_eq(total, 2)
+	assert_eq(d, {})
+end)
+
+test("is_counter_leak: only a phantom finding that counts more deliveries than bound trains", function()
+	local l = logic()
+	assert_eq(l.is_counter_leak({ check = LINT_PHANTOM, a = 2, b = 1 }), true)
+	assert_eq(l.is_counter_leak({ check = LINT_PHANTOM, a = 1, b = 0 }), true)
+	assert_eq(l.is_counter_leak({ check = LINT_PHANTOM, a = 0, b = 1 }), false, "a bound train: send it home instead")
+	assert_eq(l.is_counter_leak({ check = LINT_PHANTOM, a = 1, b = 1 }), false)
+	assert_eq(l.is_counter_leak({ check = LINT_OCCUPANCY, a = 3, b = 1 }), false)
+end)
+
+test("stop_panel_fits: vanilla 1,067 + 300 logical px against the logical screen width", function()
+	local l = logic()
+	assert_eq(l.stop_panel_fits(3840, 1.5), true, "4K at 1.5: 2,560")
+	assert_eq(l.stop_panel_fits(3840, 2.0), true, "4K at 2.0: 1,920")
+	assert_eq(l.stop_panel_fits(1920, 1.0), true, "1080p at 1.0: 1,920")
+	assert_eq(l.stop_panel_fits(1920, 1.25), true, "1080p at 1.25: 1,536")
+	assert_eq(l.stop_panel_fits(1920, 1.5), false, "1080p at 1.5: 1,280")
+	assert_eq(l.stop_panel_fits(1920, 2.0), false, "1080p at 2.0: 960")
+	assert_eq(l.stop_panel_fits(1367, 1), true, "exactly the two widths")
+	assert_eq(l.stop_panel_fits(1366, 1), false)
 end)

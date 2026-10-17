@@ -1,11 +1,9 @@
 -- "Explain" for one Unserved row (PLAN3 §11.8, B3): what the dispatcher recorded for a (requester, item) key, the
--- requester's setup findings, the recent confirmed reason changes and who it lost to, and a Test path button. It
--- reads storage.diag and the lint result only: it never evaluates eligibility itself (the lint engine and the reason
+-- requester's setup findings and the recent confirmed reason changes and who it lost to. It reads storage.diag and the lint result only: it never evaluates eligibility itself (the lint engine and the reason
 -- codes stay the only two models).
 -- Mounted as a screen frame beside the manager window, so the Overview's whole-row sizing never changes.
 
 local gui = require("__flib__.gui")
-local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
 local utext = require("scripts.gui.unserved-text")
@@ -58,18 +56,17 @@ local function heading(caption)
 end
 
 --- A string that changes whenever anything shown changes (ages in 10 s steps).
-local function sig_of(pd, r_id, hash, e)
+local function sig_of(r_id, hash, e)
 	local now = game.tick
 	local lint_s = storage.manager.lint
-	local _, seq = extras.path_note(pd, r_id)
-	if not e then return table.concat({ "gone", lint_s and lint_s.pass or 0, seq }, "|") end
+	if not e then return table.concat({ "gone", lint_s and lint_s.pass or 0 }, "|") end
 	return table.concat({ e.reason, e.a, e.b, e.n, #e.changes, e.changes[#e.changes] or 0, tostring(e.lost_to), e.lost_n,
-		math.floor((now - e.first_tick) / utext.READ_STEP), lint_s and lint_s.pass or 0, seq,
+		math.floor((now - e.first_tick) / utext.READ_STEP), lint_s and lint_s.pass or 0,
 		storage.acks and storage.acks.lint_version or 0 }, "|")
 end
 
 --- The body's children for one key.
-local function body_defs(pd, r_id, hash, e)
+local function body_defs(r_id, hash, e)
 	local now = game.tick
 	local out = {}
 	local sprite, quality = util.item_sprite_and_tooltip(hash)
@@ -128,21 +125,6 @@ local function body_defs(pd, r_id, hash, e)
 		out[#out + 1] = label(pm.fix(f.check), true)
 	end
 
-	out[#out + 1] = heading({ "cybersyn-gui.explain-test-path" })
-	local note = extras.path_note(pd, r_id)
-	out[#out + 1] = {
-		type = "flow",
-		direction = "horizontal",
-		style_mods = { vertical_align = "center", horizontal_spacing = 8 },
-		{
-			type = "button",
-			name = "test_path",
-			caption = { "cybersyn-gui.explain-test-path-button" },
-			tooltip = { "cybersyn-gui.relative-test-path-tooltip" },
-			handler = { [defines.events.on_gui_click] = explain.handle.explain_test_path },
-		},
-	}
-	if note then out[#out + 1] = label(note) end
 	return out, sprite, quality
 end
 
@@ -173,12 +155,12 @@ function explain.render(player, pd, force)
 	local frame = player.gui.screen[FRAME]
 	if not (frame and frame.valid) then return end
 	local e = entry_of(ex.r_id, ex.hash)
-	local sig = sig_of(pd, ex.r_id, ex.hash, e)
+	local sig = sig_of(ex.r_id, ex.hash, e)
 	if not force and ex.sig == sig then return end
 	ex.sig = sig
 	local body = frame.body
 	body.clear()
-	local defs, sprite, quality = body_defs(pd, ex.r_id, ex.hash, e)
+	local defs, sprite, quality = body_defs(ex.r_id, ex.hash, e)
 	for _, def in ipairs(defs) do gui.add(body, def) end
 	local title = frame.titlebar.title
 	title.caption = { "cybersyn-gui.explain-title", sprite and ("[img=" .. sprite .. "]") or "", stop_name(ex.r_id) }
@@ -262,13 +244,6 @@ function explain.handle.explain_close(player, pd)
 	explain.close(player, pd)
 end
 
-function explain.handle.explain_test_path(player, pd)
-	local ex = pd.explain
-	if not ex then return end
-	extras.test_path(player, pd, ex.r_id)
-	explain.render(player, pd)
-end
-
 function explain.wrapper(e, handler)
 	local player = game.get_player(e.player_index)
 	local pd = storage.manager and storage.manager.players[e.player_index]
@@ -300,14 +275,6 @@ dev.extend({
 		if not (frame and frame.valid) then return { open = false } end
 		return { open = true, key = pd.explain, title = frame.titlebar.title.caption, lines = view(frame.body, {}),
 			location = frame.location }
-	end,
-	explain_test_path = function(pi)
-		local player = game.get_player(pi)
-		local pd = storage.manager.players[pi]
-		-- As dev test_path: tests ask several stops in one tick, which a player's clicks cannot.
-		if pd.test_path then pd.test_path.tick = -extras.TEST_PATH_TICKS end
-		explain.handle.explain_test_path(player, pd)
-		return pd.test_path and { found = pd.test_path.found, train_id = pd.test_path.train_id }
 	end,
 	explain_close = function(pi)
 		local player = game.get_player(pi)

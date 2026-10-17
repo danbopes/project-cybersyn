@@ -147,17 +147,14 @@ lab.suite("39_relative", {
 		dev("close", PI)
 		lab.check("provider: the live status equals the snapshot's", snap_status ~= nil and d.model.status == snap_status,
 			{ live = d.model.status, snapshot = snap_status })
-		-- Phase 10 replaced the disabled placeholders: Test path and Pin are tools in the first row, Rescan station is
-		-- the action row below (enabled only with the right; 39_extras covers the permission matrix).
-		lab.check("provider: comb1, Test path and Pin enabled, Rescan station in the action row", (function()
+		-- PLAN4 D13: the stop footer is Open in manager, comb1, comb2 (stations) and Pin; Test path and Rescan station
+		-- are gone, so there is no action row.
+		lab.check("provider: Open in manager, comb1 and Pin; no Test path, no action row", (function()
 			local row = d.sections.buttons.content[1].children
 			local names = {}
 			for _, c in ipairs(row) do if c.name then names[c.name] = c end end
-			local actions = d.sections.buttons.content[2]
-			local rescan = actions and actions.children and actions.children[1]
-			return names.comb1 and names.comb1.enabled and names.test_path and names.test_path.enabled == true and
-				names.pin and names.pin.enabled == true and names.open_manager ~= nil and rescan ~= nil
-				and rescan.name == "rescan"
+			return names.comb1 and names.comb1.enabled and names.pin and names.pin.enabled == true
+				and names.open_manager ~= nil and names.test_path == nil and d.sections.buttons.content[2] == nil
 		end)(), d.sections.buttons)
 		stop_checks("requester", rx.requester, false, true)
 		stop_checks("both", rx.both, true, true)

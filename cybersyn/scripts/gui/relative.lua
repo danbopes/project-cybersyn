@@ -23,6 +23,7 @@ local item_model = require("scripts.gui.item-model")
 local problems_tab = require("scripts.gui.problems")
 local extras = require("scripts.gui.extras")
 local repair = require("scripts.gui.repair")
+local xlogic = require("scripts.gui.extras-logic")
 
 local relative = {}
 
@@ -67,7 +68,7 @@ relative.WIDTH = WIDTH
 relative.FLEET_CHUNK = FLEET_CHUNK
 
 local STOP_SECTIONS = { "head", "slots", "unserved", "deliveries", "control", "setup", "effective", "events", "buttons" }
-local TRAIN_SECTIONS = { "head", "manifest", "route", "schedule", "signal", "events", "buttons" }
+local TRAIN_SECTIONS = { "head", "alert", "manifest", "route", "schedule", "signal", "events", "buttons" }
 
 local STATUS_COLOR = {
 	no_power = "red",
@@ -1088,8 +1089,19 @@ local function render_control(state, body, m)
 	end
 end
 
-local function render_setup(state, body, m)
-	local sig = m.lint_bits .. ":" .. m.lint_pass
+--- Whether a finding line gets the Recount deliveries button: the counter-leak direction of a phantom finding.
+local function leak_of(findings)
+	for _, f in ipairs(findings) do
+		if xlogic.is_counter_leak(f) then return true end
+	end
+	return false
+end
+
+local function render_setup(state, body, m, pd)
+	local player = game.get_player(pd.player_index)
+	if not player then return end
+	local leak = m.sub == "station" and leak_of(m.findings)
+	local sig = m.lint_bits .. ":" .. m.lint_pass .. (leak and (":" .. repair.recount_sig(player, pd, state.id)) or "")
 	if state.sigs["setup"] ~= sig then
 		section(state, body, "setup", sig, function()
 			local out = { heading({ "cybersyn-gui.relative-setup" }) }
@@ -1106,6 +1118,7 @@ local function render_setup(state, body, m)
 				-- Same detail and fix texts as the Problems tab, so one finding reads alike in both places.
 				out[#out + 1] = note(pm.detail(f, problems_tab.ENV))
 				out[#out + 1] = note(pm.fix(f.check))
+				if leak and xlogic.is_counter_leak(f) then out[#out + 1] = repair.recount_button(player, pd, state.id) end
 			end
 			return out
 		end)
@@ -1247,8 +1260,19 @@ local function event_rows_sig(rows)
 	return table.concat(parts, ",")
 end
 
+--- The alert's own name ("Train stuck") for an alert event, nil for any other kind.
+--- @param ev {kind: int, code: int}
+--- @return LocalisedString?
+local function alert_name(ev)
+	local name = ev.kind == DIAG_KIND_ALERT and DIAG_ALERT_NAMES[ev.code]
+	return name and { "cybersyn-diag.alert-" .. string.gsub(name, "_", "-") } or nil
+end
+
 local function event_caption(ev, now, d)
-	local caption = rtext.event_row(ev, now, util.short_duration)
+	local alert = alert_name(ev)
+	-- An alert row names the alert where other rows name their kind: "Alert" alone says nothing.
+	local caption = alert and { "", util.short_duration(rtext.age_step(now - ev.tick)), "  ", alert }
+		or rtext.event_row(ev, now, util.short_duration)
 	local hash = ev.item ~= 0 and d and d.item_hash[ev.item] or nil
 	local _, _, item_tooltip = hash and util.item_sprite_and_tooltip(hash)
 	if item_tooltip then caption = { "", caption, "  ", item_tooltip } end
@@ -1356,23 +1380,16 @@ local function extras_sig(player, pd, kind, id)
 	return "|" .. extras.tools_sig(pd, kind, id) .. "|" .. repair.sig(player, pd, kind, id)
 end
 
---- The footer rows: `row` (the panel's own buttons) with the phase-10 tool buttons appended, the action row below,
---- and the latest Test path result of this stop.
+--- The footer rows: `row` (the panel's own buttons) with the phase-10 tool buttons appended, and for a train the
+--- action row below.
 --- @return flib.GuiElemDef[]
 local function extras_rows(player, pd, kind, id, row)
 	local rows = { row }
 	if kind == "train" then
 		-- Open in manager and Locate fill the train panel's first row; the tools share the action row.
-		local actions_row = repair.train_row(player, pd, id, extras.train_tools(pd, id))
-		rows[#rows + 1] = actions_row
+		rows[#rows + 1] = repair.train_row(player, pd, id, extras.train_tools(pd, id))
 	else
 		for _, def in ipairs(extras.stop_tools()) do row[#row + 1] = def end
-		local actions_row = repair.stop_row(player, pd, id)
-		if actions_row then rows[#rows + 1] = actions_row end
-	end
-	if kind == "stop" then
-		local caption = extras.path_note(pd, id)
-		if caption then rows[#rows + 1] = line(caption) end
 	end
 	return rows
 end
@@ -1533,6 +1550,32 @@ local function render_train_head(state, body, m)
 			return out
 		end)
 	end
+end
+
+--- The Cybersyn alert on the train (the warning triangle of the Trains tab and the map), named.
+local function render_alert(state, body)
+	local alerts = storage.active_alerts
+	local alert = alerts and alerts[state.id]
+	local code = alert and alert[2]
+	local sig = code and tostring(code) or ""
+	if state.sigs["alert"] == sig then return end
+	section(state, body, "alert", sig, function()
+		if not code then return nil end
+		local name = DIAG_ALERT_NAMES[code]
+		return { {
+			type = "flow",
+			direction = "horizontal",
+			style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+			{ type = "sprite", sprite = "utility/warning_icon", resize_to_sprite = false, style_mods = { size = 20 } },
+			{
+				type = "button",
+				name = "alert_chip",
+				style = "cybersyn_chip_orange",
+				caption = name and { "cybersyn-diag.alert-" .. string.gsub(name, "_", "-") } or { "cybersyn-gui.overview-alert-0" },
+				tooltip = { "cybersyn-gui.relative-alert-tooltip" },
+			},
+		} }
+	end)
 end
 
 local function render_manifest(state, body, m)
@@ -1745,7 +1788,7 @@ function relative.render(pd, state, panel)
 		render_unserved(state, body, m, compact)
 		render_deliveries(state, body, m)
 		render_control(state, body, m)
-		render_setup(state, body, m)
+		render_setup(state, body, m, pd)
 		render_effective(state, body, m)
 		if m.sub == "station" then
 			render_events(state, body, "station", state.id, compact and EVENTS_COMPACT or EVENTS)
@@ -1759,6 +1802,7 @@ function relative.render(pd, state, panel)
 	if not m then return nil end
 	render_caption(state, panel, m, pd)
 	render_train_head(state, body, m)
+	render_alert(state, body)
 	render_manifest(state, body, m)
 	render_route(state, body, m)
 	render_schedule(state, body, m)
@@ -1839,12 +1883,35 @@ local function place_train(player, frame)
 	frame.location = { x = math.floor((TRAIN_PANE_RIGHT + GAP) * scale), y = math.floor((TRAIN_PANE_TOP + GAP) * scale) }
 end
 
+--- The player's screen in physical px and UI scale, or the one dev.set_layout emulates (as the manager window's sizing).
+--- @param player LuaPlayer
+--- @return number width
+--- @return number height
+--- @return number scale
+local function screen_of(player)
+	local pd = storage.manager and storage.manager.players[player.index]
+	local o = pd and pd.layout_override
+	if o then return o.width, o.height, o.scale end
+	local r = player.display_resolution
+	return r.width, r.height, player.display_scale
+end
+
+--- Whether the stop panel is shown on this player's screen (PLAN4 D16): only where the vanilla window and the panel
+--- both fit. A narrower screen gets no panel, never a cut or overlapping one; "Open in manager" is the way there.
+--- @param player LuaPlayer
+--- @return boolean
+function relative.stop_fits(player)
+	local width, _, scale = screen_of(player)
+	return xlogic.stop_panel_fits(width, scale)
+end
+
 --- Caps the panel's height to the player's screen: a stop with many requests, findings and events scrolls instead of
 --- running off a 1080p screen at scale 1.
 --- @param player LuaPlayer
 --- @param panel LuaGuiElement a relative.build result
 function relative.fit(player, panel)
-	local screen = math.floor(player.display_resolution.height / player.display_scale)
+	local _, h, scale = screen_of(player)
+	local screen = math.floor(h / scale)
 	local height
 	if panel.tags.kind == "stop" then
 		height = math.min(STOP_BODY_MAX, screen - STOP_SCREEN_MARGIN)
@@ -1891,6 +1958,11 @@ function relative.open(player, pd, kind, id, key)
 	pd.relative_open = { kind = kind, id = id, mount = key ~= kind and key or nil }
 	storage.manager.relative_any = true
 	if key == "train" then place_train(player, frame) end
+	if key == "stop" and not relative.stop_fits(player) then
+		-- Still open, so a display change that makes room shows it (relative.on_display_changed); nothing renders.
+		pd.relative_open.narrow = true
+		return
+	end
 	relative.fit(player, panel)
 	frame.visible = true
 	state.burst = true
@@ -2081,6 +2153,8 @@ function relative.tick(manager_data)
 				pd.relative = nil
 			elseif not window_open(player, open) then
 				relative.close(player, pd)
+			elseif open.narrow then
+				-- Hidden on a narrow screen: the window check above is all it costs.
 			else
 				local p = manager_data.relative_samples and game.create_profiler()
 				local alive = relative.render(pd, state, panel)
@@ -2106,6 +2180,29 @@ function relative.on_display_changed(player, pd)
 	local panel = frame and frame[PANEL]
 	if not panel then return end
 	if mount_key(open) == "train" then place_train(player, frame) end
+	if mount_key(open) == "stop" then
+		local fits = relative.stop_fits(player)
+		if fits == (open.narrow == nil) then
+			if frame.visible then relative.fit(player, panel) end
+			return
+		end
+		if not fits then
+			open.narrow = true
+			frame.visible = false
+			return
+		end
+		open.narrow = nil
+		relative.fit(player, panel)
+		frame.visible = true
+		local state = pd.relative
+		if state then
+			state.burst = true
+			local alive = relative.render(pd, state, panel)
+			state.burst = nil
+			if not alive then relative.close(player, pd) end
+		end
+		return
+	end
 	relative.fit(player, panel)
 end
 
@@ -2471,7 +2568,7 @@ function dev_fns.relative_profile(pi)
 	step("unserved", function() render_unserved(state, body, m, compact) end)
 	step("deliveries", function() render_deliveries(state, body, m) end)
 	step("control", function() render_control(state, body, m) end)
-	step("setup", function() render_setup(state, body, m) end)
+	step("setup", function() render_setup(state, body, m, pd) end)
 	step("effective", function() render_effective(state, body, m) end)
 	step("events", function() render_events(state, body, "station", state.id, compact and EVENTS_COMPACT or EVENTS) end)
 	step("buttons", function() render_stop_buttons(state, panel.footer, m, pd) end)
@@ -2492,6 +2589,13 @@ function dev_fns.relative_samples(on, print)
 	end
 	if not on then samples = {} end
 	return out
+end
+
+--- The display-change handler as on_player_display_resolution_changed / _scale_changed run it (after set_layout).
+function dev_fns.relative_display_changed(pi)
+	local player, pd = dev_context(pi)
+	relative.on_display_changed(player, pd)
+	return dev_fns.relative_dump(pi)
 end
 
 --- Whether the open panel skips the vanilla-window check (relative_open sets it; false lets the next tick apply it).

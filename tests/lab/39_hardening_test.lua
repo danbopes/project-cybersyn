@@ -1,7 +1,7 @@
 -- Phase 7 hardening (PLAN3 §5 row 7): the one Escape rule for every overlay (Explain, the item drill-down, the Trains
 -- pane, a focused search) on pinned and unpinned windows, the modal action dialog and its hand-back, lint transitions
 -- not logged twice after a dropped half pass, the per-item station index behind the drill-down, the Trains table on
--- a narrow window, Test path's rate limit, relative.tick's open-panel flag and the growth sampler.
+-- a narrow window, relative.tick's open-panel flag and the growth sampler.
 -- Escape is emulated as the engine does it: player.opened set to nil raises on_gui_closed for the window.
 
 local DEV = "cybersyn-manager-dev"
@@ -314,17 +314,6 @@ lab.suite("39_hardening", {
 		dev("select_tab", PI, "overview")
 	end,
 
-	-- Test path: one pathfinder request per player per second; a click in between gets the last answer again.
-	function()
-		local stop = next(read("stations"))
-		local tid = next(read("trains"))
-		local a = dev("test_path", PI, stop, tid)
-		local b = dev("test_path", PI, stop, tid, true)
-		lab.check("a second Test path in the same tick is not asked again", a and b and a.seq == b.seq, { a, b })
-		local c = dev("test_path", PI, stop, tid)
-		lab.check("after the limit the next one is", c and c.seq == a.seq + 1, c)
-	end,
-
 	-- relative.tick walks no players while no panel is open.
 	function()
 		local station = next(read("stations"))
@@ -351,7 +340,8 @@ lab.suite("39_hardening", {
 		lab.check("Confirm in a dialog opened with the right, after it was taken away: refused, not audited",
 			d.ran == false and recalcs == 0, { d = d, recalcs = recalcs })
 		dev("set_setting", "cybersyn-manager-actions", "everyone")
-		-- Send home: the schedule's current record is the depot.
+		-- Send home with diagnostics off: the schedule's current record is the depot, and the action still logs and
+		-- prints its audit line.
 		local tid, depot
 		for id, t in pairs(read("trains")) do
 			if t.manifest and t.status >= 1 and t.status <= 4 and t.depot_id then
@@ -360,9 +350,14 @@ lab.suite("39_hardening", {
 			end
 		end
 		if tid then
+			dev("set_setting", "cybersyn-diagnostics", "off")
 			dev("relative_open", PI, "train", tid)
+			dev("last_audit", true)
 			dev("action_click", PI, "fail_delivery")
 			dev("action_click", PI, "fail_delivery")
+			local audit = dev("last_audit")
+			lab.check("with diagnostics off, Send home is still audited (force line)", type(audit) == "table"
+				and audit[1] == "cybersyn-messages.audit-fail-delivery", audit)
 			local t = read("trains", tid)
 			local schedule = t.entity.get_schedule()
 			local current = schedule.get_records()[schedule.current]
@@ -370,21 +365,10 @@ lab.suite("39_hardening", {
 			lab.check("Send home: the schedule's current record is the train's depot", current and current.station == name,
 				{ current = current and current.station, depot = name })
 			dev("relative_close", PI)
+			dev("set_setting", "cybersyn-diagnostics", "basic")
 		else
-			lab.skip("Send home schedule", "no train on a delivery at this point of the run")
+			lab.skip("Send home schedule and audit", "no train on a delivery at this point of the run")
 		end
-		-- Diagnostics off: the action still logs and prints its audit line.
-		dev("set_setting", "cybersyn-diagnostics", "off")
-		local station = next(read("stations"))
-		dev("relative_open", PI, "stop", station)
-		dev("last_audit", true)
-		dev("action_click", PI, "rescan")
-		dev("action_click", PI, "rescan")
-		local audit = dev("last_audit")
-		lab.check("with diagnostics off, Rescan is still audited (force line)", type(audit) == "table"
-			and audit[1] == "cybersyn-messages.audit-rescan", audit)
-		dev("relative_close", PI)
-		dev("set_setting", "cybersyn-diagnostics", "basic")
 		dev("set_setting", "cybersyn-manager-actions", setting)
 		lab.check("diagnostics back on", dev("diag_state").mode == "basic")
 	end,

@@ -2,9 +2,10 @@
 -- runs an existing code path for one entity per click, behind the `cybersyn-manager-actions` rule (checked in the
 -- click handler, never trusted from a disabled button), a confirm step, and the audit trail of actions.audit.
 --   Fail delivery and send home   interface.fail_delivery + the depot schedule (train panel)
---   Rescan station                the combinator re-read the planner applies at tick_init (stop panel)
---   Recalculate train sizes       retrigger_train_calculation, every train at once (dialog)
---   Refresh allow-lists           update_train_layout per train, chunked by trains and stop visits (dialog)
+--   Recount deliveries            one station's delivery counters from the trains bound to it (stop panel, on the
+--                                 counter-leak finding only)
+--   Refresh allow-lists           update_train_layout per train, chunked by trains and stop visits (console command)
+-- The confirm dialog below served the panel's Recalculate / Refresh tools; PLAN4 D13 took those off the panel.
 
 local gui = require("__flib__.gui")
 
@@ -48,10 +49,12 @@ function repair.can_fail(id)
 	return train ~= nil and train.manifest ~= nil and DELIVERY_STATUSES[train.status] == true
 end
 
+--- Whether Recount deliveries has a station to act on.
 --- @param id uint
 --- @return boolean
-function repair.can_rescan(id)
-	return storage.stations[id] ~= nil or storage.refuelers[id] ~= nil
+function repair.can_recount(id)
+	local station = storage.stations[id]
+	return station ~= nil and station.entity_stop ~= nil and station.entity_stop.valid
 end
 
 -- ---------------------------------------------------------------- the actions
@@ -75,27 +78,30 @@ function repair.fail_delivery(train_id)
 	return true
 end
 
---- Re-reads a station's (or refueler's) combinators the way a combinator change does: a station is queued for the
---- planner's tick_init re-read, a refueler is read at once; an automatic allow-list is rebuilt from the rails.
---- @param stop_id uint
---- @return boolean done
-function repair.rescan(stop_id)
-	local station = storage.stations[stop_id]
-	if station then
-		queue_station_for_combinator_update(storage, stop_id)
-		if not station.allows_all_trains then reset_stop_layout(storage, station, true) end
-		return true
+--- Sets one station's `deliveries_total` and `deliveries` to what the trains bound to it account for (the counter
+--- leak of PLAN4 D10: on_failed_delivery skips the decrement while a combinator is invalid), then refreshes what the
+--- dispatcher derives from them: the comb2 output and the "deliveries pending" bit of the stop's display.
+--- @param station_id uint
+--- @return {total: int, deliveries: {[string]: int}}? before nil when the station is gone
+--- @return {total: int, deliveries: {[string]: int}, trains: uint[]}? after
+function repair.recount(station_id)
+	if not repair.can_recount(station_id) then return nil, nil end
+	local station = storage.stations[station_id]
+	local copy = {}
+	for h, n in pairs(station.deliveries or {}) do copy[h] = n end
+	local before = { total = station.deliveries_total or 0, deliveries = copy }
+	local total, deliveries, ids = logic.recount(storage.trains, station_id, hash_item)
+	station.deliveries_total = total
+	station.deliveries = deliveries
+	set_comb2(storage, station)
+	if total == 0 and bit32.band(station.display_state, 1) > 0 then
+		station.display_state = station.display_state - 1
+		update_display(storage, station)
+	elseif total > 0 and bit32.band(station.display_state, 1) == 0 then
+		station.display_state = station.display_state + 1
+		update_display(storage, station)
 	end
-	local refueler = storage.refuelers[stop_id]
-	if refueler and refueler.entity_comb and refueler.entity_comb.valid then
-		local pre = refueler.allows_all_trains
-		set_refueler_from_comb(storage, mod_settings, stop_id, refueler)
-		if refueler.allows_all_trains ~= pre or not refueler.allows_all_trains then
-			update_stop_if_auto(storage, refueler, false)
-		end
-		return true
-	end
-	return false
+	return before, { total = total, deliveries = deliveries, trains = ids }
 end
 
 --- @param player LuaPlayer?
@@ -174,21 +180,7 @@ function repair.confirm_button(player, pd, name, key, caption, tooltip, handler,
 	}
 end
 
---- A tool button that opens a dialog for an action on many entities.
-local function dialog_tool(player, name, sprite, tooltip, handler)
-	local allowed = actions.may_act(player)
-	return {
-		type = "sprite-button",
-		name = name,
-		style = "tool_button",
-		sprite = sprite,
-		tooltip = allowed and tooltip or { "cybersyn-gui.action-admin-only" },
-		enabled = allowed,
-		handler = { [defines.events.on_gui_click] = handler },
-	}
-end
-
---- Second footer row of the train panel: Send home, then `tools` (read-only, extras.lua), then the two dialogs.
+--- Second footer row of the train panel: Send home, then `tools` (read-only, extras.lua).
 --- @param player LuaPlayer
 --- @param pd PlayerData
 --- @param train_id uint
@@ -206,26 +198,7 @@ function repair.train_row(player, pd, train_id, tools)
 		{ type = "empty-widget", style = "flib_horizontal_pusher" },
 	}
 	for _, def in ipairs(tools or {}) do row[#row + 1] = def end
-	row[#row + 1] = { type = "empty-widget", style_mods = { width = 8 } }
-	row[#row + 1] = dialog_tool(player, "recalc", "utility/reset", { "cybersyn-gui.action-recalc-tooltip" },
-		repair.handle.repair_recalc_click)
-	row[#row + 1] = dialog_tool(player, "allow_lists", "utility/refresh", { "cybersyn-gui.action-allow-tooltip" },
-		repair.handle.repair_allow_click)
 	return row
-end
-
---- Second footer row of the stop panel (stations and refuelers; a depot caches nothing to re-read).
---- @return flib.GuiElemDef?
-function repair.stop_row(player, pd, stop_id)
-	if not repair.can_rescan(stop_id) then return nil end
-	return {
-		type = "flow",
-		name = "actions",
-		direction = "horizontal",
-		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-		repair.confirm_button(player, pd, "rescan", "rescan:" .. stop_id, { "cybersyn-gui.action-rescan" },
-			{ "cybersyn-gui.action-rescan-tooltip" }, repair.handle.repair_rescan_click, true),
-	}
 end
 
 --- The part of a panel footer's signature these rows depend on.
@@ -235,10 +208,30 @@ end
 --- @param id uint
 --- @return string
 function repair.sig(player, pd, kind, id)
-	local key = kind == "train" and ("fail:" .. id) or ("rescan:" .. id)
-	local armed = logic.confirm_armed(pd.confirm, key, game.tick)
-	local applicable = kind == "train" and repair.can_fail(id) or kind ~= "train"
-	return (actions.may_act(player) and "a" or "n") .. (armed and "c" or "") .. (applicable and "y" or "")
+	if kind ~= "train" then return "" end
+	local armed = logic.confirm_armed(pd.confirm, "fail:" .. id, game.tick)
+	return (actions.may_act(player) and "a" or "n") .. (armed and "c" or "") .. (repair.can_fail(id) and "y" or "")
+end
+
+--- The Recount deliveries button of the stop panel's counter-leak finding.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param station_id uint
+--- @return flib.GuiElemDef
+function repair.recount_button(player, pd, station_id)
+	return repair.confirm_button(player, pd, "recount_deliveries", "recount:" .. station_id,
+		{ "cybersyn-gui.action-recount" }, { "cybersyn-gui.action-recount-tooltip" }, repair.handle.repair_recount_click,
+		repair.can_recount(station_id))
+end
+
+--- The part of the stop panel's Setup signature the Recount button depends on.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param station_id uint
+--- @return string
+function repair.recount_sig(player, pd, station_id)
+	local armed = logic.confirm_armed(pd.confirm, "recount:" .. station_id, game.tick)
+	return (actions.may_act(player) and "a" or "n") .. (armed and "c" or "")
 end
 
 --- A click on a confirm button: arms it, or on the second click checks the right again and runs `run`.
@@ -276,19 +269,29 @@ function repair.handle.repair_fail_click(player, pd, e)
 	end)
 end
 
-function repair.handle.repair_rescan_click(player, pd, e)
+--- Text of a station's per-item counters for the force line: "iron-plate 400, coal -50" in hash order, or "–".
+local function deliveries_text(deliveries)
+	local keys = {}
+	for h in pairs(deliveries) do keys[#keys + 1] = h end
+	table.sort(keys)
+	for i, h in ipairs(keys) do keys[i] = h .. " " .. tostring(deliveries[h]) end
+	return #keys > 0 and table.concat(keys, ", ") or "–"
+end
+
+function repair.handle.repair_recount_click(player, pd, e)
 	local kind, id = repair.subject(e.element)
 	if kind ~= "stop" then return end
-	confirm_click(player, pd, e, "rescan station", function()
+	confirm_click(player, pd, e, "recount deliveries", function()
 		local stop = storage.stations[id] and storage.stations[id].entity_stop
-			or storage.refuelers[id] and storage.refuelers[id].entity_stop
-		if not repair.rescan(id) then
+		local before, after = repair.recount(id)
+		if not (before and after) then
 			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 			return
 		end
 		local tag = stop and stop.valid and ("[train-stop=" .. stop.unit_number .. "]") or tostring(id)
-		actions.audit(ACTION_RESCAN_STATION, id, player, { "cybersyn-gui.action-rescan" },
-			{ "cybersyn-messages.audit-rescan", player.name, tag }, nil, id)
+		actions.audit(ACTION_RECOUNT_DELIVERIES, id, player, { "cybersyn-gui.action-recount" },
+			{ "cybersyn-gui.action-recount-done", player.name, tag, tostring(before.total), tostring(after.total),
+				deliveries_text(before.deliveries), deliveries_text(after.deliveries) }, nil, id)
 	end)
 end
 
@@ -441,16 +444,6 @@ function repair.open_dialog(player, pd, which)
 	player.opened = frame
 end
 
-function repair.handle.repair_recalc_click(player, pd)
-	if not actions.check(player, "recalculate train sizes") then return end
-	repair.open_dialog(player, pd, "recalc")
-end
-
-function repair.handle.repair_allow_click(player, pd)
-	if not actions.check(player, "refresh allow-lists") then return end
-	repair.open_dialog(player, pd, "allow")
-end
-
 function repair.handle.repair_dialog_back(player, pd)
 	repair.close_dialog(player, pd, true)
 end
@@ -527,6 +520,29 @@ function repair.wrapper(e, handler)
 end
 
 gui.add_handlers(repair.handle, repair.wrapper, "cybersyn_repair")
+
+--- /cybersyn-refresh-allow-lists: the allow-list job the train panel's tool used to start, behind the same right.
+--- @param command CustomCommandData
+function repair.allow_lists_command(command)
+	local player = command.player_index and game.get_player(command.player_index) or nil
+	if not actions.check(player, "/" .. command.name) then return end
+	if not storage.manager then return end
+	if storage.manager.repair_job then
+		local text = { "cybersyn-gui.action-dialog-allow-running" }
+		if player then player.print(text) else game.print(text) end
+		return
+	end
+	repair.start_allow_job(player)
+	local name = player and player.name or "server"
+	actions.audit(ACTION_REFRESH_ALLOW_LISTS, nil, player, "/" .. command.name,
+		{ "cybersyn-messages.audit-allow-lists", name, tostring(#storage.manager.repair_job.ids) })
+end
+
+-- In the console commands' table too (scripts/commands.lua, loaded first in control.lua; the host unit harness loads
+-- this module alone), where the dev interface's run_command finds it.
+if cybersyn_command_handlers then cybersyn_command_handlers["cybersyn-refresh-allow-lists"] = repair.allow_lists_command end
+commands.add_command("cybersyn-refresh-allow-lists", { "cybersyn-gui.action-allow-command-help" },
+	repair.allow_lists_command)
 
 -- ---------------------------------------------------------------- dev interface
 
