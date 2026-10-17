@@ -80,6 +80,7 @@ local KIND_SPRITE_CANDIDATES = {
 	[DIAG_KIND_LEAVE_R] = { "item/locomotive" },
 	[DIAG_KIND_RETURNED] = { "item/locomotive" },
 	[DIAG_KIND_TRAIN_STATE] = { "item/locomotive" },
+	[DIAG_KIND_SLOW_DELIVERY] = { "utility/clock" },
 }
 local kind_sprites
 

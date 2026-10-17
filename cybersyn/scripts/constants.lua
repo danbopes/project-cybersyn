@@ -146,7 +146,8 @@ REJ_REASON = {
 	REASON_P_AT_LIMIT, REASON_P_IS_REQUESTING, REASON_MASK_MISMATCH, REASON_NO_SURFACE_ROUTE, REASON_P_BELOW_THRESHOLD,
 }
 
--- Event kinds of the two rings. Kinds 1-18 go to the basic ring, 19-25 (DIAG_KIND_FULL) only to the full ring.
+-- Event kinds of the two rings. Kinds 1-18 and 26 go to the basic ring, 19-25 (DIAG_KIND_FULL) only to the full ring.
+-- Kinds are positional (saved rings and exports hold the numbers): new kinds are appended.
 -- short_load, unexpected_cargo, residual_cargo, schedule_edited, lint and manual_action are declared for the ring
 -- schema; their hooks land in phase 2b.
 DIAG_KIND_UNSERVED_REASON = 1
@@ -174,11 +175,12 @@ DIAG_KIND_ARRIVE_R = 22
 DIAG_KIND_LEAVE_R = 23
 DIAG_KIND_RETURNED = 24
 DIAG_KIND_TRAIN_STATE = 25
+DIAG_KIND_SLOW_DELIVERY = 26
 DIAG_KIND_NAMES = {
 	"unserved_reason", "served", "flapping", "dispatch_failed", "delivery_failed", "alert", "station_power",
 	"station_limit", "station_warmup_done", "station_disabled", "short_load", "unexpected_cargo", "residual_cargo",
 	"schedule_edited", "lint", "acknowledged", "unacknowledged", "manual_action", "dispatched", "arrive_p", "leave_p",
-	"arrive_r", "leave_r", "returned", "train_state",
+	"arrive_r", "leave_r", "returned", "train_state", "slow_delivery",
 }
 --- Locale key suffix per kind: [cybersyn-diag] kind-<key>.
 DIAG_KIND_KEYS = {}

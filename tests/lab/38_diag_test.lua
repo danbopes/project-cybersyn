@@ -76,7 +76,9 @@ lab.suite("38_diag", {
 		lab.check("ring sizes: basic 4,096, full from the setting (16,384)",
 			st.ring_basic_size == 4096 and st.ring_full_size == 16384, st)
 		lab.check("the log has events after the trace", st.seq > 0 and st.count_basic > 0, st)
-		lab.check("kinds table names all 25 kinds", #st.kinds == 25 and st.kinds[2] == "served", st.kinds)
+		-- PLAN4 D14 appends slow_delivery as kind 26.
+		lab.check("kinds table names all 26 kinds", #st.kinds == 26 and st.kinds[2] == "served" and
+			st.kinds[26] == "slow_delivery", st.kinds)
 		-- Step 2 (phase 2b): the sweep and ring fields, the planner-cycle counters, refuel_since.
 		lab.check("schema step 2 recorded", lab.read("fork_schema") == 2, lab.read("fork_schema"))
 		local acks = lab.read("acks")

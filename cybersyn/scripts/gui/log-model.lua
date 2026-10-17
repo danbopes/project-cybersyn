@@ -36,8 +36,8 @@ model.GROUPS = {
 	},
 	{
 		name = "deliveries",
-		kinds = { DIAG_KIND_DISPATCH_FAILED, DIAG_KIND_DELIVERY_FAILED, DIAG_KIND_DISPATCHED, DIAG_KIND_ARRIVE_P,
-			DIAG_KIND_LEAVE_P, DIAG_KIND_ARRIVE_R, DIAG_KIND_LEAVE_R, DIAG_KIND_RETURNED },
+		kinds = { DIAG_KIND_DISPATCH_FAILED, DIAG_KIND_DELIVERY_FAILED, DIAG_KIND_SLOW_DELIVERY, DIAG_KIND_DISPATCHED,
+			DIAG_KIND_ARRIVE_P, DIAG_KIND_LEAVE_P, DIAG_KIND_ARRIVE_R, DIAG_KIND_LEAVE_R, DIAG_KIND_RETURNED },
 	},
 	{
 		name = "stations",
@@ -925,6 +925,8 @@ function model.message(g, ctx)
 		return { msg, amount(b), format.number(a) }
 	elseif kind == DIAG_KIND_ARRIVE_P or kind == DIAG_KIND_LEAVE_P or kind == DIAG_KIND_ARRIVE_R then
 		return { msg, amount(a) }
+	elseif kind == DIAG_KIND_SLOW_DELIVERY then
+		return { msg, ctx.duration(a), b > 0 and string.format("%.1f", a / b) or "–", ctx.duration(b) }
 	elseif kind == DIAG_KIND_TRAIN_STATE then
 		if code == defines.train_state.wait_signal then
 			return { msg .. "-wait-signal", ctx.duration(a) }

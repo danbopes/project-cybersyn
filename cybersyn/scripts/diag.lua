@@ -66,7 +66,7 @@ local STATION2_IS_STATION = {
 	[DIAG_KIND_DISPATCH_FAILED] = true, [DIAG_KIND_DELIVERY_FAILED] = true, [DIAG_KIND_ALERT] = true,
 	[DIAG_KIND_SHORT_LOAD] = true, [DIAG_KIND_UNEXPECTED_CARGO] = true, [DIAG_KIND_RESIDUAL_CARGO] = true,
 	[DIAG_KIND_DISPATCHED] = true, [DIAG_KIND_ARRIVE_P] = true, [DIAG_KIND_LEAVE_P] = true,
-	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true,
+	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true, [DIAG_KIND_SLOW_DELIVERY] = true,
 }
 diag.STATION2_IS_STATION = STATION2_IS_STATION
 
@@ -1351,6 +1351,22 @@ function diag.dispatched(d, train_id, train, r_id, p_id, manifest, first_hash)
 	diag.event(d, DIAG_KIND_DISPATCHED, DIAG_SEV_INFO, 0, id, train_id, r_id, p_id,
 		first_hash and intern(d, first_hash) or 0, #manifest, total)
 end
+
+--- A delivery took more than stats.SLOW_FACTOR times its item's average trip (basic ring): `a` = the trip in ticks,
+--- `b` = the average it was judged against; station = requester, station2 = provider, item = the manifest's first.
+--- @param train Train
+--- @param hash string
+--- @param ticks uint
+--- @param avg number
+function diag.slow_delivery(train, hash, ticks, avg)
+	local d = storage.diag
+	if not d then return end
+	local entity = train.entity
+	local train_id = entity and entity.valid and entity.id or 0
+	diag.event(d, DIAG_KIND_SLOW_DELIVERY, DIAG_SEV_WARNING, 0, train.delivery_id or 0, train_id,
+		train.r_station_id or 0, train.p_station_id or 0, intern(d, hash), ticks, math.floor(avg + 0.5))
+end
+stats.set_slow_listener(diag.slow_delivery)
 
 --- Arrivals, departures and the return to a depot (full only).
 --- @param kind int DIAG_KIND_ARRIVE_P .. DIAG_KIND_RETURNED
