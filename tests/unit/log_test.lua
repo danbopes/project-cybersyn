@@ -758,11 +758,11 @@ test("names: lead · text · tail; when the cell is short the lead icons go befo
 	local name_cell = require("scripts.gui.name-cell")
 	local parts = { lead = { "item/a", "item/b", "item/c" }, tail = { "item/x", "item/y" }, text = "Requestor for" }
 	-- 5 icons × 22 px + 120 px of text + 4 fit 234 px.
-	assert_eq({ name_cell.fit(parts, 300) }, { 3, 2 })
-	assert_eq({ name_cell.fit(parts, 234) }, { 3, 2 })
-	assert_eq({ name_cell.fit(parts, 233) }, { 2, 2 })
-	assert_eq({ name_cell.fit(parts, 168) }, { 0, 2 })
-	assert_eq({ name_cell.fit(parts, 140) }, { 0, 0 })
-	assert_eq({ name_cell.fit({ lead = { "a", "b", "c", "d" } }, 1000) }, { 3, 0 }, "at most POOL_ICONS a side")
-	assert_eq({ name_cell.fit(nil, 300) }, { 0, 0 })
+	assert_eq({ name_cell.fit_counts(parts, 300) }, { 3, 2 })
+	assert_eq({ name_cell.fit_counts(parts, 234) }, { 3, 2 })
+	assert_eq({ name_cell.fit_counts(parts, 233) }, { 2, 2 })
+	assert_eq({ name_cell.fit_counts(parts, 168) }, { 0, 2 })
+	assert_eq({ name_cell.fit_counts(parts, 140) }, { 0, 0 })
+	assert_eq({ name_cell.fit_counts({ lead = { "a", "b", "c", "d" } }, 1000) }, { 3, 0 }, "at most POOL_ICONS a side")
+	assert_eq({ name_cell.fit_counts(nil, 300) }, { 0, 0 })
 end)

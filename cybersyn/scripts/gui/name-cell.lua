@@ -166,7 +166,7 @@ end
 -- Icons per side a pooled cell holds; a name with more shows the first ones.
 name_cell.POOL_ICONS = 3
 -- Logical px the text keeps before icons are dropped.
-name_cell.MIN_TEXT = 120
+name_cell.MIN_TEXT = MIN_TEXT
 
 --- How many lead and tail icons a name shows in a cell `width` px wide: lead · text · tail, and when that is short
 --- the lead icons go first (the tail is what tells a base's similar names apart), then the tail's.
@@ -175,7 +175,7 @@ name_cell.MIN_TEXT = 120
 --- @param max_icons int? per side, default POOL_ICONS
 --- @return int lead
 --- @return int tail
-function name_cell.fit(parts, width, max_icons)
+function name_cell.fit_counts(parts, width, max_icons)
 	max_icons = max_icons or name_cell.POOL_ICONS
 	local lead = parts and parts.lead and math.min(#parts.lead, max_icons) or 0
 	local tail = parts and parts.tail and math.min(#parts.tail, max_icons) or 0
@@ -233,7 +233,7 @@ function name_cell.write_pooled(flow, memo, parts, name, width)
 		button = flow.children[1]
 		memo.button, memo.lead, memo.tail, memo.shown = button, {}, {}, {}
 	end
-	local lead, tail = name_cell.fit(parts, width)
+	local lead, tail = name_cell.fit_counts(parts, width)
 	local shown = memo.shown
 	local function side(list, n, sprites, qualities, prefix, before)
 		for i = 1, math.max(n, #list) do
