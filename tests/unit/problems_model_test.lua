@@ -163,8 +163,14 @@ test("detail: the numbers behind each check", function()
 	assert_eq(d(LINT_OCCUPANCY, 0, 1), { K .. "occupancy", "0", "1" })
 	assert_eq(d(LINT_OCCUPANCY, 0, 1, { train = 412 }), { K .. "occupancy-train", "412", "1", "0" },
 		"the train the stop holds that Cybersyn did not send")
-	assert_eq(d(LINT_PHANTOM, 3, 1, { fix = "phantom-leak" }), { K .. "phantom-leak", "2" },
-		"a counter leak: the deliveries no train serves")
+	assert_eq(d(LINT_PHANTOM, 2, 0, { fix = "phantom-leak" }), { K .. "phantom-leak", "2" },
+		"a counter leak with no train bound")
+	assert_eq(d(LINT_PHANTOM, 3, 2, { fix = "phantom-leak" }), { K .. "phantom-leak-bound", "3", "2", "1" },
+		"a counter leak beside real deliveries keeps both counts")
+	assert_eq(d(LINT_PHANTOM, 1, 3, { train = 15, status = STATUS_P }),
+		{ K .. "phantom-trains", "15", { "cybersyn-diag.lint-train-status-2" }, "3", "1" },
+		"several bound trains: the one named is one of them")
+	assert_eq(d(LINT_PHANTOM, 0, 1), { K .. "phantom", "0", "1" }, "no train named: both counts")
 	assert_eq(d(LINT_PHANTOM, 0, 1, { train = 15, status = STATUS_P }),
 		{ K .. "phantom-train", "15", { "cybersyn-diag.lint-train-status-2" }, "0" }, "a bound train the station does not count")
 	assert_eq(d(LINT_PRIORITY, 49, 0), { K .. "priority", "49", "0" })
@@ -215,7 +221,7 @@ test("locale: every lint caption, fix and detail key, and the tab's keys, in eve
 	end
 	for _, k in ipairs({ "capacity", "capacity-fluid", "capacity-threshold", "layout", "layout-item", "mask-zero", "no-provider", "limit-zero",
 		"same-item-static", "same-item-out", "same-item-in", "occupancy", "occupancy-train", "phantom", "phantom-train",
-		"phantom-leak", "priority", "depot-limit", "depot-limit-none",
+		"phantom-trains", "phantom-leak", "phantom-leak-bound", "priority", "depot-limit", "depot-limit-none",
 		"depot-shared-name", "refueler-mask", "never-refuelled", "in-group", "missing-stop", "capacity-drift",
 		"train-mask", "no-train" }) do
 		keys[#keys + 1] = "lint-detail-" .. k

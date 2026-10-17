@@ -275,8 +275,16 @@ function model.detail(f, env)
 	elseif check == LINT_MASK then
 		return { key .. "-zero", env.network(f.network) }
 	elseif check == LINT_PHANTOM then
-		if f.train then return { key .. "-train", tostring(f.train), { "cybersyn-diag.lint-train-status-" .. (f.status or 0) }, n(a) } end
-		return { key .. "-leak", n(a - b) }
+		if f.train then
+			local status = { "cybersyn-diag.lint-train-status-" .. (f.status or 0) }
+			-- The counter says how many trains, not which: with several bound, the one named may be one it counts.
+			if b > 1 then return { key .. "-trains", tostring(f.train), status, n(b), n(a) } end
+			return { key .. "-train", tostring(f.train), status, n(a) }
+		end
+		if a > b then
+			if b == 0 then return { key .. "-leak", n(a) } end
+			return { key .. "-leak-bound", n(a), n(b), n(a - b) }
+		end
 	elseif check == LINT_OCCUPANCY and f.train then
 		return { key .. "-train", tostring(f.train), n(b), n(a) }
 	elseif check == LINT_NO_PROVIDER then

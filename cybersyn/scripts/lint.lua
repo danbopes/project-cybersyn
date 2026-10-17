@@ -87,10 +87,8 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field groups {[string]: int}? vanilla train group -> depot names among its Cybersyn trains
 --- @field dest {[uint]: int} stop id -> Cybersyn trains heading to or standing at it
 --- @field bound {[uint]: int} station id -> trains its deliveries_total should count
---- @field delivered {[uint]: int} station id -> its deliveries_total, read in the same update as `bound` (only the
----   stations occupancy_index reads; any other station's counter was 0 then)
---- @field counting {[uint]: true} stations whose counter was not 0 when this pass checked them (the next pass's
----   `delivered` reads them)
+--- @field delivered {[uint]: int} station id -> its deliveries_total, read with `bound` (the stations with a sighted gap)
+--- @field named {[uint]: uint} station id -> a train bound to it, for the same stations
 --- @field findings LintFinding[]
 --- @field bits {[uint]: int} this pass's masks, committed with the findings when the pass completes
 --- @field train_bits {[uint]: int}
@@ -111,7 +109,6 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field train_logged {[uint]: int}?
 --- @field occupancy_since {[uint]: uint} stop -> tick the occupancy gap was first seen (cleared when it closes)
 --- @field phantom_since {[uint]: uint}
---- @field counting {[uint]: true}? the last complete pass's LintJob.counting
 --- @field world {tick: uint, findings: LintFinding[]}? the registry as scripts/gui/problems.lua reads it (lint.state)
 --- @field merged {pass: LintFinding[], registry: LintFinding[], list: LintFinding[]}? lint.findings' last result
 
@@ -480,32 +477,35 @@ local function keys_into(t, out)
 	return out
 end
 
---- Trains Cybersyn has heading to or standing at each stop and the deliveries each station's counter should hold,
---- with the counters they are compared against, read in this one update: a station is checked up to a whole pass
---- later (about 50 s on a 2,000-station base), and comparing a live counter with an index that old flagged every
---- train that left a provider in between.
---- Reading every station's counter here cost 0.9-1.5 ms per pass on that base (2,030 cold station tables in one
---- update), so only the counters that can differ from `bound` are read: those of the stations a train is bound to,
---- and those that were not 0 when the last pass checked them (a counter no train serves stays so: a leak). A leak
---- that starts after its station's check is read from the next pass on. The stops' train counts are not copied
---- either: occupancy confirms its few candidates live (foreign_train).
+--- Trains Cybersyn has heading to or standing at each stop and the deliveries each station's counter should hold.
+--- A station is checked up to a whole pass later (about 50 s on a 2,000-station base), and its live counter against
+--- this index is only a sighting: a train that left in between makes a gap. The stations with a sighting from the
+--- last pass (`phantom_since`) are decided here instead, on their counters read in this update, at the same instant
+--- as the index, with a train bound to each named. Reading every station's counter here cost 0.9-1.5 ms in this one
+--- update on that base, and recounting a station's trains at its check one walk of every train per update.
 --- @param job LintJob
 --- @param s LintState
 local function occupancy_index(job, s)
-	local dest, bound = {}, {}
-	for _, train in pairs(storage.trains) do
+	local watch = s.phantom_since
+	local dest, bound, named = {}, {}, {}
+	for train_id, train in pairs(storage.trains) do
 		local status = train.status
 		local p, r = train.p_station_id, train.r_station_id
 		if status == STATUS_TO_P or status == STATUS_P then
 			if p then
 				dest[p] = (dest[p] or 0) + 1
 				bound[p] = (bound[p] or 0) + 1
+				if watch[p] then named[p] = named[p] or train_id end
 			end
-			if r then bound[r] = (bound[r] or 0) + 1 end
+			if r then
+				bound[r] = (bound[r] or 0) + 1
+				if watch[r] then named[r] = named[r] or train_id end
+			end
 		elseif status == STATUS_TO_R or status == STATUS_R then
 			if r then
 				dest[r] = (dest[r] or 0) + 1
 				bound[r] = (bound[r] or 0) + 1
+				if watch[r] then named[r] = named[r] or train_id end
 			end
 		elseif status == STATUS_TO_F or status == STATUS_F then
 			local f = train.refueler_id
@@ -513,30 +513,11 @@ local function occupancy_index(job, s)
 		end
 	end
 	local delivered, stations = {}, storage.stations
-	for _, ids in ipairs({ bound, s.counting or NO_LAYOUTS }) do
-		for id in pairs(ids) do
-			if delivered[id] == nil then
-				local station = stations[id]
-				delivered[id] = station and station.deliveries_total or 0
-			end
-		end
+	for id in pairs(watch) do
+		local station = stations[id]
+		delivered[id] = station and station.deliveries_total or 0
 	end
-	job.dest, job.bound, job.delivered, job.counting = dest, bound, delivered, {}
-end
-
---- A train bound to station `id` (a delivery's provider while it loads or heads there, its requester until it
---- leaves), for the detail of a bound train the station does not count: looked up only for such a finding.
---- @param id uint
---- @return uint? train_id
-local function bound_train(id)
-	for train_id, train in pairs(storage.trains) do
-		local status = train.status
-		if ((status == STATUS_TO_P or status == STATUS_P) and (train.p_station_id == id or train.r_station_id == id)) or
-			((status == STATUS_TO_R or status == STATUS_R) and train.r_station_id == id) then
-			return train_id
-		end
-	end
-	return nil
+	job.dest, job.bound, job.delivered, job.named = dest, bound, delivered, named
 end
 
 --- A pass is set up over three updates, so no update lists thousands of ids and indexes them as well: the station
@@ -672,18 +653,25 @@ local function sent_here(train, id)
 end
 
 --- A train the stop counts (standing at it or heading to it) that Cybersyn did not send there, read now: the
---- index's count says only that there may be one.
+--- index's count says only that there may be one. Also the trains among them Cybersyn did send, read at the same
+--- instant, for the finding's detail.
 --- @param stop LuaEntity
 --- @param id uint
 --- @return uint? train_id
+--- @return int sent
 local function foreign_train(stop, id)
 	local trains = storage.trains
+	local foreign, sent = nil, 0
 	for _, t in pairs(stop.get_train_stop_trains()) do
-		if t.valid and (t.station == stop or t.path_end_stop == stop) and not sent_here(trains[t.id], id) then
-			return t.id
+		if t.valid and (t.station == stop or t.path_end_stop == stop) then
+			if sent_here(trains[t.id], id) then
+				sent = sent + 1
+			elseif not foreign then
+				foreign = t.id
+			end
 		end
 	end
-	return nil
+	return foreign, sent
 end
 lint.sent_here = sent_here
 
@@ -715,24 +703,36 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		local count = stop.trains_count
 		local occupancy = job.dest[id] or 0
 		local bound = job.bound[id] or 0
-		local deliveries = job.delivered[id] or 0
-		local now = station.deliveries_total or 0
-		if now ~= 0 then job.counting[id] = true end
+		local deliveries = job.delivered[id]
+		local tid
+		if deliveries then
+			tid = job.named[id]
+		else
+			deliveries = station.deliveries_total or 0
+		end
 		live.limit = stop.trains_limit
 		live.priority = stop.train_stop_priority
 		live.count = count
 		live.occupancy = occupancy
 		-- Only more trains than Cybersyn sent count: one it sent is routed through a rail record first and is not
 		-- in the stop's count until it heads for the stop itself, and a delivery Cybersyn counts but no train serves
-		-- is the phantom check's. The live count against the pass's index only nominates a candidate; the stop's
-		-- trains, compared with what Cybersyn sent there now, decide it and name the train.
-		local foreign = count > occupancy and foreign_train(stop, id) or nil
+		-- is the phantom check's. The live count against the pass's index only nominates a candidate (as does a gap
+		-- already seen: the index may have counted trains that left since); the stop's trains, compared with what
+		-- Cybersyn sent there now, decide it and name the train.
+		local foreign
+		if count > occupancy or (count > 0 and s.occupancy_since[id]) then
+			local sent
+			foreign, sent = foreign_train(stop, id)
+			if foreign then live.occupancy = sent end
+		end
 		live.occupancy_train = foreign
 		live.occupancy_gap = persisted(s.occupancy_since, id, foreign ~= nil, job, cycle_ticks)
+		-- The counter: a station with a gap sighted at the last pass is decided on the counter read with the index
+		-- (occupancy_index); any other compares its live counter with the index, which can only sight a gap.
 		live.deliveries = deliveries
 		live.bound = bound
 		live.phantom = persisted(s.phantom_since, id, deliveries ~= bound, job, cycle_ticks)
-		local tid = live.phantom and bound > deliveries and bound_train(id) or nil
+		if not (live.phantom and bound > deliveries) then tid = nil end
 		local train = tid and storage.trains[tid]
 		live.phantom_train = tid
 		live.phantom_status = train and train.status or nil
@@ -951,7 +951,6 @@ local function commit(s, job)
 	end
 	s.bits = new
 	s.train_bits = job.train_bits
-	s.counting = job.counting
 	s.logged, s.train_logged = nil, nil
 	resolve_acks(s)
 end
@@ -1338,11 +1337,13 @@ local function eval_around(surface, pos, except)
 	end
 end
 
---- The name overlap of every stop called `name`: set on the stops that are not depots while a depot has the name.
+--- The name overlap of every stop of `force` called `name`: set on the stops that are not depots while a depot has
+--- the name (trains route by name within their own force only).
 --- @param name string?
-local function eval_name(name)
+--- @param force LuaForce
+local function eval_name(name, force)
 	if not name then return end
-	local stops = game.train_manager.get_train_stops({ station_name = name })
+	local stops = game.train_manager.get_train_stops({ station_name = name, force = force })
 	local depots = storage.depots
 	local any = false
 	for _, stop in pairs(stops) do
@@ -1383,28 +1384,42 @@ end
 --- @param stop LuaEntity
 function lint.on_stop_built(stop)
 	eval_stop(stop)
-	eval_name(stop.backer_name)
+	eval_name(stop.backer_name, stop.force)
 end
 
---- A stop is being removed (it is still in the world); `orphans` are the combinators it owned.
+--- A stop is being removed (it is still in the world); `orphans` are the combinators it owned. A combinator facing
+--- away from it is no stop's either and was wrong side only because of it, so every combinator within reach that no
+--- other stop owns, or that the registry holds, is looked at again (the rule eval_stop uses).
 --- @param stop LuaEntity
 --- @param orphans LuaEntity[]
 function lint.on_stop_removed(stop, orphans)
-	for _, comb in ipairs(orphans) do eval_comb(comb, stop) end
+	local seen = {}
+	for _, comb in ipairs(orphans) do
+		seen[comb] = true
+		eval_comb(comb, stop)
+	end
+	local to_stop, entries = storage.to_stop, registry().entries
+	for _, e in pairs(stop.surface.find_entities_filtered({ area = reach_box(stop.position), name = COMBINATOR_NAME })) do
+		if e.valid and not seen[e] then
+			local unit = e.unit_number --[[@as uint]]
+			local owner = to_stop[unit]
+			if entries[unit] or not (owner and owner.valid and owner ~= stop) then eval_comb(e, stop) end
+		end
+	end
 	drop(stop.unit_number --[[@as uint]])
 end
 
 --- @param stop LuaEntity
 --- @param old_name string
 function lint.on_stop_renamed(stop, old_name)
-	eval_name(old_name)
-	eval_name(stop.backer_name)
+	eval_name(old_name, stop.force)
+	eval_name(stop.backer_name, stop.force)
 end
 
 --- A depot was created or removed at `stop`: the stops sharing its name gain or lose the overlap.
 --- @param stop LuaEntity?
 function lint.on_depot_changed(stop)
-	if stop and stop.valid then eval_name(stop.backer_name) end
+	if stop and stop.valid then eval_name(stop.backer_name, stop.force) end
 end
 
 --- A surface is being deleted or cleared: its stops and combinators leave without events of their own.
@@ -1486,12 +1501,15 @@ function lint.registry_seed()
 	local names, n = {}, 0
 	for _, depot in pairs(storage.depots or {}) do
 		local stop = depot.entity_stop
-		if stop and stop.valid and not names[stop.backer_name] then
-			names[stop.backer_name] = true
-			n = n + 1
+		if stop and stop.valid then
+			local key = stop.force.index .. "\1" .. stop.backer_name
+			if not names[key] then
+				names[key] = { stop.backer_name, stop.force }
+				n = n + 1
+			end
 		end
 	end
-	for name in pairs(names) do eval_name(name) end
+	for _, nf in pairs(names) do eval_name(nf[1], nf[2]) end
 	resolve_registry_acks()
 	local manager = storage.manager
 	local s = manager and manager.lint
@@ -1515,13 +1533,18 @@ function lint.registry_findings()
 		end
 		if list then return list end
 	end
-	local units = {}
+	local units, gone = {}, nil
 	for unit, entry in pairs(reg.entries) do
 		if entry.entity.valid then
 			units[#units + 1] = unit
 		else
-			reg.entries[unit] = nil
+			gone = gone or {}
+			gone[#gone + 1] = unit
 		end
+	end
+	-- drop ends the acknowledgements and moves the version, as the event paths do.
+	if gone then
+		for _, unit in ipairs(gone) do drop(unit) end
 	end
 	table.sort(units)
 	list = {}
@@ -1597,10 +1620,12 @@ function lint.report(player)
 		say(where and { "", where, " ", text } or text)
 		n = n + 1
 	end
-	for _, f in ipairs(lint.registry_findings()) do
-		line(f.message == "wrong-side-combinator" and f.stop or f.entity, f.message)
-	end
 	local force = player and player.valid and player.force or nil
+	for _, f in ipairs(lint.registry_findings()) do
+		if not force or f.entity.force == force then
+			line(f.message == "wrong-side-combinator" and f.stop or f.entity, f.message)
+		end
+	end
 	for _, records in ipairs({ storage.stations, storage.depots, storage.refuelers }) do
 		for _, rec in pairs(records) do
 			local stop = rec.entity_stop

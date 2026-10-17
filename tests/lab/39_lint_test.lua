@@ -275,9 +275,6 @@ lab.suite("39_lint", {
 		lx.trip_status = read("trains", ot.id, "status")
 		ot.get_schedule().add_record({ station = "rc-no-such-stop-2", wait_conditions = { { type = "time", ticks = 60 } } })
 		lx.first = pass()
-		-- A counter that leaked since its station's last check is read from the next pass on (PLAN4 D10: the index
-		-- reads only the counters that can differ), so the leak written above needs one pass more than the rest.
-		for _, ev in ipairs(pass()) do lx.first[#lx.first + 1] = ev end
 		lab.wait(1200, SPEED)
 	end,
 
@@ -504,6 +501,15 @@ lab.suite("39_lint", {
 		lab.check("registry: turning it away again unregisters the station and records one wrong-side finding",
 			read("to_stop", w.wrong.unit_number) == nil and read("stations", w.wrong_stop.unit_number) == nil and
 			only(w.wrong, "wrong-side-combinator") and only(w.wrong_stop, nil), registry(w.wrong))
+		-- Removing the stop it faces away from leaves it no stop's at all: derelict, as a fresh seed says.
+		w.wrong_stop.destroy({ raise_destroy = true })
+		lab.check("registry: removing the stop a wrong-side combinator faces away from makes it derelict",
+			only(w.wrong, "derelict-combinator"), registry(w.wrong))
+		lab.check("registry: the seed agrees after the stop's removal", (function()
+			local now = keys()
+			dev("lint_registry_seed")
+			return lab.same_list(now, keys())
+		end)())
 		local derelict_unit = w.derelict.unit_number
 		w.derelict.destroy({ raise_destroy = true })
 		lab.check("registry: removing the derelict combinator drops its finding",
@@ -567,8 +573,12 @@ lab.suite("39_lint", {
 		dev("lint_finish")
 		local gaps = dev("lint_gaps")
 		lab.check("race: the pass completed", dev("lint_state").pass == lx.race_pass + 1, dev("lint_state"))
-		lab.check("race: no phantom gap seen at the provider or the requester", not lab.set_of(gaps.phantom)[q.p.id] and
-			not lab.set_of(gaps.phantom)[q.r.id], gaps)
+		-- The provider's live counter against the pass's older index is only a sighting; the next pass decides it on
+		-- the counter read with its own index.
+		lx.race_sighted = lab.set_of(gaps.phantom)[q.p.id] == true
+		lab.info("race: provider gap sighted on the first pass: " .. tostring(lx.race_sighted))
+		lab.check("race: no phantom finding at the provider or the requester after the provider's race",
+			not has(q.p.id, "phantom") and not has(q.r.id, "phantom"), gaps)
 		lab.wait_until(function()
 			local t = read("trains", q.t1.id)
 			return t and t.status == 4 and q.t1.state == defines.train_state.wait_station
@@ -599,10 +609,21 @@ lab.suite("39_lint", {
 		lab.check("race: the train left the requester during the pass", t.status ~= 4 and
 			read("stations", q.r.id, "deliveries_total") == 0, { status = t.status, state = q.t1.state,
 			deliveries = read("stations", q.r.id, "deliveries_total") })
+		-- A sighted station is decided on the counter read with the index: a counter that differs by the station's
+		-- turn (written here for the length of this one synchronous finish) changes nothing. Read live at the turn,
+		-- it would confirm the provider's sighting from the last pass as a finding.
+		local p_total = read("stations", q.p.id, "deliveries_total")
+		write(7, "stations", q.p.id, "deliveries_total")
 		dev("lint_finish")
+		write(p_total, "stations", q.p.id, "deliveries_total")
 		local gaps = dev("lint_gaps")
-		lab.check("race: no phantom gap at either end over two incremental passes", not lab.set_of(gaps.phantom)[q.p.id]
-			and not lab.set_of(gaps.phantom)[q.r.id], gaps)
+		lab.check("race: the provider's sighting is decided on the counter read with the index: cleared, no finding",
+			not lab.set_of(gaps.phantom)[q.p.id] and not has(q.p.id, "phantom"), { gaps = gaps, sighted = lx.race_sighted })
+		-- One more pass decides the requester's sighting the same way.
+		dev("lint_run")
+		gaps = dev("lint_gaps")
+		lab.check("race: no phantom gap at either end after the pass that decides the sightings",
+			not lab.set_of(gaps.phantom)[q.p.id] and not lab.set_of(gaps.phantom)[q.r.id], gaps)
 		lab.check("race: no phantom or occupancy finding on the row", not has(q.p.id, "phantom") and
 			not has(q.r.id, "phantom") and not has(q.p.id, "occupancy") and not has(q.r.id, "occupancy"),
 			{ p = dev("lint_bits", q.p.id), r = dev("lint_bits", q.r.id) })
