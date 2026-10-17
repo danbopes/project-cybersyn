@@ -56,8 +56,11 @@ local DEFER_ROWS = 12
 -- older above the newer). Under Follow the reader is at the top: the viewport every update, and below it a slice
 -- that would pass the page once per AGE_TICKS, capped at a viewport per update (the Follow path's 1 ms).
 local AGE_TICKS = 120
--- A lint pass's own rows are indented under its row.
-local CHILD_INDENT = "      "
+-- A lint pass's own rows are indented under its row by this many px (the row's left padding; the message cell gives
+-- the room back, so the row keeps its width and its height).
+local CHILD_INDENT = 20
+-- cybersyn_log_row's own left padding.
+local ROW_LEFT_PADDING = 4
 -- Logical px at the 1,392 px content width of a 1,440 px window; the message takes the rest.
 local W = { age = 60, dot = 16, kind = 20, train = 56, station = 300, item = 28, count = 44, print = 28 }
 local BASE_CONTENT_WIDTH = 1392
@@ -733,7 +736,7 @@ local function write_cells(cells, g, m, now, key, expanded, child)
 		(pass and ("|" .. table.concat(g.lint, ",") .. (expanded and "x" or "")) or "") .. (child and "|c" or "")
 	if m.msg ~= msig then
 		local message = log_tab.message(g, expanded)
-		cells[7].caption = child and { "", CHILD_INDENT, message } or message
+		cells[7].caption = message
 		cells[7].tooltip = pass and { "cybersyn-gui.log-lint-pass-tooltip" } or ""
 		m.msg = msig
 	end
@@ -830,6 +833,13 @@ local function row_write(elem, entry, age, still)
 		m.hidden = nil
 	end
 	local cells = row_cells(elem, m)
+	local indent = entry.child and CHILD_INDENT or 0
+	local message_width = r_widths.message - indent
+	if m.ind ~= indent or m.mw ~= message_width then
+		elem.style.left_padding = ROW_LEFT_PADDING + indent
+		cells[7].style.width = message_width
+		m.ind, m.mw = indent, message_width
+	end
 	local moved = m.seq ~= g.seq or m.n_ ~= g.n or m.a_ ~= g.a or m.b_ ~= g.b or m.x_ ~= entry.x
 	if moved or (age and not still and m.epoch ~= name_epoch(key, now)) then
 		write_cells(cells, g, m, now, key, entry.x, entry.child)
@@ -1881,6 +1891,8 @@ dev.register_dump(TAB, function(player_data)
 			rows[i] = {
 				style = row.style.name,
 				height = row.style.maximal_height,
+				left_padding = row.style.left_padding,
+				message_width = c[7].style.maximal_width,
 				age = c[1].caption,
 				age_tooltip = c[1].tooltip,
 				age_style = c[1].style.name,

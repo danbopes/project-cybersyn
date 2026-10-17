@@ -315,15 +315,23 @@ lab.suite("39_log", {
 		dev("log_toggle_pass", pi, 1)
 		d = render()
 		local disp = d.display
-		lab.check("the pass row expands to its rows, newest first, below it, indented", d.rows[1].message[3] == "▾" and
+		lab.check("the pass row expands to its rows, newest first, below it", d.rows[1].message[3] == "▾" and
 			disp[2].child and disp[3].child and disp[4].child and not disp[5].child and
 			#d.rows == math.min(d.page, #d.groups + 3) and
-			d.rows[2].message[1] == "" and d.rows[2].message[3][1] == "cybersyn-diag.msg-lint-appeared" and
+			d.rows[2].message[1] == "cybersyn-diag.msg-lint-appeared" and
 			disp[2].seq > disp[3].seq and d.rows[1].message[1] ~= "",
 			{ disp[1], disp[2], disp[3], disp[4], disp[5], rows = #d.rows })
+		local top, kid, after = d.rows[1], d.rows[2], d.rows[5]
+		lab.check("…indented by the row's left padding, the message cell giving the room back, at the same height",
+			kid.left_padding == top.left_padding + 20 and kid.message_width == top.message_width - 20 and
+			after.left_padding == top.left_padding and after.message_width == top.message_width and
+			d.rows[3].left_padding == kid.left_padding and kid.height == top.height,
+			{ top = { top.left_padding, top.message_width, top.height }, kid = { kid.left_padding, kid.message_width,
+				kid.height }, after = { after.left_padding, after.message_width } })
 		dev("log_toggle_pass", pi, 1)
 		d = render()
-		lab.check("…and collapses again", #d.rows == #d.groups and d.rows[1].message[3] == "▸", #d.rows)
+		lab.check("…and collapses again", #d.rows == #d.groups and d.rows[1].message[3] == "▸" and
+			d.rows[2].left_padding == d.rows[1].left_padding, #d.rows)
 		-- The header's cycle figures are storage.stats.cycle, as on the Overview.
 		local cycle = dev("cycle") or {}
 		lab.check("header: planner cycle ticks and dispatches per cycle == stats.cycle, the plain count for the plural",
