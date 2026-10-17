@@ -20,7 +20,7 @@ local utext = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
 local pm = require("scripts.gui.problems-model")
 local item_model = require("scripts.gui.item-model")
-local problems_tab = require("scripts.gui.problems")
+local problems_tab = require("scripts.gui.lint-text")
 local extras = require("scripts.gui.extras")
 local repair = require("scripts.gui.repair")
 

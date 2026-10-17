@@ -12,7 +12,7 @@ local utext = require("scripts.gui.unserved-text")
 local diag = require("scripts.diag")
 local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
-local problems_tab = require("scripts.gui.problems")
+local problems_tab = require("scripts.gui.lint-text")
 local extras = require("scripts.gui.extras")
 local dev = require("scripts.gui.dev")
 

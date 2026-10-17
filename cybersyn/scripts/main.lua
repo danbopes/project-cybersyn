@@ -141,6 +141,8 @@ local function on_station_built(map_data, stop, comb1, comb2, secondary_inv_comb
 		--allows_all_trains = set_station_from_comb,
 		deliveries_total = 0,
 		last_delivery_tick = map_data.total_ticks,
+		-- last_delivery_tick still equal to this means no train was dispatched yet (the manager's "never").
+		created_tick = map_data.total_ticks,
 		trains_limit = math.huge,
 		priority = 0,
 		item_priotity = nil,

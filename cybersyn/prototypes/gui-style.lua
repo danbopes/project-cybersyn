@@ -1087,56 +1087,9 @@ styles.cybersyn_slot_32_count = {
 	parent_hovered_font_color = { 1, 1, 1 },
 }
 
--- PROBLEMS TAB STYLES (PLAN3 §4.7): 32 px rows in a vertical flow, group rows in the subheader colour.
+-- STATIONS PROBLEMS COLUMN (PLAN4 D7): severity dot, check chip, detail numbers of a station's lint findings.
 
-styles.cybersyn_problems_frame = {
-	type = "frame_style",
-	parent = "inside_deep_frame",
-	horizontally_stretchable = "on",
-	vertical_flow_style = {
-		type = "vertical_flow_style",
-		vertical_spacing = 0,
-	},
-}
-
-styles.cybersyn_problems_header = {
-	type = "horizontal_flow_style",
-	horizontal_spacing = 8,
-	left_padding = 4,
-	right_padding = 10,
-	height = 20,
-	vertical_align = "center",
-}
-
-styles.cybersyn_problems_row = {
-	type = "frame_style",
-	parent = "frame",
-	graphical_set = {},
-	padding = 0,
-	left_padding = 4,
-	right_padding = 10,
-	height = 32,
-	horizontally_stretchable = "on",
-	horizontal_flow_style = {
-		type = "horizontal_flow_style",
-		horizontal_spacing = 8,
-		vertical_align = "center",
-	},
-}
-
-styles.cybersyn_problems_row_odd = {
-	type = "frame_style",
-	parent = "cybersyn_problems_row",
-	graphical_set = { base = { center = { position = { 472, 25 }, size = { 1, 1 } } } },
-}
-
-styles.cybersyn_problems_group_row = {
-	type = "frame_style",
-	parent = "cybersyn_problems_row",
-	graphical_set = { base = { center = { position = { 256, 25 }, size = { 1, 1 } } } },
-}
-
-styles.cybersyn_problems_dot = {
+styles.cybersyn_lint_dot = {
 	type = "image_style",
 	size = 16,
 	stretch_image_to_widget_size = true,
@@ -1144,43 +1097,40 @@ styles.cybersyn_problems_dot = {
 	right_margin = 2,
 }
 
-styles.cybersyn_problems_group_caption = {
-	type = "label_style",
-	parent = "caption_label",
-	horizontally_squashable = "on",
-}
-
--- The width lives in the style: the acknowledged variant swaps styles in place, which drops an element's own width.
-styles.cybersyn_problems_detail = {
+styles.cybersyn_lint_detail = {
 	type = "label_style",
 	parent = "cybersyn_unserved_cell",
-	width = 300,
 	horizontally_squashable = "on",
 }
 
-styles.cybersyn_problems_detail_acked = {
+styles.cybersyn_lint_detail_acked = {
 	type = "label_style",
-	parent = "cybersyn_problems_detail",
+	parent = "cybersyn_lint_detail",
 	font_color = { 0.5, 0.5, 0.5 },
 }
 
-styles.cybersyn_problems_fix = {
-	type = "label_style",
-	parent = "cybersyn_unserved_cell",
-	font_color = { 0.6, 0.6, 0.6 },
-	horizontally_squashable = "on",
+-- The second line of the Stations chips when they do not fit beside the search field: one row high, so the page
+-- gives up exactly one row for it.
+styles.cybersyn_chip_row = {
+	type = "frame_style",
+	parent = "cybersyn_tab_subheader",
+	height = 32,
 }
 
-styles.cybersyn_problems_subfooter = {
-	type = "frame_style",
-	parent = "subfooter_frame",
-	horizontally_stretchable = "on",
-	horizontal_flow_style = {
-		type = "horizontal_flow_style",
-		horizontal_spacing = 8,
-		vertical_align = "center",
-	},
-}
+-- A reason or queue state as plain coloured text where nothing happens on a click (PLAN4 D7: no dead chips).
+local function reason_label(color)
+	return {
+		type = "label_style",
+		parent = "cybersyn_unserved_cell",
+		font = "default-semibold",
+		font_color = color,
+		horizontally_squashable = "on",
+	}
+end
+styles.cybersyn_reason_label_red = reason_label({ 1, 0.5, 0.45 })
+styles.cybersyn_reason_label_orange = reason_label({ 1, 0.78, 0.45 })
+styles.cybersyn_reason_label_grey = reason_label({ 0.8, 0.8, 0.8 })
+styles.cybersyn_reason_label_acked = reason_label({ 0.5, 0.5, 0.5 })
 
 -- LOG TAB STYLES (PLAN3 §4.7 Log: 28 px rows; the rows table below gives the alternate-row tint)
 

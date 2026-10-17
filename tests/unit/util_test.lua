@@ -1029,3 +1029,15 @@ test("slot_table_build_from_control_signals: sorted virtual signals with a sprit
 		"\n", { "cybersyn-gui.request-threshold", "150" },
 	})
 end)
+
+test("natural_key: digit runs compare by value, leading zeros ignored", function()
+	local util = H.load("scripts.gui.util")
+	local names = { "stn-10", "stn-2", "stn-1", "stn-002", "stn", "a10b", "a9b", "x0" }
+	table.sort(names, function(a, b)
+		local ka, kb = util.natural_key(a), util.natural_key(b)
+		if ka ~= kb then return ka < kb end
+		return a < b
+	end)
+	assert_eq(names, { "a9b", "a10b", "stn", "stn-1", "stn-002", "stn-2", "stn-10", "x0" })
+	assert_eq(util.natural_key("000"), util.natural_key("0"))
+end)

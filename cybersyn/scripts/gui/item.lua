@@ -61,7 +61,6 @@ item.CONTENT_FRAMES = {
 	inventory_tab = "manager_inventory_content_frame",
 	stations_tab = "manager_stations_content_frame",
 	trains_tab = "manager_trains_tab_content_frame",
-	problems_tab = "manager_problems_content_frame",
 	log_tab = "manager_log_content_frame",
 }
 
@@ -71,11 +70,17 @@ local TAB_CAPTION = {
 	inventory_tab = "cybersyn-gui.inventory",
 	stations_tab = "cybersyn-gui.stations",
 	trains_tab = "cybersyn-gui.trains",
-	problems_tab = "cybersyn-gui.problems",
 	log_tab = "cybersyn-gui.log",
 	utilization_tab = "cybersyn-gui.utilization-tab",
 	delivery_breakdown_tab = "cybersyn-gui.delivery-breakdown-tab",
 }
+
+--- The reason or queue state is plain coloured text (nothing happens on a click): the chip style's colour as a label.
+--- @param chip_style string? cybersyn_chip_red|orange|grey|acked
+--- @return string
+local function label_style(chip_style)
+	return (string.gsub(chip_style or "cybersyn_chip_grey", "^cybersyn_chip_", "cybersyn_reason_label_"))
+end
 
 local STATUS_COLOR = {
 	no_power = "red",
@@ -438,8 +443,8 @@ local function cell_def(col, v, width, scope)
 			style = "cybersyn_unserved_cell_flow",
 			style_mods = { width = width },
 			util.hoverable({
-				type = "button",
-				style = v.style or "cybersyn_chip_grey",
+				type = "label",
+				style = label_style(v.style),
 				style_mods = { maximal_width = width },
 				caption = v.caption or "",
 				tooltip = v.tooltip,
@@ -481,7 +486,7 @@ local function cell_update(col, cell, v, width, scope)
 		cell.tags = t
 	elseif kind == "chip" then
 		local button = cell.children[1]
-		local style = v.style or "cybersyn_chip_grey"
+		local style = label_style(v.style)
 		if button.style.name ~= style then
 			button.style = style
 			button.style.maximal_width = width

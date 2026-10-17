@@ -11,7 +11,6 @@ local inventory_tab = require("scripts.gui.inventory")
 local log_tab = require("scripts.gui.log")
 local utilization_tab = require("scripts.gui.utilization")
 local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
-local problems_tab = require("scripts.gui.problems")
 local item = require("scripts.gui.item")
 local explain = require("scripts.gui.explain")
 local util = require("scripts.gui.util")
@@ -23,10 +22,10 @@ local manager = {}
 
 local DEFAULT_TAB = "overview_tab"
 -- Tabs whose content gets the banner and subheader, in pane order.
-local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "problems_tab", "log_tab",
+local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab",
 	"utilization_tab", "delivery_breakdown_tab" }
--- Tabs that ignore the item filter, so they never show its chip (the Problems tab lists every finding).
-local NO_ITEM_CHIP = { problems_tab = true }
+-- Tabs that ignore the item filter, so they never show its chip.
+local NO_ITEM_CHIP = {}
 -- Tabs the station-name search applies to.
 local SEARCH_TABS = { inventory_tab = true, stations_tab = true, trains_tab = true }
 -- The last render must be this old before the title bar says how old it is.
@@ -73,7 +72,6 @@ function manager.create(player)
 		add_header(inventory_tab.create(), "inventory_tab", header),
 		add_header(stations_tab.create(widths), "stations_tab", header),
 		add_header(trains_tab.create(widths), "trains_tab", header),
-		add_header(problems_tab.create(), "problems_tab", header, problems_tab.subheader_right()),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
 	}
 	if analytics.is_enabled() then
@@ -246,7 +244,6 @@ local CONTENT_FRAMES = {
 	inventory_tab = "manager_inventory_content_frame",
 	stations_tab = "manager_stations_content_frame",
 	trains_tab = "manager_trains_tab_content_frame",
-	problems_tab = "manager_problems_content_frame",
 	log_tab = "manager_log_content_frame",
 }
 
@@ -270,7 +267,6 @@ function manager.apply_layout(player, player_data)
 	end
 	overview_tab.apply_layout(player_data, layout)
 	inventory_tab.apply_layout(player_data, layout)
-	problems_tab.apply_layout(player_data, layout)
 	log_tab.apply_layout(player_data, layout)
 	item.apply_layout(player_data, layout)
 	return layout
@@ -573,7 +569,6 @@ local tab_builders = {
 	log_tab = log_tab,
 	utilization_tab = utilization_tab,
 	delivery_breakdown_tab = delivery_breakdown_tab,
-	problems_tab = problems_tab,
 }
 
 --- @param map_data MapData
@@ -605,7 +600,6 @@ end
 --- Train alerts as the Trains tab's badge (PLAN3 §4.6).
 --- @param player_data PlayerData
 local function refresh_badges(player_data)
-	problems_tab.refresh_tab(player_data)
 	local tab = player_data.refs.manager_trains_tab
 	if not (tab and tab.valid) then return end
 	local n = #collector.get().alerts
@@ -651,8 +645,8 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_open(player, player_data, refs)
 	-- A window built by an older version of this file survives a script update that has no version bump.
-	if not (refs.manager_filter_row and refs.manager_filter_row.valid and refs.manager_problems_tab
-			and refs.manager_problems_tab.valid) then
+	if not (refs.manager_filter_row and refs.manager_filter_row.valid)
+			or (refs.manager_problems_tab and refs.manager_problems_tab.valid) then
 		if refs.manager_window and refs.manager_window.valid then
 			refs.manager_window.destroy()
 		end
@@ -663,8 +657,9 @@ function manager.handle.manager_open(player, player_data, refs)
 	player_data.chip_sig = nil
 	player_data.collecting_shown = nil
 	player_data.trains_badge = nil
-	player_data.problems_badge = nil
-	player_data.problems_scan_sig = nil
+	-- What the Problems tab (folded into Stations in round 4) kept per player.
+	player_data.problems_badge, player_data.problems_scan_sig, player_data.problems_model = nil, nil, nil
+	player_data.problems_filter, player_data.problems_widths = nil, nil
 	player_data.status_sig = nil
 	manager.refresh_banners(player_data)
 	manager.apply_layout(player, player_data)

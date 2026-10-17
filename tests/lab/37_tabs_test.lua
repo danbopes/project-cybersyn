@@ -7,7 +7,7 @@
 
 local D, pi = lab.D, lab.pi
 local DS, DT, DI = "cybersyn-manager-dev-stations", "cybersyn-manager-dev-trains", "cybersyn-manager-dev-inventory"
-local STATION_CHIPS = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok", "unserved", "setup",
+local STATION_CHIPS = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok", "unserved", "problems",
 	"stuck", "failing" }
 local TRAIN_CHIPS = { "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
 	"not_refuelled", "in_group", "trouble" }
@@ -45,7 +45,7 @@ local function check_station_chips(label)
 		local d = stations_dump()
 		lab.check(label .. ": Stations chip " .. chip .. " count == rows shown", d.total == counts[chip] and #d.ids == d.total
 			and (counts[chip] == 0 or d.chip == chip), { count = counts[chip], total = d.total, rows = #d.ids, chip = d.chip })
-		if lab.STATUSES and counts[chip] and d.statuses and chip ~= "unserved" and chip ~= "setup" and chip ~= "stuck"
+		if lab.STATUSES and counts[chip] and d.statuses and chip ~= "unserved" and chip ~= "problems" and chip ~= "stuck"
 			and chip ~= "failing" then
 			local same = true
 			for _, s in ipairs(d.statuses) do
@@ -110,21 +110,23 @@ lab.suite("37_tabs", {
 			if st.status == "no_power" or st.status == "disabled" or st.throttling then f = true end
 			if f then failing = failing + 1 end
 		end
-		lab.check("Setup chip == stations with st.lint ~= 0", counts.setup == lint and lint > 0, { chip = counts.setup, records = lint })
+		lab.check("Problems chip == stations with st.lint ~= 0", counts.problems == lint and lint > 0, { chip = counts.problems, records = lint })
 		lab.check("Unserved chip == stations with st.unserved.count > 0", counts.unserved == unserved, { chip = counts.unserved, records = unserved })
-		lab.check("Failing chip == no power + disabled + throttling + setup records", counts.failing == failing, { chip = counts.failing, records = failing })
+		lab.check("Failing chip == no power + disabled + throttling + problems records", counts.failing == failing, { chip = counts.failing, records = failing })
 		remote.call(D, "select_tab", pi, "overview")
 		local o = remote.call(D, "dump", pi, "overview")
 		lab.check("Failing chip == the Overview's Stations failing tile (one number per fact)",
 			o.tiles.failing and o.tiles.failing.headline == counts.failing, { tile = o.tiles.failing, chip = counts.failing })
 
-		-- A rendered setup chip on exactly the rows with a lint finding.
+		-- PLAN4 D7 flipped round 3's row-level Setup chip: the Status column shows the status only (no dead button).
 		local d = stations_dump()
+		local list = d.status_children
 		local ok = true
-		for i, id in ipairs(d.ids) do
-			if d.setup[i] ~= ((snap.stations[id].lint or 0) ~= 0) then ok = false end
+		for _, n in ipairs(list or {}) do
+			if n ~= 2 then ok = false end
 		end
-		lab.check("the Status column's Setup chip shows on exactly the stations with a finding", ok)
+		lab.check("the Status column holds the status dot and caption only (row Setup chip removed)", list ~= nil and #list > 0
+			and ok, list)
 
 		-- Stuck: a stuck alert on a train names its provider and requester.
 		local train_id, train
@@ -155,6 +157,299 @@ lab.suite("37_tabs", {
 			check_train_chips("surface " .. name)
 			remote.call(D, "clear_filters", pi)
 		end
+	end,
+
+	-- PLAN4 D7: the Problems chip's view on Stations. Chip count == station rows (with and without a surface filter),
+	-- every finding once (lab.problems_verify), the Problems column shows each row's worst finding with "+n", stops
+	-- and combinators that are not a station follow as registry rows linked to their entity; acknowledging from the
+	-- row; the stop panel's Setup section still renders.
+	function(ctx)
+		remote.call(D, "clear_filters", pi)
+		lab.set_status_filter(pi, nil)
+		lab.big_screen(pi)
+		-- A combinator with no stop in reach: the registry reports it (before the registry existed, the world scan did).
+		local s = game.surfaces["cyb-bench"]
+		local comb = s.create_entity({ name = "cybersyn-combinator", position = { 0.5, -60.5 }, force = game.forces.player })
+		script.raise_script_built({ entity = comb })
+		ctx.derelict = comb
+		if remote.interfaces[D].lint_scan_world then lab.dev("lint_scan_world", nil, true) end
+		lab.dev("lint_run")
+		lab.dev("collect")
+		local v = lab.problems_verify("37_tabs Problems view")
+		local derelict
+		for _, r in ipairs(v.registry) do
+			if r.entry.id == comb.unit_number then derelict = r end
+		end
+		lab.check("the derelict combinator is a registry row of the Problems view", derelict ~= nil and
+			derelict.entry.check == "derelict_comb" and derelict.entity, v.registry)
+
+		remote.call(DS, "set_chip", pi, "problems")
+		local d = stations_dump()
+		lab.check("Problems chip: count == station rows, the view sorts worst first, column 4 is Problems",
+			d.chip == "problems" and d.total == d.chip_counts.problems and #d.ids == d.total and d.total > 0
+			and d.column == "problems" and d.ascending == true and d.header[4] == "problems",
+			{ chip = d.chip, total = d.total, count = d.chip_counts.problems, rows = #d.ids, column = d.column, header = d.header })
+		local want = {}
+		for _, row in ipairs(v.stations) do want[row.id] = row end
+		local same = #d.ids == #v.stations
+		for _, id in ipairs(d.ids) do
+			if not want[id] then same = false end
+		end
+		lab.check("Problems chip: the rows are the stations with a finding", same, { rows = d.ids, view = #v.stations })
+		local sorted = true
+		for i = 2, #d.keys do
+			if d.keys[i] < d.keys[i - 1] then sorted = false end
+		end
+		lab.check("Problems view: worst severity then check, row by row", sorted, d.keys)
+		local cells_ok, bad = true, {}
+		for i, id in ipairs(d.ids) do
+			local p, row = d.problems[i], want[id]
+			local first = row and row.entries[1]
+			local more = row and #row.entries > 1 and ("+" .. (#row.entries - 1)) or false
+			if not (p and first and key_of(p.chip) == key_of(first.chip) and key_of(p.detail) == key_of(first.detail)
+				and p.more == more and p.ack ~= nil and p.ack_tags.sid == id) then
+				cells_ok = false
+				bad[#bad + 1] = { id = id, cell = p, first = first and first.check, n = row and #row.entries }
+			end
+		end
+		lab.check("Problems column: each row spells out its worst finding, '+n' for the rest, an acknowledge button",
+			cells_ok, bad)
+		lab.check("Problems view: the registry rows follow the stations, one per stop or combinator finding",
+			d.registry_last and #d.registry == #v.registry and #d.registry > 0, { rows = d.registry, view = #v.registry })
+		local reg
+		for _, r in ipairs(d.registry) do
+			if string.find(r.key, ":" .. comb.unit_number .. ":", 1, true) then reg = r end
+		end
+		lab.check("registry row: the combinator links to its entity and names its check", reg ~= nil and reg.link[1] == "entity"
+			and reg.link[2] == comb.unit_number and reg.problems and key_of(reg.problems.chip) == "cybersyn-diag.lint-chip-derelict-comb",
+			reg)
+		local summary = d.summary
+		if type(summary) == "table" and summary[1] == "" then summary = summary[2] end
+		lab.check("Problems view: the subfooter counts the registry rows", key_of(summary) == "cybersyn-gui.stations-summary-registry",
+			d.summary)
+
+		-- PLAN4 D2/D7: the Overview's Misconfigured line and the view it jumps to agree on one number. The oracle is the
+		-- findings themselves: a station with an error-severity finding nobody acknowledged counts, one whose errors are
+		-- all acknowledged is "+n acked". Those stations lead the view, and the subfooter carries both numbers.
+		local function misconfigured_oracle(surface)
+			local view = remote.call(D, "stations_lint_view")
+			local snap = snapshot()
+			local open, acked = {}, 0
+			for _, row in ipairs(view.stations) do
+				local st = snap.stations[row.id]
+				if st and (not surface or st.surface_index == surface) then
+					local errors, open_errors = 0, 0
+					for _, e in ipairs(row.entries) do
+						if e.sev == 1 then
+							errors = errors + 1
+							if not e.acked then open_errors = open_errors + 1 end
+						end
+					end
+					if open_errors > 0 then open[row.id] = true elseif errors > 0 then acked = acked + 1 end
+				end
+			end
+			return open, acked
+		end
+		local function check_misconfigured(label, surface)
+			local open, acked = misconfigured_oracle(surface)
+			local m = stations_dump()
+			local lead = 0
+			while m.ids[lead + 1] and open[m.ids[lead + 1]] do lead = lead + 1 end
+			local n = lab.count(open)
+			lab.check("Misconfigured agrees with the Problems view (" .. label .. "): the leading rows are the stations "
+				.. "with an open error, the subfooter says how many (+ acked)", m.chip == "problems" and lead == n
+				and m.open_errors ~= nil and m.open_errors[1] == n and m.open_errors[2] == acked,
+				{ lead = lead, oracle = n, acked = acked, subfooter = m.open_errors, ids = m.ids })
+			return n, acked
+		end
+		local n_open = check_misconfigured("no filter")
+		lab.check("layout-dev has a station with an open error to jump to", n_open > 0, n_open)
+		-- The Overview's own number: after the filters phase it counts open errors (misconfigured_acked exists); before,
+		-- it counted every station with a finding, as the chip does.
+		local ov = remote.call(D, "dump", pi, "overview").tiles.failing
+		remote.call(D, "select_tab", pi, "stations")
+		if ov and ov.misconfigured_acked ~= nil then
+			local _, acked0 = misconfigured_oracle()
+			lab.check("the Overview's Misconfigured line == the open-error rows of its jump", ov.misconfigured == n_open
+				and ov.misconfigured_acked == acked0, { overview = ov.misconfigured, acked = ov.misconfigured_acked,
+				view = n_open, view_acked = acked0 })
+		else
+			lab.check("the Overview's Misconfigured line == the Problems chip", ov and ov.misconfigured == d.chip_counts.problems,
+				{ overview = ov and ov.misconfigured, chip = d.chip_counts.problems })
+		end
+
+		-- With a surface filter: the chip counts that surface's stations and lists them; registry rows of other surfaces go.
+		for _, name in ipairs({ "nauvis", "cyb-bench" }) do
+			remote.call(D, "set_filter", pi, { surface = game.surfaces[name].index })
+			local f = stations_dump()
+			local on_surface = true
+			local snap = snapshot()
+			for _, id in ipairs(f.ids) do
+				if snap.stations[id].surface_index ~= game.surfaces[name].index then on_surface = false end
+			end
+			lab.check("Problems chip with surface " .. name .. ": count == rows, all on that surface", f.chip == "problems"
+				and f.total == (f.chip_counts.problems or 0) and #f.ids == f.total and on_surface,
+				{ total = f.total, count = f.chip_counts.problems, rows = #f.ids })
+			local has_derelict = false
+			for _, r in ipairs(f.registry) do
+				if string.find(r.key, ":" .. comb.unit_number .. ":", 1, true) then has_derelict = true end
+			end
+			lab.check("registry rows obey the surface filter (" .. name .. ")", has_derelict == (name == "cyb-bench"), f.registry)
+			check_misconfigured("surface " .. name, game.surfaces[name].index)
+		end
+		remote.call(D, "set_filter", pi, { network = "signal-A" })
+		lab.check("a network filter hides the registry rows (they belong to no network)", #stations_dump().registry == 0)
+		-- Clearing the filters clears the Stations chips too (PLAN4 D4).
+		remote.call(D, "clear_filters", pi)
+		remote.call(DS, "set_chip", pi, "problems")
+
+		-- Acknowledge every finding of the first row from its button, then end it with a second click.
+		d = stations_dump()
+		local first_id = d.ids[1]
+		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 4, 6 })
+		local acks = lab.dev("diag_acks")
+		local by = acks and acks.lint and acks.lint[first_id]
+		local acked_all = by ~= nil and lab.count(by) == lab.count((function()
+			local checks = {}
+			for _, e in ipairs(want[first_id].entries) do checks[e.check] = true end
+			return checks
+		end)())
+		local after = stations_dump()
+		local pos
+		for i, id in ipairs(after.ids) do if id == first_id then pos = i end end
+		lab.check("acknowledge: the row's findings are acknowledged and its cell greys out", acked_all and pos ~= nil
+			and after.problems[pos] and after.problems[pos].ack == true and after.problems[pos].chip_style == "cybersyn_chip_acked",
+			{ pos = pos, cell = pos and after.problems[pos], acks = acks and acks.lint })
+		-- The first row had an open error: it leaves the count for "+1 acked" and moves behind every open station.
+		local open_after, acked_after = check_misconfigured("one station acknowledged")
+		local open_station_after = 0
+		for i, id in ipairs(after.ids) do
+			if after.problems[i] and after.problems[i].ack == false then open_station_after = i end
+		end
+		lab.check("acknowledge: the station moves behind every open one", open_after == n_open - 1 and acked_after >= 1
+			and pos ~= nil and pos > open_station_after, { pos = pos, last_open = open_station_after, open = open_after,
+			before = n_open })
+		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { pos or 1, 4, 6 })
+		after = stations_dump()
+		lab.check("acknowledge: a second click ends them", after.problems[pos or 1] and after.problems[pos or 1].ack == false,
+			after.problems[pos or 1])
+
+		-- The stop panel's Setup section still renders the findings (its texts moved to lint-text.lua).
+		lab.dev("relative_open", pi, "stop", first_id)
+		local setup = serpent.line(lab.dev("relative_dump", pi).sections.setup.content)
+		lab.check("stop panel: the Setup section still lists the stop's findings with their fix lines",
+			setup:find("lint-fix-", 1, true) ~= nil and setup:find("lint-detail-", 1, true) ~= nil, setup)
+		lab.dev("relative_close", pi)
+
+		-- Leaving the view gives Provided / requested back and drops the Problems sort.
+		remote.call(DS, "set_chip", pi, "all")
+		d = stations_dump()
+		lab.check("Problems chip off: Provided / requested is back, sorted by name", d.header[4] == "provided_requested"
+			and d.column == "name" and #d.registry == 0, { header = d.header, column = d.column })
+		-- The Overview's jump sets player_data.stations_chip = "problems" (p1); the tab reads it as the chip.
+		remote.call("cybersyn", "write_global", "problems", "manager", "players", pi, "stations_chip")
+		d = stations_dump()
+		lab.check("stations_chip = 'problems' (the Overview's jump) opens the Problems view", d.chip == "problems"
+			and d.column == "problems" and d.total == d.chip_counts.problems, { chip = d.chip, column = d.column })
+		remote.call(DS, "set_chip", pi, "all")
+		comb.destroy({ raise_destroy = true })
+		if remote.interfaces[D].lint_scan_world then lab.dev("lint_scan_world", nil, true) end
+		lab.dev("lint_run")
+	end,
+
+	-- PLAN4 D15 items 8, 13, 14, 15: Last dispatch reads never before the first dispatch; names sort naturally; chips
+	-- wrap rather than abbreviate on a narrow window; the Wait column hides when the page has no wait.
+	function(ctx)
+		remote.call(D, "clear_filters", pi)
+		lab.set_status_filter(pi, nil)
+		lab.big_screen(pi)
+		remote.call(D, "set_sort", pi, "stations", "name", true)
+		local d = stations_dump()
+		local function natural(name)
+			return (string.gsub(string.lower(name), "%d+", function(n)
+				n = string.gsub(n, "^0+", "")
+				if n == "" then n = "0" end
+				return string.format("%02d", #n) .. n
+			end))
+		end
+		local ordered, pairs_out = true, {}
+		for i = 2, #d.names do
+			local a, b = natural(tostring(d.names[i - 1])), natural(tostring(d.names[i]))
+			if b < a then
+				ordered = false
+				pairs_out[#pairs_out + 1] = { d.names[i - 1], d.names[i] }
+			end
+		end
+		local has_ten = false
+		for _, n in ipairs(d.names) do if tostring(n):find("10", 1, true) then has_ten = true end end
+		lab.check("Stations: names in natural order (stn-2 before stn-10)", ordered and has_ten, pairs_out)
+
+		local dispatched = 0
+		for i, id in ipairs(d.ids) do
+			local station = remote.call("cybersyn", "read_global", "stations", id)
+			if station and station.created_tick and station.last_delivery_tick ~= station.created_tick
+				and key_of(d.last[i]) ~= "cybersyn-gui.never" then dispatched = dispatched + 1 end
+		end
+		lab.info("Stations: " .. dispatched .. " rows with a recorded dispatch show its age")
+
+		local ok, case = pcall(function()
+			local c = cases.base("P3FRESH", { k = 90 }, { network = "signal-9", no_train = true })
+			c.fresh = cases.station(c, { name = "p3-fresh-station", x = cases.X_P[1], bits = 1 })
+			return c
+		end)
+		lab.check("a fresh station builds", ok, case)
+		if ok then
+			lab.dev("collect")
+			remote.call(D, "set_filter", pi, { query = "p3-fresh-station" })
+			local f = stations_dump()
+			lab.check("Last dispatch: a fresh station reads never", #f.ids == 1 and key_of(f.last[1]) == "cybersyn-gui.never",
+				{ ids = f.ids, last = f.last })
+			-- One station with no wait on the page: the Wait column hides and gives its width to the name.
+			lab.check("Wait column hidden when the page has no wait", f.hidden[1] == "wait" and #f.hidden == 1, f.hidden)
+			-- Unless it carries the sort: its header holds the sort arrow.
+			remote.call(D, "set_sort", pi, "stations", "wait", false)
+			f = stations_dump()
+			lab.check("Wait column stays while the list sorts by it", #f.hidden == 0 and f.column == "wait", f.hidden)
+			remote.call(D, "set_sort", pi, "stations", "name", true)
+			remote.call(D, "clear_filters", pi)
+			pcall(case.cleanup or function() cases.destroy(case) end)
+			lab.dev("collect")
+		end
+
+		-- A narrow window with the search field open: the chips wrap onto a second line, none abbreviated, and the
+		-- page gives up exactly one row for it. 1080p at 2.0 is the narrowest supported window (960 px); a stuck alert
+		-- on a delivering train adds the Stuck train chip, more than fits beside the search field there.
+		local snap = snapshot()
+		local stuck_train
+		for id, tr in pairs(snap.trains) do
+			if tr.p_station_id and (not stuck_train or id < stuck_train) then stuck_train = id end
+		end
+		lab.dev("set_layout", pi, 1920, 1080, 2)
+		remote.call(D, "select_tab", pi, "stations")
+		-- Ctrl+F reaches an offline player's window only while it is pinned.
+		lab.dev("click", pi, "manager_pin_button")
+		lab.dev("search_input", pi)
+		if stuck_train then
+			remote.call("cybersyn", "write_global", { { train_id = stuck_train, kind = 1, since_tick = game.tick } }, "manager",
+				"snapshot", "alerts")
+		end
+		remote.call(D, "update", pi, 1)
+		d = stations_dump()
+		local rows = lab.dev("rows", pi, "stations")
+		local named = true
+		for _, chip in ipairs(d.chips) do
+			if chip[1] ~= "all" and chip[3] == false and chip[2] == false then named = false end
+		end
+		lab.check("narrow window: chips wrap onto a second line", d.chip_row == true and #d.wrapped > 0, { wrapped = d.wrapped, chips = d.chips })
+		lab.check("narrow window: zero-count chips are hidden, the rest enabled", named, d.chips)
+		lab.check("narrow window: the page gives up one row for the chip line and still fits whole rows",
+			rows.rendered == rows.computed - 1 and #d.ids == rows.rendered, { rows = rows, ids = #d.ids })
+		lab.dev("cancel_search", pi)
+		lab.dev("click", pi, "manager_pin_button")
+		lab.big_screen(pi)
+		remote.call(D, "update", pi, 1)
+		d = stations_dump()
+		lab.check("wide window: one chip line again", d.chip_row == false and #d.wrapped == 0, d.wrapped)
 	end,
 
 	-- Trains: chips, hidden columns, time in state, depot groups.
