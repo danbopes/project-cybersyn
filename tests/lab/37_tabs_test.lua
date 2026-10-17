@@ -10,7 +10,7 @@ local DS, DT, DI = "cybersyn-manager-dev-stations", "cybersyn-manager-dev-trains
 local STATION_CHIPS = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok", "unserved", "problems",
 	"stuck", "failing" }
 local TRAIN_CHIPS = { "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
-	"not_refuelled", "in_group", "trouble" }
+	"not_refuelled", "in_group", "trouble", "problems" }
 local HANDLER = "__cybersyn_handler"
 local HOUR = 216000
 
@@ -30,6 +30,39 @@ end
 local function trains_dump()
 	remote.call(D, "select_tab", pi, "trains")
 	return remote.call(D, "dump", pi, "trains")
+end
+
+--- Every string and locale key of a LocalisedString, depth first, in reading order.
+local function leaves(ls, out)
+	out = out or {}
+	if type(ls) ~= "table" then
+		out[#out + 1] = ls
+		return out
+	end
+	if ls[1] ~= "" then out[#out + 1] = { key = ls[1] } end
+	for i = 2, #ls do leaves(ls[i], out) end
+	return out
+end
+
+--- The "Trains by state" counts of a group row's hover box: {train-state key suffix = n}, and their sum.
+local function tooltip_states(tip)
+	local out, sum = {}, 0
+	local l = leaves(tip)
+	for i, v in ipairs(l) do
+		if type(v) == "table" and v.key:find("^cybersyn%-diag%.train%-state%-") then
+			local n = tonumber(((l[i + 1] or ""):gsub("[^%d]", "")))
+			out[(v.key:gsub("^cybersyn%-diag%.train%-state%-", ""))] = n
+			sum = sum + (n or 0)
+		end
+	end
+	return out, sum
+end
+
+--- The train count of a group row's hover box head ("depot-0 · 6 trains").
+local function tooltip_head(tip)
+	for _, v in ipairs(leaves(tip)) do
+		if type(v) == "table" and v.key == "cybersyn-gui.trains-group-head" then return v end
+	end
 end
 
 --- Every chip toggled in turn shows as many rows as its count said before (big screen: one page).
@@ -701,6 +734,248 @@ lab.suite("37_tabs", {
 		lab.check("rows rendered == rows computed while grouped",
 			remote.call(D, "rows", pi, "trains").rendered == math.min(#e.groups + members, remote.call(D, "rows", pi, "trains").computed))
 		remote.call(DT, "set_grouped", pi, false, nil)
+	end,
+
+	-- PLAN4 D11 / D7: every state icon exists, composition icons follow the layout record, the group hover box counts
+	-- the group's trains by state, the Problems chip counts the trains with findings, depot markers sit exactly on
+	-- the depots with findings.
+	function(ctx)
+		local sprites = remote.call(DT, "sprites")
+		local bad, states = {}, 0
+		for _, s in ipairs(sprites) do
+			if not s.valid then bad[#bad + 1] = s.kind .. " " .. s.name .. " " .. s.sprite end
+			if s.kind == "state" then states = states + 1 end
+		end
+		local n_states = 0
+		for _ in pairs(defines.train_state) do n_states = n_states + 1 end
+		lab.check("every defines.train_state, residue and refuel map to a sprite that exists (" .. states .. ")",
+			#bad == 0 and states == n_states + 2, bad)
+		lab.check("every tooltip bucket, carriage class and chip icon is a valid sprite (" .. #sprites .. ")", #bad == 0, bad)
+
+		-- One train gets a second layout for this step (no tick passes), so the Composition column shows.
+		local trains = lab.read("trains")
+		local ids = {}
+		for id in pairs(trains) do ids[#ids + 1] = id end
+		table.sort(ids)
+		local odd, odd_layout = ids[1], trains[ids[1]].layout_id
+		remote.call("cybersyn", "write_global", { 0, 1, 1, 0, 2 }, "layouts", 9901)
+		remote.call("cybersyn", "write_global", 9901, "trains", odd, "layout_id")
+		lab.dev("collect")
+		remote.call(D, "update", pi, 3)
+		local d = trains_dump()
+		local snap = snapshot()
+		local comp_ok, checked, wrong = true, 0, {}
+		for i, id in ipairs(d.ids) do
+			local tr = snap.trains[id]
+			local want = remote.call(DT, "runs", tr.layout_id) or {}
+			local got = d.layouts[i] or {}
+			local same = #got == #want
+			for k, r in ipairs(want) do
+				local g = got[k]
+				if not (type(g) == "table" and g[1] == r[1] and g[2] == r[2]) then same = false end
+			end
+			if not same then
+				comp_ok = false
+				wrong[#wrong + 1] = { id = id, got = got, want = want }
+			end
+			checked = checked + 1
+		end
+		lab.check("composition icons == the layout record's class runs for every train (" .. checked .. ")",
+			comp_ok and checked == #ids and not lab.set_of(d.hidden).layout, wrong)
+		local odd_row
+		for i, id in ipairs(d.ids) do
+			if id == odd then odd_row = d.layouts[i] end
+		end
+		lab.check("L C×2 L F: four runs, the badge only on the run of two", odd_row and #odd_row == 4 and odd_row[2][1] == "item/cargo-wagon"
+			and odd_row[2][2] == 2 and odd_row[1][2] == 1, odd_row)
+
+		-- State icons: a slot only for the coloured states, its tooltip "<state> · <age>" and the click footer.
+		local icon_ok = true
+		local names = {}
+		for name, v in pairs(defines.train_state) do names[v] = name end
+		for i, id in ipairs(d.ids) do
+			local tr = snap.trains[id]
+			local s = names[tr.state]
+			local quiet = s == "on_the_path" or s == "wait_station" or s == "arrive_station"
+			local residue = tr.status == 0 and next(tr.manifest_hashes or {}) ~= nil
+			local refuel = tr.status == 8
+			local st = d.states[i]
+			if quiet and not residue and not refuel then
+				if st ~= false then icon_ok = false end
+			elseif not (st and st.type == "sprite-button" and st.style:find("^cybersyn_state_slot_")
+					and key_of(leaves(st.tooltip)[1]) ~= nil) then
+				icon_ok = false
+			end
+		end
+		lab.check("state icons: a coloured slot exactly on the rows whose state is not quiet", icon_ok, d.states)
+
+		-- Grouped: the hover box's states sum to the group's trains, its head names them.
+		remote.call(DT, "set_grouped", pi, true, nil)
+		local g = trains_dump()
+		local sums_ok, groups = true, 0
+		for _, row in ipairs(g.groups) do
+			local bound = row.captions[3] and tonumber(row.captions[3][2])
+			if row.name == "\1refuelers" then bound = row.captions[2] and tonumber(row.captions[2][2]) end
+			local _, sum = tooltip_states(row.tooltip)
+			local head = tooltip_head(row.tooltip)
+			if not (bound and sum == bound and head) then sums_ok = false end
+			groups = groups + 1
+		end
+		lab.check("group hover box: trains by state sum to the group's trains (" .. groups .. " groups)", sums_ok and groups > 0,
+			g.groups)
+		local comps_ok = true
+		for _, row in ipairs(g.groups) do
+			if row.comps then
+				local icons = 0
+				for _, c in ipairs(row.comps) do if type(c) == "table" then icons = icons + 1 end end
+				if icons == 0 then comps_ok = false end
+			end
+		end
+		lab.check("group rows draw their compositions as icon runs", comps_ok, g.groups)
+		remote.call("cybersyn", "write_global", odd_layout, "trains", odd, "layout_id")
+		remote.call("cybersyn", "write_global", nil, "layouts", 9901)
+		lab.dev("collect")
+
+		-- Findings: one train with a drifted capacity, one depot with a train limit of 2.
+		local depots = lab.read("depots")
+		local depot_id
+		for id, dp in pairs(depots) do
+			if not depot_id or id < depot_id then depot_id = id end
+		end
+		local stop = depots[depot_id].entity_stop
+		local limit = stop.trains_limit
+		-- The lint measures a train's capacity only while it is off a trip: a parked one.
+		local drift
+		for _, id in ipairs(ids) do
+			if not drift and trains[id].status == 0 then drift = id end
+		end
+		local capacity = trains[drift].item_slot_capacity
+		stop.trains_limit = 2
+		remote.call("cybersyn", "write_global", 7, "trains", drift, "item_slot_capacity")
+		lab.dev("lint_run")
+		local findings = lab.dev("lint_findings")
+		local train_ids, depot_ids, refueler = {}, {}, false
+		for _, f in ipairs(findings) do
+			if f.subject == "train" then train_ids[f.id] = true end
+			if f.subject == "depot" then depot_ids[f.id] = true end
+			if f.subject == "refueler" then refueler = true end
+		end
+		local n_train = 0
+		for _ in pairs(train_ids) do n_train = n_train + 1 end
+		remote.call(DT, "set_grouped", pi, false, nil)
+		remote.call(DT, "set_chip", pi, "all")
+		local f = trains_dump()
+		lab.check("Problems chip == trains with a train finding (" .. n_train .. ")", f.counts.problems == n_train
+			and train_ids[drift] == true, { chip = f.counts.problems, findings = train_ids, drift = drift })
+		remote.call(DT, "set_chip", pi, "problems")
+		local fp = trains_dump()
+		lab.check("the Problems chip lists exactly those trains", #fp.ids == n_train and train_ids[fp.ids[1]] == true, fp.ids)
+		remote.call(DT, "set_chip", pi, "all")
+		remote.call(DT, "set_grouped", pi, true, nil)
+		local by_name = lab.dev("depots_by_name")
+		local want = {}
+		for name, e in pairs(by_name) do
+			for _, id in ipairs(e.ids) do
+				if depot_ids[id] then want[name] = true end
+			end
+		end
+		if refueler then want["\1refuelers"] = true end
+		local gm = trains_dump()
+		local marks_ok, marked = true, 0
+		for _, row in ipairs(gm.groups) do
+			local has = row.marker ~= nil
+			if has ~= (want[row.name] == true) then marks_ok = false end
+			if has then
+				marked = marked + 1
+				if not (row.marker.type == "label" and row.marker.style:find("^cybersyn_marker_")) then marks_ok = false end
+			end
+		end
+		lab.check("a Problems marker (a label) on exactly the depot groups with findings (" .. marked .. ")",
+			marks_ok and marked > 0, { groups = gm.groups, want = want })
+		stop.trains_limit = limit
+		remote.call("cybersyn", "write_global", capacity, "trains", drift, "item_slot_capacity")
+		lab.dev("lint_run")
+		remote.call(DT, "set_grouped", pi, false, nil)
+		lab.dev("collect")
+	end,
+
+	-- A train changing state changes only a group row's hover box: written into the built row, no rebuild.
+	function(ctx)
+		remote.call(DT, "set_grouped", pi, true, nil)
+		remote.call(D, "update", pi, 2)
+		local before = trains_dump()
+		local snap = snapshot()
+		local target, group
+		for id, tr in pairs(snap.trains) do
+			if not target and tr.status == 0 and tr.depot_name then target, group = id, tr.depot_name end
+		end
+		local row0
+		for _, r in ipairs(before.groups) do if r.name == group then row0 = r end end
+		local states0 = row0 and tooltip_states(row0.tooltip) or {}
+		remote.call("cybersyn", "write_global", defines.train_state.wait_signal, "manager", "snapshot", "trains", target, "state")
+		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "trains_query")
+		remote.call(D, "update", pi, 2)
+		local after = trains_dump()
+		local row1
+		for _, r in ipairs(after.groups) do if r.name == group then row1 = r end end
+		local states1, sum1 = {}, 0
+		if row1 then states1, sum1 = tooltip_states(row1.tooltip) end
+		local bound = row1 and row1.captions[3] and tonumber(row1.captions[3][2])
+		lab.check("a state change moves the group hover box's count (" .. tostring(group) .. ")", row1 ~= nil
+			and (states1["wait-signal"] or 0) == (states0["wait-signal"] or 0) + 1 and sum1 == bound, { before = states0, after = states1, bound = bound })
+		lab.check("the group rows were updated in place, not rebuilt", after.last_result ~= "rebuilt", after.last_result)
+		remote.call(DT, "set_grouped", pi, false, nil)
+		lab.dev("collect")
+	end,
+
+	-- The panels' former chips are labels: the train state, the unserved reason, the lint finding in the stop head.
+	function(ctx)
+		local function find(view, name, out)
+			out = out or {}
+			if type(view) ~= "table" then return out end
+			if view.name == name then out[#out + 1] = view end
+			for _, c in ipairs(view.children or {}) do find(c, name, out) end
+			return out
+		end
+		local function section_items(d, section, name)
+			local s = d.sections and d.sections[section]
+			local out = {}
+			for _, c in ipairs(s and s.content or {}) do find(c, name, out) end
+			return out
+		end
+		local trains = lab.read("trains")
+		local tid = next(trains)
+		local t = lab.dev("relative_open", pi, "train", tid)
+		local chips = section_items(t, "head", "state_chip")
+		lab.check("train panel: the state is a label, no handler, no chip style", #chips == 1 and chips[1].type == "label"
+			and not chips[1].handler and not (chips[1].style or ""):find("chip"), chips)
+		lab.dev("relative_close", pi)
+		local diag = lab.read("diag")
+		local station = diag and next(diag.unserved or {})
+		if station then
+			local p = lab.dev("relative_open", pi, "stop", station)
+			local reason = section_items(p, "unserved", "chip")
+			local ok = #reason > 0
+			for _, c in ipairs(reason) do
+				if c.type ~= "label" or c.handler or (c.style or ""):find("^cybersyn_chip_") then ok = false end
+			end
+			lab.check("stop panel: unserved reasons are labels, no handler, no chip style (" .. #reason .. ")", ok, reason)
+			-- The head's lint finding (occupancy / phantom) is a marker label too: no chip-styled button anywhere in it.
+			local function chip_buttons(view, out)
+				if type(view) ~= "table" then return out end
+				if view.type == "button" and (view.style or ""):find("^cybersyn_chip_") then out[#out + 1] = view end
+				for _, c in ipairs(view.children or {}) do chip_buttons(c, out) end
+				return out
+			end
+			local left = {}
+			for _, sec in ipairs({ "head", "unserved" }) do
+				for _, c in ipairs(p.sections[sec] and p.sections[sec].content or {}) do chip_buttons(c, left) end
+			end
+			lab.check("stop panel: no chip-styled button left in the head and the unserved rows", #left == 0, left)
+			lab.dev("relative_close", pi)
+		else
+			lab.skip("stop panel reason labels", "no unserved request on this save at this tick")
+		end
 	end,
 
 	-- Inventory: per-grid sorts, deficit, dim unrequested, delivered last hour.

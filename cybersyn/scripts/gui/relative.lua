@@ -23,6 +23,7 @@ local item_model = require("scripts.gui.item-model")
 local problems_tab = require("scripts.gui.lint-text")
 local extras = require("scripts.gui.extras")
 local repair = require("scripts.gui.repair")
+local logic = require("scripts.gui.tab-logic")
 
 local relative = {}
 
@@ -84,11 +85,6 @@ local ROLLING_STOCK = { locomotive = true, ["cargo-wagon"] = true, ["fluid-wagon
 local STATE_NAMES = {}
 for name, v in pairs(defines.train_state) do STATE_NAMES[v] = name end
 
-local STATE_CHIP = {
-	[defines.train_state.no_path] = "cybersyn_chip_red",
-	[defines.train_state.destination_full] = "cybersyn_chip_orange",
-	[defines.train_state.wait_signal] = "cybersyn_chip_orange",
-}
 
 local TRAIN_STATUS_KEY = {
 	[STATUS_D] = "cybersyn-gui.parked-at-depot",
@@ -833,13 +829,31 @@ local function status_caption(status)
 		{ "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") } }
 end
 
-local function lint_chip(check, tooltip)
+--- The label style that says what a chip style said (cybersyn_chip_red -> cybersyn_marker_red), without looking
+--- pressable: these panel cells have nothing to click.
+--- @param chip_style string
+--- @return string
+local function marker_style(chip_style)
+	return (string.gsub(chip_style, "^cybersyn_chip_", "cybersyn_marker_"))
+end
+
+--- A finding named in the panel head: coloured words with the detail in the tooltip, not a chip (nothing to click).
+local function lint_marker(check, tooltip)
 	return {
-		type = "button",
-		style = LINT_SEVERITY[check] == DIAG_SEV_ERROR and "cybersyn_chip_red" or "cybersyn_chip_orange",
+		type = "label",
+		style = LINT_SEVERITY[check] == DIAG_SEV_ERROR and "cybersyn_marker_red" or "cybersyn_marker_orange",
 		caption = { "cybersyn-diag.lint-" .. LINT_KEYS[check] },
 		tooltip = tooltip,
 	}
+end
+
+--- One lint finding as the panels and the Trains depot markers word it: the check's name, the detail with its
+--- numbers, the fix line.
+--- @param f LintFinding
+--- @return LocalisedString
+function relative.finding_text(f)
+	return { "", "[font=default-semibold]", pm.caption(f.check), "[/font]  ", pm.detail(f, problems_tab.ENV), "\n",
+		pm.fix(f.check) }
 end
 
 local function render_stop_head(state, body, m)
@@ -879,7 +893,7 @@ local function render_stop_head(state, body, m)
 				for _, x in ipairs(m.findings) do
 					if x.check == check then f = x end
 				end
-				pair[#pair + 1] = lint_chip(check, f and { "", pm.detail(f, problems_tab.ENV), "\n", pm.fix(f.check) } or nil)
+				pair[#pair + 1] = lint_marker(check, f and relative.finding_text(f) or nil)
 			end
 			out[#out + 1] = pair
 			return out
@@ -1004,9 +1018,9 @@ local function render_unserved(state, body, m, compact)
 						handler = { [defines.events.on_gui_click] = util.handle.link_click },
 					} or label(r.hash),
 					{
-						type = "button",
+						type = "label",
 						name = "chip",
-						style = acked and "cybersyn_chip_acked" or utext.chip_style(e.reason),
+						style = marker_style(acked and "cybersyn_chip_acked" or utext.chip_style(e.reason)),
 						style_mods = { maximal_width = UNSERVED_CHIP },
 						caption = utext.chip_caption(e.reason),
 						tooltip = tip,
@@ -1478,6 +1492,28 @@ local function status_target(m)
 	return "depot", m.depot_id
 end
 
+--- The train's state as every place names it (logic.state_chip): residue or refuelling replace a quiet state.
+--- @param m table the train panel's model
+--- @param now uint
+--- @return StateChip
+local function train_state_chip(m, now)
+	local residue = m.status == STATUS_D and next(m.manifest) ~= nil
+	return logic.state_chip(m.state_name, m.state_since, now,
+		residue and "residue" or (m.status == STATUS_F and "refuel" or nil))
+end
+
+--- @param sc StateChip
+--- @return string
+local function state_label_style(sc)
+	return sc.style and ("cybersyn_marker_" .. sc.style) or "label"
+end
+
+--- @param sc StateChip
+--- @return LocalisedString
+local function state_label_caption(sc)
+	return { "", "[img=" .. sc.sprite .. "] ", sc.caption }
+end
+
 local function render_train_head(state, body, m)
 	local now = game.tick
 	-- Time in state as the Trains row beside the pane shows it (util.short_duration of the exact age): one rule.
@@ -1485,16 +1521,17 @@ local function render_train_head(state, body, m)
 	local since_caption = since >= 0 and util.short_duration(since) or ""
 	local kind, target = status_target(m)
 	local sig = table.concat({ m.status or -1, kind, tostring(target), tostring(target and stop_name(kind, target)) }, "|")
-	-- A moving train changes state at every signal: the state chip and its age are rewritten in place.
+	-- A moving train changes state at every signal: the state and its age are rewritten in place.
 	local ages = state.ages
-	local state_now = m.state or -1
+	local sc = train_state_chip(m, now)
+	local state_now = sc.key .. "|" .. tostring(sc.style)
 	if state.sigs["head"] == sig then
 		if ages.head ~= state_now or ages.head_since ~= since_caption then
 			local row = body.head and body.head.state_row
 			if row then
 				if ages.head ~= state_now then
-					row.state_chip.style = STATE_CHIP[m.state] or "cybersyn_chip_grey"
-					row.state_chip.caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") }
+					row.state_chip.style = state_label_style(sc)
+					row.state_chip.caption = state_label_caption(sc)
 				end
 				row.in_state.caption = since >= 0 and { "cybersyn-gui.relative-in-state", since_caption } or ""
 				row.in_state.tooltip = m.state_since and util.format_duration(since) or ""
@@ -1521,11 +1558,10 @@ local function render_train_head(state, body, m)
 				direction = "horizontal",
 				style_mods = { vertical_align = "center", horizontal_spacing = 8 },
 				{
-					type = "button",
+					type = "label",
 					name = "state_chip",
-					style = STATE_CHIP[m.state] or "cybersyn_chip_grey",
-					caption = { "cybersyn-gui.relative-state-" .. string.gsub(m.state_name or "unknown", "_", "-") },
-					tooltip = { "cybersyn-gui.relative-state-tooltip" },
+					style = state_label_style(sc),
+					caption = state_label_caption(sc),
 				},
 				label(since >= 0 and { "cybersyn-gui.relative-in-state", since_caption } or "",
 					{ name = "in_state", tooltip = m.state_since and util.format_duration(since) or nil }),
@@ -2288,7 +2324,11 @@ gui.add_handlers(relative.handle, relative.wrapper, "cybersyn_relative")
 --- Plain data for a rendered element subtree: captions and visibility, depth first.
 local function element_view(elem)
 	local v = { name = elem.name ~= "" and elem.name or nil, type = elem.type }
-	if elem.type == "label" or elem.type == "button" then v.caption = elem.caption end
+	if elem.type == "label" or elem.type == "button" then
+		v.caption = elem.caption
+		v.style = elem.style.name
+		v.handler = elem.tags["__" .. script.mod_name .. "_handler"] ~= nil or nil
+	end
 	if elem.type == "sprite-button" then
 		v.sprite = elem.sprite
 		v.enabled = elem.enabled

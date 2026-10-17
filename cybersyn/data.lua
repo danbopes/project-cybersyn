@@ -10,6 +10,7 @@ require("prototypes.sprite")
 require("prototypes.misc")
 
 require("prototypes.gui-style")
+require("prototypes.trains-style")
 
 data:extend({
 	combinator_entity,

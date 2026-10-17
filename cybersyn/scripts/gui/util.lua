@@ -798,12 +798,13 @@ end
 --- @param tab string
 --- @param total integer
 --- @param size integer? rows per page when the tab gives up some of its rows (default util.page_size)
+--- @param fewer integer? rows the page gives up to a strip the tab shows above its list (Trains: wrapped chips)
 --- @return integer first
 --- @return integer last
 --- @return integer page
 --- @return integer pages
-function util.paginate(player_data, tab, total, size)
-	size = size or util.page_size(player_data, tab)
+function util.paginate(player_data, tab, total, size, fewer)
+	size = math.max((size or util.page_size(player_data, tab)) - (fewer or 0), 1)
 	local pages = math.max(1, math.ceil(total / size))
 	player_data.page = player_data.page or {}
 	local page = math.min(math.max(player_data.page[tab] or 1, 1), pages)

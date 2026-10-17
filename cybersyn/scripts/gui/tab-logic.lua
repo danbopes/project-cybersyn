@@ -97,6 +97,10 @@ end
 -- ---------------------------------------------------------------- Trains table widths
 
 local TRAIN_SLOT = 32
+--- A depot group row's compositions slot and its Problems marker, in px.
+logic.GROUP_COMPS = 220
+logic.GROUP_MARKER = 110
+logic.GROUP_MARKER_ICON = 28
 -- Row padding and frame borders, and the gap between two shown columns.
 local ROW_PADDING, COLUMN_GAP = 20, 8
 
@@ -107,17 +111,19 @@ logic.TRAIN_WIDTHS = {
 	{ "network", 96, min = 64 },
 	{ "layout", 112, min = 80 },
 	{ "depot", 150, min = 100 },
-	{ "state", 128, min = 100 },
+	{ "state", 64 },
 	{ "time_in_state", 72 },
 	{ "last_refuel", 80 },
 	{ "fuel", 52 },
 	{ "shipment", 6 * TRAIN_SLOT, min = 3 * TRAIN_SLOT },
 }
 logic.TRAIN_STATUS_MIN = 260
---- While the detail pane shows, Shipment is dropped (the pane shows the cargo); with or without the pane, these go
---- one at a time while the status would stay under its minimum (a window narrower than about 1,100 px drops columns
---- even with the pane closed). Id, status and state always stay.
-logic.TRAIN_PANE_DROP = { "last_refuel", "fuel", "layout", "network", "depot", "time_in_state" }
+--- These go one at a time while the status would stay under its minimum after the shrinkable columns gave up their
+--- room (a window narrower than about 1,100 px drops columns even with the pane closed). With the detail pane open,
+--- Shipment goes first (the pane shows the cargo), but only then: a wide window keeps it rather than give the status
+--- all the room. Id, status and state always stay.
+logic.TRAIN_DROP = { "last_refuel", "fuel", "layout", "network", "depot", "time_in_state" }
+logic.TRAIN_PANE_DROP = { "shipment", "last_refuel", "fuel", "layout", "network", "depot", "time_in_state" }
 
 --- Column widths of the Trains table. The table is narrower by the detail pane while it shows; columns the pane
 --- pushed out are reported in `dropped` and have no width, like the `hidden` ones. Shipment is cut to whole slots,
@@ -131,10 +137,7 @@ function logic.train_widths(content_width, hidden, pane)
 	local cw = logic.table_width(content_width, pane)
 	local h, dropped = {}, {}
 	for k in pairs(hidden) do h[k] = true end
-	if pane then
-		h.shipment = true
-		dropped.shipment = true
-	end
+	local order = pane and logic.TRAIN_PANE_DROP or logic.TRAIN_DROP
 	local next_drop = 0
 	local w
 	while true do
@@ -148,7 +151,7 @@ function logic.train_widths(content_width, hidden, pane)
 		local key
 		repeat
 			next_drop = next_drop + 1
-			key = logic.TRAIN_PANE_DROP[next_drop]
+			key = order[next_drop]
 		until key == nil or not h[key]
 		if not key then break end
 		h[key] = true
@@ -161,16 +164,21 @@ function logic.train_widths(content_width, hidden, pane)
 	end
 	w.cw = cw
 	w.dropped = dropped
-	-- Group row: toggle 28, Parked 110, Inbound 100, Trains 100, Bypassed chip 90, compositions 220, the name the rest.
-	local name = cw - ROW_PADDING - 7 * COLUMN_GAP - 28 - 110 - 100 - 100 - 90 - 220
-	w.group_comps, w.group_bypass = true, true
+	-- Group row: toggle 28, Problems marker 110, Parked 110, Inbound 100, Trains 100, Bypassed 90, compositions 220,
+	-- the name the rest. Below 120 px of name the compositions go, then Bypassed, then the marker keeps its icon only.
+	local name = cw - ROW_PADDING - 8 * COLUMN_GAP - 28 - logic.GROUP_MARKER - 110 - 100 - 100 - 90 - logic.GROUP_COMPS
+	w.group_comps, w.group_bypass, w.group_marker = true, true, logic.GROUP_MARKER
 	if name < 120 then
 		w.group_comps = false
-		name = name + 220
+		name = name + logic.GROUP_COMPS
 	end
 	if name < 120 then
 		w.group_bypass = false
 		name = name + 90
+	end
+	if name < 120 then
+		w.group_marker = logic.GROUP_MARKER_ICON
+		name = name + logic.GROUP_MARKER - logic.GROUP_MARKER_ICON
 	end
 	w.group_name = math.min(360, name)
 	return w
@@ -209,9 +217,11 @@ end
 --- A signal wait shorter than this is ordinary traffic (diag.WAIT_SIGNAL_MIN, PLAN3 §4.4).
 logic.WAIT_SIGNAL_MIN = 600
 
---- LuaTrain.state names that are a train's normal work and show no chip.
+--- LuaTrain.state names that are a train's normal work: no icon in its row.
 local QUIET = { on_the_path = true, wait_station = true, arrive_station = true }
+local SIGNAL = { arrive_signal = true, wait_signal = true }
 
+-- Red: the train will not move again without help; orange: it waits on something that may clear by itself.
 local STATE_STYLE = {
 	no_path = "red",
 	path_lost = "red",
@@ -219,32 +229,129 @@ local STATE_STYLE = {
 	destination_full = "orange",
 	manual_control = "orange",
 	manual_control_stop = "orange",
-	arrive_signal = "grey",
-	wait_signal = "grey",
 }
 
---- The chip a train row shows in its State column, or nil.
---- @param state string? LuaTrain.state as its defines.train_state name
---- @param waited number ticks in that state
---- @param residue boolean parked at its depot with cargo aboard
---- @return string? key chip name: the state name or "residue"
---- @return string? style suffix of a cybersyn_chip_* style
-function logic.state_chip(state, waited, residue)
-	if residue then return "residue", "orange" end
-	if not state or QUIET[state] then return nil, nil end
-	if state == "wait_signal" and (waited or 0) >= logic.WAIT_SIGNAL_MIN then return state, "orange" end
-	return state, STATE_STYLE[state] or "grey"
+--- The icon of every train state the manager names (every defines.train_state, plus the two Cybersyn conditions
+--- "residue" and "refuel" that replace a quiet state). Fluids are the mod's hidden alert icons (prototypes/misc.lua).
+logic.STATE_SPRITE = {
+	on_the_path = "item/locomotive",
+	path_lost = "fluid/cybersyn-lost-train",
+	no_schedule = "utility/rail_path_not_possible",
+	no_path = "utility/no_path_icon",
+	arrive_signal = "item/rail-signal",
+	wait_signal = "item/rail-signal",
+	arrive_station = "item/train-stop",
+	wait_station = "item/train-stop",
+	manual_control_stop = "utility/hand",
+	manual_control = "utility/hand",
+	destination_full = "utility/destination_full_icon",
+	residue = "fluid/cybersyn-nonempty-train",
+	refuel = "virtual-signal/signal-fuel",
+}
+--- Used for "refuel" where an install has no signal-fuel (it is a base virtual signal since 2.0).
+logic.REFUEL_FALLBACK = "utility/fuel_icon"
+
+--- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h" (util.short_duration
+--- is the same rule; this copy keeps the module free of the game API).
+--- @param ticks number
+--- @return string
+function logic.short_duration(ticks)
+	local s = math.floor(math.max(ticks or 0, 0) / 60)
+	if s < 60 then return s .. "s" end
+	local m = math.floor(s / 60)
+	if m < 60 then return string.format("%dm %02ds", m, s % 60) end
+	local h = math.floor(m / 60)
+	if h < 24 then return string.format("%dh %02dm", h, m % 60) end
+	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
 end
 
---- The Trains tab's In trouble chip: every state whose chip is red or orange (no path, path lost, no schedule,
---- destination full, manual control, a signal wait of at least WAIT_SIGNAL_MIN), so a red row is always counted.
+--- @class StateChip
+--- @field key string the state name, "residue", "refuel" or "unknown"
+--- @field sprite string the state's icon (STATE_SPRITE)
+--- @field style "red"|"orange"|"grey"|nil the slot colour; nil = a quiet state, no icon in a Trains row
+--- @field caption LocalisedString the one wording of the state ([cybersyn-diag] train-state-*)
+--- @field tooltip LocalisedString "<caption> · <age>", the caption alone without an age
+
+--- What every place that names a train's state shows (Trains rows, the train panel, the Log): one wording, one
+--- icon, one colour. A signal wait or approach of at least WAIT_SIGNAL_MIN is orange, a shorter one grey.
+--- @param state string? LuaTrain.state as its defines.train_state name
+--- @param since number? tick the train entered the state
+--- @param now number? the current tick
+--- @param status "residue"|"refuel"|nil a Cybersyn condition: residue (parked with cargo) wins over any state,
+---   refuel replaces a quiet one
+--- @return StateChip
+function logic.state_chip(state, since, now, status)
+	local key, style
+	if status == "residue" then
+		key, style = "residue", "orange"
+	elseif not state then
+		key = "unknown"
+	elseif QUIET[state] then
+		key = state
+		if status == "refuel" then key, style = "refuel", "grey" end
+	elseif SIGNAL[state] then
+		key = state
+		style = (since and now and now - since >= logic.WAIT_SIGNAL_MIN) and "orange" or "grey"
+	else
+		key = state
+		style = STATE_STYLE[state] or "grey"
+	end
+	local caption = { "cybersyn-diag.train-state-" .. string.gsub(key, "_", "-") }
+	local tooltip = caption
+	if since and now then tooltip = { "", caption, " · ", logic.short_duration(now - since) } end
+	return {
+		key = key,
+		sprite = logic.STATE_SPRITE[key] or "utility/questionmark",
+		style = style,
+		caption = caption,
+		tooltip = tooltip,
+	}
+end
+
+--- The Trains tab's In trouble chip: every engine state whose icon is red or orange (no path, path lost, no schedule,
+--- destination full, manual control, a signal of at least WAIT_SIGNAL_MIN). Residue is orange too but is cargo, not
+--- a state: Cybersyn's nonempty_in_depot alert brings those trains in (trains.lua train_in_trouble).
 --- @param state string?
---- @param waited number
+--- @param waited number ticks in that state
 --- @return boolean
 function logic.in_trouble(state, waited)
 	if not state or QUIET[state] then return false end
-	local _, style = logic.state_chip(state, waited, false)
-	return style == "red" or style == "orange"
+	if SIGNAL[state] then return (waited or 0) >= logic.WAIT_SIGNAL_MIN end
+	return true
+end
+
+--- Sort rank of a state for the State column: red first, then orange, the signal states, the quiet ones, none.
+--- Fixed per state, so the order does not move while a wait ages past WAIT_SIGNAL_MIN.
+--- @param state string?
+--- @return string
+function logic.state_sort_key(state)
+	if not state then return "5" end
+	local style = STATE_STYLE[state]
+	if style == "red" then return "1" .. state end
+	if style == "orange" then return "2" .. state end
+	if SIGNAL[state] then return "3" .. state end
+	return "4" .. state
+end
+
+--- The lines of a depot group tooltip's "Trains by state", in display order: one per engine state, worded and drawn
+--- by state_chip like everywhere else, plus "unknown" for a train without one, so every train counts on one line.
+logic.STATE_BUCKETS = { "on_the_path", "arrive_station", "wait_station", "arrive_signal", "wait_signal",
+	"manual_control_stop", "manual_control", "no_path", "path_lost", "no_schedule", "destination_full", "unknown" }
+local IS_BUCKET = {}
+for _, b in ipairs(logic.STATE_BUCKETS) do IS_BUCKET[b] = true end
+
+--- The tooltip line of a LuaTrain state; a state the list does not know (a newer engine) counts as unknown.
+--- @param state string?
+--- @return string
+function logic.state_bucket(state)
+	return (state and IS_BUCKET[state]) and state or "unknown"
+end
+
+--- The state_chip of a tooltip line.
+--- @param bucket string
+--- @return StateChip
+function logic.bucket_chip(bucket)
+	return logic.state_chip(bucket ~= "unknown" and bucket or nil)
 end
 
 --- Composition string of a Cybersyn layout (0 = locomotive or any other carriage, 1 = cargo wagon, 2 = fluid wagon):
@@ -275,6 +382,67 @@ function logic.composition(layout)
 	end
 	if open then out[n + 1] = ">" end
 	return table.concat(out)
+end
+
+--- The icon of each carriage class of a Cybersyn layout (layout.lua: 0 = locomotive or any other carriage,
+--- 1 = cargo wagon, 2 = fluid wagon; artillery wagons are class 0).
+logic.CLASS_SPRITE = { [0] = "item/locomotive", [1] = "item/cargo-wagon", [2] = "item/fluid-wagon" }
+--- Composition icons are this wide; a run's count is the badge on its icon.
+logic.COMPOSITION_ICON = 28
+
+--- A layout as runs of one carriage class: {0, 1, 1, 0} -> {{class = 0, n = 1}, {class = 1, n = 2}, {class = 0, n = 1}}.
+--- @param layout int[]
+--- @return {class: int, n: int}[]
+function logic.composition_runs(layout)
+	local runs = {}
+	local last
+	for i = 1, #layout do
+		local c = layout[i]
+		if c ~= 0 and c ~= 1 and c ~= 2 then c = 0 end
+		if last and last.class == c then
+			last.n = last.n + 1
+		else
+			last = { class = c, n = 1 }
+			runs[#runs + 1] = last
+		end
+	end
+	return runs
+end
+
+--- One rich-text icon per carriage, for tooltips: "[item=locomotive][item=cargo-wagon][item=cargo-wagon]".
+--- @param layout int[]
+--- @return string
+function logic.composition_icons(layout)
+	local out = {}
+	for i = 1, #layout do
+		local c = layout[i]
+		out[i] = c == 1 and "[item=cargo-wagon]" or c == 2 and "[item=fluid-wagon]" or "[item=locomotive]"
+	end
+	return table.concat(out)
+end
+
+-- A group row's composition: its icons, the "×273" label after them (px per character at the row font) and the gap.
+local COMP_LABEL_PAD, COMP_CHAR, COMP_GAP, COMP_MORE = 4, 7, 12, 28
+
+--- How many of a depot group's compositions (most trains first) its row shows as icon runs in `budget` px, at most
+--- `max`; the rest go to a "+n" label. One is always shown when there is any.
+--- @param list {runs: int, n: int}[] per composition: its run count and its trains
+--- @param budget int
+--- @param max int
+--- @return int shown
+--- @return int more
+function logic.fit_compositions(list, budget, max)
+	local used, shown = 0, 0
+	for i, c in ipairs(list) do
+		if i > max then break end
+		local w = c.runs * logic.COMPOSITION_ICON + COMP_LABEL_PAD + COMP_CHAR * (#tostring(c.n) + 1)
+		if i > 1 then w = w + COMP_GAP end
+		local reserve = (i < #list) and COMP_MORE or 0
+		if shown > 0 and used + w + reserve > budget then break end
+		used = used + w
+		shown = i
+	end
+	return shown, #list - shown
 end
 
 --- Ticks since `tick`, nil when there is none (never refuelled, no state change recorded).
@@ -312,7 +480,7 @@ end
 --- @return number?
 function logic.chip_change_tick(now, state, state_since, refuel_since, hours, has_refueler)
 	local t
-	if state == "wait_signal" and state_since then
+	if SIGNAL[state] and state_since then
 		local at = state_since + logic.WAIT_SIGNAL_MIN
 		if at > now then t = at end
 	end
@@ -371,16 +539,44 @@ end
 
 --- The Trains chips in subheader order; "all" clears the chip.
 logic.TRAIN_CHIPS = { "all", "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
-	"not_refuelled", "in_group", "trouble" }
+	"not_refuelled", "in_group", "trouble", "problems" }
 
---- The locale key of a Trains chip caption: compact captions use the -short key, except All, which is short already.
+--- The locale key of a Trains chip caption (the Trains subheader and the drill-down's train status).
 --- @param key string one of TRAIN_CHIPS
---- @param compact boolean
 --- @return string
-function logic.train_chip_locale(key, compact)
-	local base = "cybersyn-gui.trains-chip-" .. string.gsub(key, "_", "-")
-	if compact and key ~= "all" then return base .. "-short" end
-	return base
+function logic.train_chip_locale(key)
+	return "cybersyn-gui.trains-chip-" .. string.gsub(key, "_", "-")
+end
+
+--- Which chips a subheader shows in `available` px, and on how many lines: every chip with its name when they fit;
+--- else the zero-count chips go (those marked `keep`, All and the toggled one, stay); what still does not fit wraps
+--- onto further lines. Captions are never shortened.
+--- @param chips {key: string, width: int, count: int, keep: boolean?}[] in display order, widths with their spacing
+--- @param available int
+--- @return {[string]: true} hidden
+--- @return string[][] lines the shown keys per line
+function logic.chip_lines(chips, available)
+	local hidden = {}
+	local total = 0
+	for _, c in ipairs(chips) do total = total + c.width end
+	if total > available then
+		for _, c in ipairs(chips) do
+			if c.count == 0 and not c.keep then hidden[c.key] = true end
+		end
+	end
+	local lines, line, used = {}, {}, 0
+	for _, c in ipairs(chips) do
+		if not hidden[c.key] then
+			if #line > 0 and used + c.width > available then
+				lines[#lines + 1] = line
+				line, used = {}, 0
+			end
+			line[#line + 1] = c.key
+			used = used + c.width
+		end
+	end
+	if #line > 0 then lines[#lines + 1] = line end
+	return hidden, lines
 end
 
 --- The hours of the Not refuelled chip as the caption and the tooltip show them: "1", "0.25", "2.75", "12.5".
