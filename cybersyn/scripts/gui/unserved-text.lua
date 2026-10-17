@@ -27,6 +27,16 @@ function text.chip_caption(reason)
 	return { "cybersyn-diag.chip-" .. key }
 end
 
+--- Counts in the Overview tiles: exact below 10,000, then "12.3k", so a number is never cut to "…" (round 5 item 7);
+--- the tile's tooltip carries the exact figure.
+--- @param n number?
+--- @return string
+function text.count(n)
+	if n == nil then return text.NO_VALUE end
+	if math.abs(n) < 10000 then return format.number(n) end
+	return (string.gsub(format.number(n, true), " ", ""))
+end
+
 --- "1.2k / 2.0k" for stock against what is needed; train counts for the train-side reasons.
 --- @param reason int
 --- @param a int payload (PLAN3 §4.5 B1)

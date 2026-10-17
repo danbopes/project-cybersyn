@@ -376,7 +376,10 @@ lab.suite("39_log", {
 		local screen = game.get_player(pi).gui.screen
 		local ov = find(screen, "overview_unserved_table")
 		local cell = ov and ov.children[8 + 2]
-		local link = cell and cell.children[2]
+		local link
+		for _, part in ipairs(cell and cell.children or {}) do
+			if part.type == "button" then link = part end
+		end
 		lab.check("Overview requester links take right-clicks", link and link.mouse_button_filter.right == true,
 			link and link.mouse_button_filter)
 		dev("select_tab", pi, "log")

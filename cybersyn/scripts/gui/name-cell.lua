@@ -82,6 +82,21 @@ local function children(parts, name, tags, width, tooltip, scope)
 	return out
 end
 
+--- The text keeps at least this much of a cell before its icons give way.
+local MIN_TEXT = 120
+
+--- Parts for a cell `width` wide: when the icons would leave the text less than MIN_TEXT, the leading icons are dropped
+--- (pY names such as "[a] / [b] Requestor for [c]" differ in their trailing icons). Parts are shared and read-only,
+--- so a fitted copy is made only then.
+--- @param parts RichNameParts?
+--- @param width int
+--- @return RichNameParts?
+function name_cell.fit(parts, width)
+	if not (parts and parts.lead) then return parts end
+	if width - icons_width(parts) - 4 >= MIN_TEXT then return parts end
+	return { text = parts.text, tail = parts.tail, tail_quality = parts.tail_quality, tail_overflow = parts.tail_overflow }
+end
+
 --- @param parts RichNameParts? shared and read-only (scripts/gui/rich-name.lua)
 --- @param name string the full rich-text name
 --- @param tags {kind: string, id: any}

@@ -674,6 +674,65 @@ function util.station_passes(st, f, ignore_item)
 	return true
 end
 
+--- The filters the Overview applies (PLAN4 D2): network name, network ID, surface and item. It has no station search,
+--- so the terms are left out: a query typed on another tab would otherwise filter it invisibly.
+--- @param player_data PlayerData
+--- @return ManagerFilters
+function util.overview_filters(player_data)
+	local f = util.get_filters(player_data)
+	f.terms = nil
+	if f.item and not util.signal_hash_valid(f.item) then f.item = nil end
+	return f
+end
+
+--- A plain string of every filter field, for caches keyed on the filters.
+--- @param f ManagerFilters
+--- @return string
+function util.filter_signature(f)
+	return table.concat({
+		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
+	}, "\1")
+end
+
+--- Whether network name, network ID or surface is set: the filters that decide by a station's place, not its items.
+--- @param f ManagerFilters
+--- @return boolean
+function util.place_filters_active(f)
+	return f.network ~= nil or f.mask ~= -1 or f.surface ~= nil
+end
+
+--- Whether requester `r_id` of an Unserved entry passes the network name, network ID and surface filters (D2): read
+--- from its snapshot record, or from the live station while the first pass is still collecting. A requester that is
+--- gone passes only while none of those filters is set.
+--- @param r_id uint
+--- @param stations {[uint]: SnapshotStation}
+--- @param f ManagerFilters
+--- @return boolean
+function util.requester_passes(r_id, stations, f)
+	if not util.place_filters_active(f) then return true end
+	local st = stations[r_id]
+	if st then
+		if f.surface and st.surface_index ~= f.surface then return false end
+		return util.network_passes(st.network_name, st.network_mask, f)
+	end
+	local station = storage.stations[r_id]
+	local stop = station and station.entity_stop
+	if not (stop and stop.valid) then return false end
+	if f.surface and stop.surface_index ~= f.surface then return false end
+	return util.network_passes(station.network_name, station.network_mask, f)
+end
+
+--- Whether surface `surface_index` holds a Cybersyn station (the manager's surface default falls back to All without).
+--- @param surface_index uint
+--- @return boolean
+function util.surface_has_station(surface_index)
+	for _, station in pairs(storage.stations) do
+		local stop = station.entity_stop
+		if stop and stop.valid and stop.surface_index == surface_index then return true end
+	end
+	return false
+end
+
 --- Station-name terms are not applied to trains.
 --- @param tr SnapshotTrain
 --- @param f ManagerFilters
@@ -917,6 +976,8 @@ end
 function util.set_item_filter(player_data, hash)
 	if hash and not util.signal_hash_valid(hash) then hash = nil end
 	player_data.search_item = hash
+	-- No filter is ever hidden (PLAN4 D4): setting one opens the filter row; the manager's render shows it.
+	if hash then player_data.filter_row_open = true end
 	local elem = player_data.refs and player_data.refs.manager_item_filter
 	if elem and elem.valid then
 		elem.elem_value = hash and util.signalid_from_hash(hash) or nil

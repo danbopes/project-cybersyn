@@ -61,7 +61,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field layout ManagerLayout? window size for the player's screen, see manager.layout
 --- @field layout_override {width: number, height: number, scale: number}? emulated screen (dev.set_layout)
 --- @field location {x: int, y: int}? window position in physical pixels, from on_gui_location_changed
---- @field filter_row_open true? the title bar's filter toggle
+--- @field filter_row_open true? the filter row is open (the title bar's filter button is lit); closing it clears its filters
 --- @field search_open true? the title bar's search toggle
 --- @field search_focused true? the search field was clicked or focused and not confirmed since
 --- @field auto_pinned true? "show on map" pinned the window; leaving remote view unpins it
@@ -317,10 +317,9 @@ function manager_gui.reset_gui(player)
 	player_data.location = nil
 	player_data.layout = nil
 	player_data.layout_override = nil
-	player_data.filter_row_open = nil
+	manager.close_filter_row(player, player_data)
 	local refs = player_data.refs
 	if refs and refs.manager_window and refs.manager_window.valid then
-		manager.refresh_filter_row(player, player_data)
 		manager.apply_layout(player, player_data)
 		refs.manager_window.force_auto_center()
 		if player_data.is_manager_open then manager.render(player, player_data) end
