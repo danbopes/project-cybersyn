@@ -825,7 +825,7 @@ local function problems_tooltip(entries, snapshot, now)
 	for i = 1, math.min(#entries, TOOLTIP_FINDINGS) do
 		local e = entries[i]
 		local f = e.f
-		local t = lint_text.texts(f.check, lint_text.role_of(f, snapshot))
+		local t = lint_text.texts(f.check, lint_text.role_of(f, snapshot), f)
 		local part = { "", "[img=" .. (e.ack and pm.ACKED_DOT or pm.DOT[e.sev]) .. "] ", t.tooltip, "\n",
 			pm.detail(f, lint_text.ENV) }
 		if e.ack then
@@ -2104,7 +2104,7 @@ local function entry_view(e)
 	return {
 		check = LINT_NAMES[f.check], subject = LINT_SUBJECT_NAMES[f.subject], id = f.id, item = f.item,
 		message = f.message, a = f.a, b = f.b, c = f.c, network = f.network, sev = e.sev, acked = e.ack ~= nil,
-		detail = pm.detail(f, lint_text.ENV), fix = pm.fix(f.check), chip = pm.chip(f.check),
+		detail = pm.detail(f, lint_text.ENV), fix = pm.fix(f.check, f), chip = pm.chip(f.check),
 	}
 end
 

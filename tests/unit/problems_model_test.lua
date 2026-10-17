@@ -224,3 +224,19 @@ test("locale: every lint caption, fix and detail key, and the Problems column's 
 		assert_true(text:find("\nproblems-scan-tooltip=", 1, true) == nil, loc .. " still has problems-scan-tooltip")
 	end
 end)
+
+test("lint-text: a counter leak's fix line reads Recount deliveries in the Stations tooltip; a bound train keeps Send home", function()
+	local lt = H.load("scripts.gui.lint-text")
+	local K = "cybersyn-diag.lint-fix-"
+	local leak = { check = LINT_PHANTOM, subject = LINT_SUBJECT_STATION, id = 1, a = 2, b = 0, fix = "phantom-leak" }
+	local bound = { check = LINT_PHANTOM, subject = LINT_SUBJECT_STATION, id = 2, a = 0, b = 1, train = 15 }
+	local t_leak = lt.texts(LINT_PHANTOM, "r", leak)
+	local t_bound = lt.texts(LINT_PHANTOM, "r", bound)
+	assert_eq(t_leak.fix, { K .. "phantom-leak" })
+	assert_eq(t_leak.tooltip[4], { K .. "phantom-leak" }, "the tooltip carries the finding's fix line")
+	assert_eq(t_bound.fix, { K .. "phantom" })
+	assert_eq(t_bound.tooltip[4], { K .. "phantom" })
+	assert_true(t_leak.key ~= t_bound.key, "the per-check cache keeps the two apart")
+	assert_eq(lt.texts(LINT_PHANTOM, "r").fix, { K .. "phantom" }, "no finding: the per-check line")
+	assert_true(lt.texts(LINT_PHANTOM, "r", leak) == t_leak, "cached per variant")
+end)

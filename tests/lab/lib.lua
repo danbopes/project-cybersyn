@@ -453,7 +453,9 @@ function lab.problems_verify(label, collect)
 		seen[id] = (seen[id] or 0) + 1
 		local why = lint_detail_wrong(e)
 		if why then wrong[#wrong + 1] = where .. " " .. e.check .. " " .. e.id .. ": " .. why end
-		if lint_key_of(e.fix) ~= "cybersyn-diag.lint-fix-" .. lint_dash(e.check) then wrong[#wrong + 1] = e.check .. " fix" end
+		-- A counter leak (more deliveries counted than trains bound) has its own fix line: Recount deliveries.
+		local fix = (e.check == "phantom" and (e.a or 0) > (e.b or 0)) and "phantom-leak" or lint_dash(e.check)
+		if lint_key_of(e.fix) ~= "cybersyn-diag.lint-fix-" .. fix then wrong[#wrong + 1] = e.check .. " fix" end
 		if lint_key_of(e.chip) ~= "cybersyn-diag.lint-chip-" .. lint_dash(e.check) then wrong[#wrong + 1] = e.check .. " chip" end
 		if not why then lab.problems_seen[e.check] = true end
 	end

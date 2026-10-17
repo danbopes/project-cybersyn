@@ -41,27 +41,31 @@ end
 --- @type ProblemsEnv
 lint_text.ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.short_duration }
 
--- Captions and tooltips that depend only on the check and the side of the station it predicts for: built once per
--- Lua state. A pure function of its key, so a cache that differs between states cannot desync anything.
+-- Captions and tooltips that depend only on the check, the side of the station it predicts for and the finding's
+-- own fix variant (f.fix, a small fixed set): built once per Lua state. A pure function of its key, so a cache that
+-- differs between states cannot desync anything.
 local check_text = {}
 
 --- @param check int
 --- @param role "r"|"p"|nil nil when the subject is not a station
+--- @param f LintFinding? the finding, when it may carry its own fix line (a counter leak reads "Recount deliveries")
 --- @return {key: string, caption: LocalisedString, chip: LocalisedString, fix: LocalisedString, tooltip: LocalisedString, linked: LocalisedString}
-function lint_text.texts(check, role)
-	local key = check .. (role or "-")
+function lint_text.texts(check, role, f)
+	local variant = f and f.fix
+	local key = check .. (role or "-") .. (variant or "")
 	local t = check_text[key]
 	if t then return t end
 	local code = role and lint.predicts(check, role) or nil
 	local predicts = code and { "cybersyn-gui.problems-predicts", { "cybersyn-diag.chip-" .. REASON_KEYS[code] } }
 		or { "cybersyn-gui.problems-predicts-none" }
-	local tooltip = { "cybersyn-gui.problems-chip-tooltip", pm.caption(check), predicts, pm.fix(check),
+	local fix = pm.fix(check, f)
+	local tooltip = { "cybersyn-gui.problems-chip-tooltip", pm.caption(check), predicts, fix,
 		{ "cybersyn-diag.sev-" .. DIAG_SEV_NAMES[LINT_SEVERITY[check] or DIAG_SEV_WARNING] } }
 	t = {
 		key = key,
 		caption = pm.caption(check),
 		chip = pm.chip(check),
-		fix = pm.fix(check),
+		fix = fix,
 		tooltip = tooltip,
 		linked = { "", tooltip, "\n", util.LINK_FOOTER },
 	}
