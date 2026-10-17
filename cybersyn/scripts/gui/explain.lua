@@ -123,7 +123,7 @@ local function body_defs(r_id, hash, e)
 	for _, f in ipairs(findings) do
 		out[#out + 1] = label({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } })
 		out[#out + 1] = label(pm.detail(f, problems_tab.ENV), true)
-		out[#out + 1] = label(pm.fix(f.check), true)
+		out[#out + 1] = label(pm.fix(f.check, f), true)
 	end
 
 	return out, sprite, quality

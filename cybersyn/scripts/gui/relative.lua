@@ -854,7 +854,7 @@ end
 --- @return LocalisedString
 function relative.finding_text(f)
 	return { "", "[font=default-semibold]", pm.caption(f.check), "[/font]  ", pm.detail(f, problems_tab.ENV), "\n",
-		pm.fix(f.check) }
+		pm.fix(f.check, f) }
 end
 
 local function render_stop_head(state, body, m)
@@ -1129,9 +1129,9 @@ local function render_setup(state, body, m, pd)
 			end
 			for _, f in ipairs(m.findings) do
 				out[#out + 1] = line({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } }, nil, sev_color(LINT_SEVERITY[f.check]))
-				-- Same detail and fix texts as the Problems tab, so one finding reads alike in both places.
+				-- Same detail and fix texts as the Stations Problems column, so one finding reads alike in both places.
 				out[#out + 1] = note(pm.detail(f, problems_tab.ENV))
-				out[#out + 1] = note(pm.fix(f.check))
+				out[#out + 1] = note(pm.fix(f.check, f))
 				if leak and xlogic.is_counter_leak(f) then out[#out + 1] = repair.recount_button(player, pd, state.id) end
 			end
 			return out
