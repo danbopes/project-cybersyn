@@ -128,7 +128,8 @@ lab.suite("39_extras", {
 		local s = dev("path_trace_state", PI)
 		lab.check("selection change removes the trace", s.shown == false and s.objects == ctx.base_objects, s)
 		dev("path_trace", PI, tid)
-		lab.wait(620)
+		-- extras.tick drops the trace on the manager tick (every 60 ticks at 1 update/s), so the wait covers two of them.
+		lab.wait(720)
 	end,
 
 	function(ctx)

@@ -3,6 +3,7 @@ local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
 local lint = require("scripts.lint")
+local diag = require("scripts.diag")
 local rich_name = require("scripts.gui.rich-name")
 
 local util = {}
@@ -720,6 +721,42 @@ function util.requester_passes(r_id, stations, f)
 	if not (stop and stop.valid) then return false end
 	if f.surface and stop.surface_index ~= f.surface then return false end
 	return util.network_passes(station.network_name, station.network_mask, f)
+end
+
+local error_mask
+--- Lint bits of the checks whose findings are errors (LINT_SEVERITY).
+--- @return int
+function util.lint_error_mask()
+	if not error_mask then
+		local m = 0
+		for check = 1, LINT_COUNT do
+			if LINT_SEVERITY[check] == DIAG_SEV_ERROR then m = bit32.bor(m, LINT_BIT[check]) end
+		end
+		error_mask = m
+	end
+	return error_mask
+end
+
+--- The error-severity checks station `id` fails that are not acknowledged: the Overview's Misconfigured rule (PLAN4
+--- D7). The Stations Problems chip lists exactly the stations with a non-zero count while
+--- `player_data.stations_problems_scope == "errors"` (set by the Misconfigured jump), so the line and its rows agree.
+--- @param id uint station id
+--- @param bits int? the station's lint bits (SnapshotStation.lint)
+--- @param by_check {[int]: int}? adds 1 per open check
+--- @return int open
+function util.open_setup_errors(id, bits, by_check)
+	local mask = bit32.band(bits or 0, util.lint_error_mask())
+	local open, check = 0, 1
+	local is_acked = diag.is_acked
+	while mask ~= 0 do
+		if bit32.band(mask, 1) ~= 0 and not is_acked("lint", id, check) then
+			open = open + 1
+			if by_check then by_check[check] = (by_check[check] or 0) + 1 end
+		end
+		mask = bit32.rshift(mask, 1)
+		check = check + 1
+	end
+	return open
 end
 
 --- Whether surface `surface_index` holds a Cybersyn station (the manager's surface default falls back to All without).

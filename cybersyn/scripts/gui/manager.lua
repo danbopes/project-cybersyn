@@ -234,6 +234,7 @@ local function clear_row_filters(player_data)
 	player_data.search_surface_idx = nil
 	player_data.stations_status_filter = nil
 	player_data.stations_chip = nil
+	player_data.stations_problems_scope = nil
 	player_data.trains_chip = nil
 	util.reset_pages(player_data)
 end
@@ -1027,7 +1028,9 @@ function manager.on_controller_changed(player, player_data)
 	end
 	-- Back from remote view with a pinned window's overlays still open: the manager tick hands player.opened back once
 	-- no GUI holds it (manager.restore_opened), so Escape peels them again (PLAN4 D16).
-	if player_data.is_manager_open and player_data.pinning and manager.top_overlay(player_data) then
+	-- Only the return to the character (D16); a hand-back already pending keeps its entity.
+	if player.controller_type == defines.controllers.character and not player_data.restore_opened
+		and player_data.is_manager_open and player_data.pinning and manager.top_overlay(player_data) then
 		player_data.restore_opened = { controller = player.controller_type }
 	end
 end

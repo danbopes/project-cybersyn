@@ -105,10 +105,13 @@ lab.suite("36_window", {
 				old = old + 1
 			end
 		end
-		lab.check("Unserved > 1 min tile == entries older than a minute", d.tiles.unserved.headline == old,
-			{ tile = d.tiles.unserved.headline, rows = old })
-		lab.check("Unserved tile caption names the setting", key_of(d.rendered_tiles.unserved.caption) == "cybersyn-gui.overview-tile-unserved"
-			and d.rendered_tiles.unserved.caption[2] == "1", d.rendered_tiles.unserved.caption)
+		lab.check("Unserved tile's Waiting > 1 min line == entries older than a minute", d.tiles.unserved.old == old,
+			{ tile = d.tiles.unserved.old, rows = old })
+		local rt = d.rendered_tiles.unserved
+		lab.check("Unserved tile: the headline is its station count, the first line names the setting",
+			key_of(rt.caption) == "cybersyn-gui.overview-tile-unserved" and d.tiles.unserved.headline == d.tiles.unserved.stations
+			and rt.headline == tostring(d.tiles.unserved.stations)
+			and key_of(rt.lines[1][1]) == "cybersyn-gui.overview-unserved-old" and rt.lines[1][1][2] == "1", rt)
 		lab.check("table caption counts shown of total", key_of(u.caption) == "cybersyn-gui.unserved-count", u.caption)
 		local r1 = u.rendered[1]
 		local tip = r1 and r1.chip_tooltip
@@ -190,7 +193,16 @@ lab.suite("36_window", {
 		local res = lab.dev("click", pi, "overview_failing_line4_label")
 		lab.check("the Misconfigured line jumps to the Stations tab", res == true
 			and remote.call(D, "state", pi).selected_tab == "stations_tab", res)
-		lab.info("stations_chip after the Misconfigured jump: " .. tostring(lab.read("manager", "players", pi, "stations_chip")))
+		local chip = lab.read("manager", "players", pi, "stations_chip")
+		lab.check("the Misconfigured jump narrows the Problems chip to open errors",
+			lab.read("manager", "players", pi, "stations_problems_scope") == "errors", chip)
+		-- Line == rows needs the Problems chip (phase p3) to honour the scope; until it lands stations.lua drops the chip.
+		if chip == "problems" then
+			local rows = remote.call(D, "dump", pi, "stations").ids
+			lab.check("Misconfigured line == rows of its jump", #rows == before, { line = before, rows = #rows })
+		else
+			lab.skip("Misconfigured line == rows of its jump", "stations.lua has no Problems chip on this branch")
+		end
 		remote.call(D, "clear_filters", pi)
 		remote.call(D, "select_tab", pi, "overview")
 	end,
@@ -217,7 +229,8 @@ lab.suite("36_window", {
 			and d.lists.unserved.total == u.total - 1, { before = u.total, after = d.lists.unserved.total })
 		if old_row then
 			lab.check("tile reads (+1 acked)", d.tiles.unserved.acked == before.acked + 1
-				and key_of(d.rendered_tiles.unserved.note) == "cybersyn-gui.overview-acked-note", d.rendered_tiles.unserved)
+				and string.find(serpent.line(d.rendered_tiles.unserved.lines[1][2], { comment = false }),
+					"overview-acked-note", 1, true) ~= nil, d.rendered_tiles.unserved)
 		else
 			lab.skip("tile reads (+1 acked)", "the first row is younger than a minute")
 		end
@@ -582,6 +595,10 @@ lab.suite("36_window", {
 		lab.dev("lint_run")
 		local stations = lab.read("stations")
 		local bench = game.surfaces["cyb-bench"].index
+		local function mask_ok(f, mask)
+			return type(mask) == "number" and bit32.btest(f.mask or -1, mask)
+		end
+		-- The requester's place (surface, network name, network ID), from the live station.
 		local function passes(id, f)
 			local st = stations[id]
 			if not st then return false end
@@ -590,19 +607,36 @@ lab.suite("36_window", {
 			if f.network then
 				local mask = st.network_name == "signal-each" and type(st.network_mask) == "table" and st.network_mask[f.network]
 					or (st.network_name == f.network and st.network_mask) or nil
-				if type(mask) ~= "number" or mask == 0 then return false end
+				if not mask_ok(f, mask) then return false end
+			elseif f.mask then
+				if type(st.network_mask) == "table" then
+					local any = false
+					for _, m in pairs(st.network_mask) do any = any or mask_ok(f, m) end
+					if not any then return false end
+				elseif not mask_ok(f, st.network_mask) then
+					return false
+				end
 			end
 			return true
 		end
 		local function entries(f)
-			local n, ids = 0, {}
+			local n = 0
 			for _, row in ipairs(lab.dev("diag_unserved_rows", 5000)) do
-				if passes(row.r_station_id, f) then
+				if passes(row.r_station_id, f) and (not f.item or row.hash == f.item) then n = n + 1 end
+			end
+			return n
+		end
+		-- The Stations tab's Unserved chip rule, independently: a snapshot record with an unserved entry (any item) that
+		-- passes the place filters and provides, requests or delivers the filtered item.
+		local function unserved_stations(f)
+			local n = 0
+			for id, st in pairs(lab.read("manager").snapshot.stations) do
+				if st.unserved and st.unserved.count > 0 and passes(id, f) and (not f.item or st.provided[f.item]
+					or st.requested[f.item] or st.deliveries[f.item]) then
 					n = n + 1
-					ids[row.r_station_id] = true
 				end
 			end
-			return n, table_size(ids)
+			return n
 		end
 		local function jump(tile)
 			remote.call(D, "select_tab", pi, "overview")
@@ -612,10 +646,27 @@ lab.suite("36_window", {
 		remote.call(D, "select_tab", pi, "overview")
 		lab.dev("collect")
 		local all = overview()
+		-- An item filter where the two rules differ when one can be found: a station that handles the item with an
+		-- unserved entry for another item only (the case a per-entry count got wrong).
+		local item, differs
+		local by_item = {}
+		for _, row in ipairs(lab.dev("diag_unserved_rows", 5000)) do
+			by_item[row.hash] = by_item[row.hash] or {}
+			by_item[row.hash][row.r_station_id] = true
+		end
+		for hash, ids in pairs(by_item) do
+			local d = unserved_stations({ item = hash }) ~= table_size(ids)
+			if not item or (d and not differs) or (d == differs and hash < item) then item, differs = hash, d end
+		end
+		lab.info("item case " .. tostring(item) .. (differs and " (a station handles it with another item unserved)" or ""))
 		local cases = {
 			{ "surface cyb-bench", { surface = bench } },
 			{ "network signal-A", { network = "signal-A" } },
 			{ "surface cyb-bench + network signal-B", { surface = bench, network = "signal-B" } },
+			{ "item " .. tostring(item), { item = item } },
+			{ "network ID 1", { mask = 1 } },
+			{ "network signal-A + network ID 2", { network = "signal-A", mask = 2 } },
+			{ "surface cyb-bench + a station search typed elsewhere", { surface = bench, query = "stn-1" } },
 			{ "surface nauvis (no stops)", { surface = 1 } },
 		}
 		for _, case in ipairs(cases) do
@@ -626,9 +677,10 @@ lab.suite("36_window", {
 			lab.dev("collect")
 			local d = overview()
 			local u = d.tiles.unserved
-			local n, n_stations = entries(f)
-			lab.check(name .. ": Unserved table and tile count the requests whose requester passes",
-				u.total + u.acked_total == n and u.stations == n_stations, { tile = u, entries = n, stations = n_stations })
+			local n, n_stations = entries(f), unserved_stations(f)
+			lab.check(name .. ": Unserved table counts the requests whose requester passes, the tile the chip's stations",
+				u.total + u.acked_total == n and u.stations == n_stations and u.headline == u.stations,
+				{ tile = u, entries = n, stations = n_stations })
 			local ok = true
 			for _, r in ipairs(d.lists.unserved.rendered) do
 				if not passes(r.requester_id, f) then ok = false end
@@ -638,11 +690,14 @@ lab.suite("36_window", {
 			local unserved_ids = jump("unserved")
 			lab.check(name .. ": Unserved tile stations == rows of its jump", u.stations == #unserved_ids,
 				{ tile = u.stations, rows = #unserved_ids })
+			if f.query then remote.call(D, "set_filter", pi, { query = f.query }) end
 			local failing_ids = jump("failing")
 			lab.check(name .. ": Stations failing tile == rows of its jump", failing == #failing_ids,
 				{ tile = failing, rows = #failing_ids })
-			lab.check(name .. ": the jumps keep the filter and the row open", remote.call(D, "header", pi).filter_row
-				and remote.call(D, "state", pi).filters.surface == f.surface)
+			local st = remote.call(D, "state", pi).filters
+			lab.check(name .. ": the jumps keep the filter and the row open and drop the station search",
+				remote.call(D, "header", pi).filter_row and st.surface == f.surface and st.item == f.item
+				and st.mask == (f.mask or -1) and st.terms == nil, st)
 			lab.info(name .. ": unserved " .. u.total .. " + " .. u.acked_total .. " acked at " .. u.stations
 				.. " stations, failing " .. tostring(failing) .. " (unfiltered " .. all.tiles.unserved.total .. ", "
 				.. tostring(all.tiles.failing.headline) .. ")")

@@ -21,6 +21,8 @@ local logic = require("scripts.gui.tab-logic")
 --- @field overview_show_acked true? acknowledged rows are listed (greyed, at the bottom)
 --- @field overview_widths {requester: int, provider: int, tile: int}? column widths for the current layout
 --- @field stations_chip "unserved"|"failing"|"problems"? the Stations chip a tile jump selects (stations.lua owns the others)
+--- @field stations_problems_scope "errors"? set with the Problems chip by the Misconfigured jump: list only the stations
+--- util.open_setup_errors counts (stations.lua honours it; any chip toggle there clears it)
 --- @field trains_chip "parked"? the Trains chip the Fleet headroom tile selects (phase 4), with the network filter
 
 local overview_tab = {}
@@ -32,7 +34,9 @@ local DEFAULT_PERIOD = 60
 local NO_VALUE = text.NO_VALUE
 local HOUR = 216000
 local DAY = 24 * HOUR
-local TOP_REASONS = 3
+-- Tile 1's body: line 1 the requests older than N minutes, then two reasons and a third line (the third reason or
+-- the rest summed).
+local TOP_REASONS = 2
 local MAX_TOOLTIP_NETWORKS = 12
 local TABLE_COLUMNS = 8
 -- Logical px at the 1,392 px content width of a 1,440 px window (PLAN3 §4.7); the requester column takes the rest.
@@ -409,8 +413,9 @@ local function counts_before(a, b)
 end
 
 --- The diagnostics walk: the table's rows (top `rows` by wait, acknowledged ones apart) and the Unserved tile's
---- counts, for the filters (D2: the requester's network name, network ID and surface, the entry's item). One pass over
---- the unserved entries, never over the stations; the place filters are decided once per requester.
+--- request counts, for the filters (D2: the requester's network name, network ID and surface, the entry's item). One
+--- pass over the unserved entries, never over the stations; the place filters are decided once per requester. The
+--- tile's station count is not taken here: it comes from the snapshot records (station_part), the Unserved chip's rule.
 --- @param d DiagState
 --- @param f ManagerFilters util.overview_filters
 --- @param stations {[uint]: SnapshotStation}
@@ -420,7 +425,7 @@ end
 --- @return table
 local function unserved_model(d, f, stations, rows, threshold, now)
 	local out = {
-		open = {}, acked = {}, total = 0, acked_total = 0, old = 0, old_acked = 0, reasons = {}, stations = 0,
+		open = {}, acked = {}, total = 0, acked_total = 0, old = 0, old_acked = 0, reasons = {},
 	}
 	local want_ix
 	local item = f.item
@@ -435,15 +440,10 @@ local function unserved_model(d, f, stations, rows, threshold, now)
 	local none = {}
 	for r_id, by_item in pairs(d.unserved) do
 		local by_ack = ack_requests and ack_requests[r_id]
-		local counted = false
 		if not passes(r_id, stations, f) then by_item = none end
 		for ix, e in pairs(by_item) do
 			local reason = e.reason
 			if not want_ix or ix == want_ix then
-				if not counted then
-					counted = true
-					out.stations = out.stations + 1
-				end
 				local hash = d.item_hash[ix]
 				local acked = by_ack and by_ack[hash] and diag.is_acked("request", r_id, hash) ~= nil
 				local old = now - e.first_tick >= threshold
@@ -471,30 +471,21 @@ end
 
 local band = bit32.band
 local F_NO_POWER, F_DISABLED, F_THROTTLING = logic.FLAG_NO_POWER, logic.FLAG_DISABLED, logic.FLAG_THROTTLING
+local F_UNSERVED, FAILING = logic.FLAG_UNSERVED, logic.FAILING
+local COUNTED = bit32.bor(FAILING, F_UNSERVED)
 
-local error_mask
---- Lint bits of the checks whose findings are errors (LINT_SEVERITY): the Misconfigured line counts only these.
---- @return int
-local function lint_error_mask()
-	if not error_mask then
-		local m = 0
-		for check = 1, LINT_COUNT do
-			if LINT_SEVERITY[check] == DIAG_SEV_ERROR then m = bit32.bor(m, LINT_BIT[check]) end
-		end
-		error_mask = m
-	end
-	return error_mask
-end
+local lint_error_mask = util.lint_error_mask
 
---- One station's part of the Stations failing tile: its Failing flags (tab-logic, the flags the Stations tab's Failing
---- chip lists) and its error lint bits, or nil when it does not count or does not pass the filters.
+--- One station's part of tiles 1 and 3: its Failing and Unserved flags (tab-logic, the flags the Stations tab's
+--- Failing and Unserved chips list) and its error lint bits, or nil when it does not count or does not pass the
+--- filters. The same record, flags and station_passes as those chips, so each tile counts the rows its jump lists.
 --- @param st SnapshotStation?
 --- @param f ManagerFilters
 --- @return int? flags
 --- @return int errors
-local function failing_part(st, f)
+local function station_part(st, f)
 	if not st then return nil, 0 end
-	local flags = band(logic.station_flags(st), logic.FAILING)
+	local flags = band(logic.station_flags(st), COUNTED)
 	if flags == 0 then return nil, 0 end
 	if not util.station_passes(st, f) then return nil, 0 end
 	return flags, band(st.lint or 0, lint_error_mask())
@@ -504,6 +495,8 @@ end
 --- @param flags int
 --- @param sign int 1 adds the station, -1 takes it out
 local function failing_add(c, flags, sign)
+	if band(flags, F_UNSERVED) ~= 0 then c.unserved = c.unserved + sign end
+	if band(flags, FAILING) == 0 then return end
 	c.total = c.total + sign
 	if band(flags, F_NO_POWER) ~= 0 then c.no_power = c.no_power + sign end
 	if band(flags, F_DISABLED) ~= 0 then c.disabled = c.disabled + sign end
@@ -518,18 +511,9 @@ end
 local function misconfigured(errs)
 	local out = { stations = 0, acked = 0, findings = 0, by_check = {} }
 	local by_check = out.by_check
-	local is_acked = diag.is_acked
+	local open_errors = util.open_setup_errors
 	for id, mask in pairs(errs) do
-		local open = 0
-		local check = 1
-		while mask ~= 0 do
-			if band(mask, 1) ~= 0 and not is_acked("lint", id, check) then
-				open = open + 1
-				by_check[check] = (by_check[check] or 0) + 1
-			end
-			mask = bit32.rshift(mask, 1)
-			check = check + 1
-		end
+		local open = open_errors(id, mask, by_check)
 		if open > 0 then
 			out.stations = out.stations + 1
 			out.findings = out.findings + open
@@ -553,7 +537,10 @@ local function failing_model(player_data, snapshot, f)
 	local epoch, pos = collector.log_position()
 	local fsig = util.filter_signature(f)
 	local ids, first, last
-	if cache and cache.fsig == fsig then ids, first, last = collector.changed_since(cache.epoch, cache.pos) end
+	-- A cache from before tile 1 counted here has no Unserved count: walk again.
+	if cache and cache.fsig == fsig and cache.counts.unserved then
+		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
+	end
 	local stations = snapshot.stations
 	if ids then
 		local parts, errs, c = cache.parts, cache.errs, cache.counts
@@ -564,17 +551,17 @@ local function failing_model(player_data, snapshot, f)
 				seen[id] = true
 				local old = parts[id]
 				if old then failing_add(c, old, -1) end
-				local flags, e = failing_part(stations[id], f)
+				local flags, e = station_part(stations[id], f)
 				parts[id] = flags
 				errs[id] = flags and e ~= 0 and e or nil
 				if flags then failing_add(c, flags, 1) end
 			end
 		end
 	else
-		local c = { no_power = 0, disabled = 0, throttling = 0, total = 0 }
+		local c = { no_power = 0, disabled = 0, throttling = 0, total = 0, unserved = 0 }
 		local parts, errs = {}, {}
 		for id, st in pairs(stations) do
-			local flags, e = failing_part(st, f)
+			local flags, e = station_part(st, f)
 			if flags then
 				parts[id] = flags
 				if e ~= 0 then errs[id] = e end
@@ -587,7 +574,7 @@ local function failing_model(player_data, snapshot, f)
 	cache.epoch, cache.pos = epoch, pos
 	local c = cache.counts
 	return {
-		total = c.total, no_power = c.no_power, disabled = c.disabled, throttling = c.throttling,
+		total = c.total, no_power = c.no_power, disabled = c.disabled, throttling = c.throttling, unserved = c.unserved,
 		misconfigured = misconfigured(cache.errs),
 	}
 end
@@ -696,6 +683,8 @@ function overview_tab.model(player_data)
 	local collecting = snapshot.tick == nil
 	local unserved = d and unserved_model(d, f, snapshot.stations, rows, minutes * 3600, now) or nil
 	local failing = not collecting and failing_model(player_data, snapshot, f) or nil
+	-- Tile 1's headline: the stations the Stations tab's Unserved chip lists under these filters (D2).
+	if unserved then unserved.stations = failing and failing.unserved end
 	local cycle = stats.get().cycle
 	return {
 		now = now,
@@ -803,7 +792,7 @@ end
 local function render_unserved_tile(refs, cache, model)
 	local u = model.unserved
 	local minutes = tostring(model.minutes)
-	set_caption(cache, refs.overview_unserved_caption, minutes, { "cybersyn-gui.overview-tile-unserved", minutes })
+	set_caption(cache, refs.overview_unserved_caption, "c", { "cybersyn-gui.overview-tile-unserved" })
 	if not u or model.collecting then
 		set_caption(cache, refs.overview_unserved_headline, NO_VALUE, NO_VALUE)
 		set_caption(cache, refs.overview_unserved_note, "", "")
@@ -812,17 +801,24 @@ local function render_unserved_tile(refs, cache, model)
 		set_tooltip(cache, refs.overview_tile_unserved, sig, u and { "cybersyn-gui.stations-collecting" } or { "cybersyn-gui.unserved-diag-off" })
 		return
 	end
-	set_caption(cache, refs.overview_unserved_headline, tostring(u.old), count_text(u.old))
-	local note = u.old_acked > 0 and { "cybersyn-gui.overview-acked-note", count_text(u.old_acked) } or ""
-	set_caption(cache, refs.overview_unserved_note, tostring(u.old_acked), note)
+	-- The headline is the number the click lists (D2): the stations the Stations tab's Unserved chip shows. The
+	-- minutes threshold applies to the requests on the lines below it.
+	set_caption(cache, refs.overview_unserved_headline, tostring(u.stations), count_text(u.stations))
+	set_caption(cache, refs.overview_unserved_note, "", "")
+	local old = count_text(u.old)
+	local old_value = old
+	if u.old_acked > 0 then old_value = { "", old, " ", { "cybersyn-gui.overview-acked-note", count_text(u.old_acked) } } end
+	set_caption(cache, refs.overview_unserved_line1_label, "old" .. minutes, { "cybersyn-gui.overview-unserved-old", minutes })
+	set_caption(cache, refs.overview_unserved_line1_value, old .. "|" .. u.old_acked, old_value)
 	local sorted = u.sorted_reasons
-	for i = 1, 4 do
-		local entry = i <= TOP_REASONS and sorted[i] or nil
+	for i = 2, 4 do
+		local k = i - 1
+		local entry = (k <= TOP_REASONS or #sorted == TOP_REASONS + 1) and sorted[k] or nil
 		if entry then
 			set_line(refs, cache, "unserved", i, "r" .. entry[1], { "cybersyn-diag.chip-" .. REASON_KEYS[entry[1]] }, count_text(entry[2]))
-		elseif i == 4 and #sorted > TOP_REASONS then
+		elseif k == TOP_REASONS + 1 and #sorted > k then
 			local rest = 0
-			for k = TOP_REASONS + 1, #sorted do rest = rest + sorted[k][2] end
+			for j = k, #sorted do rest = rest + sorted[j][2] end
 			set_line(refs, cache, "unserved", i, "other", { "cybersyn-gui.overview-other-reasons" }, count_text(rest))
 		else
 			set_line(refs, cache, "unserved", i, "", "", "")
@@ -834,9 +830,10 @@ local function render_unserved_tile(refs, cache, model)
 		.. "|" .. tostring(model.filtered)
 	if not tooltip_due(cache, refs.overview_tile_unserved, sig) then return end
 	local tooltip = { "", { "cybersyn-gui.overview-tile-unserved-tooltip", minutes } }
-	if u.old >= 10000 then
-		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-exact", format.number(u.old) } }
+	if u.stations >= 10000 then
+		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-exact", format.number(u.stations) } }
 	end
+	tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-unserved-old-line", minutes, format.number(u.old) } }
 	for i, entry in ipairs(sorted) do
 		if i > 18 then break end
 		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-diag.reason-" .. REASON_KEYS[entry[1]] }, ": ", format.number(entry[2]) }
@@ -844,7 +841,6 @@ local function render_unserved_tile(refs, cache, model)
 	if u.old_acked > 0 then
 		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-acked-line", format.number(u.old_acked) } }
 	end
-	tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-unserved-stations", format.number(u.stations) } }
 	if model.filtered then
 		tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-filtered-requester" } }
 	end
@@ -1614,8 +1610,8 @@ dev.register_dump(TAB, function(player_data)
 	local refs = player_data.refs
 	local u = model.unserved
 	local tiles = {
-		unserved = u and { headline = u.old, acked = u.old_acked, total = u.total, acked_total = u.acked_total,
-			stations = u.stations, reasons = {} } or nil,
+		unserved = u and { headline = u.stations, old = u.old, acked = u.old_acked, total = u.total,
+			acked_total = u.acked_total, stations = u.stations, reasons = {} } or nil,
 		failing = model.failing and { headline = model.failing.total, no_power = model.failing.no_power,
 			disabled = model.failing.disabled, throttling = model.failing.throttling,
 			misconfigured = model.failing.misconfigured.stations, misconfigured_acked = model.failing.misconfigured.acked,
@@ -1758,12 +1754,27 @@ function overview_tab.handle.overview_show_acked(player, player_data, refs, e)
 	util.rerender(player, player_data)
 end
 
+--- A tile or line jump to the Stations tab: the target lists under exactly the filters the Overview counted with (D2).
+--- The Overview has no station search, so a query typed on another tab goes; a toggled status chip would win over
+--- the flag chip (stations.lua active_chip): one chip at a time.
+--- @param player_data PlayerData
+--- @param chip string the Stations flag chip
+local function jump_stations(player_data, chip)
+	if player_data.search_query then
+		util.set_search_query(player_data, nil)
+		util.reset_pages(player_data)
+		local manager = overview_tab.manager
+		if manager then manager.refresh_search_fields(player_data) end
+	end
+	player_data.stations_status_filter = nil
+	player_data.stations_chip = chip
+	player_data.stations_problems_scope = nil
+end
+
 --- Stations tab with the Unserved chip (phase 4), longest wait first.
 --- @param player_data PlayerData
 local function jump_unserved(player_data)
-	-- A toggled status chip would win over the flag chip (stations.lua active_chip): one chip at a time.
-	player_data.stations_status_filter = nil
-	player_data.stations_chip = "unserved"
+	jump_stations(player_data, "unserved")
 	util.set_sort(player_data, "stations_tab", "wait", false)
 	util.select_tab(player_data, "stations_tab")
 end
@@ -1784,8 +1795,7 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 		local manager = overview_tab.manager
 		if manager then manager.restore_filter_widgets(player_data) end
 	elseif tile == "failing" then
-		player_data.stations_status_filter = nil
-		player_data.stations_chip = "failing"
+		jump_stations(player_data, "failing")
 		util.set_sort(player_data, "stations_tab", "station_status", true)
 		util.select_tab(player_data, "stations_tab")
 	elseif tile == "throughput" then
@@ -1801,11 +1811,12 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 	util.rerender(player, player_data)
 end
 
---- The Misconfigured line: Stations with the Problems chip (PLAN4 D7; stations.lua reads the chip).
+--- The Misconfigured line: Stations with the Problems chip (PLAN4 D7; stations.lua reads the chip), narrowed to the
+--- stations the line counts (an unacknowledged error-severity finding, util.open_setup_errors).
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_problems_click(player, player_data, refs, e)
-	player_data.stations_status_filter = nil
-	player_data.stations_chip = "problems"
+	jump_stations(player_data, "problems")
+	player_data.stations_problems_scope = "errors"
 	util.select_tab(player_data, "stations_tab")
 	local manager = overview_tab.manager
 	if manager then manager.refresh_sort_headers(player_data) end
