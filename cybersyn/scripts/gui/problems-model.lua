@@ -233,10 +233,13 @@ function model.chip(check)
 	return { "cybersyn-diag.lint-chip-" .. (LINT_KEYS[check] or "unknown") }
 end
 
---- The fix line: what to change, without the numbers (they are in the detail column).
+--- The fix line: what to change, without the numbers (they are in the detail column). A finding that names its own
+--- fix (a phantom delivery's counter leak) gets that one.
 --- @param check int
+--- @param f LintFinding?
 --- @return LocalisedString
-function model.fix(check)
+function model.fix(check, f)
+	if f and f.fix then return { "cybersyn-diag.lint-fix-" .. f.fix } end
 	return { "cybersyn-diag.lint-fix-" .. (LINT_KEYS[check] or "unknown") }
 end
 
@@ -270,8 +273,12 @@ function model.detail(f, env)
 		if f.item then return { key .. "-item", env.item(f.item), n(a), n(b), env.network(f.network) } end
 		return { key, n(a), n(b), env.network(f.network) }
 	elseif check == LINT_MASK then
-		if a == 0 then return { key .. "-zero", env.network(f.network) } end
-		return { key, tostring(a), tostring(b), env.item(f.item) }
+		return { key .. "-zero", env.network(f.network) }
+	elseif check == LINT_PHANTOM then
+		if f.train then return { key .. "-train", tostring(f.train), { "cybersyn-diag.lint-train-status-" .. (f.status or 0) }, n(a) } end
+		return { key .. "-leak", n(a - b) }
+	elseif check == LINT_OCCUPANCY and f.train then
+		return { key .. "-train", tostring(f.train), n(b), n(a) }
 	elseif check == LINT_NO_PROVIDER then
 		return { key, env.item(f.item), env.network(f.network) }
 	elseif check == LINT_SAME_ITEM then
@@ -300,7 +307,8 @@ end
 function model.detail_sig(f)
 	local a = f.a
 	if f.check == LINT_NEVER_REFUELLED and a then a = math.floor(a / HOUR_TICKS) end
-	return tostring(a) .. ":" .. tostring(f.b) .. ":" .. tostring(f.network) .. ":" .. tostring(f.item) .. ":" .. tostring(f.c)
+	return tostring(a) .. ":" .. tostring(f.b) .. ":" .. tostring(f.network) .. ":" .. tostring(f.item) .. ":" .. tostring(f.c) ..
+		":" .. tostring(f.train) .. ":" .. tostring(f.status)
 end
 
 return model

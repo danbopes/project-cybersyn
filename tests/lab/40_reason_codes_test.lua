@@ -40,6 +40,7 @@ local function dev(fn, ...)
 end
 
 -- The lint checks that predict a reason code (PLAN3 §4.12); a case asserts exactly its expected ones among these.
+-- "mask" (mask 0 since PLAN4 D6) is expected by no case and must stay clear on all of them.
 local PREDICTING = { "capacity", "layout", "mask", "train_mask", "no_train", "no_provider", "limit_zero", "same_item",
 	"occupancy", "phantom" }
 

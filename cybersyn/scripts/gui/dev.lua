@@ -1022,6 +1022,9 @@ local function finding_view(f)
 		network = f.network,
 		item = f.item,
 		message = f.message,
+		train = f.train,
+		status = f.status,
+		fix = f.fix,
 	}
 end
 
@@ -1079,8 +1082,8 @@ function interface.lint_state()
 	return { pass = s.pass, tick = s.tick, updates = s.updates, findings = #s.findings,
 		running = job and { i = job.i, n = #job.sids + #(job.dids or {}) + #(job.fids or {}), ti = job.ti,
 			nt = job.tids and #job.tids or 0, updates = job.updates } or nil,
-		world_running = s.world_job ~= nil, world_tick = s.world and s.world.tick or nil,
-		world_findings = s.world and #s.world.findings or nil }
+		registry = #lint.registry_findings(), registry_version = storage.lint_registry and storage.lint_registry.version,
+		phantom_since = table_size(s.phantom_since), occupancy_since = table_size(s.occupancy_since) }
 end
 
 --- One lint update as the manager tick runs it, timed (the gate's per-update figure); `records`/`trains` override the
@@ -1089,11 +1092,77 @@ function interface.lint_step(n, records, trains)
 	return profile(n or 1, function() lint.step(records, trains) end)
 end
 
---- The world scan run to completion now; returns its findings (printed only when `print` is true).
-function interface.lint_scan_world(player_index, print)
-	local world = lint.scan_world_now(player_index, not print)
+--- The setup registry's findings, optionally only those of one stop or combinator unit number.
+function interface.lint_registry(unit)
 	local out = {}
-	for i, f in ipairs(world.findings) do out[i] = finding_view(f) end
+	for _, f in ipairs(lint.registry_findings()) do
+		if not unit or f.id == unit then out[#out + 1] = finding_view(f) end
+	end
+	return out
+end
+
+--- Rebuilds the registry from Cybersyn's tables as the schema-3 migration does, timed; returns what it found.
+function interface.lint_registry_seed()
+	local p = game.create_profiler()
+	local r = lint.registry_seed()
+	p.stop()
+	r.ms = p
+	return r
+end
+
+--- Steps the running lint pass (or a new one) to its end with unbounded batches; returns the pass count.
+function interface.lint_finish()
+	local guard = 0
+	while not lint.step(math.huge, math.huge) do
+		guard = guard + 1
+		if guard > 4 then break end
+	end
+	return lint.state().pass
+end
+
+--- Runs Cybersyn's on_player_rotated_entity handler for `entity` as the engine raises it. A player's R on a placed
+--- 1x2 combinator only flips it 180° (raised for real by LuaEntity.rotate{by_player}); a 90° turn in place is a
+--- script's direction write, which raises nothing, so the lab turns it that way and calls the handler here.
+function interface.raise_rotated(entity, player_index, previous_direction)
+	local handler = script.get_event_handler(defines.events.on_player_rotated_entity)
+	handler({ entity = entity, player_index = player_index or 1, previous_direction = previous_direction,
+		name = defines.events.on_player_rotated_entity, tick = game.tick })
+	return true
+end
+
+--- `true` starts recording the lint job's cost per manager-tick update; anything else returns the samples recorded
+--- since ({update, LuaProfiler} each; update 3 is the pass's index) and stops.
+function interface.lint_profile(on)
+	if on == true then
+		lint.samples = {}
+		return 0
+	end
+	local out = lint.samples or {}
+	lint.samples = nil
+	return out
+end
+
+--- /cybersyn-find-problems' report for player `pi`; returns the lines printed (0 when it printed the all-clear).
+function interface.lint_report(pi)
+	return lint.report(pi and game.get_player(pi) or nil)
+end
+
+--- Drops the running lint pass, so the next lint_step starts a fresh one; true when one was running.
+function interface.lint_reset_job()
+	local s = lint.state()
+	local had = s.job ~= nil
+	s.job = nil
+	return had
+end
+
+--- The station ids whose phantom or occupancy gap a pass saw and is waiting to confirm.
+function interface.lint_gaps()
+	local s = lint.state()
+	local out = { phantom = {}, occupancy = {} }
+	for id in pairs(s.phantom_since) do out.phantom[#out.phantom + 1] = id end
+	for id in pairs(s.occupancy_since) do out.occupancy[#out.occupancy + 1] = id end
+	table.sort(out.phantom)
+	table.sort(out.occupancy)
 	return out
 end
 

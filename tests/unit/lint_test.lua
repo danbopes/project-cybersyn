@@ -137,7 +137,7 @@ test("layout: trains on the network but none with a layout the stop accepts", fu
 	assert_eq(checks(select(2, run(p, { accepted_layouts = { [1] = true } }, fl))), {})
 end)
 
-test("mask: no train shares a bit, the network has no train, or the item's providers share none", function()
+test("mask: no train shares a bit or the network has no train; the item's providers' bits are not a finding", function()
 	local fl = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 2 } }, 2)
 	local _, out = run(station(1, { ["iron-plate"] = { 1000 } }), nil, fl)
 	assert_eq(checks(out), { "train_mask" })
@@ -146,13 +146,12 @@ test("mask: no train shares a bit, the network has no train, or the item's provi
 	local _, none = run(station(1, {}), nil, { capability = {}, mask_or = {} })
 	assert_eq(checks(none), { "no_train" })
 	assert_eq(none[1].network, "signal-A")
-	-- Trains fine, but every provider of the item is on mask 2.
+	-- Trains fine, but every provider of the item is on mask 2 right now: providers whose masks follow demand make
+	-- that a normal idle state (PLAN4 D6, flipped from phase 2b), and the dispatcher's live MASK_MISMATCH covers a
+	-- request it actually blocks.
 	local fl3 = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 3 } }, 3)
 	local _, prov = run(station(1, { ["iron-plate"] = { 1000 } }), nil, fl3, { ["signal-A:iron-plate"] = 2 })
-	assert_eq(checks(prov), { "mask" })
-	assert_eq({ prov[1].a, prov[1].b, prov[1].item }, { 1, 2, "iron-plate" })
-	assert_eq(checks(select(2, run(station(1, { ["iron-plate"] = { 1000 } }), nil, fl3, { ["signal-A:iron-plate"] = 3 }))),
-		{})
+	assert_eq(checks(prov), {})
 end)
 
 test("no_provider: an active request whose key is starved; an inactive one is not", function()
@@ -261,25 +260,99 @@ test("actions: single player always; admins, everyone and nobody against player.
 	assert_eq(actions.setting(), "admins")
 end)
 
-test("mask: a request carries its combinator's mask; mask 0 is a mask finding, not a train one", function()
+test("mask: only mask 0 on a network with trains, a warning, not on a stop without power or switched off", function()
 	local fl = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 3 } }, 3)
-	-- The primary is on mask 2 but a secondary on mask 1 requests the item, which mask-1 providers offer.
+	-- A secondary combinator's request on bits no provider has now is no finding any more (PLAN4 D6).
 	local st = station(2, { ["iron-plate"] = { 1000 } })
-	st.requested["iron-plate"].mask = 1
-	assert_eq(checks(select(2, run(st, nil, fl, { ["signal-A:iron-plate"] = 1 }))), {})
 	st.requested["iron-plate"].mask = 2
-	local _, out = run(st, nil, fl, { ["signal-A:iron-plate"] = 1 })
-	assert_eq(checks(out), { "mask" })
-	assert_eq({ out[1].a, out[1].b }, { 2, 1 })
-	-- A NETWORK_EACH stop uses its per-network mask whatever the request says.
-	local each = station({ ["signal-A"] = 1 }, { ["iron-plate"] = { 1000 } }, { network_name = NETWORK_EACH })
-	each.requested["iron-plate"].mask = 2
-	assert_eq(checks(select(2, run(each, nil, fl, { ["signal-A:iron-plate"] = 1 }))), {})
+	assert_eq(checks(select(2, run(st, nil, fl, { ["signal-A:iron-plate"] = 1 }))), {})
 	-- Mask 0 matches nothing; the dispatcher stops at the provider mask check, so it is MASK_MISMATCH's finding.
 	local zero = station(0, {})
 	local _, z = run(zero, nil, fl)
 	assert_eq(checks(z), { "mask" })
-	assert_eq({ z[1].a, z[1].b }, { 0, 3 })
+	assert_eq({ z[1].a, z[1].b, z[1].network }, { 0, 3, "signal-A" })
+	assert_eq(LINT_SEVERITY[LINT_MASK], DIAG_SEV_WARNING)
+	for _, status in ipairs({ "no_power", "disabled" }) do
+		assert_eq(checks(select(2, run(station(0, {}, { status = status }), nil, fl))), {}, status)
+	end
+	assert_eq(checks(select(2, run(station(0, {}, { status = "starved" }), nil, fl))), { "mask" })
+	-- A NETWORK_EACH stop with mask 0 on one of its networks.
+	local each = station({ ["signal-A"] = 0 }, {}, { network_name = NETWORK_EACH })
+	assert_eq(checks(select(2, run(each, nil, fl))), { "mask" })
+end)
+
+test("phantom: the direction decides the detail and the fix; occupancy names its train; priority not 50", function()
+	local fl = fleet({ [1] = { count = 1, item_capacity = 40, fluid_capacity = 0, mask_or = 1 } }, 1)
+	local function live(extra)
+		local t = {}
+		for k, v in pairs(CLEAN) do t[k] = v end
+		for k, v in pairs(extra) do t[k] = v end
+		return t
+	end
+	-- Counted deliveries no train serves: a counter leak, repaired by a recount.
+	local _, leak = run(station(1, {}), nil, fl, nil, nil, live({ phantom = true, deliveries = 2, bound = 0 }))
+	assert_eq(checks(leak), { "phantom" })
+	assert_eq({ leak[1].a, leak[1].b, leak[1].fix, leak[1].train }, { 2, 0, "phantom-leak", nil })
+	-- A bound train the station does not count: named with its status, the check's own fix (send it home).
+	local _, bound = run(station(1, {}), nil, fl, nil, nil,
+		live({ phantom = true, deliveries = 0, bound = 1, phantom_train = 15, phantom_status = STATUS_P }))
+	assert_eq({ bound[1].a, bound[1].b, bound[1].fix, bound[1].train, bound[1].status }, { 0, 1, nil, 15, STATUS_P })
+	local _, occ = run(station(1, {}), nil, fl, nil, nil,
+		live({ occupancy_gap = true, occupancy = 0, count = 1, occupancy_train = 412 }))
+	assert_eq(checks(occ), { "occupancy" })
+	assert_eq({ occ[1].a, occ[1].b, occ[1].train }, { 0, 1, 412 })
+	local _, prio = run(station(1, {}), nil, fl, nil, nil, live({ priority = 49 }))
+	assert_eq(checks(prio), { "priority" })
+	assert_eq(prio[1].a, 49)
+	assert_eq(checks(select(2, run(station(1, {}), nil, fl, nil, nil, live({ priority = 50 })))), {})
+	local out = {}
+	assert_eq(lint.check_depot(out, 5, 1, nil, 60), LINT_BIT[LINT_PRIORITY])
+	assert_eq({ out[1].subject, out[1].a }, { LINT_SUBJECT_DEPOT, 60 })
+	out = {}
+	lint.check_refueler(out, 9, { network_name = nil }, { capability = {}, mask_or = {} }, 10)
+	assert_eq(checks(out), { "priority" })
+	assert_eq(out[1].subject, LINT_SUBJECT_REFUELER)
+end)
+
+test("stop_facts: doubled and conflicting combinators, control-only stops and ghosts at unregistered stops", function()
+	local function c(primary, secondary, depot, refueler, attached)
+		return { primary = primary, secondary = secondary, depot = depot, refueler = refueler, attached = attached }
+	end
+	local function keys(found)
+		local out = {}
+		for m in pairs(found or {}) do out[#out + 1] = m end
+		table.sort(out)
+		return out
+	end
+	assert_eq(lint.stop_facts(c(1, 1, 0, 0, 2), true, false), nil)
+	assert_eq(keys(lint.stop_facts(c(2, 0, 0, 0, 2), true, false)), { "double-station" })
+	assert_eq(keys(lint.stop_facts(c(1, 2, 0, 0, 3), true, false)), { "double-station-control" })
+	assert_eq(keys(lint.stop_facts(c(0, 0, 2, 0, 2), true, false)), { "double-depot" })
+	assert_eq(keys(lint.stop_facts(c(0, 0, 0, 2, 2), true, false)), { "double-refueler" })
+	assert_eq(keys(lint.stop_facts(c(1, 0, 1, 1, 3), true, false)),
+		{ "depot-and-refueler", "station-and-depot", "station-and-refueler" })
+	-- Not registered: a ghost waiting to be built says why first; else combinators that make no station.
+	assert_eq(keys(lint.stop_facts(c(0, 1, 0, 0, 1), false, false)), { "stop-no-combinator" })
+	assert_eq(keys(lint.stop_facts(c(0, 1, 0, 0, 1), false, true)), { "ghost-combinator" })
+	assert_eq(keys(lint.stop_facts(c(0, 0, 0, 0, 0), false, true)), { "ghost-combinator" })
+	assert_eq(lint.stop_facts(c(0, 0, 0, 0, 0), false, false), nil)
+	-- Every message names a registry check, and every registry check has a message.
+	local seen = {}
+	for m, check in pairs(lint.MESSAGE_CHECK) do
+		assert_true(lint.REGISTRY_CHECKS[check], m)
+		seen[check] = true
+	end
+	for check in pairs(lint.REGISTRY_CHECKS) do assert_true(seen[check], LINT_NAMES[check]) end
+	assert_true(not lint.REGISTRY_CHECKS[LINT_PRIORITY], "priority is a pass check now")
+end)
+
+test("sent_here: a train counts for the station it is bound to on its current leg only", function()
+	assert_eq(lint.sent_here({ status = STATUS_TO_P, p_station_id = 1, r_station_id = 2 }, 1), true)
+	assert_eq(lint.sent_here({ status = STATUS_P, p_station_id = 1, r_station_id = 2 }, 2), false)
+	assert_eq(lint.sent_here({ status = STATUS_TO_R, p_station_id = 1, r_station_id = 2 }, 2), true)
+	assert_eq(lint.sent_here({ status = STATUS_TO_R, p_station_id = 1, r_station_id = 2 }, 1), false)
+	assert_eq(lint.sent_here({ status = STATUS_D, depot_id = 3 }, 3), false)
+	assert_eq(lint.sent_here(nil, 3), false)
 end)
 
 test("rejected_layouts: mask-eligible layouts the allow list keeps out, optionally only those that carry the need", function()

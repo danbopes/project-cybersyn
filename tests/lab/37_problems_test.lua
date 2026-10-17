@@ -1,7 +1,7 @@
 -- PLAN3 phase 6b: the Problems tab. Hidden until the lint job has a result; one row per finding of the last lint pass
--- and world scan, grouped by check in whole rows with the right detail numbers and fix line; the badge and the
--- Overview's misconfigured line counting the same pass; filters, pages, acknowledge with expiry, and Scan world
--- (chunked, one at a time, also with manager updates off).
+-- and the setup registry, grouped by check in whole rows with the right detail numbers and fix line; the badge and the
+-- Overview's misconfigured line counting the same pass; filters, pages, acknowledge with expiry, and the registry's
+-- rows with their entity links.
 --
 -- lab.problems_verify(label) is defined here for 39_lint and 40_reason_codes too: it checks every finding there is
 -- against the tab's model and notes which checks it saw, so the last suite can assert that every check produced a
@@ -38,8 +38,8 @@ local NUMBERS = {
 	layout = { a = "n", b = "n" },
 	mask = { a = "s", b = "s" },
 	occupancy = { a = "n", b = "n" },
-	phantom = { a = "n", b = "n" },
 	depot_limit = { a = "n" },
+	priority = { a = "n" },
 	depot_shared_name = { a = "n", b = "n" },
 	refueler_mask = { a = "s", b = "s" },
 	in_group = { a = "n" },
@@ -50,7 +50,7 @@ local NUMBERS = {
 }
 
 local WORLD = { derelict_comb = true, ghost_comb = true, no_comb = true, wrong_side = true, double_comb = true,
-	priority = true, name_overlap = true }
+	name_overlap = true }
 
 lab.problems_seen = lab.problems_seen or {}
 
@@ -65,6 +65,16 @@ local function detail_wrong(row)
 	local key = key_of(detail)
 	if string.sub(key, 1, #("cybersyn-diag.lint-detail-" .. dash(row.check))) ~= "cybersyn-diag.lint-detail-" .. dash(row.check) then
 		return "key " .. key
+	end
+	-- PLAN4 D10: a counter leak shows the deliveries no train serves, a bound train its id and the counted ones.
+	if row.check == "phantom" then
+		local leak = key_of(detail) == "cybersyn-diag.lint-detail-phantom-leak"
+		local s = leak and number(row.a - row.b) or number(row.a)
+		if not string.find(text, '"' .. s .. '"', 1, true) then return "phantom " .. s .. " not in " .. text end
+		if row.train and not string.find(text, '"' .. row.train .. '"', 1, true) then return "phantom train" end
+	end
+	if row.check == "occupancy" and row.train and not string.find(text, '"' .. row.train .. '"', 1, true) then
+		return "occupancy train"
 	end
 	local want = NUMBERS[row.check] or {}
 	for _, field in ipairs({ "a", "b" }) do
@@ -87,7 +97,7 @@ local function detail_wrong(row)
 	return nil
 end
 
---- Every finding of the last lint pass and world scan is exactly one row of the tab's model, with its check's
+--- Every finding of the last lint pass and the setup registry is exactly one row of the tab's model, with its check's
 --- caption, chip and fix line and the finding's numbers in the detail. With `collect` (inside a tick handler, where
 --- nothing can be printed) the results are appended to it as {name, ok, detail} for the caller to check later.
 function lab.problems_verify(label, collect)
@@ -103,8 +113,6 @@ function lab.problems_verify(label, collect)
 		want[id_of(f)] = (want[id_of(f)] or 0) + 1
 		n = n + 1
 	end
-	local st = dev("lint_state")
-	n = n + (st.world_findings or 0)
 	local rows, wrong = {}, {}
 	for _, row in ipairs(d.all) do
 		rows[id_of(row)] = (rows[id_of(row)] or 0) + 1
@@ -118,7 +126,7 @@ function lab.problems_verify(label, collect)
 	for id, c in pairs(want) do
 		if rows[id] ~= c then missing[#missing + 1] = id end
 	end
-	check(label .. ": one model row per finding (lint pass and world scan)", #d.all == n and #missing == 0,
+	check(label .. ": one model row per finding (lint pass and registry)", #d.all == n and #missing == 0,
 		{ rows = #d.all, findings = n, missing = missing })
 	check(label .. ": every row has its check's chip, fix line and detail numbers", #wrong == 0, wrong)
 	return d
@@ -550,7 +558,8 @@ lab.suite("37_problems", {
 		dev("problems_set_filter", pi, { acked = false })
 	end,
 
-	-- Scan world: derelict, ghost and wrong-side combinators built on a row of their own.
+	-- The setup registry (PLAN4 D8; the world scan and its button are gone): derelict, ghost and wrong-side
+	-- combinators built on a row of their own are rows of the tab at once.
 	function()
 		local w = cases.base("PROBLEMS_W", { k = ROW_K }, { network = "signal-9", no_train = true })
 		cases.finish(w)
@@ -561,67 +570,22 @@ lab.suite("37_problems", {
 		comb_at(w, ghost_stop, 1.5, -2.5, "north", "/", true)
 		local wrong_stop = bare_stop(w, 130, "rc-PROBLEMS_W-wrong")
 		pr.wrong_stop = wrong_stop
-		comb_at(w, wrong_stop, 1.5, -2.5, "east", "/")
-		local d = problems()
-		lab.check("before a scan the subheader says the world was not scanned",
-			key_of(d.scan_note) == "cybersyn-gui.problems-never-scanned" or key_of(d.scan_note) == "cybersyn-gui.problems-scanned-ago",
-			d.scan_note)
-		pr.ups = settings.global["cybersyn-manager-updates-per-second"].value
-		lab.dev("set_setting", "cybersyn-manager-updates-per-second", 60)
-		local res = dev("click", pi, "problems_scan_button")
-		lab.check("Scan world dispatches", res == true, res)
-		local st = dev("lint_state")
-		pr.world_started = lab.read("manager").lint.world_job.started_tick
-		d = problems()
-		lab.check("while it runs the subheader says Scanning… n % and the button is off",
-			key_of(d.scan_note) == "cybersyn-gui.problems-scanning" and d.scan_enabled == false and st.world_running,
-			{ note = d.scan_note, enabled = d.scan_enabled })
-		-- A second request does not restart it.
-		dev("run_command", "cybersyn-find-problems", pi)
-		lab.check("/cybersyn-find-problems while a scan runs is refused (the scan is not restarted)",
-			lab.read("manager").lint.world_job.started_tick == pr.world_started)
-		pr.ticks = 0
-		lab.wait_until(function() return dev("lint_state").world_running == false end, 3600, 1)
-	end,
-
-	function()
-		local st = dev("lint_state")
-		local took = st.world_tick and st.world_tick - pr.world_started or -1
-		lab.check("the scan completes on the manager tick over more than one update (chunked)", st.world_running == false
-			and took >= 2, { took = took })
-		lab.info("Scan world on layout-dev took " .. took .. " ticks at 60 manager updates per second")
+		pr.wrong = comb_at(w, wrong_stop, 1.5, -2.5, "east", "/")
 		remote.call(D, "update", pi, 1)
-		local d = lab.problems_verify("37 Scan world")
-		lab.check("after the scan the subheader says how long ago", key_of(d.scan_note) == "cybersyn-gui.problems-scanned-ago"
-			and d.scan_enabled == true, d.scan_note)
+		local d = lab.problems_verify("37 registry")
 		local found = {}
 		for _, row in ipairs(d.all) do found[row.check .. ":" .. row.id] = row end
-		lab.check("Scan world reports the derelict combinator", found["derelict_comb:" .. pr.derelict.unit_number] ~= nil)
-		lab.check("Scan world reports the ghost at the unregistered stop", found["ghost_comb:" .. pr.ghost_stop.unit_number] ~= nil)
-		lab.check("Scan world reports the combinator facing away", found["wrong_side:" .. pr.wrong_stop.unit_number] ~= nil)
-		-- A world finding's link opens the entity; shift shows it on the map.
+		lab.check("the registry lists the derelict combinator", found["derelict_comb:" .. pr.derelict.unit_number] ~= nil)
+		lab.check("the registry lists the ghost at the unregistered stop", found["ghost_comb:" .. pr.ghost_stop.unit_number] ~= nil)
+		lab.check("the registry lists the combinator facing away", found["wrong_side:" .. pr.wrong.unit_number] ~= nil)
+		-- A registry finding's link opens the entity; shift shows it on the map.
 		local link = dev("link_click", pi, "entity", pr.derelict.unit_number, { shift = true })
 		lab.check("an unregistered combinator's link shows it on the map", link.markers ~= nil and #link.markers == 2
 			and link.controller == defines.controllers.remote, link)
 		local p = game.get_player(pi)
 		if p.controller_type == defines.controllers.remote then p.exit_remote_view() end
-		-- With manager updates off the command's scan still runs in chunks on its own nth tick.
-		lab.dev("set_setting", "cybersyn-manager-updates-per-second", 0)
-		dev("run_command", "cybersyn-find-problems", pi)
-		pr.zero_started = game.tick
-		lab.check("with manager updates off the scan is started, not run at once", dev("lint_state").world_running == true)
-		lab.wait_until(function() return dev("lint_state").world_running == false end, 3600, 1)
-	end,
-
-	function()
-		local st = dev("lint_state")
-		local took = st.world_tick and st.world_tick - pr.zero_started or -1
-		lab.check("with manager updates off the scan completes in chunks on its own nth tick", st.world_running == false
-			and took >= 10, { took = took })
-		lab.dev("set_setting", "cybersyn-manager-updates-per-second", pr.ups)
 		local ok, err = pcall(pr.w.cleanup)
 		if not ok then lab.check("cleanup", false, err) end
-		dev("lint_scan_world", nil, false)
 		dev("lint_run")
 		remote.call(D, "update", pi, 1)
 		lab.dev("set_setting", "cybersyn-enable-planner", pr.planner)

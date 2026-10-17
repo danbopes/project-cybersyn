@@ -1,7 +1,10 @@
 -- Phase 2b setup lint (PLAN3 §4.12): every check without a reason code of its own, each built on a row of its own
 -- and asserted through the dev API (lint_run, lint_bits, lint_findings), with the `lint` log event of each
--- transition; the job running only while a window is open; and the world scan, synchronously and through the
--- /cybersyn-find-problems command's chunked job, finding the derelicts built for it.
+-- transition; the job running only while a window is open; the setup registry (PLAN4 D8) recording each combinator
+-- and stop problem when it is built and dropping it when it is fixed by a rotation, a removal, a revived ghost or a
+-- rename, the same as a fresh seed, and /cybersyn-find-problems printing it; and the phantom/occupancy race of an
+-- incremental pass (PLAN4 D10) closed: a train leaving its provider or requester between the pass's index and the
+-- station's turn is no gap.
 --
 -- Rows k = 40.. on cyb-bench, torn down at the end. The checks whose reason codes the dispatcher records are asserted
 -- with those codes in 40_reason_codes.
@@ -93,6 +96,17 @@ local function comb_at(case, stop_entity, dx, dy, dir, mode, ghost)
 	return e
 end
 
+local function registry(entity)
+	return dev("lint_registry", entity.unit_number)
+end
+
+--- The one registry finding on `entity` has `message` (nil: it has none).
+local function only(entity, message)
+	local list = registry(entity)
+	if message == nil then return #list == 0 end
+	return #list == 1 and list[1].message == message
+end
+
 local function bare_stop(case, x, name)
 	local s = case.surface
 	local stop = s.create_entity({ name = "train-stop", position = { x, case.y - 1 }, direction = defines.direction.west,
@@ -109,6 +123,8 @@ lab.suite("39_lint", {
 		-- An earlier file may leave a manager window open, and the lint job then runs between steps and writes the
 		-- transition events before pass() can capture them.
 		dev("close", 1)
+		lx.reg_start = dev("lint_state").registry
+		lab.info("registry findings on layout-dev before the rows: " .. tostring(lx.reg_start))
 		-- Row 1: depots, refueler, trains, a requester for the phantom and one for the occupancy gap.
 		-- Trains on mask 1 (the default network mask is every bit, which any refueler would match).
 		local a = cases.base("LINT_A", { k = K0 }, { network = "signal-7", depot_mask = 1 })
@@ -127,7 +143,7 @@ lab.suite("39_lint", {
 		cases.finish(a)
 		lx.rows[#lx.rows + 1] = a
 		lx.a = a
-		-- Row 2: the world-scan derelicts.
+		-- Row 2: the registry's combinator and stop problems.
 		local w = cases.base("LINT_W", { k = K0 + 1 }, { network = "signal-8", no_train = true })
 		-- The stop a train that is not Cybersyn's heads for (the occupancy gap).
 		w.r2 = cases.station(w, { name = cases.sname(w, "r2"), x = 220, bits = 2 + 4 })
@@ -144,13 +160,11 @@ lab.suite("39_lint", {
 		local double_stop = bare_stop(w, 70, "rc-LINT_W-double")
 		local first = comb_at(w, double_stop, 1.5, -2.5, "north", "/")
 		local second = comb_at(w, double_stop, -0.5, -2.5, "north", "/")
-		-- A plain stop that shares the depot's name, and one with a station's name at a non-default priority.
+		-- A plain stop that shares the depot's name.
 		local overlap_stop = bare_stop(w, 40, w.d1.name)
-		local priority_stop = bare_stop(w, 20, w.r2.name)
-		priority_stop.train_stop_priority = 49
 		lx.world = { derelict = derelict, ghost_stop = ghost_stop, ghost = ghost, wrong_stop = wrong_stop, wrong = wrong,
 			nocomb_stop = nocomb_stop, control = control, double_stop = double_stop, first = first, second = second,
-			overlap_stop = overlap_stop, priority_stop = priority_stop }
+			overlap_stop = overlap_stop }
 		lab.check("world rows: the wrong-side combinator is not adopted by its stop",
 			read("to_stop", wrong.unit_number) == nil)
 		lab.check("world rows: the control-only stop and the double stop own their combinators",
@@ -195,8 +209,16 @@ lab.suite("39_lint", {
 		cases.finish(o)
 		lx.rows[#lx.rows + 1] = o
 		lx.o = o
-		lab.wait_until(function() return cases.trains_ready(a) and cases.trains_ready(l) and cases.trains_ready(o) end,
-			3600, SPEED)
+		-- Row 5: one delivery the race steps drive by hand (the operator's loading and unloading).
+		local q = cases.base("LINT_RACE", { k = K0 + 4 }, { network = "signal-9" })
+		q.p = cases.station(q, { name = cases.sname(q, "p"), x = cases.X_P[1], bits = 1 + 4,
+			signals = cases.provide(q, 5000) })
+		q.r = cases.station(q, { name = cases.sname(q, "r"), x = cases.X_R[1], bits = 2 + 4 })
+		cases.finish(q)
+		lx.rows[#lx.rows + 1] = q
+		lx.q = q
+		lab.wait_until(function() return cases.trains_ready(a) and cases.trains_ready(l) and cases.trains_ready(o) and
+			cases.trains_ready(q) end, 3600, SPEED)
 	end,
 
 	function()
@@ -241,6 +263,9 @@ lab.suite("39_lint", {
 		local o = lx.o
 		cases.unfuel(o.t1)
 		cases.set_signals(o.r, cases.request(o, -10000, 5000))
+		-- Stop priorities: the pass reads them on every registered stop (PLAN4 D8; no event reports a change).
+		lx.w.r2.stop.train_stop_priority = 49
+		a.d3.stop.train_stop_priority = 60
 		lab.wait(300, SPEED)
 	end,
 
@@ -250,6 +275,9 @@ lab.suite("39_lint", {
 		lx.trip_status = read("trains", ot.id, "status")
 		ot.get_schedule().add_record({ station = "rc-no-such-stop-2", wait_conditions = { { type = "time", ticks = 60 } } })
 		lx.first = pass()
+		-- A counter that leaked since its station's last check is read from the next pass on (PLAN4 D10: the index
+		-- reads only the counters that can differ), so the leak written above needs one pass more than the rest.
+		for _, ev in ipairs(pass()) do lx.first[#lx.first + 1] = ev end
 		lab.wait(1200, SPEED)
 	end,
 
@@ -282,10 +310,19 @@ lab.suite("39_lint", {
 		local ph = dev("lint_findings", a.r.id, "phantom")[1]
 		lab.check("phantom delivery after two passes (1 counted, 0 trains bound)", ph ~= nil and ph.a == 1 and ph.b == 0,
 			dev("lint_bits", a.r.id))
+		lab.check("phantom delivery with no train bound is a counter leak: the recount fix, no train named",
+			ph ~= nil and ph.fix == "phantom-leak" and ph.train == nil, ph)
 		local r2 = lx.w.r2
 		local oc = dev("lint_findings", r2.id, "occupancy")[1]
 		lab.check("occupancy gap after two passes (Cybersyn 0, the stop 1)", oc ~= nil and oc.a == 0 and oc.b == 1,
 			{ bits = dev("lint_bits", r2.id), count = r2.stop.trains_count })
+		lab.check("occupancy names the train Cybersyn did not send", oc ~= nil and oc.train == lx.vanilla.id,
+			{ finding = oc, vanilla = lx.vanilla.id })
+		local pr = dev("lint_findings", r2.id, "priority")[1]
+		local pd = dev("lint_findings", a.d3.id, "priority")[1]
+		lab.check("priority not 50: a station and a depot, with the priority in the detail",
+			pr ~= nil and pr.a == 49 and pr.subject == "station" and pd ~= nil and pd.a == 60 and pd.subject == "depot",
+			{ station = pr, depot = pd })
 		lab.check("no phantom on the occupancy stop and no gap on the phantom stop",
 			not has(r2.id, "phantom") and not has(a.r.id, "occupancy"))
 		lab.check("st.lint of the phantom stop is its lint mask", dev("lint_bits", a.r.id).st_lint ==
@@ -325,6 +362,19 @@ lab.suite("39_lint", {
 
 		if lab.problems_verify then lab.problems_verify("39_lint rows") end
 
+		-- No network bit (PLAN4 D6): mask 0 on a network that has trains, a warning; nothing for a mask no provider of
+		-- the item shares (the MASK_MISMATCH row of 40_reason_codes asserts that side).
+		local lp = l.p.id
+		lx.l_mask = read("stations", lp, "network_mask")
+		write(0, "stations", lp, "network_mask")
+		dev("collect")
+		dev("lint_run")
+		local mf = dev("lint_findings", lp, "mask")[1]
+		if lab.problems_verify then lab.problems_verify("39_lint mask 0") end
+		write(lx.l_mask, "stations", lp, "network_mask")
+		lab.check("mask 0 on a network with trains: one mask finding, a = 0, on the network", mf ~= nil and mf.a == 0 and
+			mf.network == "signal-6", { finding = mf, mask = lx.l_mask })
+
 		-- Fix them: each finding clears with its own event.
 		a.d1.stop.trains_limit = 1
 		a.train_entities[2].group = ""
@@ -334,6 +384,8 @@ lab.suite("39_lint", {
 		a.t1.manual_mode = false
 		a.train_entities[2].manual_mode = false
 		write(0, "stations", a.r.id, "deliveries_total")
+		lx.w.r2.stop.train_stop_priority = 50
+		a.d3.stop.train_stop_priority = 50
 		write(lx.refuel_since, "stats", "refuel_since")
 		for id, seen in pairs(lx.seen) do write(seen, "trains", id, "seen_tick") end
 		game.get_player(1).admin = true
@@ -350,6 +402,8 @@ lab.suite("39_lint", {
 			not has(t1, "missing_stop", true) and not has(t1, "capacity_drift", true) and
 			not has(t1, "never_refuelled", true), { t1 = dev("lint_bits", t1, true), t2 = dev("lint_bits", t2, true) })
 		lab.check("cleared: phantom", not has(a.r.id, "phantom"))
+		lab.check("cleared: priority back at 50, and the mask restored", not has(lx.w.r2.id, "priority") and
+			not has(a.d3.id, "priority") and not has(lx.l.p.id, "mask"))
 		lab.check("capacity restored by the recalculation", read("trains", t1, "item_slot_capacity") == lx.capacity)
 		local ev = transition(lx.cleared, d1, "depot_limit", false)
 		lab.check("lint event when a finding clears", ev ~= nil and ev.sev == "info", ev)
@@ -385,51 +439,173 @@ lab.suite("39_lint", {
 			" findings")
 		dev("close", 1)
 
-		-- World scan (B8), synchronously.
+		-- The setup registry (PLAN4 D8): every row-W problem was recorded when it was built, one finding each.
 		local w = lx.world
-		local found = {}
-		for _, f in ipairs(dev("lint_scan_world", nil, false)) do
-			found[f.id] = found[f.id] or {}
-			found[f.id][#found[f.id] + 1] = f.message
+		lx.reg_before = dev("lint_state").registry
+		lab.check("registry: derelict combinator, one finding on the combinator", only(w.derelict, "derelict-combinator") and
+			registry(w.derelict)[1].subject == "combinator", registry(w.derelict))
+		lab.check("registry: ghost combinator at an unregistered stop, one finding on the stop",
+			only(w.ghost_stop, "ghost-combinator"), registry(w.ghost_stop))
+		lab.check("registry: combinator facing away from its stop, one finding on the combinator, none on the stop",
+			only(w.wrong, "wrong-side-combinator") and only(w.wrong_stop, nil), { comb = registry(w.wrong),
+			stop = registry(w.wrong_stop) })
+		lab.check("registry: stop with only a control combinator", only(w.nocomb_stop, "stop-no-combinator"),
+			registry(w.nocomb_stop))
+		lab.check("registry: two station combinators at one stop", only(w.double_stop, "double-station") and
+			only(w.first, nil) and only(w.second, nil), registry(w.double_stop))
+		lab.check("registry: a plain stop sharing a depot's name, not the depot", only(w.overlap_stop,
+			"name-overlap-with-depot") and only(lx.w.d1.stop, nil), registry(w.overlap_stop))
+		local by_unit = {}
+		for _, f in ipairs(dev("lint_findings")) do
+			if f.message then by_unit[f.id .. f.message] = true end
 		end
-		lx.sync = found
-		local function says(entity, message)
-			for _, m in ipairs(found[entity.unit_number] or {}) do
-				if m == message then return true end
-			end
-			return false
+		lab.check("registry: lint.findings() carries the registry findings after the pass's",
+			by_unit[w.derelict.unit_number .. "derelict-combinator"] and by_unit[w.double_stop.unit_number .. "double-station"],
+			by_unit)
+		-- The seed (fork schema 3) builds the same registry from Cybersyn's tables as the handlers did.
+		local function keys()
+			local out = {}
+			for _, f in ipairs(dev("lint_registry")) do out[#out + 1] = f.id .. ":" .. f.check .. ":" .. f.message end
+			table.sort(out)
+			return out
 		end
-		lab.check("world scan: derelict combinator", says(w.derelict, "derelict-combinator"), found[w.derelict.unit_number])
-		lab.check("world scan: ghost combinator at an unregistered stop", says(w.ghost_stop, "ghost-combinator"))
-		lab.check("world scan: combinator facing away from its stop", says(w.wrong_stop, "wrong-side-combinator") and
-			not says(w.wrong, "derelict-combinator"))
-		lab.check("world scan: stop with only a control combinator", says(w.nocomb_stop, "stop-no-combinator"))
-		lab.check("world scan: two station combinators at one stop", says(w.double_stop, "double-station"))
-		lab.check("world scan: a plain stop sharing a depot's name", says(w.overlap_stop, "name-overlap-with-depot"))
-		lab.check("world scan: a non-default priority on a stop named like a station",
-			says(w.priority_stop, "non-default-priority"))
-		local n = 0
-		for _ in pairs(found) do n = n + 1 end
-		lab.info("world scan: " .. n .. " subjects with findings on layout-dev plus the rows")
-		if lab.problems_verify then lab.problems_verify("39_lint world scan") end
-
-		-- The command starts the same scan as a chunked job on the manager tick (no window needed).
+		local live = keys()
+		local seed = dev("lint_registry_seed")
+		rcon.print({ "", "INFO 39_lint: registry seed on layout-dev plus the rows: ", seed.ms, " (", seed.entries,
+			" entries, ", seed.orphans, " orphan combinators, ", seed.ghosts, " ghosts, ", seed.names, " depot names)" })
+		lab.check("registry: a fresh seed holds exactly what the build handlers recorded", lab.same_list(live, keys()),
+			{ handlers = live, seed = keys() })
+		-- /cybersyn-find-problems prints the registry and the registered stops at a non-default priority.
+		lab.check("/cybersyn-find-problems: one line per registry finding", dev("lint_report", 1) == #live,
+			{ lines = dev("lint_report", 1), registry = #live })
 		dev("run_command", "cybersyn-find-problems", 1)
-		lab.check("/cybersyn-find-problems starts the chunked scan", dev("lint_state").world_running == true)
-		lab.wait_until(function() return dev("lint_state").world_running == false end, 36000, 50)
+		lx.w.r2.stop.train_stop_priority = 30
+		lab.check("/cybersyn-find-problems: and one per registered stop at a non-default priority",
+			dev("lint_report", 1) == #live + 1, dev("lint_report", 1))
+		lx.w.r2.stop.train_stop_priority = 50
+		if lab.problems_verify then lab.problems_verify("39_lint registry") end
+
+		-- Fixed in the world: each finding goes with the event that fixed it. A turn by 90° changes which stop a
+		-- combinator reaches (the engine allows it in place only to scripts; see dev raise_rotated).
+		local player = game.get_player(1)
+		w.wrong.direction = defines.direction.north
+		dev("raise_rotated", w.wrong, 1, defines.direction.east)
+		lab.check("registry: turning the combinator to face its stop registers the station and drops the finding",
+			read("to_stop", w.wrong.unit_number) == w.wrong_stop and read("stations", w.wrong_stop.unit_number) ~= nil and
+			only(w.wrong, nil) and only(w.wrong_stop, nil), { comb = registry(w.wrong), stop = registry(w.wrong_stop) })
+		-- A player's R on a placed combinator flips it 180°: the same reach, so the station is not rebuilt.
+		write(true, "stations", w.wrong_stop.unit_number, "lab_marker")
+		lx.flipped = w.wrong.rotate({ by_player = player })
+		lab.check("registry: a player's flip keeps the reach and the very same station record", lx.flipped and
+			w.wrong.direction == defines.direction.south and read("stations", w.wrong_stop.unit_number, "lab_marker") and
+			only(w.wrong, nil), { flipped = lx.flipped, dir = w.wrong.direction })
+		w.wrong.direction = defines.direction.east
+		dev("raise_rotated", w.wrong, 1, defines.direction.south)
+		lab.check("registry: turning it away again unregisters the station and records one wrong-side finding",
+			read("to_stop", w.wrong.unit_number) == nil and read("stations", w.wrong_stop.unit_number) == nil and
+			only(w.wrong, "wrong-side-combinator") and only(w.wrong_stop, nil), registry(w.wrong))
+		local derelict_unit = w.derelict.unit_number
+		w.derelict.destroy({ raise_destroy = true })
+		lab.check("registry: removing the derelict combinator drops its finding",
+			#dev("lint_registry", derelict_unit) == 0)
+		w.control.destroy({ raise_destroy = true })
+		lab.check("registry: removing the control combinator drops the stop's finding", only(w.nocomb_stop, nil),
+			registry(w.nocomb_stop))
+		w.second.destroy({ raise_destroy = true })
+		lab.check("registry: removing the second station combinator drops the doubled finding, the station stays",
+			only(w.double_stop, nil) and read("stations", w.double_stop.unit_number) ~= nil, registry(w.double_stop))
+		local _, revived = w.ghost.revive({ raise_revive = true })
+		if revived then lx.w.entities[#lx.w.entities + 1] = revived end
+		lab.check("registry: building the ghost registers the stop and drops its finding", revived ~= nil and
+			read("stations", w.ghost_stop.unit_number) ~= nil and only(w.ghost_stop, nil) and
+			(revived == nil or only(revived, nil)), registry(w.ghost_stop))
+		w.overlap_stop.backer_name = "rc-LINT_W-renamed"
+		lab.check("registry: renaming the stop away from the depot's name drops the overlap", only(w.overlap_stop, nil),
+			registry(w.overlap_stop))
+		w.overlap_stop.backer_name = lx.w.d1.name
+		lab.check("registry: renaming it back records the overlap again", only(w.overlap_stop, "name-overlap-with-depot"),
+			registry(w.overlap_stop))
+		w.overlap_stop.destroy({ raise_destroy = true })
+		lab.check("registry: removing the stop drops it", dev("lint_state").registry == lx.reg_before - 5,
+			{ before = lx.reg_before, now = dev("lint_state").registry })
+		lab.check("registry: the seed agrees after the fixes", (function()
+			local now = keys()
+			dev("lint_registry_seed")
+			return lab.same_list(now, keys())
+		end)())
+
+		-- The race of an incremental pass (PLAN4 D10): the provider's delivery leaves between the pass's index and
+		-- the provider's turn. Before the fix the counter was read live at the turn and the index at the start.
+		local q = lx.q
+		cases.set_signals(q.r, cases.request(q, -2000, 1000))
+		lab.wait_until(function()
+			local t = read("trains", q.t1.id)
+			return t and t.status == 2 and q.t1.state == defines.train_state.wait_station
+		end, 7200, SPEED)
 	end,
 
 	function()
+		local q = lx.q
+		local t = read("trains", q.t1.id) or {}
+		lab.check("race: the train is loading at the provider, its delivery counted",
+			t.status == 2 and read("stations", q.p.id, "deliveries_total") == 1, { status = t.status })
+		dev("collect")
+		dev("lint_reset_job")
+		dev("lint_step", 1, 0, 0)
 		local st = dev("lint_state")
-		lab.check("/cybersyn-find-problems: the chunked scan completes with the windows closed",
-			st.world_running == false and st.world_tick ~= nil, st)
-		local n = 0
-		for _ in pairs(lx.sync) do n = n + 1 end
-		local async = {}
-		for _, f in ipairs(dev("lint_scan_world", nil, false)) do async[f.id] = true end
-		local same = st.world_findings ~= nil
-		for id in pairs(lx.sync) do if not async[id] then same = false end end
-		lab.check("/cybersyn-find-problems: the same findings as the synchronous scan", same, st)
+		lx.race_pass = st.pass
+		lab.check("race: a pass is set up (index taken) and has checked no station yet", st.running ~= nil and
+			st.running.i == 0, st)
+		for _, m in ipairs(t.manifest or {}) do q.t1.insert({ name = m.name, count = m.count, quality = m.quality }) end
+		lab.wait_until(function() return (read("trains", q.t1.id) or {}).status == 3 end, 3600, 10)
+	end,
+
+	function()
+		local q = lx.q
+		lab.check("race: the train left the provider during the pass, its counter is 0 now",
+			(read("trains", q.t1.id) or {}).status == 3 and read("stations", q.p.id, "deliveries_total") == 0)
+		dev("lint_finish")
+		local gaps = dev("lint_gaps")
+		lab.check("race: the pass completed", dev("lint_state").pass == lx.race_pass + 1, dev("lint_state"))
+		lab.check("race: no phantom gap seen at the provider or the requester", not lab.set_of(gaps.phantom)[q.p.id] and
+			not lab.set_of(gaps.phantom)[q.r.id], gaps)
+		lab.wait_until(function()
+			local t = read("trains", q.t1.id)
+			return t and t.status == 4 and q.t1.state == defines.train_state.wait_station
+		end, 7200, SPEED)
+	end,
+
+	function()
+		-- The same race at the requester, on the next pass: the train unloads and leaves between index and turn.
+		local q = lx.q
+		lab.check("race: the train is unloading at the requester, its delivery counted",
+			(read("trains", q.t1.id) or {}).status == 4 and read("stations", q.r.id, "deliveries_total") == 1)
+		dev("collect")
+		dev("lint_reset_job")
+		dev("lint_step", 1, 0, 0)
+		cases.set_signals(q.r, {})
+		q.t1.clear_items_inside()
+		-- The line is a dead end east of the requester: the control case's operator sends the train round its end.
+		q.line_end = q.surface.find_entities_filtered({ name = "straight-rail", position = { cases.X_MAX + 1, q.y + 1 } })[1]
+		lab.wait_until(function()
+			cases.operate(q)
+			return (read("trains", q.t1.id) or {}).status ~= 4
+		end, 3600, 10)
+	end,
+
+	function()
+		local q = lx.q
+		local t = read("trains", q.t1.id) or {}
+		lab.check("race: the train left the requester during the pass", t.status ~= 4 and
+			read("stations", q.r.id, "deliveries_total") == 0, { status = t.status, state = q.t1.state,
+			deliveries = read("stations", q.r.id, "deliveries_total") })
+		dev("lint_finish")
+		local gaps = dev("lint_gaps")
+		lab.check("race: no phantom gap at either end over two incremental passes", not lab.set_of(gaps.phantom)[q.p.id]
+			and not lab.set_of(gaps.phantom)[q.r.id], gaps)
+		lab.check("race: no phantom or occupancy finding on the row", not has(q.p.id, "phantom") and
+			not has(q.r.id, "phantom") and not has(q.p.id, "occupancy") and not has(q.r.id, "occupancy"),
+			{ p = dev("lint_bits", q.p.id), r = dev("lint_bits", q.r.id) })
 
 		for _, case in ipairs(lx.rows) do
 			local ok, err = pcall(case.cleanup)
@@ -450,10 +626,13 @@ lab.suite("39_lint", {
 		dev("lint_run")
 		local stale = 0
 		for _, f in ipairs(dev("lint_findings")) do
-			if f.subject ~= "train" and not (read("stations", f.id) or read("depots", f.id) or read("refuelers", f.id)) then
+			if not f.message and f.subject ~= "train" and not (read("stations", f.id) or read("depots", f.id) or
+				read("refuelers", f.id)) then
 				stale = stale + 1
 			end
 		end
 		lab.check("cleanup: no lint finding left for a removed stop", stale == 0, stale)
+		lab.check("cleanup: the registry is back to the save's own findings", dev("lint_state").registry == lx.reg_start,
+			{ start = lx.reg_start, now = dev("lint_registry") })
 	end,
 })

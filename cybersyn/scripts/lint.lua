@@ -1,19 +1,20 @@
 -- Setup lint (PLAN3 §4.12): finds the setups that will never dispatch before a request exists, and names the reason
 -- code each one predicts, so the reason-code suite can hold this model and the dispatcher's to the same answers.
 --
--- Two jobs, both driven by the manager tick and neither on a timer of its own:
+-- Two sources of findings, neither on a timer of its own:
 --   the setup job runs only while a manager window is open (collector.tick calls lint.tick), 50 station, depot and
 --   refueler records plus 12 trains per update, from the manager snapshot, the fleet facts the collector builds once
 --   per pass, and a few reads of each record's stop; it rebuilds the findings array every pass and writes one `lint`
 --   log event per finding that appears or clears. Schedule records are checked against the stop names the snapshot
 --   already holds; only a name outside them costs a lookup (a full get_train_stops{} list took 0.85 ms on a
 --   2,578-stop base, more than a whole update may).
---   the world scan (lint.scan_world, the /cybersyn-find-problems command and the Problems tab's button) searches the
---   map around every train stop for combinators that keep a station from registering: one get_train_stops call,
---   then chunks of stops and combinators per manager update whether or not a window is open (or per update of its
---   own nth-tick handler while manager updates are off, scripts/main.lua), one scan at a time.
--- Nothing here reads storage.diag except through diag.lint, and nothing runs find_entities_filtered except the
--- world scan.
+--   the setup registry (storage.lint_registry) holds what the build, rotate, rename and removal handlers in
+--   scripts/main.lua decide about combinators and stops and Cybersyn itself drops: combinators no stop adopted,
+--   doubled or conflicting combinators, stops that only control combinators reach, combinator ghosts at stops that
+--   are not registered and stops that share a depot's name. It is written when those handlers run and seeded once
+--   from to_comb/to_stop/to_comb_params (scripts/fork-migrations.lua), so nothing ever scans the map for it.
+-- Nothing here reads storage.diag except through diag.lint; find_entities_filtered runs only inside the handlers
+-- that change what it would find (and once per orphan combinator in the seed).
 
 local diag = require("scripts.diag")
 
@@ -33,27 +34,25 @@ local LOOKUPS_PER_UPDATE = 2
 -- Station names for the schedule check, read from the snapshot before the train checks start: looking a name up
 -- (get_train_stops by name) costs tens of µs on a big base, reading it from a record a fraction of one.
 local SEED_PER_UPDATE = 300
-local WORLD_NAMES_PER_UPDATE = 400
-local WORLD_STOPS_PER_UPDATE = 100
-local WORLD_COMBS_PER_UPDATE = 200
 -- "Never refuelled" needs this much tracked time per train: from its first sighting (Train.seen_tick), and never from
 -- before refuel_tick existed (storage.stats.refuel_since), so neither a new train nor one from an older save is
 -- flagged before it had the chance to visit a refueler.
 local REFUEL_GRACE = 216000
 -- Unset train limits read back as uint max.
 local UNLIMITED = 2100000000
+-- Vanilla's own; any other value misroutes trains Cybersyn sends to stops of the same name.
+local DEFAULT_PRIORITY = 50
 
--- Checks only the world scan finds; their acknowledgements end when a scan no longer finds them.
-local WORLD_CHECKS = {
+-- Checks only the registry finds; their acknowledgements end when the registry drops them, not with a pass.
+local REGISTRY_CHECKS = {
 	[LINT_DERELICT_COMB] = true,
 	[LINT_GHOST_COMB] = true,
 	[LINT_NO_COMB] = true,
 	[LINT_WRONG_SIDE] = true,
 	[LINT_DOUBLE_COMB] = true,
-	[LINT_PRIORITY] = true,
 	[LINT_NAME_OVERLAP] = true,
 }
-lint.WORLD_CHECKS = WORLD_CHECKS
+lint.REGISTRY_CHECKS = REGISTRY_CHECKS
 
 lint.RECORDS_PER_UPDATE = RECORDS_PER_UPDATE
 lint.TRAINS_PER_UPDATE = TRAINS_PER_UPDATE
@@ -68,8 +67,12 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field network string?
 --- @field item string? item hash the finding is about
 --- @field c number? CAPACITY: the threshold as typed (items or fluid units) behind the stacks in `a`
---- @field entity LuaEntity? world scan: the stop or combinator
---- @field message string? world scan: the [cybersyn-problems] key the command prints
+--- @field train uint? PHANTOM: the bound train the station does not count; OCCUPANCY: the train Cybersyn did not send
+--- @field status int? PHANTOM with `train`: that train's STATUS_*
+--- @field fix string? a lint-fix-* key suffix that replaces the check's own fix line (PHANTOM: "phantom-leak")
+--- @field entity LuaEntity? registry: the stop or combinator
+--- @field message string? registry: the [cybersyn-problems] key the command prints (problems-world-<message>)
+--- @field stop LuaEntity? registry, wrong side: the stop the combinator stands next to
 
 --- @class LintJob
 --- @field started_tick uint
@@ -84,6 +87,10 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field groups {[string]: int}? vanilla train group -> depot names among its Cybersyn trains
 --- @field dest {[uint]: int} stop id -> Cybersyn trains heading to or standing at it
 --- @field bound {[uint]: int} station id -> trains its deliveries_total should count
+--- @field delivered {[uint]: int} station id -> its deliveries_total, read in the same update as `bound` (only the
+---   stations occupancy_index reads; any other station's counter was 0 then)
+--- @field counting {[uint]: true} stations whose counter was not 0 when this pass checked them (the next pass's
+---   `delivered` reads them)
 --- @field findings LintFinding[]
 --- @field bits {[uint]: int} this pass's masks, committed with the findings when the pass completes
 --- @field train_bits {[uint]: int}
@@ -104,8 +111,9 @@ lint.REFUEL_GRACE = REFUEL_GRACE
 --- @field train_logged {[uint]: int}?
 --- @field occupancy_since {[uint]: uint} stop -> tick the occupancy gap was first seen (cleared when it closes)
 --- @field phantom_since {[uint]: uint}
---- @field world {tick: uint, findings: LintFinding[], player_index: uint?}?
---- @field world_job table?
+--- @field counting {[uint]: true}? the last complete pass's LintJob.counting
+--- @field world {tick: uint, findings: LintFinding[]}? the registry as scripts/gui/problems.lua reads it (lint.state)
+--- @field merged {pass: LintFinding[], registry: LintFinding[], list: LintFinding[]}? lint.findings' last result
 
 --- @return LintState
 function lint.state()
@@ -116,6 +124,8 @@ function lint.state()
 		manager.lint = s
 	end
 	if not s.train_live then s.train_live = {} end
+	-- scripts/gui/problems.lua lists s.world beside the pass; it reads the registry through it until that tab goes.
+	s.world = lint.registry_view()
 	return s
 end
 
@@ -268,10 +278,12 @@ local function count_keys(t)
 	return n
 end
 
+-- A stop without power or switched off is reported as that; a network bit it lacks changes nothing until then.
+local NO_MASK_CHECK = { no_power = true, disabled = true }
+
 --- The checks of one network of a station; returns the station's mask with this network's findings added.
---- @param keys {masks: {[string]: int}, overrides: {[string]: number}?, starved: {[string]: true}}
---- @param each boolean? a NETWORK_EACH station (its requests carry no mask of their own)
-local function check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, net_mask, each)
+--- @param keys {overrides: {[string]: number}?, starved: {[string]: true}}
+local function check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, net_mask)
 	local S = LINT_SUBJECT_STATION
 	local mask_or = fleet.mask_or[net]
 	local trains, ok, items, fluid, all_items, all_fluid = 0, 0, 0, 0, 0, 0
@@ -279,7 +291,11 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, key
 		if band(mask, LINT_BIT[LINT_NO_TRAIN]) == 0 then mask = find(out, mask, S, id, LINT_NO_TRAIN, net_mask, 0, net) end
 	elseif net_mask == 0 then
 		-- Mask 0 shares no bit with any provider or requester either, and the dispatcher's provider check comes first.
-		if band(mask, LINT_BIT[LINT_MASK]) == 0 then mask = find(out, mask, S, id, LINT_MASK, 0, mask_or, net) end
+		-- Only mask 0 is a finding: a requester whose bits no provider shares right now may be waiting by design for
+		-- providers whose masks follow demand, and the dispatcher reports MASK_MISMATCH live when it is not.
+		if band(mask, LINT_BIT[LINT_MASK]) == 0 and not NO_MASK_CHECK[st.status] then
+			mask = find(out, mask, S, id, LINT_MASK, 0, mask_or, net)
+		end
 	elseif band(net_mask, mask_or) == 0 then
 		if band(mask, LINT_BIT[LINT_TRAIN_MASK]) == 0 then
 			mask = find(out, mask, S, id, LINT_TRAIN_MASK, net_mask, mask_or, net)
@@ -293,17 +309,12 @@ local function check_network(out, mask, id, st, accepted, allows_all, fleet, key
 		end
 	end
 	if not st.is_r then return mask end
-	local provider_masks, overrides, starved = keys.masks, keys.overrides, keys.starved
+	local overrides, starved = keys.overrides, keys.starved
 	local prefix
 	for hash, req in pairs(st.requested) do
 		prefix = prefix or (net .. ":")
 		local key = prefix .. hash
-		local pm = provider_masks[key]
-		-- A request from a secondary combinator goes out under that combinator's own mask.
-		local rm = not each and req.mask or net_mask
-		if pm and band(pm, rm) == 0 then
-			if band(mask, LINT_BIT[LINT_MASK]) == 0 then mask = find(out, mask, S, id, LINT_MASK, rm, pm, net, hash) end
-		elseif req.active and starved[key] then
+		if req.active and starved[key] then
 			if band(mask, LINT_BIT[LINT_NO_PROVIDER]) == 0 then
 				mask = find(out, mask, S, id, LINT_NO_PROVIDER, 0, 0, net, hash)
 			end
@@ -338,16 +349,32 @@ end
 --- @param st SnapshotStation
 --- @param station Station
 --- @param fleet SnapshotFleet
---- @param keys {masks: {[string]: int}, overrides: {[string]: number}?, starved: {[string]: true}} the snapshot's
----   per network:item facts: providers' masks OR-ed, their lowest item threshold, the keys nobody provides
---- @param live {limit: int, occupancy_gap: boolean, occupancy: int, count: int, phantom: boolean, deliveries: int, bound: int}
+--- @param keys {overrides: {[string]: number}?, starved: {[string]: true}} the snapshot's per network:item facts:
+---   the providers' lowest item threshold, the keys nobody provides
+--- @param live LintStationLive
 --- @return int mask
 function lint.check_station(out, id, st, station, fleet, keys, live)
 	local mask = 0
 	local S = LINT_SUBJECT_STATION
 	if live.limit == 0 then mask = find(out, mask, S, id, LINT_LIMIT_ZERO, 0, 0) end
-	if live.occupancy_gap then mask = find(out, mask, S, id, LINT_OCCUPANCY, live.occupancy, live.count) end
-	if live.phantom then mask = find(out, mask, S, id, LINT_PHANTOM, live.deliveries, live.bound) end
+	if live.occupancy_gap then
+		mask = find(out, mask, S, id, LINT_OCCUPANCY, live.occupancy, live.count)
+		out[#out].train = live.occupancy_train
+	end
+	if live.phantom then
+		local deliveries, bound = live.deliveries, live.bound
+		mask = find(out, mask, S, id, LINT_PHANTOM, deliveries, bound)
+		local f = out[#out]
+		if deliveries > bound then
+			-- Counted deliveries no train serves: the counter leaked, and only a recount repairs it.
+			f.fix = "phantom-leak"
+		else
+			f.train, f.status = live.phantom_train, live.phantom_status
+		end
+	end
+	if live.priority and live.priority ~= DEFAULT_PRIORITY then
+		mask = find(out, mask, S, id, LINT_PRIORITY, live.priority, 0)
+	end
 
 	-- A stop that provides and requests: an item it has on its way out is not requested (R_IS_PROVIDING), one on its
 	-- way in is not provided (P_IS_REQUESTING). The dispatcher skips both whatever the item's own threshold, so an item
@@ -377,7 +404,7 @@ function lint.check_station(out, id, st, station, fleet, keys, live)
 	if name == NETWORK_EACH then
 		if type(net_mask) == "table" then
 			for net, m in pairs(net_mask) do
-				mask = check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, m, true)
+				mask = check_network(out, mask, id, st, accepted, allows_all, fleet, keys, net, m)
 			end
 		end
 	elseif name then
@@ -389,12 +416,16 @@ end
 
 --- @param out LintFinding[]
 --- @param group SnapshotDepotGroup?
+--- @param priority int? the stop's train_stop_priority
 --- @return int mask
-function lint.check_depot(out, id, limit, group)
+function lint.check_depot(out, id, limit, group, priority)
 	local mask = 0
 	if limit ~= 1 then mask = find(out, mask, LINT_SUBJECT_DEPOT, id, LINT_DEPOT_LIMIT, limit >= UNLIMITED and -1 or limit, 0) end
 	if group and #group.ids > 1 and group.same_depot_bypass > 0 then
 		mask = find(out, mask, LINT_SUBJECT_DEPOT, id, LINT_DEPOT_SHARED_NAME, #group.ids, group.same_depot_bypass)
+	end
+	if priority and priority ~= DEFAULT_PRIORITY then
+		mask = find(out, mask, LINT_SUBJECT_DEPOT, id, LINT_PRIORITY, priority, 0)
 	end
 	return mask
 end
@@ -402,8 +433,9 @@ end
 --- @param out LintFinding[]
 --- @param refueler {network_name: string?, network_mask: int|{[string]: int}}
 --- @param fleet SnapshotFleet
+--- @param priority int? the stop's train_stop_priority
 --- @return int mask
-function lint.check_refueler(out, id, refueler, fleet)
+function lint.check_refueler(out, id, refueler, fleet, priority)
 	local mask = 0
 	each_network(refueler.network_name, refueler.network_mask, function(net, net_mask)
 		local mask_or = fleet.mask_or[net] or 0
@@ -411,6 +443,9 @@ function lint.check_refueler(out, id, refueler, fleet)
 			mask = find(out, mask, LINT_SUBJECT_REFUELER, id, LINT_REFUELER_MASK, net_mask, mask_or, net)
 		end
 	end)
+	if priority and priority ~= DEFAULT_PRIORITY then
+		mask = find(out, mask, LINT_SUBJECT_REFUELER, id, LINT_PRIORITY, priority, 0)
+	end
 	return mask
 end
 
@@ -445,10 +480,18 @@ local function keys_into(t, out)
 	return out
 end
 
---- Trains Cybersyn has heading to or standing at each stop, and the deliveries each station's counter should hold.
---- @return {[uint]: int} dest
---- @return {[uint]: int} bound
-local function occupancy_index()
+--- Trains Cybersyn has heading to or standing at each stop and the deliveries each station's counter should hold,
+--- with the counters they are compared against, read in this one update: a station is checked up to a whole pass
+--- later (about 50 s on a 2,000-station base), and comparing a live counter with an index that old flagged every
+--- train that left a provider in between.
+--- Reading every station's counter here cost 0.9-1.5 ms per pass on that base (2,030 cold station tables in one
+--- update), so only the counters that can differ from `bound` are read: those of the stations a train is bound to,
+--- and those that were not 0 when the last pass checked them (a counter no train serves stays so: a leak). A leak
+--- that starts after its station's check is read from the next pass on. The stops' train counts are not copied
+--- either: occupancy confirms its few candidates live (foreign_train).
+--- @param job LintJob
+--- @param s LintState
+local function occupancy_index(job, s)
 	local dest, bound = {}, {}
 	for _, train in pairs(storage.trains) do
 		local status = train.status
@@ -469,7 +512,31 @@ local function occupancy_index()
 			if f then dest[f] = (dest[f] or 0) + 1 end
 		end
 	end
-	return dest, bound
+	local delivered, stations = {}, storage.stations
+	for _, ids in ipairs({ bound, s.counting or NO_LAYOUTS }) do
+		for id in pairs(ids) do
+			if delivered[id] == nil then
+				local station = stations[id]
+				delivered[id] = station and station.deliveries_total or 0
+			end
+		end
+	end
+	job.dest, job.bound, job.delivered, job.counting = dest, bound, delivered, {}
+end
+
+--- A train bound to station `id` (a delivery's provider while it loads or heads there, its requester until it
+--- leaves), for the detail of a bound train the station does not count: looked up only for such a finding.
+--- @param id uint
+--- @return uint? train_id
+local function bound_train(id)
+	for train_id, train in pairs(storage.trains) do
+		local status = train.status
+		if ((status == STATUS_TO_P or status == STATUS_P) and (train.p_station_id == id or train.r_station_id == id)) or
+			((status == STATUS_TO_R or status == STATUS_R) and train.r_station_id == id) then
+			return train_id
+		end
+	end
+	return nil
 end
 
 --- A pass is set up over three updates, so no update lists thousands of ids and indexes them as well: the station
@@ -503,7 +570,7 @@ local function setup_job(job, snap)
 		job.tids = keys_into(storage.trains, {})
 		job.setup = 2
 	else
-		job.dest, job.bound = occupancy_index()
+		occupancy_index(job, lint.state())
 		-- The names schedules use are the depots', the refuelers' and the stations' (seeded from the station list in
 		-- later updates, before the train checks start); any other name is looked up once per pass (stop_exists).
 		local names = {}
@@ -544,8 +611,8 @@ local function transitions(subject, id, old, new)
 	end
 end
 
---- A gap between two counts must hold for two planner cycles and across two passes before it is a finding:
---- trains_count also counts trains passing through, and the snapshot's index lags the counters by up to a pass.
+--- A gap between two counts must hold for two planner cycles and across two passes before it is a finding: the
+--- counts are read in one update, but a train Cybersyn just sent may not be in the stop's count yet.
 --- @param since {[uint]: uint}
 --- @return boolean
 local function persisted(since, id, gap, job, cycle_ticks)
@@ -579,7 +646,49 @@ local function live_refueler(refueler)
 	return { network_name = name, network_mask = mask }
 end
 
+--- @class LintStationLive what check_station needs beyond the snapshot record
+--- @field limit int
+--- @field priority int? the stop's train_stop_priority
+--- @field occupancy_gap boolean
+--- @field occupancy int Cybersyn trains bound for the stop
+--- @field count int the stop's trains_count
+--- @field occupancy_train uint? a train at or for the stop that Cybersyn did not send there
+--- @field phantom boolean
+--- @field deliveries int
+--- @field bound int
+--- @field phantom_train uint? a train bound to the station (bound > deliveries)
+--- @field phantom_status int? its status
+
+--- True when Cybersyn sent `train` to station `id` (heading there or standing at it).
+--- @param train Train?
+--- @param id uint
+--- @return boolean
+local function sent_here(train, id)
+	if not train then return false end
+	local status = train.status
+	if status == STATUS_TO_P or status == STATUS_P then return train.p_station_id == id end
+	if status == STATUS_TO_R or status == STATUS_R then return train.r_station_id == id end
+	return false
+end
+
+--- A train the stop counts (standing at it or heading to it) that Cybersyn did not send there, read now: the
+--- index's count says only that there may be one.
+--- @param stop LuaEntity
+--- @param id uint
+--- @return uint? train_id
+local function foreign_train(stop, id)
+	local trains = storage.trains
+	for _, t in pairs(stop.get_train_stop_trains()) do
+		if t.valid and (t.station == stop or t.path_end_stop == stop) and not sent_here(trains[t.id], id) then
+			return t.id
+		end
+	end
+	return nil
+end
+lint.sent_here = sent_here
+
 -- Reused for every station of a pass (the values are copied into findings, never kept).
+--- @type LintStationLive
 local live = {}
 local station_keys = {}
 
@@ -605,31 +714,42 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		if not (st and stop and stop.valid) then return end
 		local count = stop.trains_count
 		local occupancy = job.dest[id] or 0
-		local deliveries, bound = station.deliveries_total or 0, job.bound[id] or 0
+		local bound = job.bound[id] or 0
+		local deliveries = job.delivered[id] or 0
+		local now = station.deliveries_total or 0
+		if now ~= 0 then job.counting[id] = true end
 		live.limit = stop.trains_limit
+		live.priority = stop.train_stop_priority
 		live.count = count
 		live.occupancy = occupancy
 		-- Only more trains than Cybersyn sent count: one it sent is routed through a rail record first and is not
 		-- in the stop's count until it heads for the stop itself, and a delivery Cybersyn counts but no train serves
-		-- is the phantom check's.
-		live.occupancy_gap = persisted(s.occupancy_since, id, count > occupancy, job, cycle_ticks)
+		-- is the phantom check's. The live count against the pass's index only nominates a candidate; the stop's
+		-- trains, compared with what Cybersyn sent there now, decide it and name the train.
+		local foreign = count > occupancy and foreign_train(stop, id) or nil
+		live.occupancy_train = foreign
+		live.occupancy_gap = persisted(s.occupancy_since, id, foreign ~= nil, job, cycle_ticks)
 		live.deliveries = deliveries
 		live.bound = bound
 		live.phantom = persisted(s.phantom_since, id, deliveries ~= bound, job, cycle_ticks)
+		local tid = live.phantom and bound > deliveries and bound_train(id) or nil
+		local train = tid and storage.trains[tid]
+		live.phantom_train = tid
+		live.phantom_status = train and train.status or nil
 		local keys = station_keys
-		keys.masks, keys.overrides, keys.starved = snap.provider_masks or NO_LAYOUTS, snap.provider_overrides,
-			snap.starved or NO_LAYOUTS
+		keys.overrides, keys.starved = snap.provider_overrides, snap.starved or NO_LAYOUTS
 		mask = lint.check_station(out, id, st, station, snap.fleet, keys, live)
 	elseif subject == LINT_SUBJECT_DEPOT then
 		local depot = storage.depots[id]
 		local stop = depot and depot.entity_stop
 		if not (stop and stop.valid) then return end
-		mask = lint.check_depot(out, id, stop.trains_limit, (snap.depots_by_name or NO_LAYOUTS)[stop.backer_name])
+		mask = lint.check_depot(out, id, stop.trains_limit, (snap.depots_by_name or NO_LAYOUTS)[stop.backer_name],
+			stop.train_stop_priority)
 	else
 		local refueler = storage.refuelers[id]
 		local stop = refueler and refueler.entity_stop
 		if not (stop and stop.valid) then return end
-		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet)
+		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet, stop.train_stop_priority)
 	end
 	local logged = s.logged
 	local old = logged and logged[id] or s.bits[id] or 0
@@ -800,8 +920,7 @@ local function set_station_lint(id, mask)
 	if log then log.ids[#log.ids + 1] = id end
 end
 
---- Ends the acknowledgements of setup findings that cleared with this pass (the world-scan checks are the world
---- scan's to end).
+--- Ends the acknowledgements of setup findings that cleared with this pass (the registry ends its own).
 --- @param s LintState
 local function resolve_acks(s)
 	local acks = storage.acks
@@ -810,7 +929,7 @@ local function resolve_acks(s)
 	for key, by in pairs(acks.lint) do
 		local mask = key < 0 and s.train_bits[-key] or s.bits[key] or 0
 		for check in pairs(by) do
-			if not WORLD_CHECKS[check] and band(mask, LINT_BIT[check] or 0) == 0 then
+			if not REGISTRY_CHECKS[check] and band(mask, LINT_BIT[check] or 0) == 0 then
 				ended[#ended + 1] = { key, check }
 			end
 		end
@@ -832,6 +951,7 @@ local function commit(s, job)
 	end
 	s.bits = new
 	s.train_bits = job.train_bits
+	s.counting = job.counting
 	s.logged, s.train_logged = nil, nil
 	resolve_acks(s)
 end
@@ -900,9 +1020,23 @@ function lint.step(records, trains)
 	return false
 end
 
+-- Dev (dev lint_profile): while set, one {update, profiler} per manager-tick update of the setup job, so the budget
+-- is measured where it is spent (after the collector's step in the same update), not in a synchronous loop.
+lint.samples = nil
+
 --- One manager update of the setup job (only while a window is open; see collector.tick).
 function lint.tick()
+	local samples = lint.samples
+	if not samples then
+		lint.step()
+		return
+	end
+	local s = lint.state()
+	local k = s.job and s.job.updates or 0
+	local p = game.create_profiler()
 	lint.step()
+	p.stop()
+	samples[#samples + 1] = { k + 1, p }
 end
 
 --- Runs a whole fresh pass now (dev and tests).
@@ -918,15 +1052,67 @@ function lint.run_to_completion()
 	return s
 end
 
---- Findings of the last complete pass (read only).
+-- lint.findings' last merge, by the identity of its two inputs (both are replaced, never edited, when they change);
+-- a joining client starts with none and merges the same lists.
+local merged = { pass = nil, registry = nil, list = nil }
+
+--- Findings of the last complete pass, then the registry's (read only).
 --- @return LintFinding[]
 function lint.findings()
 	local manager = storage.manager
 	local s = manager and manager.lint
-	return s and s.findings or {}
+	local pass = s and s.findings or NO_LAYOUTS
+	local reg = lint.registry_findings()
+	if #reg == 0 then return pass end
+	if #pass == 0 then return reg end
+	if merged.pass == pass and merged.registry == reg then return merged.list end
+	local list = {}
+	for i, f in ipairs(pass) do list[i] = f end
+	local n = #pass
+	for i, f in ipairs(reg) do list[n + i] = f end
+	merged.pass, merged.registry, merged.list = pass, reg, list
+	return list
 end
 
--- ---------------------------------------------------------------- the world scan (B8)
+-- ---------------------------------------------------------------- the setup registry (D8)
+
+--- @class LintRegistry
+--- @field entries {[uint]: LintRegistryEntry} by the stop's or combinator's unit number
+--- @field version int counts the changes (caches and render sigs)
+--- @field findings LintFinding[]? built from the entries on demand, dropped on every change
+--- @field view {tick: int, findings: LintFinding[]}? the same findings in the shape of the old world scan
+
+--- @class LintRegistryEntry
+--- @field entity LuaEntity the stop or combinator
+--- @field subject int LINT_SUBJECT_STOP or LINT_SUBJECT_COMBINATOR
+--- @field msgs {[string]: true} [cybersyn-problems] keys, each one finding
+--- @field stop LuaEntity? wrong side: the stop the combinator stands next to
+
+local MESSAGE_CHECK = {
+	["double-station"] = LINT_DOUBLE_COMB,
+	["double-station-control"] = LINT_DOUBLE_COMB,
+	["double-depot"] = LINT_DOUBLE_COMB,
+	["double-refueler"] = LINT_DOUBLE_COMB,
+	["station-and-depot"] = LINT_DOUBLE_COMB,
+	["station-and-refueler"] = LINT_DOUBLE_COMB,
+	["depot-and-refueler"] = LINT_DOUBLE_COMB,
+	["ghost-combinator"] = LINT_GHOST_COMB,
+	["stop-no-combinator"] = LINT_NO_COMB,
+	["name-overlap-with-depot"] = LINT_NAME_OVERLAP,
+	["derelict-combinator"] = LINT_DERELICT_COMB,
+	["wrong-side-combinator"] = LINT_WRONG_SIDE,
+}
+lint.MESSAGE_CHECK = MESSAGE_CHECK
+
+-- What one evaluation decides: eval_stop the combinator facts of a stop, eval_name the name overlap (per name, so
+-- a depot's creation reaches every stop of its name), eval_comb an orphan combinator's.
+local STOP_MESSAGES = { "double-station", "double-station-control", "double-depot", "double-refueler",
+	"station-and-depot", "station-and-refueler", "depot-and-refueler", "ghost-combinator", "stop-no-combinator" }
+local OVERLAP_MESSAGES = { "name-overlap-with-depot" }
+local COMB_MESSAGES = { "derelict-combinator", "wrong-side-combinator" }
+local OVERLAP = { ["name-overlap-with-depot"] = true }
+local DERELICT = { ["derelict-combinator"] = true }
+local WRONG_SIDE = { ["wrong-side-combinator"] = true }
 
 local PRIMARY = {
 	[MODE_PRIMARY_IO] = true,
@@ -934,211 +1120,497 @@ local PRIMARY = {
 	[MODE_PRIMARY_IO_FAILED_REQUEST] = true,
 }
 
---- @param out LintFinding[]
-local function world_find(out, check, entity, message)
-	local subject = entity.type == "train-stop" and LINT_SUBJECT_STOP or LINT_SUBJECT_COMBINATOR
-	out[#out + 1] = { subject = subject, id = entity.unit_number, check = check, entity = entity, message = message }
+-- Cybersyn adopts the combinators within 2 tiles of a stop (scripts/main.lua); one tile more also finds those that
+-- stand beside the stop but face away from it, and the ghosts waiting to be built there.
+local REACH = 3
+
+--- @param pos MapPosition
+--- @return BoundingBox
+local function reach_box(pos)
+	return { { pos.x - REACH, pos.y - REACH }, { pos.x + REACH, pos.y + REACH } }
 end
 
---- Starts the chunked world scan for `player_index` (nil = the server). Refused while a scan runs: a restart would
---- throw away the work done and let anyone keep the scan going forever.
---- @param player_index uint?
---- @param quiet boolean? no chat report when it completes (the Problems tab shows the result)
---- @return int? stops to check, nil when a scan is already running
-function lint.scan_world(player_index, quiet)
-	local s = lint.state()
-	if s.world_job then return nil end
-	-- A player's scan covers their force's stops only (on a multi-force map another force's base is not theirs to
-	-- see); the server's covers every force.
-	local player = player_index and game.get_player(player_index)
-	local stops = game.train_manager.get_train_stops({ force = player and player.force or nil })
-	s.world_job = {
-		player_index = player_index,
-		started_tick = game.tick,
-		stops = stops,
-		phase = 1,
-		k = 0,
-		-- name -> bit 1 station, 2 depot, 4 refueler (the stops registered under that name)
-		names = {},
-		combs = keys_into(storage.to_comb, {}),
-		reported = {},
-		findings = {},
-		quiet = quiet,
-	}
-	return #stops
+--- @return LintRegistry
+local function registry()
+	local reg = storage.lint_registry
+	if not reg then
+		reg = { entries = {}, version = 0 }
+		storage.lint_registry = reg
+	end
+	return reg
 end
 
---- How far the running world scan is, 0..1, or nil when none runs. The stops are most of the work.
---- @return number?
-function lint.world_progress()
-	local manager = storage.manager
-	local job = manager and manager.lint and manager.lint.world_job
-	if not job then return nil end
-	if job.phase == 1 then return 0 end
-	if job.phase == 2 then return 0.9 * job.k / math.max(#job.stops, 1) end
-	return 0.9 + 0.1 * job.k / math.max(#job.combs, 1)
+--- @param reg LintRegistry
+local function changed(reg)
+	reg.version = reg.version + 1
+	reg.findings = nil
+	reg.view = nil
 end
 
---- Ends the acknowledgements of world-scan findings the latest scan no longer has.
---- @param findings LintFinding[]
-local function resolve_world_acks(findings)
+--- Ends the acknowledgements of `checks` on `unit` that no remaining message still finds.
+--- @param unit uint
+--- @param msgs {[string]: true}
+--- @param checks int[]
+local function end_acks(unit, msgs, checks)
+	local acks = storage.acks
+	if not (acks and acks.lint and acks.lint[unit]) then return end
+	for _, check in ipairs(checks) do
+		local still = false
+		for m in pairs(msgs) do
+			if MESSAGE_CHECK[m] == check then
+				still = true
+				break
+			end
+		end
+		if not still then diag.resolve_lint_ack(unit, check) end
+	end
+end
+
+--- Replaces what one evaluation decides about `entity` (the messages in `owned`) with `found`.
+--- @param entity LuaEntity
+--- @param subject int
+--- @param owned string[]
+--- @param found {[string]: true}?
+--- @param stop LuaEntity? COMB_MESSAGES only: the stop of a wrong-side finding
+local function set(entity, subject, owned, found, stop)
+	local reg = registry()
+	local unit = entity.unit_number --[[@as uint]]
+	local entry = reg.entries[unit]
+	if not entry then
+		if not (found and next(found)) then return end
+		entry = { entity = entity, subject = subject, msgs = {} }
+		reg.entries[unit] = entry
+	end
+	local msgs = entry.msgs
+	local dirty, gone = false, nil
+	for _, m in ipairs(owned) do
+		local want = found and found[m] or nil
+		if msgs[m] ~= want then
+			msgs[m] = want
+			dirty = true
+			if not want then
+				gone = gone or {}
+				gone[#gone + 1] = MESSAGE_CHECK[m]
+			end
+		end
+	end
+	if owned == COMB_MESSAGES and entry.stop ~= stop then
+		entry.stop = stop
+		dirty = true
+	end
+	if not next(msgs) then reg.entries[unit] = nil end
+	if gone then end_acks(unit, msgs, gone) end
+	if dirty then changed(reg) end
+end
+
+--- Forgets a removed stop or combinator.
+--- @param unit uint
+local function drop(unit)
+	local reg = storage.lint_registry
+	local entry = reg and reg.entries[unit]
+	if not entry then return end
+	reg.entries[unit] = nil
+	local checks = {}
+	for m in pairs(entry.msgs) do checks[#checks + 1] = MESSAGE_CHECK[m] end
+	end_acks(unit, {}, checks)
+	changed(reg)
+end
+
+--- The stop's combinator facts from the combinators Cybersyn attached to it (`c`, counted by mode), whether it is
+--- registered and whether a combinator ghost stands within reach.
+--- @param c {primary: int, secondary: int, depot: int, refueler: int, attached: int}
+--- @param registered boolean
+--- @param ghost boolean
+--- @return {[string]: true}? found
+function lint.stop_facts(c, registered, ghost)
+	local primary, depot, refueler = c.primary, c.depot, c.refueler
+	-- The common case, one station, depot or refueler combinator and at most one control combinator, allocates nothing.
+	if registered and primary + depot + refueler <= 1 and c.secondary <= 1 then return nil end
+	local found = {}
+	if primary > 1 then found["double-station"] = true end
+	if c.secondary > 1 then found["double-station-control"] = true end
+	if depot > 1 then found["double-depot"] = true end
+	if refueler > 1 then found["double-refueler"] = true end
+	if primary > 0 and depot > 0 then found["station-and-depot"] = true end
+	if primary > 0 and refueler > 0 then found["station-and-refueler"] = true end
+	if depot > 0 and refueler > 0 then found["depot-and-refueler"] = true end
+	if not registered then
+		if ghost then
+			found["ghost-combinator"] = true
+		elseif c.attached > 0 then
+			found["stop-no-combinator"] = true
+		end
+	end
+	return next(found) and found or nil
+end
+
+--- @return {primary: int, secondary: int, depot: int, refueler: int, attached: int}
+local function new_counts()
+	return { primary = 0, secondary = 0, depot = 0, refueler = 0, attached = 0 }
+end
+
+--- @param c {primary: int, secondary: int, depot: int, refueler: int, attached: int}
+--- @param params {operation: string}?
+local function count(c, params)
+	local op = params and params.operation
+	c.attached = c.attached + 1
+	if PRIMARY[op] then
+		c.primary = c.primary + 1
+	elseif op == MODE_SECONDARY_IO then
+		c.secondary = c.secondary + 1
+	elseif op == MODE_DEPOT then
+		c.depot = c.depot + 1
+	elseif op == MODE_REFUELER then
+		c.refueler = c.refueler + 1
+	end
+end
+
+--- @param unit uint
+--- @return boolean
+local function registered(unit)
+	return (storage.stations[unit] or storage.depots[unit] or storage.refuelers[unit]) ~= nil
+end
+
+--- A combinator no stop owns: wrong side when a stop stands within reach (it faces away), derelict otherwise.
+--- Clears both when a stop owns it again or it is a wagon combinator, which needs no stop.
+--- @param comb LuaEntity
+--- @param except LuaEntity? a stop being removed
+local function eval_comb(comb, except)
+	if not comb.valid then return end
+	local unit = comb.unit_number --[[@as uint]]
+	local stop = storage.to_stop[unit]
+	local params = storage.to_comb_params[unit]
+	if (stop and stop.valid) or (params and params.operation == MODE_WAGON) then
+		set(comb, LINT_SUBJECT_COMBINATOR, COMB_MESSAGES, nil)
+		return
+	end
+	local near
+	for _, e in pairs(comb.surface.find_entities_filtered({ area = reach_box(comb.position), name = "train-stop" })) do
+		if e.valid and e ~= except then
+			near = e
+			break
+		end
+	end
+	set(comb, LINT_SUBJECT_COMBINATOR, COMB_MESSAGES, near and WRONG_SIDE or DERELICT, near)
+end
+
+--- A stop's combinator facts, from the combinators and ghosts within reach (`except` is one being removed), and
+--- the facts of every combinator there that no stop owns or that the registry holds (a stop built or removed
+--- next to them changes those).
+--- @param stop LuaEntity
+--- @param except LuaEntity?
+local function eval_stop(stop, except)
+	if not stop.valid then return end
+	local to_stop, params, entries = storage.to_stop, storage.to_comb_params, registry().entries
+	local c = new_counts()
+	local ghost = false
+	local recheck
+	local found = stop.surface.find_entities_filtered({ area = reach_box(stop.position),
+		name = { COMBINATOR_NAME, "entity-ghost" } })
+	for _, e in pairs(found) do
+		if e.valid and e ~= except then
+			if e.name == "entity-ghost" then
+				if e.ghost_name == COMBINATOR_NAME then ghost = true end
+			else
+				local unit = e.unit_number --[[@as uint]]
+				local owner = to_stop[unit]
+				if owner == stop then count(c, params[unit]) end
+				if entries[unit] or not (owner and owner.valid) then
+					recheck = recheck or {}
+					recheck[#recheck + 1] = e
+				end
+			end
+		end
+	end
+	set(stop, LINT_SUBJECT_STOP, STOP_MESSAGES, lint.stop_facts(c, registered(stop.unit_number --[[@as uint]]), ghost))
+	if recheck then
+		for _, e in ipairs(recheck) do eval_comb(e) end
+	end
+end
+
+--- Every stop within reach of `pos`.
+--- @param surface LuaSurface
+--- @param pos MapPosition
+--- @param except LuaEntity?
+local function eval_around(surface, pos, except)
+	for _, stop in pairs(surface.find_entities_filtered({ area = reach_box(pos), name = "train-stop" })) do
+		if stop ~= except then eval_stop(stop, except) end
+	end
+end
+
+--- The name overlap of every stop called `name`: set on the stops that are not depots while a depot has the name.
+--- @param name string?
+local function eval_name(name)
+	if not name then return end
+	local stops = game.train_manager.get_train_stops({ station_name = name })
+	local depots = storage.depots
+	local any = false
+	for _, stop in pairs(stops) do
+		if depots[stop.unit_number] then
+			any = true
+			break
+		end
+	end
+	for _, stop in pairs(stops) do
+		set(stop, LINT_SUBJECT_STOP, OVERLAP_MESSAGES, any and not depots[stop.unit_number] and OVERLAP or nil)
+	end
+end
+
+-- The handlers in scripts/main.lua call these once Cybersyn's own handling of the event is done, so what they read
+-- (to_stop, to_comb_params, stations, depots, refuelers) is what the event left.
+
+--- A combinator was built, rebuilt (a mode change or a rotation that changed its stop) or revived from a ghost.
+--- @param comb LuaEntity
+function lint.on_combinator_built(comb)
+	eval_comb(comb)
+	eval_around(comb.surface, comb.position)
+end
+
+--- A combinator is being removed (it is still in the world).
+--- @param comb LuaEntity
+function lint.on_combinator_removed(comb)
+	drop(comb.unit_number --[[@as uint]])
+	eval_around(comb.surface, comb.position, comb)
+end
+
+--- A combinator ghost was placed, or is being removed (`removed`; it is still in the world).
+--- @param ghost LuaEntity
+--- @param removed boolean?
+function lint.on_ghost_changed(ghost, removed)
+	eval_around(ghost.surface, ghost.position, removed and ghost or nil)
+end
+
+--- @param stop LuaEntity
+function lint.on_stop_built(stop)
+	eval_stop(stop)
+	eval_name(stop.backer_name)
+end
+
+--- A stop is being removed (it is still in the world); `orphans` are the combinators it owned.
+--- @param stop LuaEntity
+--- @param orphans LuaEntity[]
+function lint.on_stop_removed(stop, orphans)
+	for _, comb in ipairs(orphans) do eval_comb(comb, stop) end
+	drop(stop.unit_number --[[@as uint]])
+end
+
+--- @param stop LuaEntity
+--- @param old_name string
+function lint.on_stop_renamed(stop, old_name)
+	eval_name(old_name)
+	eval_name(stop.backer_name)
+end
+
+--- A depot was created or removed at `stop`: the stops sharing its name gain or lose the overlap.
+--- @param stop LuaEntity?
+function lint.on_depot_changed(stop)
+	if stop and stop.valid then eval_name(stop.backer_name) end
+end
+
+--- A surface is being deleted or cleared: its stops and combinators leave without events of their own.
+--- @param surface_index uint
+function lint.on_surface_removed(surface_index)
+	local reg = storage.lint_registry
+	if not reg then return end
+	for unit, entry in pairs(reg.entries) do
+		local e = entry.entity
+		if not e.valid or e.surface_index == surface_index then drop(unit) end
+	end
+end
+
+--- Ends the acknowledgements of registry checks the registry no longer has (after a seed).
+local function resolve_registry_acks()
 	local acks = storage.acks
 	if not (acks and acks.lint and next(acks.lint)) then return end
-	local found = {}
-	for _, f in ipairs(findings) do
-		local key = lint.subject_key(f.subject, f.id)
-		found[key] = found[key] or {}
-		found[key][f.check] = true
-	end
+	local entries = registry().entries
 	local ended = {}
 	for key, by in pairs(acks.lint) do
+		local entry = key > 0 and entries[key]
 		for check in pairs(by) do
-			if WORLD_CHECKS[check] and not (found[key] and found[key][check]) then ended[#ended + 1] = { key, check } end
+			if REGISTRY_CHECKS[check] then
+				local still = false
+				for m in pairs(entry and entry.msgs or NO_LAYOUTS) do
+					if MESSAGE_CHECK[m] == check then still = true end
+				end
+				if not still then ended[#ended + 1] = { key, check } end
+			end
 		end
 	end
 	for _, e in ipairs(ended) do diag.resolve_lint_ack(e[1], e[2]) end
 end
 
---- @param job table
---- @param stop LuaEntity
-local function scan_stop(job, stop)
-	local id = stop.unit_number
-	local out = job.findings
-	local to_stop, params = storage.to_stop, storage.to_comb_params
-	local pos = stop.position
-	-- One tile wider than the box Cybersyn adopts combinators from, so a combinator rotated away from the stop (whose
-	-- own search box misses it) is still found.
-	local found = stop.surface.find_entities_filtered({
-		area = { { pos.x - 3, pos.y - 3 }, { pos.x + 3, pos.y + 3 } },
-		name = { COMBINATOR_NAME, "entity-ghost" },
-	})
-	local primary, secondary, depot, refueler, attached = 0, 0, 0, 0, 0
-	local ghost, wrong
-	for _, comb in pairs(found) do
-		if comb.valid then
+--- Builds the registry from Cybersyn's own tables (fork schema 3, and every configuration change): the combinators
+--- each stop owns give the doubled and control-only stops with no world read; only a combinator no stop owns costs
+--- one search for a stop within reach (wrong side or derelict), and a ghost one for the stops it stands beside.
+--- @return {orphans: int, ghosts: int, names: int, entries: int}
+function lint.registry_seed()
+	local old = storage.lint_registry
+	storage.lint_registry = { entries = {}, version = (old and old.version or 0) + 1 }
+	local to_stop, params = storage.to_stop or {}, storage.to_comb_params or {}
+	local groups = {}
+	local function group(stop)
+		local unit = stop.unit_number --[[@as uint]]
+		local g = groups[unit]
+		if not g then
+			g = { stop = stop, c = new_counts(), ghost = false }
+			groups[unit] = g
+		end
+		return g
+	end
+	local orphans, ghosts = 0, 0
+	-- A combinator a stop owns is a built one (ghosts never get a stop), so only the others are read from the game.
+	for unit, comb in pairs(storage.to_comb or {}) do
+		local stop = to_stop[unit]
+		if stop and stop.valid then
+			count(group(stop).c, params[unit])
+		elseif comb.valid then
 			if comb.name == "entity-ghost" then
-				if comb.ghost_name == COMBINATOR_NAME then ghost = ghost or comb end
-			else
-				local unit = comb.unit_number
-				local p = params[unit]
-				local op = p and p.operation
-				if to_stop[unit] == stop then
-					attached = attached + 1
-					if PRIMARY[op] then
-						primary = primary + 1
-					elseif op == MODE_SECONDARY_IO then
-						secondary = secondary + 1
-					elseif op == MODE_DEPOT then
-						depot = depot + 1
-					elseif op == MODE_REFUELER then
-						refueler = refueler + 1
-					end
-				elseif to_stop[unit] == nil and op ~= MODE_WAGON then
-					wrong = wrong or comb
+				ghosts = ghosts + 1
+				for _, near in pairs(comb.surface.find_entities_filtered({ area = reach_box(comb.position),
+					name = "train-stop" })) do
+					group(near).ghost = true
 				end
-			end
-		end
-	end
-	local registered = storage.stations[id] or storage.depots[id] or storage.refuelers[id]
-	if primary > 1 then world_find(out, LINT_DOUBLE_COMB, stop, "double-station") end
-	if secondary > 1 then world_find(out, LINT_DOUBLE_COMB, stop, "double-station-control") end
-	if depot > 1 then world_find(out, LINT_DOUBLE_COMB, stop, "double-depot") end
-	if refueler > 1 then world_find(out, LINT_DOUBLE_COMB, stop, "double-refueler") end
-	if primary > 0 and depot > 0 then world_find(out, LINT_DOUBLE_COMB, stop, "station-and-depot") end
-	if primary > 0 and refueler > 0 then world_find(out, LINT_DOUBLE_COMB, stop, "station-and-refueler") end
-	if depot > 0 and refueler > 0 then world_find(out, LINT_DOUBLE_COMB, stop, "depot-and-refueler") end
-	if not registered then
-		if ghost then
-			world_find(out, LINT_GHOST_COMB, stop, "ghost-combinator")
-		elseif attached > 0 then
-			world_find(out, LINT_NO_COMB, stop, "stop-no-combinator")
-		end
-	end
-	-- One finding per combinator: one within reach of two stops is reported at the first stop scanned.
-	if wrong and not job.reported[wrong.unit_number] then
-		job.reported[wrong.unit_number] = true
-		world_find(out, LINT_WRONG_SIDE, stop, "wrong-side-combinator")
-	end
-	local name = stop.backer_name
-	local roles = job.names[name] or 0
-	if stop.train_stop_priority ~= 50 and roles ~= 0 then world_find(out, LINT_PRIORITY, stop, "non-default-priority") end
-	if band(roles, 2) ~= 0 and not storage.depots[id] then
-		world_find(out, LINT_NAME_OVERLAP, stop, "name-overlap-with-depot")
-	end
-end
-
---- One update of the world scan: names of the registered stops, then the stops, then the combinators no stop owns.
---- @return boolean done
-function lint.world_tick()
-	local s = lint.state()
-	local job = s.world_job
-	if not job then return true end
-	if job.phase == 1 then
-		local ids = job.name_ids
-		if not ids then
-			ids = {}
-			for _, pair in ipairs({ { storage.stations, 1 }, { storage.depots, 2 }, { storage.refuelers, 4 } }) do
-				for id in pairs(pair[1]) do ids[#ids + 1] = { id, pair[2] } end
-			end
-			job.name_ids = ids
-		end
-		local last = math.min(#ids, job.k + WORLD_NAMES_PER_UPDATE)
-		for k = job.k + 1, last do
-			local id, role = ids[k][1], ids[k][2]
-			local rec = storage.stations[id] or storage.depots[id] or storage.refuelers[id]
-			local stop = rec and rec.entity_stop
-			if stop and stop.valid then
-				local name = stop.backer_name
-				job.names[name] = bor(job.names[name] or 0, role)
-			end
-		end
-		job.k = last
-		if last >= #ids then job.phase, job.k = 2, 0 end
-	elseif job.phase == 2 then
-		local stops = job.stops
-		local last = math.min(#stops, job.k + WORLD_STOPS_PER_UPDATE)
-		for k = job.k + 1, last do
-			local stop = stops[k]
-			if stop.valid then scan_stop(job, stop) end
-		end
-		job.k = last
-		if last >= #stops then job.phase, job.k = 3, 0 end
-	else
-		local combs = job.combs
-		local last = math.min(#combs, job.k + WORLD_COMBS_PER_UPDATE)
-		local to_comb, to_stop, params = storage.to_comb, storage.to_stop, storage.to_comb_params
-		for k = job.k + 1, last do
-			local unit = combs[k]
-			local comb = to_comb[unit]
-			if comb and comb.valid and comb.name == COMBINATOR_NAME and not to_stop[unit] and not job.reported[unit] then
+			else
 				local p = params[unit]
 				if not (p and p.operation == MODE_WAGON) then
-					world_find(job.findings, LINT_DERELICT_COMB, comb, "derelict-combinator")
+					orphans = orphans + 1
+					eval_comb(comb)
 				end
 			end
 		end
-		job.k = last
-		if last >= #combs then
-			s.world = { tick = game.tick, findings = job.findings, player_index = job.player_index,
-				stops = #job.stops, quiet = job.quiet }
-			s.world_job = nil
-			resolve_world_acks(job.findings)
-			lint.report_world(s.world)
-			return true
+	end
+	for unit, g in pairs(groups) do
+		local found = lint.stop_facts(g.c, registered(unit), g.ghost)
+		if found then set(g.stop, LINT_SUBJECT_STOP, STOP_MESSAGES, found) end
+	end
+	local names, n = {}, 0
+	for _, depot in pairs(storage.depots or {}) do
+		local stop = depot.entity_stop
+		if stop and stop.valid and not names[stop.backer_name] then
+			names[stop.backer_name] = true
+			n = n + 1
 		end
 	end
-	return false
+	for name in pairs(names) do eval_name(name) end
+	resolve_registry_acks()
+	local manager = storage.manager
+	local s = manager and manager.lint
+	if s then s.world_job = nil end
+	return { orphans = orphans, ghosts = ghosts, names = n, entries = table_size(storage.lint_registry.entries) }
 end
 
---- Runs the world scan to completion now (dev and tests; the command and the Problems tab use the chunked job). A
---- scan already running is finished instead.
---- @return {tick: uint, findings: LintFinding[]}
-function lint.scan_world_now(player_index, quiet)
-	lint.scan_world(player_index, quiet)
-	local s = lint.state()
-	s.world_job.quiet = quiet
-	while not lint.world_tick() do end
-	return s.world
+--- The registry's findings, one per message, by unit number (read only).
+--- @return LintFinding[]
+function lint.registry_findings()
+	local reg = storage.lint_registry
+	if not reg then return NO_LAYOUTS end
+	local list = reg.findings
+	if list then
+		-- A stop or combinator can leave without an event (a script's destroy without raise_destroy).
+		for _, f in ipairs(list) do
+			if not f.entity.valid then
+				list = nil
+				break
+			end
+		end
+		if list then return list end
+	end
+	local units = {}
+	for unit, entry in pairs(reg.entries) do
+		if entry.entity.valid then
+			units[#units + 1] = unit
+		else
+			reg.entries[unit] = nil
+		end
+	end
+	table.sort(units)
+	list = {}
+	for _, unit in ipairs(units) do
+		local entry = reg.entries[unit]
+		local msgs = {}
+		for m in pairs(entry.msgs) do msgs[#msgs + 1] = m end
+		table.sort(msgs)
+		for _, m in ipairs(msgs) do
+			list[#list + 1] = { subject = entry.subject, id = unit, check = MESSAGE_CHECK[m], entity = entry.entity,
+				message = m, stop = entry.stop }
+		end
+	end
+	reg.findings = list
+	reg.view = nil
+	return list
+end
+
+--- The registry as the old world scan's result ({tick, findings}; `tick` is the registry's version), nil while it is
+--- empty (the Problems tab shows a result only once there is one).
+--- @return {tick: int, findings: LintFinding[]}?
+function lint.registry_view()
+	local findings = lint.registry_findings()
+	local reg = storage.lint_registry
+	if not reg or #findings == 0 then return nil end
+	local view = reg.view
+	if not (view and view.findings == findings) then
+		view = { tick = reg.version, findings = findings }
+		reg.view = view
+	end
+	return view
+end
+
+--- The registry's stop or combinator with this unit number (most entities cannot be looked up by unit number, so
+--- the `entity` links of unregistered ones resolve here).
+--- @param unit uint
+--- @return LuaEntity?
+function lint.registry_entity(unit)
+	local reg = storage.lint_registry
+	local entry = reg and reg.entries[unit]
+	local e = entry and entry.entity
+	if e and e.valid then return e end
+	return nil
+end
+lint.world_entity = lint.registry_entity
+
+--- @param entity LuaEntity
+local function gps_text(entity)
+	local pos = entity.position
+	return string.format("[gps=%f,%f,%s]", pos.x, pos.y, entity.surface.name)
+end
+
+--- Prints the registry the way /cybersyn-find-problems always has: one line per problem with a link to the stop or
+--- the combinator's position, then the registered stops at a non-default priority (read now: no event reports a
+--- priority change), or the all-clear line.
+--- @param player LuaPlayer?
+--- @return int lines
+function lint.report(player)
+	local function say(message)
+		if player and player.valid then player.print(message) else game.print(message) end
+	end
+	local n = 0
+	local function line(entity, message)
+		local where
+		if entity and entity.valid then
+			if entity.type == "train-stop" then
+				where = "[train-stop=" .. entity.unit_number .. "]"
+			else
+				where = { "", gps_text(entity), " ", entity.localised_name }
+			end
+		end
+		local text = { "cybersyn-problems." .. message }
+		say(where and { "", where, " ", text } or text)
+		n = n + 1
+	end
+	for _, f in ipairs(lint.registry_findings()) do
+		line(f.message == "wrong-side-combinator" and f.stop or f.entity, f.message)
+	end
+	local force = player and player.valid and player.force or nil
+	for _, records in ipairs({ storage.stations, storage.depots, storage.refuelers }) do
+		for _, rec in pairs(records) do
+			local stop = rec.entity_stop
+			if stop and stop.valid and stop.train_stop_priority ~= DEFAULT_PRIORITY and (not force or stop.force == force) then
+				line(stop, "non-default-priority")
+			end
+		end
+	end
+	if n == 0 then say({ "cybersyn-problems.no-problems-found" }) end
+	return n
 end
 
 --- Drops a station's findings from a findings list; returns the list itself when it has none.
@@ -1184,79 +1656,23 @@ function lint.station_removed(id)
 	s.removed = (s.removed or 0) + 1
 end
 
---- Drops the last world scan's findings whose stop or combinator has since been removed, so the tab does not list
---- rows that read "Removed" and link nowhere until the next scan. A scan holds a few findings, so this is cheap.
---- @return int? version counts the findings dropped this way (for the Problems model's sig); nil without a scan
+-- ---------------------------------------------------------------- scripts/gui/problems.lua's world-scan calls
+-- That tab goes in this round (PLAN4 D7); until it does it keeps rendering on the registry. Delete with it.
+
+--- @return nil
+function lint.world_progress() return nil end
+
+--- @return int
 function lint.prune_world()
-	local manager = storage.manager
-	local world = manager and manager.lint and manager.lint.world
-	if not world then return nil end
-	local findings = world.findings
-	local gone = false
-	for _, f in ipairs(findings) do
-		local e = f.entity
-		if e and not e.valid then
-			gone = true
-			break
-		end
-	end
-	if gone then
-		local kept = {}
-		for _, f in ipairs(findings) do
-			local e = f.entity
-			if not (e and not e.valid) then kept[#kept + 1] = f end
-		end
-		world.findings = kept
-		world.pruned = (world.pruned or 0) + 1
-		resolve_world_acks(kept)
-	end
-	return world.pruned or 0
+	local reg = storage.lint_registry
+	return reg and reg.version or 0
 end
 
---- The stop or combinator of the last world scan with this unit number (most entities cannot be looked up by unit
---- number, so links to unregistered ones go through the scan that found them).
---- @param unit uint
---- @return LuaEntity?
-function lint.world_entity(unit)
-	local manager = storage.manager
-	local world = manager and manager.lint and manager.lint.world
-	if not world then return nil end
-	for _, f in ipairs(world.findings) do
-		local e = f.entity
-		if f.id == unit and e and e.valid then return e end
-	end
-	return nil
-end
+--- @return int
+function lint.scan_world() return #lint.registry_findings() end
 
---- @param entity LuaEntity
-local function gps_text(entity)
-	local pos = entity.position
-	return string.format("[gps=%f,%f,%s]", pos.x, pos.y, entity.surface.name)
-end
-
---- Prints the world scan the way /cybersyn-find-problems always has: one line per problem with a link to the stop
---- or the combinator's position, or the all-clear line.
---- @param world {findings: LintFinding[], player_index: uint?, quiet: boolean?}
-function lint.report_world(world)
-	if world.quiet then return end
-	local player = world.player_index and game.get_player(world.player_index)
-	local function say(message)
-		if player and player.valid then player.print(message) else game.print(message) end
-	end
-	for _, f in ipairs(world.findings) do
-		local e = f.entity
-		local where
-		if e and e.valid then
-			if e.type == "train-stop" then
-				where = "[train-stop=" .. e.unit_number .. "]"
-			else
-				where = { "", gps_text(e), " ", e.localised_name }
-			end
-		end
-		local text = { "cybersyn-problems." .. f.message }
-		say(where and { "", where, " ", text } or text)
-	end
-	if #world.findings == 0 then say({ "cybersyn-problems.no-problems-found" }) end
+function lint.scan_world_now()
+	return lint.registry_view()
 end
 
 return lint

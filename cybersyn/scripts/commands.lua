@@ -250,20 +250,13 @@ local function gated(action, fn)
 	end
 end
 
---- The entity-search half of the setup checks (B8): a chunked scan on the manager tick (or on its own nth tick while
---- manager updates are off) that prints its report when it is done; the snapshot-based checks live in the manager's
---- Problems tab. One scan at a time: a second request is told how far the running one is.
+--- Prints the setup registry (combinators and stops that keep a station from registering or misroute trains, kept
+--- up to date by the build handlers, scripts/lint.lua) and the registered stops at a non-default priority. Nothing
+--- is scanned: the command reads what the handlers recorded.
 --- @param command CustomCommandData
 local function find_problems_command(command)
 	local player = command.player_index and game.get_player(command.player_index) or nil
-	local n = lint.scan_world(command.player_index)
-	local text
-	if n then
-		text = { "cybersyn-messages.find-problems-started", n }
-	else
-		text = { "cybersyn-messages.find-problems-running", math.floor((lint.world_progress() or 0) * 100) }
-	end
-	if player then player.print(text) else game.print(text) end
+	lint.report(player)
 end
 
 --- Console command handlers by name; the dev interface dispatches them with a synthetic event.
