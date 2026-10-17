@@ -463,3 +463,38 @@ test("chip_change_tick: the first tick at which time alone changes a train's In 
 	assert_false(l.not_refuelled(at - 1, 500, 0.25, nil))
 	assert_true(l.not_refuelled(at, 500, 0.25, nil))
 end)
+
+test("duration axis: gridlines on whole durations that format exactly, at most five above 0", function()
+	local l = logic()
+	assert_eq(l.duration_label(0), "0s")
+	assert_eq(l.duration_label(30), "30s")
+	assert_eq(l.duration_label(60), "1m")
+	assert_eq(l.duration_label(90), "1m 30s")
+	assert_eq(l.duration_label(5400), "1h 30m")
+	assert_eq(l.duration_label(7200), "2h")
+	local function labels(max)
+		local out = {}
+		for i, t in ipairs(l.duration_ticks(max)) do out[i] = t.label end
+		return out
+	end
+	-- The checkpoint's chart: 98 s of bars, an axis top of 108 s; the library labelled 73 s "1m" and 98 s "2m".
+	assert_eq(labels(108), { "0s", "30s", "1m", "1m 30s" })
+	assert_eq(labels(132), { "0s", "30s", "1m", "1m 30s", "2m" })
+	assert_eq(labels(11), { "0s", "5s", "10s" })
+	assert_eq(labels(4000), { "0s", "15m", "30m", "45m", "1h" })
+	for _, max in ipairs({ 0.5, 1, 7, 59, 61, 100, 599, 601, 3599, 3601, 40000, 200000 }) do
+		local ticks = l.duration_ticks(max)
+		assert_true(#ticks >= 1 and #ticks - 1 <= l.DURATION_LINES, "lines at " .. max .. ": " .. #ticks)
+		local step = ticks[2] and ticks[2].value or 0
+		for i, t in ipairs(ticks) do
+			assert_true(t.value <= max, "no line above the top at " .. max)
+			assert_eq(t.value, (i - 1) * step, "evenly spaced at " .. max)
+			-- Exact: the label parses back to the value.
+			local h, m, s = 0, 0, 0
+			for n, u in string.gmatch(t.label, "(%d+)([hms])") do
+				if u == "h" then h = tonumber(n) elseif u == "m" then m = tonumber(n) else s = tonumber(n) end
+			end
+			assert_eq(h * 3600 + m * 60 + s, t.value, "label " .. t.label .. " at " .. max)
+		end
+	end
+end)

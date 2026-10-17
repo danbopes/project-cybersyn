@@ -2,6 +2,7 @@ local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
 local dev = require("scripts.gui.dev")
 local util = require("scripts.gui.util")
+local logic = require("scripts.gui.tab-logic")
 local utext = require("scripts.gui.unserved-text")
 
 -- Try to load the factorio-charts library for interaction support
@@ -17,9 +18,33 @@ local MAX_BARS = 200  -- Limit bars rendered for performance
 
 local RANGES = analytics.BREAKDOWN_RANGES
 
--- Graph dimensions (pixels) - sized to fill the manager window
+-- Graph size in logical px before the first layout is known; build() sizes it to the tab (graph_size).
 local GRAPH_WIDTH = 1100
 local GRAPH_HEIGHT = 700
+-- The legend and stats column left of the graph, and the stats table's value column inside it.
+local SIDEBAR_WIDTH = 200
+local STAT_VALUE_WIDTH = 64
+-- Above the graph: the tab subheader 36, the time range row 32, the gaps between them; below it the frame's padding.
+local GRAPH_CHROME = 80
+local GRAPH_MIN_WIDTH, GRAPH_MIN_HEIGHT = 400, 300
+-- factorio-charts 1.1 draws its y-axis first: five gridlines, each a line then its label, at evenly spaced fractions
+-- of the axis top, labelled with rounded minutes ("1m" for 73 s). The tab replaces them with gridlines on whole
+-- durations (logic.duration_ticks), in the library's colours, label scale and position.
+local LIBRARY_GRID_LINES = 5
+local AXIS_LABEL_SCALE = 0.8
+local AXIS_TTL = 360
+
+--- The graph's size for the player's window: the tab's width beside the legend and its height below the time range.
+--- @param player_data PlayerData
+--- @return int width
+--- @return int height
+local function graph_size(player_data)
+	local layout = player_data.layout
+	if not layout then return GRAPH_WIDTH, GRAPH_HEIGHT end
+	return math.max(GRAPH_MIN_WIDTH, layout.content_width - SIDEBAR_WIDTH - 8),
+		math.max(GRAPH_MIN_HEIGHT, layout.content_height - GRAPH_CHROME)
+end
+delivery_breakdown_tab.graph_size = graph_size
 
 -- Phase colors for stacked bars (Factorio-style colors, brightened for visibility)
 local PHASE_COLORS = {
@@ -189,11 +214,46 @@ local function get_segment_tooltip(bar_idx, phase, duration, delivery, phase_sta
 end
 
 ---Overlay button options for charts library
-local OVERLAY_BUTTON_OPTIONS = {
-	button_style = "cybersyn_chart_overlay_button",
-	widget_width = GRAPH_WIDTH,
-	widget_height = GRAPH_HEIGHT,
-}
+---@param width int
+---@param height int
+local function overlay_button_options(width, height)
+	return { button_style = "cybersyn_chart_overlay_button", widget_width = width, widget_height = height }
+end
+local OVERLAY_BUTTON_OPTIONS = overlay_button_options(GRAPH_WIDTH, GRAPH_HEIGHT)
+
+--- Replaces the library's y-axis (its first LIBRARY_GRID_LINES line/label pairs in interval.line_ids) with gridlines
+--- on whole durations. Leaves the chart as drawn when the objects are not laid out as factorio-charts 1.1 draws them.
+--- @param interval table
+--- @param surface LuaSurface
+--- @param chunk table
+--- @param meta table? the library's metadata: graph_left/right/bottom/height and max_total
+--- @return {value: number, label: string}[]? ticks the gridlines drawn
+local function replace_axis(interval, surface, chunk, meta)
+	local ids = interval.line_ids
+	if not (meta and meta.max_total and meta.max_total > 0 and ids and #ids >= 2 * LIBRARY_GRID_LINES and chunk.coord) then
+		return nil
+	end
+	for i = 1, 2 * LIBRARY_GRID_LINES do
+		local o = ids[i]
+		if not (o and o.valid and o.type == (i % 2 == 1 and "line" or "text")) then return nil end
+	end
+	local line_color, text_color = ids[1].color, ids[2].color
+	for i = 1, 2 * LIBRARY_GRID_LINES do ids[i].destroy() end
+	local kept = {}
+	for i = 2 * LIBRARY_GRID_LINES + 1, #ids do kept[#kept + 1] = ids[i] end
+	local pos = chunk.coord
+	local ticks = logic.duration_ticks(meta.max_total)
+	for _, t in ipairs(ticks) do
+		local y = pos.y + meta.graph_bottom - (t.value / meta.max_total) * meta.graph_height
+		kept[#kept + 1] = rendering.draw_line({ surface = surface, color = line_color, width = 1,
+			from = { pos.x + meta.graph_left, y }, to = { pos.x + meta.graph_right, y }, time_to_live = AXIS_TTL })
+		kept[#kept + 1] = rendering.draw_text({ text = t.label, surface = surface,
+			target = { pos.x + meta.graph_left - 0.2, y }, color = text_color, scale = AXIS_LABEL_SCALE,
+			alignment = "right", vertical_alignment = "middle", time_to_live = AXIS_TTL })
+	end
+	interval.line_ids = kept
+	return ticks
+end
 
 function delivery_breakdown_tab.create()
 	local interval_buttons = {}
@@ -282,7 +342,7 @@ function delivery_breakdown_tab.create()
 					name = "breakdown_legend_flow",
 					type = "flow",
 					direction = "vertical",
-					style_mods = { width = 120, vertically_stretchable = true },
+					style_mods = { width = SIDEBAR_WIDTH, vertically_stretchable = true },
 					ref = { "delivery_breakdown", "legend_flow" },
 					{
 						type = "label",
@@ -306,12 +366,12 @@ function delivery_breakdown_tab.create()
 						caption = { "cybersyn-gui.stats" },
 						style = "caption_label",
 					},
+					-- Label / value rows, the values on one right edge (stats_rows).
 					{
-						name = "breakdown_stats_label",
-						type = "label",
-						ref = { "delivery_breakdown", "stats_label" },
-						caption = "",
-						style_mods = { single_line = false, font = "default-small" },
+						name = "breakdown_stats_table",
+						type = "table",
+						column_count = 2,
+						style_mods = { horizontal_spacing = 0, vertical_spacing = 2, top_margin = 4 },
 					},
 				},
 				-- Right: large graph with hover overlay
@@ -503,6 +563,65 @@ local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
 	}
 end
 
+--- The Stats rows beside the graph: {label, value} pairs (a stuck reason's label is indented under "Stuck").
+--- @param stats table gather_filter_and_stats
+--- @return {[1]: LocalisedString, [2]: string, indent: boolean?}[]
+local function stats_rows(stats)
+	local rows = {}
+	local delivery_count = stats.delivery_count or 0
+	local fail_count = stats.fail_count or 0
+	local t = charts and charts.format_time_detailed or function(d) return string.format("%.1fs", d) end
+	if delivery_count > 0 then
+		local avg_total = (stats.total_wait + stats.total_travel_p + stats.total_loading +
+			stats.total_travel_r + stats.total_unloading) / delivery_count
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-deliveries" }, tostring(delivery_count) }
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-total" }, t(avg_total) }
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-matching" }, t(stats.total_wait / delivery_count) }
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-travel-to-p" }, t(stats.total_travel_p / delivery_count) }
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-loading" }, t(stats.total_loading / delivery_count) }
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-travel-to-r" }, t(stats.total_travel_r / delivery_count) }
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stat-unloading" }, t(stats.total_unloading / delivery_count) }
+	end
+	if fail_count > 0 then
+		rows[#rows + 1] = { { "cybersyn-gui.breakdown-stuck" }, tostring(fail_count) }
+		-- One row per reason code the dispatcher recorded, longest-waiting first.
+		local reasons = stats.fail_reasons or {}
+		table.sort(reasons, function(a, b)
+			if a.max ~= b.max then return a.max > b.max end
+			return (a.reason or -1) < (b.reason or -1)
+		end)
+		for _, by in ipairs(reasons) do
+			rows[#rows + 1] = { failure_label(by.reason), string.format("%s (%d)", t(by.max), by.count), indent = true }
+		end
+	end
+	return rows
+end
+delivery_breakdown_tab.stats_rows = stats_rows
+
+--- Writes the Stats rows into their table when the stats they come from changed (a new cache entry).
+--- @param tbl LuaGuiElement?
+--- @param stats table? gather_filter_and_stats, nil for none
+--- @param player_data PlayerData
+local function write_stats(tbl, stats, player_data)
+	if not (tbl and tbl.valid) then return end
+	if stats and player_data.breakdown_stats_of == stats and #tbl.children > 0 then return end
+	if not stats and player_data.breakdown_stats_of == false then return end
+	player_data.breakdown_stats_of = stats or false
+	local rows = stats and stats_rows(stats) or {}
+	tbl.clear()
+	for _, r in ipairs(rows) do
+		-- A long reason caption is cut at the sidebar's width; its tooltip keeps it whole.
+		local label = tbl.add({ type = "label", caption = r[1], tooltip = r[1],
+			style = r.indent and "cybersyn_subheader_note" or nil })
+		label.style.font = "default-small"
+		label.style.width = SIDEBAR_WIDTH - STAT_VALUE_WIDTH
+		if r.indent then label.style.left_padding = 8 end
+		local value = tbl.add({ type = "label", caption = r[2], style = "cybersyn_cell_value" })
+		value.style.font = "default-small"
+		value.style.width = STAT_VALUE_WIDTH
+	end
+end
+
 ---@param map_data MapData
 ---@param player_data PlayerData
 function delivery_breakdown_tab.build(map_data, player_data)
@@ -549,8 +668,26 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	local current_tick = game.tick
 	local oldest_tick = current_tick - interval_ticks
 
+	-- The graph fills the tab: its size follows the window's layout.
+	local gw, gh = graph_size(player_data)
+	local frame, camera = refs.breakdown_camera_frame, refs.breakdown_camera
+	if frame and frame.valid and frame.style.minimal_width ~= gw or frame and frame.valid and frame.style.minimal_height ~= gh then
+		for _, e in ipairs({ frame, camera }) do
+			if e and e.valid then
+				e.style.width, e.style.height = gw, gh
+				e.style.minimal_width, e.style.minimal_height = gw, gh
+				e.style.maximal_width, e.style.maximal_height = gw, gh
+			end
+		end
+		if data.breakdown_interval and data.breakdown_interval.chunk and data.surface_data then
+			charts.ensure_tile_coverage(data.surface_data, data.breakdown_interval.chunk,
+				{ viewport_width = gw, viewport_height = gh })
+		end
+	end
+	local overlay_button_opts = overlay_button_options(gw, gh)
+
 	-- Check cache - use cached data if still valid
-	local cache_key = string.format("%d:%s", interval_index, search_item or "")
+	local cache_key = string.format("%d:%s:%dx%d", interval_index, search_item or "", gw, gh)
 	local cache = player_data.breakdown_cache
 	local filtered, stats
 	local cache_hit = false
@@ -604,8 +741,8 @@ function delivery_breakdown_tab.build(map_data, player_data)
 
 	if not player_data.breakdown_registered then
 		analytics.interval_register_gui(map_data, data.breakdown_interval, player, refs, {
-			viewport_width = GRAPH_WIDTH,
-			viewport_height = GRAPH_HEIGHT,
+			viewport_width = gw,
+			viewport_height = gh,
 		})
 		player_data.breakdown_registered = true
 	end
@@ -621,13 +758,15 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	-- Resolution-independent zoom formula: zoom = scale / density
 	-- Works across Windows (density 1.0-1.75) and Mac (density 2.0)
 	local zoom = display_scale / display_density
-	local xoffset = 3.0
-	local yoffset = -1.0
+	-- The library centres the camera on a 900x700 viewport (it is not told the size); these shift it onto the graph's
+	-- centre, the y offset a tile up as the axis labels sit low (tuned on the former 1100x700 graph: 3.0, -1.0).
+	local xoffset = (gw - 900) / 64 - 0.125
+	local yoffset = (gh - 700) / 64 - 1.0
 	local camera_info = nil
 	if refs.breakdown_camera and chunk.coord and charts then
 		camera_info = charts.setup_camera_widget(refs.breakdown_camera, data.surface, chunk, {
-			widget_width = GRAPH_WIDTH,
-			widget_height = GRAPH_HEIGHT,
+			widget_width = gw,
+			widget_height = gh,
 			display_scale = display_scale,
 			position_offset = {x = xoffset, y = yoffset},
 			zoom_override = zoom,
@@ -637,9 +776,9 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	-- Early return if no data to render (camera is already set up above)
 	if #filtered == 0 then
 		-- Clear overlay buttons when no data
-		charts.create_overlay_buttons(refs.breakdown_camera, {}, OVERLAY_BUTTON_OPTIONS)
+		charts.create_overlay_buttons(refs.breakdown_camera, {}, overlay_button_opts)
 		-- The stats of another range must not stay beside an empty one.
-		if refs.breakdown_stats_label then refs.breakdown_stats_label.caption = "" end
+		write_stats(refs.breakdown_stats_table, nil, player_data)
 		return
 	end
 
@@ -665,57 +804,25 @@ function delivery_breakdown_tab.build(map_data, player_data)
 		local overlay_options = {
 			camera_position = camera_info.position,
 			camera_zoom = 1.0,  -- Always calculate positions for zoom=1
-			widget_size = {width = GRAPH_WIDTH, height = GRAPH_HEIGHT},
+			widget_size = {width = gw, height = gh},
 			get_tooltip = function(bar_idx, phase, duration, delivery)
 				return get_segment_tooltip(bar_idx, phase, duration, delivery, phase_stats)
 			end,
 			bar_icons = bar_icons,
 		}
 
-		local button_configs = analytics.render_stacked_bar_chart(
+		local button_configs, meta = analytics.render_stacked_bar_chart(
 			map_data, data.breakdown_interval, filtered,
 			PHASE_COLORS, PHASE_ORDER, HATCHED_PHASES,
-			GRAPH_WIDTH, GRAPH_HEIGHT, overlay_options
+			gw, gh, overlay_options
 		)
+		player_data.breakdown_axis = replace_axis(data.breakdown_interval, data.surface, chunk, meta)
 
 		-- Create overlay buttons for tooltips
-		charts.create_overlay_buttons(refs.breakdown_camera, button_configs or {}, OVERLAY_BUTTON_OPTIONS)
+		charts.create_overlay_buttons(refs.breakdown_camera, button_configs or {}, overlay_button_opts)
 	end
 
-	-- Update stats display using cached stats
-	if refs.breakdown_stats_label then
-		local delivery_count = stats.delivery_count or 0
-		local fail_count = stats.fail_count or 0
-		local lines = {}
-
-		if delivery_count > 0 then
-			local avg_total = (stats.total_wait + stats.total_travel_p + stats.total_loading +
-				stats.total_travel_r + stats.total_unloading) / delivery_count
-			local t = charts.format_time_detailed
-			lines = { "cybersyn-gui.breakdown-stats", tostring(delivery_count), t(avg_total),
-				t(stats.total_wait / delivery_count), t(stats.total_travel_p / delivery_count),
-				t(stats.total_loading / delivery_count), t(stats.total_travel_r / delivery_count),
-				t(stats.total_unloading / delivery_count) }
-		end
-
-		local caption = delivery_count > 0 and lines or ""
-		if fail_count > 0 then
-			caption = { "", caption, delivery_count > 0 and "\n\n" or "", { "cybersyn-gui.breakdown-stuck", tostring(fail_count) } }
-			-- One line per reason code the dispatcher recorded, longest-waiting first; nested so no LocalisedString
-			-- exceeds the engine's 20 parameters.
-			local reasons = stats.fail_reasons or {}
-			table.sort(reasons, function(a, b)
-				if a.max ~= b.max then return a.max > b.max end
-				return (a.reason or -1) < (b.reason or -1)
-			end)
-			for _, by in ipairs(reasons) do
-				caption = { "", caption, "\n  ", failure_label(by.reason), ": ",
-					string.format("%s (%d)", charts.format_time_detailed(by.max), by.count) }
-			end
-		end
-
-		refs.breakdown_stats_label.caption = caption
-	end
+	write_stats(refs.breakdown_stats_table, stats, player_data)
 end
 
 ---@param map_data MapData
@@ -746,6 +853,7 @@ function delivery_breakdown_tab.cleanup(map_data, player_data)
 	end
 
 	player_data.breakdown_registered = nil
+	player_data.breakdown_stats_of = nil
 end
 
 delivery_breakdown_tab.handle = {}
@@ -831,6 +939,21 @@ dev.add("breakdown_ranges", function()
 	local out = {}
 	for i, r in ipairs(RANGES) do out[i] = { key = r.key, ticks = r.ticks, parsed = analytics.range_ticks(r.key) } end
 	return out
+end)
+
+--- Dev: the graph's size for a player's window, and the gridlines an axis of `max_seconds` gets.
+dev.add("breakdown_layout", function(pi, max_seconds)
+	local player_data = storage.manager.players[pi]
+	local w, h = graph_size(player_data)
+	local layout = player_data.layout
+	return { width = w, height = h, content_width = layout and layout.content_width,
+		content_height = layout and layout.content_height, sidebar = SIDEBAR_WIDTH, chrome = GRAPH_CHROME,
+		ticks = max_seconds and logic.duration_ticks(max_seconds) or nil, drawn = player_data.breakdown_axis }
+end)
+
+--- Dev: the Stats rows for given totals (the lab has no charts, so the tab cannot show them).
+dev.add("breakdown_stats_rows", function(stats)
+	return stats_rows(stats)
 end)
 
 return delivery_breakdown_tab

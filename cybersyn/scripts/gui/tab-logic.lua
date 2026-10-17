@@ -675,4 +675,48 @@ function logic.unrequested(provide_keys, request_keys, network)
 	return provided
 end
 
+-- ---------------------------------------------------------------- duration axis (Delivery breakdown)
+
+--- Gridline steps of a duration axis, in seconds: each one formats exactly ("1m 30s", never a rounded "2m").
+logic.DURATION_STEPS = { 1, 2, 5, 10, 15, 20, 30, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 3600, 5400, 7200,
+	10800, 21600, 43200, 86400 }
+--- Gridlines above 0 an axis shows at most.
+logic.DURATION_LINES = 5
+
+--- "0s", "30s", "1m", "1m 30s", "2h", "1h 30m": whole seconds, zero parts left out, so a gridline says exactly where it
+--- sits.
+--- @param seconds number
+--- @return string
+function logic.duration_label(seconds)
+	local s = math.floor(seconds + 0.5)
+	if s <= 0 then return "0s" end
+	local h, m = math.floor(s / 3600), math.floor(s % 3600 / 60)
+	s = s % 60
+	local parts = {}
+	if h > 0 then parts[#parts + 1] = h .. "h" end
+	if m > 0 then parts[#parts + 1] = m .. "m" end
+	if s > 0 then parts[#parts + 1] = s .. "s" end
+	return table.concat(parts, " ")
+end
+
+--- The gridlines of a duration axis whose top is `max_seconds`: 0 and every multiple of the smallest step that leaves
+--- at most DURATION_LINES lines above 0 and none above the top.
+--- @param max_seconds number
+--- @return {value: number, label: string}[]
+function logic.duration_ticks(max_seconds)
+	local steps = logic.DURATION_STEPS
+	local step = steps[#steps]
+	for _, s in ipairs(steps) do
+		if max_seconds / s <= logic.DURATION_LINES then
+			step = s
+			break
+		end
+	end
+	local out = {}
+	for i = 0, math.max(0, math.floor(max_seconds / step)) do
+		out[#out + 1] = { value = i * step, label = logic.duration_label(i * step) }
+	end
+	return out
+end
+
 return logic

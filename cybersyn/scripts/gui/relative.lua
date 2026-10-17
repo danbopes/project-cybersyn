@@ -128,6 +128,24 @@ local function line(caption, tooltip, color)
 	}
 end
 
+-- The head's label column ("Role", "Network", "Status"): labels carry no colon, the column sets them apart.
+local FIELD_LABEL = 64
+
+--- A label / value row of the panel head; `key` nil continues the row above (a second network).
+--- @param key string? locale key of the label
+--- @param value LocalisedString
+--- @param tooltip LocalisedString?
+local function field(key, value, tooltip)
+	return {
+		type = "flow",
+		direction = "horizontal",
+		style_mods = { horizontal_spacing = 8 },
+		{ type = "label", caption = key and { key } or "", style_mods = { width = FIELD_LABEL, font_color = { 0.65, 0.65, 0.65 } } },
+		{ type = "label", caption = value, tooltip = tooltip,
+			style_mods = { single_line = false, maximal_width = INNER - FIELD_LABEL - 8 } },
+	}
+end
+
 local function note(caption, tooltip)
 	return line(caption, tooltip, { 0.65, 0.65, 0.65 })
 end
@@ -867,20 +885,21 @@ local function render_stop_head(state, body, m)
 		section(state, body, "head", sig, function()
 			local out = {}
 			if m.sub == "station" then
-				out[#out + 1] = line({ "cybersyn-gui.relative-role", rtext.role(m.is_p, m.is_r, m.is_stack) })
+				out[#out + 1] = field("cybersyn-gui.relative-role", rtext.role(m.is_p, m.is_r, m.is_stack))
 			else
-				out[#out + 1] = line({ "cybersyn-gui.relative-role", { "cybersyn-gui.relative-role-" .. m.sub } })
+				out[#out + 1] = field("cybersyn-gui.relative-role", { "cybersyn-gui.relative-role-" .. m.sub })
 			end
 			if m.nets then
 				if #m.nets == 0 then
-					out[#out + 1] = line({ "cybersyn-gui.relative-network", { "cybersyn-gui.station-no-network" } })
+					out[#out + 1] = field("cybersyn-gui.relative-network", { "cybersyn-gui.station-no-network" })
 				end
-				for _, n in ipairs(m.nets) do
-					out[#out + 1] = line({ "cybersyn-gui.relative-network-mask", network_rich(n.name), rtext.mask_text(n.mask) })
+				for i, n in ipairs(m.nets) do
+					out[#out + 1] = field(i == 1 and "cybersyn-gui.relative-network" or nil,
+						{ "cybersyn-gui.relative-network-mask", network_rich(n.name), rtext.mask_text(n.mask) })
 				end
 			end
 			if m.status then
-				out[#out + 1] = line({ "cybersyn-gui.relative-status", status_caption(m.status) },
+				out[#out + 1] = field("cybersyn-gui.relative-status", status_caption(m.status),
 					m.setup_checks and pm.setup_status_tooltip(m.setup_checks)
 					or { "cybersyn-gui.station-status-" .. string.gsub(m.status, "_", "-") .. "-tooltip" })
 			end
@@ -888,6 +907,8 @@ local function render_stop_head(state, body, m)
 				type = "flow",
 				direction = "horizontal",
 				style_mods = { vertical_align = "center", horizontal_spacing = 8 },
+				{ type = "label", caption = { "cybersyn-gui.relative-trains-label" },
+					style_mods = { width = FIELD_LABEL, font_color = { 0.65, 0.65, 0.65 } } },
 				label({ "cybersyn-gui.relative-trains", rtext.trains_pair(m.deliveries, m.limit), tostring(m.trains_count) },
 					{ tooltip = { "cybersyn-gui.relative-trains-tooltip" } }),
 			}

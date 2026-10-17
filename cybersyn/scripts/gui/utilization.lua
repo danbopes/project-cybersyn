@@ -7,6 +7,7 @@ local format = require("__flib__.format")
 local dev = require("scripts.gui.dev")
 local util = require("scripts.gui.util")
 local logic = require("scripts.gui.tab-logic")
+local sizing = require("scripts.gui.sizing")
 local stats = require("scripts.stats")
 
 local utilization_tab = {}
@@ -16,8 +17,15 @@ local TAB = "utilization_tab"
 local REFRESH_TICKS = 60
 utilization_tab.PERIODS = { 10, 60, 1440 }
 local DEFAULT_PERIOD = 2
-local W = { layout = 360, trains = 90, busy = 220, trip = 120, deliveries = 120 }
+-- Fixed columns in logical px; Layout takes the rest of the row (layout_width). The four number columns are
+-- right-aligned, as on Stations and Trains.
+local W = { trains = 90, busy = 200, trip = 120, deliveries = 120 }
 local BAR_WIDTH = 120
+local PCT_WIDTH = 48
+local LAYOUT_MIN = 240
+-- The rows' frame borders and padding (cybersyn_station_row_*: 4 + 4), and the gaps between the five columns.
+local ROW_CHROME = 8 + 8 + 4 * 8
+local ROW_HEIGHT = 32
 
 -- Statuses on a delivery (to provider, loading, to requester, unloading): what "busy" counts.
 local BUSY = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
@@ -85,8 +93,18 @@ end
 
 -- ---------------------------------------------------------------- build
 
-local function header_cell(caption, tooltip, width)
-	return { type = "label", style = "bold_label", caption = caption, tooltip = tooltip, style_mods = { width = width } }
+local function header_cell(caption, tooltip, width, right, name)
+	return { type = "label", name = name, style = "bold_label", caption = caption, tooltip = tooltip,
+		style_mods = { width = width, horizontal_align = right and "right" or "left" } }
+end
+
+--- The Layout column's width: what the fixed columns leave of the tab's width.
+--- @param player_data PlayerData?
+--- @return int
+local function layout_width(player_data)
+	local layout = player_data and player_data.layout
+	local cw = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
+	return math.max(LAYOUT_MIN, cw - ROW_CHROME - W.trains - W.busy - W.trip - W.deliveries)
 end
 
 function utilization_tab.create()
@@ -119,7 +137,15 @@ function utilization_tab.create()
 						caption = { "cybersyn-gui.utilization-header" }, tooltip = { "cybersyn-gui.utilization-header-tooltip" },
 						style_mods = { horizontally_squashable = true } },
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
-					{ type = "label", name = "utilization_recorded", style = "cybersyn_subheader_note", caption = "" },
+					{
+						type = "flow",
+						name = "utilization_recorded_flow",
+						direction = "horizontal",
+						visible = false,
+						style_mods = { horizontal_spacing = 6 },
+						{ type = "label", style = "cybersyn_subheader_note", caption = { "cybersyn-gui.overview-recorded-line" } },
+						{ type = "label", name = "utilization_recorded", caption = "" },
+					},
 					{
 						type = "drop-down",
 						name = "utilization_period",
@@ -130,16 +156,15 @@ function utilization_tab.create()
 					},
 				},
 				{
-					type = "table",
-					name = "utilization_table",
-					column_count = 5,
-					draw_horizontal_line_after_headers = true,
-					style_mods = { horizontal_spacing = 12, vertical_spacing = 6, padding = 8 },
-					header_cell({ "cybersyn-gui.utilization-col-layout" }, { "cybersyn-gui.utilization-col-layout-tooltip" }, W.layout),
-					header_cell({ "cybersyn-gui.utilization-col-trains" }, { "cybersyn-gui.utilization-col-trains-tooltip" }, W.trains),
-					header_cell({ "cybersyn-gui.utilization-col-busy" }, { "cybersyn-gui.utilization-col-busy-tooltip" }, W.busy),
-					header_cell({ "cybersyn-gui.utilization-col-trip" }, { "cybersyn-gui.utilization-col-trip-tooltip" }, W.trip),
-					header_cell({ "cybersyn-gui.utilization-col-deliveries" }, { "cybersyn-gui.utilization-col-deliveries-tooltip" }, W.deliveries),
+					type = "frame",
+					name = "utilization_header_row",
+					style = "cybersyn_list_header",
+					header_cell({ "cybersyn-gui.utilization-col-layout" }, { "cybersyn-gui.utilization-col-layout-tooltip" },
+						layout_width(nil), false, "utilization_layout_header"),
+					header_cell({ "cybersyn-gui.utilization-col-trains" }, { "cybersyn-gui.utilization-col-trains-tooltip" }, W.trains, true),
+					header_cell({ "cybersyn-gui.utilization-col-busy" }, { "cybersyn-gui.utilization-col-busy-tooltip" }, W.busy, true),
+					header_cell({ "cybersyn-gui.utilization-col-trip" }, { "cybersyn-gui.utilization-col-trip-tooltip" }, W.trip, true),
+					header_cell({ "cybersyn-gui.utilization-col-deliveries" }, { "cybersyn-gui.utilization-col-deliveries-tooltip" }, W.deliveries, true),
 				},
 				{
 					type = "flow",
@@ -149,6 +174,7 @@ function utilization_tab.create()
 					visible = false,
 					{ type = "label", style = "cybersyn_overview_empty_label", caption = { "cybersyn-gui.utilization-empty" } },
 				},
+				{ type = "flow", name = "utilization_rows", direction = "vertical", style = "cybersyn_list_rows" },
 			},
 		},
 	}
@@ -160,27 +186,25 @@ local function period_of(player_data)
 	return utilization_tab.PERIODS[player_data.utilization_period or DEFAULT_PERIOD] or 60
 end
 
--- Composition icons the Layout column holds; the last one becomes "+n" when a layout has more runs.
-local LAYOUT_ICONS = math.floor(W.layout / logic.COMPOSITION_ICON)
-
 --- The Layout cell: the Trains tab's composition icons (one per run of one carriage class, the run's length as its
---- badge), the "L<CC>" text in the tooltip.
+--- badge), the "L<CC>" text in the tooltip; the last icon the column holds becomes "+n" when a layout has more runs.
 --- @param row UtilizationRow
+--- @param width int the Layout column's width
 --- @return flib.GuiElemDef
-local function layout_def(row)
+local function layout_def(row, width)
 	local tooltip = { "cybersyn-gui.utilization-layout-tooltip", row.composition, tostring(row.layout_id) }
 	local cell = {
 		type = "flow",
 		direction = "horizontal",
 		tooltip = tooltip,
-		style_mods = { width = W.layout, vertical_align = "center", horizontal_spacing = 0 },
+		style_mods = { width = width, vertical_align = "center", horizontal_spacing = 0 },
 	}
 	local runs = row.runs
 	if not runs then
 		cell[1] = { type = "label", caption = row.composition, tooltip = tooltip }
 		return cell
 	end
-	local shown, over = logic.fit_slots(#runs, LAYOUT_ICONS)
+	local shown, over = logic.fit_slots(#runs, math.floor(width / logic.COMPOSITION_ICON))
 	for i = 1, shown do
 		local r = runs[i]
 		cell[i] = {
@@ -199,24 +223,32 @@ local function layout_def(row)
 	return cell
 end
 
+--- One layout's row: the shared 32 px list row, the numbers on their columns' right edge.
 --- @param row UtilizationRow
---- @return flib.GuiElemDef[]
-local function row_defs(row)
+--- @param i int
+--- @param width int the Layout column's width
+--- @return flib.GuiElemDef
+local function row_def(row, i, width)
 	local busy_pct = math.floor(row.busy * 100 + 0.5)
 	return {
-		layout_def(row),
-		{ type = "label", caption = format.number(row.trains), style_mods = { width = W.trains } },
+		type = "frame",
+		style = i % 2 == 1 and "cybersyn_station_row_light" or "cybersyn_station_row_dark",
+		style_mods = { height = ROW_HEIGHT },
+		direction = "horizontal",
+		layout_def(row, width),
+		{ type = "label", style = "cybersyn_cell_value", caption = format.number(row.trains), style_mods = { width = W.trains } },
 		{
 			type = "flow",
 			direction = "horizontal",
-			style_mods = { width = W.busy, vertical_align = "center", horizontal_spacing = 8 },
+			style_mods = { width = W.busy, vertical_align = "center", horizontal_align = "right", horizontal_spacing = 8 },
 			tooltip = { "cybersyn-gui.utilization-busy-tooltip", tostring(busy_pct), format.number(row.busy_now),
 				format.number(row.trains) },
 			{ type = "progressbar", value = row.busy, style_mods = { width = BAR_WIDTH } },
-			{ type = "label", caption = busy_pct .. " %" },
+			{ type = "label", style = "cybersyn_cell_value", caption = busy_pct .. " %", style_mods = { width = PCT_WIDTH } },
 		},
-		{ type = "label", caption = row.trip and util.short_duration(row.trip) or "–", style_mods = { width = W.trip } },
-		{ type = "label", caption = format.number(row.deliveries), style_mods = { width = W.deliveries } },
+		{ type = "label", style = "cybersyn_cell_value", caption = row.trip and util.short_duration(row.trip) or "–",
+			style_mods = { width = W.trip } },
+		{ type = "label", style = "cybersyn_cell_value", caption = format.number(row.deliveries), style_mods = { width = W.deliveries } },
 	}
 end
 
@@ -224,14 +256,15 @@ end
 ---@param player_data PlayerData
 function utilization_tab.build(map_data, player_data)
 	local refs = player_data.refs
-	local tbl = refs.utilization_table
+	local tbl = refs.utilization_rows
 	if not (tbl and tbl.valid) then return end
 	local minutes = period_of(player_data)
 	local cache = player_data.utilization_cache
 	local now = game.tick
 	if cache and cache.minutes == minutes and now - cache.tick < REFRESH_TICKS then return end
 	local rows, span = utilization_tab.model(map_data.trains, map_data.layouts, minutes)
-	local sig = { minutes }
+	local width = layout_width(player_data)
+	local sig = { minutes, width }
 	for _, r in ipairs(rows) do
 		sig[#sig + 1] = table.concat({ r.layout_id, r.composition, r.trains, r.busy_now, math.floor(r.busy * 1000),
 			r.trip and math.floor(r.trip / 60) or "", r.deliveries }, ":")
@@ -240,21 +273,21 @@ function utilization_tab.build(map_data, player_data)
 	player_data.utilization_cache = { tick = now, minutes = minutes, rows = #rows }
 	local dropdown = refs.utilization_period
 	if dropdown and dropdown.valid then dropdown.selected_index = player_data.utilization_period or DEFAULT_PERIOD end
-	local recorded = refs.utilization_recorded
+	local recorded, recorded_flow = refs.utilization_recorded, refs.utilization_recorded_flow
 	local partial = span < minutes * 3600
 	if recorded and recorded.valid then
-		recorded.caption = partial and { "cybersyn-gui.overview-period-recorded", util.short_duration(span) } or ""
+		recorded.caption = partial and util.short_duration(span) or ""
+		recorded_flow.visible = partial
 	end
 	local empty = refs.utilization_empty_flow
 	if empty and empty.valid then empty.visible = #rows == 0 end
 	if player_data.utilization_sig == sig then return end
 	player_data.utilization_sig = sig
-	-- The five header cells stay; a handful of layout rows are rebuilt whole when anything in them changed.
-	local children = tbl.children
-	for i = #children, 6, -1 do children[i].destroy() end
-	for _, row in ipairs(rows) do
-		for _, def in ipairs(row_defs(row)) do gui.add(tbl, def) end
-	end
+	-- A handful of layout rows, rebuilt whole when anything in them changed.
+	local header = refs.utilization_layout_header
+	if header and header.valid then header.style.width = width end
+	tbl.clear()
+	for i, row in ipairs(rows) do gui.add(tbl, row_def(row, i, width)) end
 end
 
 ---@param map_data MapData
@@ -292,24 +325,35 @@ gui.add_handlers(utilization_tab.handle, utilization_tab.wrapper)
 
 dev.register_dump(TAB, function(player_data)
 	local refs = player_data.refs
-	local tbl = refs.utilization_table
-	local rows, cells = {}, tbl and tbl.valid and tbl.children or {}
-	for i = 6, #cells, 5 do
+	local list = refs.utilization_rows
+	local rows = {}
+	for _, row in ipairs(list and list.valid and list.children or {}) do
+		local cells = row.children
 		local icons = {}
-		for j, icon in ipairs(cells[i].children) do
+		for j, icon in ipairs(cells[1].children) do
 			icons[j] = icon.type == "sprite-button" and { icon.sprite, icon.number or 1 } or icon.caption
 		end
+		local busy = cells[3].children[2]
 		rows[#rows + 1] = {
-			layout = cells[i].tooltip[2],
+			layout = cells[1].tooltip[2],
 			icons = icons,
-			trains = cells[i + 1].caption,
-			busy = cells[i + 2].children[2].caption,
-			trip = cells[i + 3].caption,
-			deliveries = cells[i + 4].caption,
+			trains = cells[2].caption,
+			busy = busy.caption,
+			trip = cells[4].caption,
+			deliveries = cells[5].caption,
+			style = row.style.name,
+			height = row.style.maximal_height,
+			numbers_right = cells[2].style.name == "cybersyn_cell_value" and busy.style.name == "cybersyn_cell_value"
+				and cells[3].style.horizontal_align == "right" and cells[4].style.name == "cybersyn_cell_value"
+				and cells[5].style.name == "cybersyn_cell_value",
 		}
 	end
+	local header_right = {}
+	for i, cell in ipairs(refs.utilization_header_row.children) do header_right[i] = cell.style.horizontal_align == "right" end
 	return { rows = rows, minutes = period_of(player_data), header = refs.utilization_header.caption,
-		empty = refs.utilization_empty_flow.visible }
+		empty = refs.utilization_empty_flow.visible, header_right = header_right,
+		recorded = refs.utilization_recorded_flow.visible and refs.utilization_recorded.caption or false,
+		layout_width = refs.utilization_layout_header.style.minimal_width }
 end)
 
 --- The model the tab renders, for oracles: (pi, minutes) -> rows, span.

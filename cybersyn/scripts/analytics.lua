@@ -501,6 +501,7 @@ end
 ---@param overlay_options table? {camera_position, camera_zoom, widget_size, get_tooltip}
 ---@return table? hit_regions Hit regions for interaction (if no overlay_options)
 ---@return table? button_configs Button configs with tooltips (if overlay_options provided)
+---@return table? metadata the library's graph geometry and axis top (graph_left/right/bottom/height, max_total), with overlay_options
 function analytics.render_stacked_bar_chart(map_data, interval, deliveries, phase_colors, phase_order, hatched_phases, viewport_width, viewport_height, overlay_options)
 	if not interval.chunk then
 		return nil
@@ -543,7 +544,7 @@ function analytics.render_stacked_bar_chart(map_data, interval, deliveries, phas
 			interval.line_ids = line_ids
 		end
 
-		return button_configs
+		return button_configs, metadata
 	end
 
 	-- Legacy path: use metadata-returning version for interaction support

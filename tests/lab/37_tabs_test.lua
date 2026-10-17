@@ -183,6 +183,9 @@ lab.suite("37_tabs", {
 				end
 				local h = head()
 				lab.check("stop panel: Status reads Setup", h:find("station-status-setup", 1, true) ~= nil, h)
+				lab.check("stop panel head: Role, Network and Status are labels of their own (no colon) beside their values",
+					h:find('{"cybersyn-gui.relative-role"}', 1, true) ~= nil and h:find('{"cybersyn-gui.relative-network"}', 1, true) ~= nil
+					and h:find('{"cybersyn-gui.relative-status"}', 1, true) ~= nil, h)
 				lab.dev("relative_close", pi)
 				local acked = {}
 				for check = 1, 32 do

@@ -254,6 +254,17 @@ local more = {
 			{ model = m.rows, rows = d.rows })
 		lab.check("…under a header that says what busy means", type(d.header) == "table" and
 			d.header[1] == "cybersyn-gui.utilization-header", d.header)
+		local rows_ok = #d.rows > 0
+		for i, r in ipairs(d.rows) do
+			if not (r.height == 32 and r.numbers_right and r.style == (i % 2 == 1 and "cybersyn_station_row_light"
+				or "cybersyn_station_row_dark")) then rows_ok = false end
+		end
+		lab.check("…in the shared 32 px list rows, the numbers right-aligned under right-aligned headers", rows_ok
+			and lab.same_list(d.header_right, { false, true, true, true, true }), { rows = d.rows, header = d.header_right })
+		lab.check("…the Layout column takes what the number columns leave", type(d.layout_width) == "number"
+			and d.layout_width >= 240, d.layout_width)
+		lab.check("…'Recorded so far' is a label beside its value, no colon", d.recorded == false or type(d.recorded) == "string",
+			d.recorded)
 		lab.info("utilization: " .. serpent.line(d.rows, { comment = false }))
 		dev("utilization_set_period", pi, 1)
 		d = dev("dump", pi, "utilization")
@@ -275,6 +286,25 @@ local more = {
 			if r.ticks ~= r.parsed then spans = false end
 		end
 		lab.check("Breakdown range buttons span what their captions say", #ranges == 5 and spans, ranges)
+		-- Item 1 of the round-4 screenshot review: gridlines on whole durations, a graph that fills the tab.
+		local bl = dev("breakdown_layout", pi, 108)
+		local labels = {}
+		for i, t in ipairs(bl.ticks) do labels[i] = t.label end
+		lab.check("Breakdown axis: the checkpoint's 108 s top gets 0s / 30s / 1m / 1m 30s", lab.same_list(labels,
+			{ "0s", "30s", "1m", "1m 30s" }), bl.ticks)
+		lab.check("Breakdown graph: as wide as the tab beside the legend, as tall as the tab below the time range",
+			bl.width == math.max(400, bl.content_width - bl.sidebar - 8) and bl.height == math.max(300, bl.content_height - bl.chrome)
+			and bl.height > 700, bl)
+		local sr = dev("breakdown_stats_rows", { delivery_count = 2, total_wait = 4, total_travel_p = 50, total_loading = 9,
+			total_travel_r = 70, total_unloading = 7, fail_count = 1,
+			fail_reasons = { { reason = nil, count = 1, max = 30 } } })
+		local keys_ok = #sr == 9
+		for _, r in ipairs(sr) do
+			if not (type(r[1]) == "table" and type(r[2]) == "string") then keys_ok = false end
+		end
+		lab.check("Breakdown stats: label / value rows (7 delivery rows, Stuck, one reason)", keys_ok
+			and sr[1][1][1] == "cybersyn-gui.breakdown-stat-deliveries" and sr[1][2] == "2"
+			and sr[8][1][1] == "cybersyn-gui.breakdown-stuck" and sr[9].indent == true, sr)
 		dev("set_setting", "cybersyn-enable-analytics", ctx.analytics)
 		dev("select_tab", pi, "overview")
 	end,
