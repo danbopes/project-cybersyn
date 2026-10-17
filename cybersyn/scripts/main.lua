@@ -8,8 +8,8 @@ local diag = require("scripts.diag")
 local fork_migrations = require("scripts.fork-migrations")
 local lint = require("scripts.lint")
 
--- Ticks between world-scan chunks while manager updates are off (100 stops a chunk).
-local WORLD_SCAN_NTH = 10
+-- Ticks between chunks of the Refresh allow-lists job while manager updates are off.
+local REPAIR_JOB_NTH = 10
 
 local ceil = math.ceil
 
@@ -26,6 +26,7 @@ local function on_depot_built(map_data, stop, comb)
 	local depot_id = stop.unit_number --[[@as uint]]
 	map_data.depots[depot_id] = depot
 	interface_raise_depot_created(depot_id)
+	lint.on_depot_changed(stop)
 end
 
 ---@param map_data MapData
@@ -60,6 +61,7 @@ function on_depot_broken(map_data, depot_id, depot)
 	end
 	map_data.depots[depot_id] = nil
 	interface_raise_depot_removed(depot_id, depot)
+	lint.on_depot_changed(depot.entity_stop)
 end
 
 ---@param map_data MapData
@@ -269,17 +271,12 @@ function combinator_build_init(map_data, comb, tags)
 	return op
 end
 
----@param map_data MapData
 ---@param comb LuaEntity
----@param tags Tags?
-local function on_combinator_built(map_data, comb, tags)
+---@return LuaEntity? stop the stop the combinator reaches as it faces now
+---@return LuaEntity? rail
+local function combinator_reach(comb)
 	local pos_x = comb.position.x
 	local pos_y = comb.position.y
-
-	if tags and tags.ghost_unit_number then
-		gui_entity_destroyed(tags.ghost_unit_number --[[@as integer]], true)
-	end
-
 	local search_area
 	if comb.direction == defines.direction.north or comb.direction == defines.direction.south then
 		search_area = {
@@ -305,6 +302,18 @@ local function on_combinator_built(map_data, comb, tags)
 			end
 		end
 	end
+	return stop, rail
+end
+
+---@param map_data MapData
+---@param comb LuaEntity
+---@param tags Tags?
+local function on_combinator_built(map_data, comb, tags)
+	if tags and tags.ghost_unit_number then
+		gui_entity_destroyed(tags.ghost_unit_number --[[@as integer]], true)
+	end
+
+	local stop, rail = combinator_reach(comb)
 
 	local out = comb.surface.create_entity({
 		name = COMBINATOR_OUT_NAME,
@@ -375,6 +384,9 @@ local function on_combinator_built(map_data, comb, tags)
 			end
 		end
 	end
+	-- The branches above drop a second primary, control, depot or refueler combinator and a combinator with no stop
+	-- in reach without a word; the registry records what they decided.
+	lint.on_combinator_built(comb)
 end
 
 
@@ -383,6 +395,7 @@ end
 local function on_combinator_ghost_built(map_data, comb)
 	combinator_build_init(map_data, comb)
 	comb.tags = { ghost_unit_number = comb.unit_number }
+	lint.on_ghost_changed(comb)
 end
 
 ---@param map_data MapData
@@ -481,6 +494,7 @@ function on_combinator_broken(map_data, comb, skip_gui_events)
 	map_data.to_output[comb_id] = nil
 	map_data.to_stop[comb_id] = nil
 	map_data.to_comb_params[comb_id] = nil
+	lint.on_combinator_removed(comb)
 end
 
 ---@param map_data MapData
@@ -496,6 +510,7 @@ function on_combinator_ghost_broken(map_data, comb, skip_gui_events)
 
 	map_data.to_comb[comb_id] = nil
 	map_data.to_comb_params[comb_id] = nil
+	lint.on_ghost_changed(comb, true)
 end
 
 ---@param map_data MapData
@@ -698,9 +713,11 @@ local function on_stop_broken(map_data, stop)
 		{ pos_x + 2, pos_y + 2 },
 	}
 	local entities = stop.surface.find_entities_filtered({ area = search_area, name = COMBINATOR_NAME })
+	local orphans = {}
 	for _, entity in pairs(entities) do
 		if entity.valid and map_data.to_stop[entity.unit_number] == stop then
 			map_data.to_stop[entity.unit_number] = nil
+			orphans[#orphans + 1] = entity
 		end
 	end
 
@@ -719,6 +736,7 @@ local function on_stop_broken(map_data, stop)
 			end
 		end
 	end
+	lint.on_stop_removed(stop, orphans)
 end
 ---@param map_data MapData
 ---@param stop LuaEntity
@@ -775,6 +793,7 @@ local function on_built(event)
 
 	if entity.name == "train-stop" then
 		on_stop_built_or_updated(storage, entity)
+		lint.on_stop_built(entity)
 	elseif entity.name == COMBINATOR_NAME then
 		on_combinator_built(storage, entity, event.tags)
 	elseif entity.name == "entity-ghost" and entity.ghost_name == COMBINATOR_NAME then
@@ -823,6 +842,16 @@ local function on_rotate(event)
 
 	if entity.type == "inserter" then
 		update_stop_from_inserter(storage, entity)
+	elseif entity.name == COMBINATOR_NAME then
+		-- A rotation decides which stop the combinator reaches, as building it did; rebuild it only when that changed,
+		-- since rebuilding a station's own combinator ends its deliveries in flight.
+		local unit = entity.unit_number --[[@as uint]]
+		local was = storage.to_stop[unit]
+		local now = combinator_reach(entity)
+		if was ~= now or (was and not was.valid) then
+			on_combinator_broken(storage, entity, true)
+			on_combinator_built(storage, entity)
+		end
 	end
 end
 
@@ -836,6 +865,7 @@ local function on_surface_removed(event)
 			end
 		end
 	end
+	lint.on_surface_removed(event.surface_index)
 end
 
 local function on_object_destroyed(event)
@@ -854,6 +884,7 @@ end
 local function on_rename(event)
 	if event.entity.name == "train-stop" then
 		on_stop_rename(storage, event.entity, event.old_name)
+		lint.on_stop_renamed(event.entity, event.old_name)
 	end
 end
 
@@ -903,11 +934,9 @@ local function register_tick()
 			manager.tick(storage)
 		end)
 	else
-		-- Without manager updates the world scan of /cybersyn-find-problems still runs in chunks, on a handler of its
-		-- own that only looks for a running scan.
-		add(WORLD_SCAN_NTH, function()
+		-- Without manager updates the Refresh allow-lists job still runs in chunks, on a handler of its own.
+		add(REPAIR_JOB_NTH, function()
 			local m = storage.manager
-			if m and m.lint and m.lint.world_job then lint.world_tick() end
 			if m and m.repair_job then manager.job_tick() end
 		end)
 	end

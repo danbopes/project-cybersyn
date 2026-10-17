@@ -246,8 +246,10 @@ DIAG_ACK_END_RESOLVED = 3
 DIAG_ACK_END_MANUAL = 4
 
 -- Setup lint (scripts/lint.lua, PLAN3 §4.12). A check is an index 1..LINT_COUNT; its bit in a subject's mask is
--- LINT_BIT[check]. Acknowledgements and the lint ring event (`a`) carry the index. The world-scan checks are found
--- only by the on-demand entity search; the others by the chunked job over storage and the snapshot.
+-- LINT_BIT[check]. Acknowledgements and the lint ring event (`a`) carry the index, so an index is never reused or
+-- renumbered. The combinator and stop-name checks (derelict, ghost, no combinator, wrong side, double, name overlap)
+-- come from the setup registry the build handlers keep; the others from the chunked job over storage and the
+-- snapshot. LINT_MASK is "no network bit" (mask 0 on a network that has trains).
 LINT_CAPACITY = 1
 LINT_LAYOUT = 2
 LINT_MASK = 3
@@ -313,7 +315,6 @@ LINT_SEVERITY = {}
 for check = 1, LINT_COUNT do LINT_SEVERITY[check] = DIAG_SEV_WARNING end
 LINT_SEVERITY[LINT_CAPACITY] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_LAYOUT] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_MASK] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_TRAIN_MASK] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_NO_TRAIN] = DIAG_SEV_ERROR
 LINT_SEVERITY[LINT_NO_PROVIDER] = DIAG_SEV_ERROR

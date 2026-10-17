@@ -71,13 +71,15 @@ end
 
 local diag = require("scripts.diag")
 local stats = require("scripts.stats")
+local lint = require("scripts.lint")
 
 -- Bumped whenever a fork release adds storage fields an existing save must get before its first planner tick.
 -- 1: diagnostics (storage.diag per setting, storage.acks), Train.in_interrupt/last_state/state_tick, the
 -- available-train counters and the cycle fields of storage.stats.
 -- 2: the diagnostics sweep and ring fields (cycles, item_served, preallocated columns), the planner-cycle counters
 -- and refuel_since of storage.stats.
-local SCHEMA = 2
+-- 3: the setup registry (storage.lint_registry), seeded from to_comb/to_stop/to_comb_params.
+local SCHEMA = 3
 
 local fork_migrations = {}
 
@@ -97,6 +99,9 @@ function fork_migrations.migrate_schema()
 		end
 	end
 	stats.init()
+	-- Rebuilt on every configuration change too: a mod change can add or remove combinators without the build
+	-- handlers seeing it.
+	lint.registry_seed()
 	storage.fork_schema = SCHEMA
 end
 

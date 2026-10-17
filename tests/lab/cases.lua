@@ -791,10 +791,10 @@ function cases.P_IS_REQUESTING(ctx)
 	return finish(case)
 end
 
---- Requester mask 1, provider mask 2, trains on both.
+--- Requester mask 1, provider mask 2, trains on both. The lint does not predict it (PLAN4 D6: only mask 0 is a
+--- finding; masks that follow demand make a mismatch at one instant normal), so no lint check is expected.
 function cases.MASK_MISMATCH(ctx)
 	local case = base("MASK_MISMATCH", ctx, { depot_mask = 3 })
-	case.lint_expect.r = { "mask" }
 	case.expect_ab = { 1, 2 }
 	case.p = cases.station(case, { name = sname(case, "p"), x = cases.X_P[1], bits = PR_PROVIDE + ALLOW_ALL,
 		signals = { { case.item, 5000 }, { case.network, 2 } } })

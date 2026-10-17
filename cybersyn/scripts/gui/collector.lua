@@ -1415,8 +1415,6 @@ end
 function collector.tick()
 	local manager = storage.manager
 	if not manager then return false end
-	-- The world scan of /cybersyn-find-problems runs whether or not a window is open.
-	if manager.lint and manager.lint.world_job then lint.world_tick() end
 	if not collector.wanted() then return false end
 	if manager.collect_boost then
 		if collector.step(nil, BOOST) then
