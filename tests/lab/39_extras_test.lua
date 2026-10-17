@@ -401,6 +401,17 @@ local STEPS = {
 		local alert = td.sections.alert
 		lab.check("train panel: the warning triangle has a chip naming the alert", alert and alert.visible
 			and mentions(alert.content, "cybersyn-diag.alert-stuck"), alert)
+		local alert_label
+		local function find_alert(v)
+			for _, c in ipairs(v or {}) do
+				if c.name == "alert_chip" then alert_label = c end
+				find_alert(c.children)
+			end
+		end
+		find_alert(alert and alert.content)
+		lab.check("…as the panels' plain marker label: nothing to click, nothing that looks clickable", alert_label ~= nil
+			and alert_label.type == "label" and alert_label.style == "cybersyn_marker_orange" and not alert_label.handler,
+			alert_label)
 		remote.call("cybersyn", "write_global", nil, "active_alerts", tid)
 		dev("tick", 1)
 		td = dev("relative_dump", PI)

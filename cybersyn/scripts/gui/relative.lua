@@ -1609,9 +1609,9 @@ local function render_alert(state, body)
 			{
 				type = "label",
 				name = "alert_chip",
+				style = marker_style("cybersyn_chip_orange"),
 				caption = name and { "cybersyn-diag.alert-" .. string.gsub(name, "_", "-") } or { "cybersyn-gui.overview-alert-0" },
 				tooltip = { "cybersyn-gui.relative-alert-tooltip" },
-				style_mods = { font = "default-bold", font_color = { 1, 0.6, 0.15 } },
 			},
 		} }
 	end)
