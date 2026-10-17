@@ -229,18 +229,21 @@ end
 --- @field network fun(name: string?): string rich-text icon of a network signal
 --- @field is_fluid fun(hash: string?): boolean
 --- @field duration fun(ticks: number): string
+--- @field count (fun(n: number): string)? an amount as the other cells write it ("2.0k"); format.number without it
 
 local HOUR_TICKS = 216000
 
-local function n(v)
-	return format.number(v or 0)
-end
-
---- The numbers behind a finding, for the detail column ("[item] needs 50 stacks · largest train 40").
+--- The numbers behind a finding, for the detail column ("[item] needs 2.0k (400 stacks) · largest train 40 stacks"):
+--- what tells two findings of one check apart (the item, its amount) comes first, so a cut cell still shows it.
 --- @param f LintFinding
 --- @param env ProblemsEnv
 --- @return LocalisedString
 function model.detail(f, env)
+	local count = env.count
+	local function n(v)
+		if count then return count(v or 0) end
+		return format.number(v or 0)
+	end
 	local check, a, b = f.check, f.a or 0, f.b or 0
 	local key = "cybersyn-diag.lint-detail-" .. (LINT_KEYS[check] or "unknown")
 	if check == LINT_CAPACITY then

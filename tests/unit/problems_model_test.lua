@@ -180,6 +180,32 @@ test("detail: the numbers behind each check", function()
 		ENV), { "cybersyn-gui.problems-world-station-and-depot" })
 end)
 
+test("detail wording: the item and its amount first, amounts as the other cells write them", function()
+	local model = pm()
+	local env = {}
+	for k, v in pairs(ENV) do env[k] = v end
+	env.count = format_signal_count
+	local function d(check, a, b, extra) return model.detail(finding(check, S, 1, a, b, extra), env) end
+	local K = "cybersyn-diag.lint-detail-"
+	assert_eq(d(LINT_CAPACITY, 400, 40, { item = "iron-plate", c = 2000 }),
+		{ K .. "capacity-threshold", "[item=iron-plate]", "2.0k", "400", "40" }, "the typed threshold in k-format")
+	assert_eq(d(LINT_CAPACITY, 30000, 25000, { item = "water" }), { K .. "capacity-fluid", "[item=water]", "30k", "25k" })
+	assert_eq(d(LINT_SAME_ITEM, 2000, 0, { item = "coal" }), { K .. "same-item-out", "[item=coal]", "2.0k" })
+	-- The locale: an icon parameter is never followed by an orphan separator, and the capacity texts open with the
+	-- item and what it needs, so a cut cell still tells two findings apart.
+	local f = assert(io.open(H.mod_root .. "/locale/en/manager.cfg", "r"))
+	local text = f:read("*a")
+	f:close()
+	for key, value in string.gmatch(text, "\n(lint%-detail%-[%w%-]+)=([^\n]*)") do
+		assert_true(not string.find(value, "^__1__ ·"), key .. " starts with an icon and a separator: " .. value)
+	end
+	for _, key in ipairs({ "capacity", "capacity-threshold", "capacity-fluid" }) do
+		local value = string.match(text, "\nlint%-detail%-" .. string.gsub(key, "%-", "%%-") .. "=([^\n]*)")
+		assert_true(value and string.find(value, "^__1__ needs __2__") ~= nil, key .. ": " .. tostring(value))
+	end
+	assert_eq(string.match(text, "\nlint%-detail%-no%-provider=([^\n]*)"), "__1__ no provider on __2__")
+end)
+
 test("captions and fix lines: one locale key per check, the fix line without numbers", function()
 	local model = pm()
 	for check = 1, LINT_COUNT do

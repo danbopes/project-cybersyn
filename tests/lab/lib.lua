@@ -371,6 +371,19 @@ local function lint_number(v)
 	return (v < 0 and "-" or "") .. o
 end
 
+-- The k-format the detail cells write amounts in (scripts/lib.lua format_signal_count): "2.0k", "10k", "400".
+local function lint_count(v)
+	local abs = math.abs(v)
+	local function si(divisor, symbol)
+		if math.abs(math.floor(v / divisor)) >= 10 then return string.format("%.0f%s", math.floor(v / divisor), symbol) end
+		return string.format("%.1f%s", math.floor(v / (divisor / 10)) / 10, symbol)
+	end
+	if abs >= 1e9 then return si(1e9, "G") end
+	if abs >= 1e6 then return si(1e6, "M") end
+	if abs >= 1e3 then return si(1e3, "k") end
+	return tostring(v)
+end
+
 -- The detail numbers each check shows: "n" formatted, "s" as a plain integer (masks), nil = none.
 local LINT_NUMBERS = {
 	capacity = { a = "n", b = "n" },
@@ -402,8 +415,11 @@ local function lint_detail_wrong(row)
 	-- PLAN4 D10: a counter leak shows the deliveries no train serves, a bound train its id and the counted ones.
 	if row.check == "phantom" then
 		local leak = key == "cybersyn-diag.lint-detail-phantom-leak"
-		local s = leak and lint_number(row.a - row.b) or lint_number(row.a)
-		if not string.find(text, '"' .. s .. '"', 1, true) then return "phantom " .. s .. " not in " .. text end
+		local v = leak and row.a - row.b or row.a
+		local s, k = lint_number(v), lint_count(v)
+		if not (string.find(text, '"' .. s .. '"', 1, true) or string.find(text, '"' .. k .. '"', 1, true)) then
+			return "phantom " .. s .. " not in " .. text
+		end
 		if row.train and not string.find(text, '"' .. row.train .. '"', 1, true) then return "phantom train" end
 	end
 	if row.check == "occupancy" and row.train and not string.find(text, '"' .. row.train .. '"', 1, true) then
@@ -416,7 +432,10 @@ local function lint_detail_wrong(row)
 			or (row.check == "same_item" and row.a == 0)
 		if how and v and not skip then
 			local s = how == "n" and lint_number(v) or tostring(v)
-			if not string.find(text, '"' .. s .. '"', 1, true) then return field .. " " .. s .. " not in " .. text end
+			local k = how == "n" and lint_count(v) or s
+			if not (string.find(text, '"' .. s .. '"', 1, true) or string.find(text, '"' .. k .. '"', 1, true)) then
+				return field .. " " .. s .. " (" .. k .. ") not in " .. text
+			end
 		end
 	end
 	if row.item and row.check ~= "layout" then

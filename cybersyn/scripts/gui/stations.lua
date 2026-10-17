@@ -71,9 +71,11 @@ local FLAG_CHIPS = { unserved = logic.FLAG_UNSERVED, problems = logic.FLAG_SETUP
 local CHIP_ORDER = { "all" }
 for _, s in ipairs(STATUSES) do CHIP_ORDER[#CHIP_ORDER + 1] = s end
 for _, c in ipairs({ "unserved", "problems", "stuck", "failing" }) do CHIP_ORDER[#CHIP_ORDER + 1] = c end
+-- Problems leads with the warning triangle the Trains depot rows' Problems marker shows, so it does not read as the
+-- yellow status dot of Setup beside it.
 local CHIP_ICON = {
 	unserved = "utility/warning_icon",
-	problems = "utility/status_yellow",
+	problems = "utility/warning_icon",
 	stuck = "item/locomotive",
 	failing = "utility/danger_icon",
 }
@@ -98,13 +100,15 @@ local SORT_KEY = { last_delivery = "stations-sort-last-dispatch", problems = "st
 -- Fixed widths in logical px; the name and the two slot strips share the rest (column_widths).
 local W = { station_status = 156, network = 80, dl_count = 40, wait = 64, last_delivery = 88 }
 local NAME_MIN = 160
--- The Problems column: a share of what the fixed columns leave, never under PROBLEMS_MIN while the name keeps NAME_MIN.
-local PROBLEMS_SHARE = 0.5
+-- The Problems view: Deliveries keeps its two slots, the name a quarter of what the fixed columns leave (at least
+-- NAME_MIN), and the Problems column stretches over the rest; never under PROBLEMS_MIN while the name keeps NAME_MIN.
+local PROBLEMS_NAME_SHARE = 0.25
 local PROBLEMS_MIN = 300
+local PROBLEMS_DL_SLOTS = 2
 
 --- Column widths for a tab content width: fixed columns, slot strips of whole slots (Provided / requested 5..12,
 --- Deliveries 2..6), the name takes the rest. With `problems` the Problems column takes Provided / requested's place
---- and half the rest; a hidden Wait column gives its width to the name.
+--- and stretches: Deliveries keeps two slots, the name a quarter; a hidden Wait column gives its width to the name.
 --- @param cw int
 --- @param problems boolean?
 --- @param hide_wait boolean?
@@ -121,8 +125,16 @@ local function column_widths(cw, problems, hide_wait)
 	local rest = avail - fixed
 	local pr = math.min(12, math.max(5, math.floor(rest * 0.45 / SLOT)))
 	local dl = math.min(6, math.max(2, math.floor(rest * 0.2 / SLOT)))
-	local fourth = problems and math.max(PROBLEMS_MIN, math.floor(rest * PROBLEMS_SHARE)) or pr * SLOT
-	local name = rest - fourth - dl * SLOT
+	local fourth, name
+	if problems then
+		dl = PROBLEMS_DL_SLOTS
+		name = math.max(NAME_MIN, math.floor(rest * PROBLEMS_NAME_SHARE))
+		fourth = math.max(PROBLEMS_MIN, rest - name - dl * SLOT)
+		name = rest - fourth - dl * SLOT
+	else
+		fourth = pr * SLOT
+		name = rest - fourth - dl * SLOT
+	end
 	while name < NAME_MIN and not problems and pr > 5 do
 		pr = pr - 1
 		fourth = pr * SLOT
@@ -1797,6 +1809,7 @@ function stations_tab.build(map_data, player_data)
 		state.cells = nil
 		state.cw = w.sig
 	end
+	state.widths = w
 	local summary = refs.manager_stations_summary
 	if ctx.pending then
 		-- Rows from before the window was closed stay hidden rather than destroyed: most of them are reused, not
@@ -2050,11 +2063,12 @@ dev.register_dump(TAB, function(player_data)
 			}
 		end
 	end
-	local chips, chip_counts, wrapped = {}, {}, {}
+	local chips, chip_counts, wrapped, chip_captions = {}, {}, {}, {}
 	local flow = player_data.refs[CHIPS]
 	if flow and flow.valid then
 		for i, chip in ipairs(flow.children) do
 			chips[i] = { chip.tags.station_chip, chip.toggled, chip.enabled }
+			chip_captions[chip.tags.station_chip] = chip.caption
 		end
 	end
 	local flow2 = player_data.refs[CHIPS2]
@@ -2062,6 +2076,7 @@ dev.register_dump(TAB, function(player_data)
 		for _, chip in ipairs(flow2.children) do
 			chips[#chips + 1] = { chip.tags.station_chip, chip.toggled, chip.enabled, 2 }
 			wrapped[#wrapped + 1] = chip.tags.station_chip
+			chip_captions[chip.tags.station_chip] = chip.caption
 		end
 	end
 	local status_counts = {}
@@ -2101,6 +2116,7 @@ dev.register_dump(TAB, function(player_data)
 		warning = player_data.refs.manager_stations_warning_flow.visible,
 		warning_caption = player_data.refs.manager_stations_warning_label.caption,
 		chips = chips,
+		chip_captions = chip_captions,
 		wrapped = wrapped,
 		chip_row = chip_row and chip_row.valid and chip_row.visible or false,
 		header = header_columns,
@@ -2108,7 +2124,7 @@ dev.register_dump(TAB, function(player_data)
 		render = util.gui_state(player_data, SCROLL).result,
 		sort_kind = player_data.stations_query and player_data.stations_query.sort_kind,
 		stripes_ok = stripes_ok,
-		widths = util.gui_state(player_data, HEADER).cw,
+		widths = util.gui_state(player_data, SCROLL).widths,
 		summary = player_data.refs.manager_stations_summary.caption,
 		open_errors = util.gui_state(player_data, SCROLL).open_errors,
 	}

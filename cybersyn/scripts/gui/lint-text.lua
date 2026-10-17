@@ -39,7 +39,8 @@ local function is_fluid(hash)
 end
 
 --- @type ProblemsEnv
-lint_text.ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.short_duration }
+lint_text.ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.short_duration,
+	count = format_signal_count }
 
 -- Captions and tooltips that depend only on the check, the side of the station it predicts for and the finding's
 -- own fix variant (f.fix, a small fixed set): built once per Lua state. A pure function of its key, so a cache that

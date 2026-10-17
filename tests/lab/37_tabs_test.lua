@@ -285,6 +285,15 @@ lab.suite("37_tabs", {
 			if not want[id] then same = false end
 		end
 		lab.check("Problems chip: the rows are the stations with a finding", same, { rows = d.ids, view = #v.stations })
+		local w = d.widths
+		lab.check("Problems view: the Problems column stretches, Deliveries keeps two slots", w and w.problems_view
+			and w.dl_slots == 2 and w.problems > w.name and w.problems > w.deliveries and w.name >= 160
+			and w.cw - 72 + (w.hide_wait and 8 or 0) - w.name - w.station_status - w.network - w.problems - w.deliveries - w.wait
+				- w.last_delivery == 0, w)
+		local caps = d.chip_captions or {}
+		lab.check("the Problems chip leads with the warning triangle, Setup with its yellow dot",
+			type(caps.problems) == "table" and caps.problems[2] == "[img=utility/warning_icon] "
+			and type(caps.setup) == "table" and caps.setup[2] == "[img=flib_indicator_yellow] ", caps)
 		local sorted = true
 		for i = 2, #d.keys do
 			if d.keys[i] < d.keys[i - 1] then sorted = false end
