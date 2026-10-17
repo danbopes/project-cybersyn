@@ -870,7 +870,6 @@ local function grab_all_settings()
 	mod_settings.fuel_threshold = settings.global["cybersyn-fuel-threshold"].value --[[@as double]]
 	mod_settings.warmup_time = settings.global["cybersyn-warmup-time"].value --[[@as double]]
 	mod_settings.stuck_train_time = settings.global["cybersyn-stuck-train-time"].value --[[@as double]]
-	mod_settings.track_request_wait_times = settings.global["cybersyn-track-request-wait-times"].value --[[@as boolean]]
 	mod_settings.allow_cargo_in_depot = settings.global["cybersyn-allow-cargo-in-depot"].value --[[@as boolean]]
 	mod_settings.manager_ups = settings.global["cybersyn-manager-updates-per-second"].value --[[@as double]]
 	mod_settings.alert_unexpected_cargo = settings.global["cybersyn-alert-unexpected-cargo"].value --[[@as boolean]]
@@ -941,12 +940,6 @@ local function on_settings_changed(event)
 	grab_all_settings()
 	if event.setting == "cybersyn-ticks-per-second" or event.setting == "cybersyn-manager-updates-per-second" then
 		register_tick()
-	elseif event.setting == "cybersyn-track-request-wait-times" then
-		-- The poll clears start ticks only when it reaches a station, so a quick off/on toggle would keep starts from
-		-- before the off period and record waits that include it.
-		for _, station in pairs(storage.stations) do
-			clear_all_request_tracking(station)
-		end
 	elseif event.setting == "cybersyn-diagnostics" or event.setting == "cybersyn-diagnostics-ring" then
 		diag.apply()
 	end

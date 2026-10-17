@@ -569,7 +569,6 @@ function overview_tab.model(player_data)
 	local minutes = unserved_minutes(player_data)
 	local layout = player_data.layout
 	local rows = layout and layout.rows_by_tab[TAB] or 10
-	local tracking = mod_settings.track_request_wait_times == true
 	local window = stats.aggregate(period, true)
 	local d = storage.diag
 	local collecting = snapshot.tick == nil
@@ -582,7 +581,6 @@ function overview_tab.model(player_data)
 		period = period,
 		minutes = minutes,
 		rows = rows,
-		tracking = tracking,
 		collecting = collecting,
 		diag = d ~= nil,
 		inherit_before = d and diag.inherit_threshold(d) or 0,
@@ -595,8 +593,8 @@ function overview_tab.model(player_data)
 			amount = window.amount,
 			dispatches = window.dispatches,
 			trip = window.cycle_avg,
-			wait_avg = tracking and window.wait_avg or nil,
-			wait_max = tracking and window.wait_max or nil,
+			wait_avg = window.wait_avg,
+			wait_max = window.wait_max,
 			recorded = window.partial and window.span_ticks or nil,
 			cycle_ticks = cycle.ticks_last or 0,
 			cycle_dispatches = cycle.dispatches_last or 0,
@@ -807,7 +805,7 @@ local function render_throughput_tile(refs, cache, model, tile_width)
 	set_line(refs, cache, "throughput", 3, "wmax", { "cybersyn-gui.overview-throughput-wait-max" }, wait_max)
 	local per_cycle = t.cycle_ticks > 0 and string.format("%.1f", t.cycle_dispatches) or ""
 	local narrow_note = not wide and t.recorded and recorded or ""
-	local sig = table.concat({ t.amount, t.dispatches, tostring(model.tracking), t.cycle_ticks, per_cycle, period,
+	local sig = table.concat({ t.amount, t.dispatches, t.cycle_ticks, per_cycle, period,
 		narrow_note }, "|")
 	if not tooltip_due(cache, refs.overview_tile_throughput, sig) then return end
 	local tooltip = {
@@ -819,10 +817,6 @@ local function render_throughput_tile(refs, cache, model, tile_width)
 	if t.cycle_ticks > 0 then
 		tooltip[#tooltip + 1] = "\n"
 		tooltip[#tooltip + 1] = { "cybersyn-gui.overview-throughput-cycle", tostring(t.cycle_ticks), per_cycle }
-	end
-	if not model.tracking then
-		tooltip[#tooltip + 1] = "\n\n"
-		tooltip[#tooltip + 1] = { "cybersyn-gui.overview-throughput-wait-off" }
 	end
 	set_tooltip(cache, refs.overview_tile_throughput, sig, tooltip)
 end
@@ -1442,7 +1436,6 @@ dev.register_dump(TAB, function(player_data)
 		period = model.period,
 		minutes = model.minutes,
 		rows = model.rows,
-		tracking = model.tracking,
 		diag = model.diag,
 		collecting = model.collecting,
 		item = model.item,

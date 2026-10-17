@@ -115,13 +115,6 @@ data:extend({
 	},
 	{
 		type = "bool-setting",
-		name = "cybersyn-track-request-wait-times",
-		order = "cd",
-		setting_type = "runtime-global",
-		default_value = false,
-	},
-	{
-		type = "bool-setting",
 		name = "cybersyn-enable-analytics",
 		order = "ce",
 		setting_type = "runtime-global",
