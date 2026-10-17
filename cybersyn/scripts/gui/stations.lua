@@ -810,7 +810,11 @@ local function problems_view(entries, tags, ctx)
 		r.dot.visible = true
 		local style = acked and "cybersyn_chip_acked" or pm.CHIP_STYLE[first.sev]
 		local chip = r.chip
-		if chip.style.name ~= style then chip.style = style end
+		if chip.style.name ~= style then
+			chip.style = style
+			-- The check stays readable; the detail squashes instead (assigning a style drops this).
+			chip.style.horizontally_squashable = false
+		end
 		chip.caption = pm.chip(f.check)
 		chip.visible = true
 		r.detail.caption = pm.detail(f, lint_text.ENV)
@@ -1371,7 +1375,8 @@ local function problems_cell_def(w)
 		style_mods = { width = w.problems, horizontal_spacing = 6 },
 		{ type = "sprite", style = "cybersyn_lint_dot", sprite = "flib_indicator_white", visible = false, ignored_by_interaction = true },
 		-- A chip that shows the check, not a button: no hover glow, the cell carries the tooltip.
-		{ type = "button", style = "cybersyn_chip_grey", caption = "", visible = false, ignored_by_interaction = true },
+		{ type = "button", style = "cybersyn_chip_grey", caption = "", visible = false, ignored_by_interaction = true,
+			style_mods = { horizontally_squashable = false } },
 		{ type = "label", style = "cybersyn_lint_detail", caption = "", ignored_by_interaction = true },
 		{ type = "label", style = "cybersyn_overflow_label", caption = "", visible = false, ignored_by_interaction = true },
 		{ type = "empty-widget", style = "flib_horizontal_pusher", ignored_by_interaction = true },
