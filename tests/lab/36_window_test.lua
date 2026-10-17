@@ -727,7 +727,7 @@ lab.suite("36_window", {
 		local rendered = d.lists.unserved.rendered
 		local any_stock, any_lost, rows_ok = false, false, true
 		for _, r in ipairs(rendered) do
-			if r.stock ~= "–" then any_stock = true end
+			if r.stock ~= "–" and r.stock ~= "" then any_stock = true end
 			if r.lost ~= "" then any_lost = true end
 			if r.stock_visible ~= not d.hidden.stock or r.lost_visible ~= not d.hidden.lost then rows_ok = false end
 		end

@@ -36,7 +36,9 @@ local TOP_REASONS = 3
 local MAX_TOOLTIP_NETWORKS = 12
 local TABLE_COLUMNS = 8
 -- Logical px at the 1,392 px content width of a 1,440 px window (PLAN3 §4.7); the requester column takes the rest.
-local W = { item = 32, why = 132, provider = 272, stock = 110, lost = 96, wait = 72, ack = 28 }
+-- The Why cell holds the 132 px reason chip and room for the Setup marker beside it.
+local W = { item = 32, why = 176, provider = 272, stock = 110, lost = 96, wait = 72, ack = 28 }
+local CHIP_W = 132
 local BASE_CONTENT_WIDTH = 1392
 local REQUESTER_MIN, PROVIDER_MIN = 160, 120
 local TABLE_PADDING = 4 + 10
@@ -87,6 +89,9 @@ end
 
 --- Stations failing's Misconfigured line jumps on its own: to the Stations tab's Problems chip (PLAN4 D7).
 local LINK_LINES = { failing4 = true }
+local TILE_H = 108
+-- The link line under the button: an 18 px line and the body's 4 px bottom padding.
+local LINK_H = 22
 
 local function line_def(tile, i)
 	local base = "overview_" .. tile.name .. "_line" .. i
@@ -133,16 +138,35 @@ local function tile_def(tile)
 			{ type = "label", name = "overview_" .. tile.name .. "_headline", style = "cybersyn_overview_big_number", caption = NO_VALUE },
 		},
 	}
+	local link
 	for i = 1, tile.lines do
-		body[#body + 1] = line_def(tile, i)
+		if LINK_LINES[tile.name .. i] then
+			link = line_def(tile, i)
+		else
+			body[#body + 1] = line_def(tile, i)
+		end
 	end
-	return {
+	local button = {
 		type = "button",
 		name = "overview_tile_" .. tile.name,
 		style = "cybersyn_overview_tile",
 		tags = { tile = tile.name },
 		handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_tile_click },
 		body,
+	}
+	if not link then return button end
+	-- Everything inside a button's ignored body is ignored too, and a button draws extra children over each other,
+	-- so a line that jumps on its own sits below the button, in a frame that looks like the rest of the tile.
+	button.style_mods = { height = TILE_H - LINK_H }
+	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4 }
+	return {
+		type = "frame",
+		name = "overview_tile_" .. tile.name .. "_frame",
+		direction = "vertical",
+		style = "inside_shallow_frame",
+		style_mods = { padding = 0, height = TILE_H },
+		button,
+		link,
 	}
 end
 
@@ -304,7 +328,14 @@ function overview_tab.apply_layout(player_data, layout)
 			button.style.width = tile
 			local body = button.children[1]
 			body.style.width = tile
-			body.style.height = 108
+			local frame = refs["overview_tile_" .. t.name .. "_frame"]
+			if frame and frame.valid then
+				frame.style.width = tile
+				body.style.height = TILE_H - LINK_H
+				frame.children[2].style.width = tile
+			else
+				body.style.height = TILE_H
+			end
 		end
 	end
 	local old = player_data.overview_widths
@@ -326,8 +357,10 @@ function overview_tab.apply_layout(player_data, layout)
 		local state = util.gui_state(player_data, TABLE)
 		state.keys, state.sigs, state.hide = nil, nil, nil
 		if tbl and tbl.valid then
-			tbl.children[5].visible = true
-			tbl.children[6].visible = true
+			tbl.children[5].style.width = W.stock
+			tbl.children[5].caption = { "cybersyn-gui.unserved-col-stock" }
+			tbl.children[6].style.width = W.lost
+			tbl.children[6].caption = { "cybersyn-gui.unserved-col-lost" }
 		end
 	end
 end
@@ -1267,7 +1300,9 @@ local function row_entry(row, acked, ctx)
 	local link_style = acked and "cybersyn_link_button_acked" or "cybersyn_link_button"
 	local cell_style = acked and "cybersyn_unserved_cell_acked" or "cybersyn_unserved_cell"
 	local lost_caption = lost and ("×" .. e.lost_n) or ""
-	local chip_width = setup and W.why - MARKER_W - 4 or W.why
+	local chip_width = CHIP_W
+	-- A table places only visible cells, so a hidden column keeps its cells at width 0 and empty instead.
+	local stock_shown = not ctx.hide.stock and stock or ""
 	local hide = ctx.hide
 	--- @param cell LuaGuiElement the Why cell
 	local function write_why(cell, chip)
@@ -1331,14 +1366,13 @@ local function row_entry(row, acked, ctx)
 					}),
 				},
 				link_cell(provider, "station", p_id, widths.provider, p_tip, acked),
-				hoverable({ type = "label", style = value_style, style_mods = { width = W.stock }, caption = stock,
-					visible = not hide.stock }),
+				hoverable({ type = "label", style = value_style, style_mods = { width = hide.stock and 0 or W.stock },
+					caption = stock_shown }),
 				{
 					type = "flow",
 					direction = "horizontal",
 					style = "cybersyn_unserved_cell_flow",
-					style_mods = { width = W.lost },
-					visible = not hide.lost,
+					style_mods = { width = hide.lost and 0 or W.lost },
 					hoverable({
 						type = "button",
 						style = link_style,
@@ -1348,8 +1382,10 @@ local function row_entry(row, acked, ctx)
 						tags = lost and { kind = "station", id = e.lost_to } or {},
 						mouse_button_filter = { "left", "right" },
 						handler = link,
+						visible = not hide.lost,
 					}),
-					hoverable({ type = "label", style = cell_style, caption = lost_caption, tooltip = l_tip }),
+					hoverable({ type = "label", style = cell_style, caption = lost_caption, tooltip = l_tip,
+						visible = not hide.lost }),
 				},
 				hoverable({ type = "label", style = value_style, style_mods = { width = W.wait }, caption = wait_caption }),
 				hoverable({
@@ -1397,7 +1433,7 @@ local function row_entry(row, acked, ctx)
 				end
 				if numbers then
 					content_sigs[key] = content_sig
-					cells[5].caption = stock
+					cells[5].caption = stock_shown
 					local l_tip = lost and station_tooltip(lost, { "cybersyn-diag.lost-priority", lost.name, tostring(e.lost_n) })
 						or ""
 					local lost_button, lost_label = cells[6].children[1], cells[6].children[2]
@@ -1413,13 +1449,13 @@ local function row_entry(row, acked, ctx)
 			update_link_cell(cells[2], requester, "station", r_id, req_width, r_tip, acked)
 			write_why(cells[3], chip)
 			update_link_cell(cells[4], provider, "station", p_id, widths.provider, p_tip, acked)
-			for _, c in ipairs({ { cells[5], W.stock }, { cells[7], W.wait } }) do
+			for _, c in ipairs({ { cells[5], hide.stock and 0 or W.stock }, { cells[7], W.wait } }) do
 				if c[1].style.name ~= value_style then
 					c[1].style = value_style
 					c[1].style.width = c[2]
 				end
 			end
-			cells[5].caption = stock
+			cells[5].caption = stock_shown
 			local lost_button, lost_label = cells[6].children[1], cells[6].children[2]
 			if lost_button.style.name ~= link_style then
 				lost_button.style = link_style
@@ -1494,8 +1530,14 @@ local function render_table(player_data, model)
 		end
 		ctx.requester_width = widths.requester + (hide.stock and W.stock or 0) + (hide.lost and W.lost or 0)
 		local header = tbl.children
-		if header[5].visible == hide.stock then header[5].visible = not hide.stock end
-		if header[6].visible == hide.lost then header[6].visible = not hide.lost end
+		for i, h in pairs({ [5] = { hide.stock, W.stock, "cybersyn-gui.unserved-col-stock" },
+			[6] = { hide.lost, W.lost, "cybersyn-gui.unserved-col-lost" } }) do
+			local width = h[1] and 0 or h[2]
+			if header[i].style.minimal_width ~= width then
+				header[i].style.width = width
+				header[i].caption = h[1] and "" or { h[3] }
+			end
+		end
 		local h_req = refs.overview_unserved_h_requester
 		if h_req and h_req.valid and h_req.style.minimal_width ~= ctx.requester_width then
 			h_req.style.width = ctx.requester_width
@@ -1646,9 +1688,9 @@ dev.register_dump(TAB, function(player_data)
 				provider_button_index = provider_button_index,
 				hover_scope = chip.tags.hover_scope,
 				stock = c(5).caption,
-				stock_visible = c(5).visible,
+				stock_visible = c(5).style.minimal_width ~= 0,
 				lost = c(6).children[2].caption,
-				lost_visible = c(6).visible,
+				lost_visible = c(6).style.minimal_width ~= 0,
 				wait = c(7).caption,
 				acked = c(8).toggled,
 			}
