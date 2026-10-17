@@ -237,6 +237,21 @@ local more = {
 			if per[r.layout_id] ~= r.trains or d.rows[i].trains ~= tostring(r.trains) then ok = false end
 		end
 		lab.check("…each with its trains as storage.trains counts them", ok, { model = m.rows, per = per })
+		local CLASS = { [0] = "item/locomotive", [1] = "item/cargo-wagon", [2] = "item/fluid-wagon" }
+		local icons_ok = true
+		for i, r in ipairs(m.rows) do
+			local row = d.rows[i]
+			if not (row and row.layout == r.composition and r.runs and #row.icons == #r.runs) then
+				icons_ok = false
+			else
+				for j, run in ipairs(r.runs) do
+					local icon = row.icons[j]
+					if not (type(icon) == "table" and icon[1] == CLASS[run.class] and icon[2] == run.n) then icons_ok = false end
+				end
+			end
+		end
+		lab.check("…its composition as icons with a count badge per run, the L<CC> text in the tooltip", icons_ok,
+			{ model = m.rows, rows = d.rows })
 		lab.check("…under a header that says what busy means", type(d.header) == "table" and
 			d.header[1] == "cybersyn-gui.utilization-header", d.header)
 		lab.info("utilization: " .. serpent.line(d.rows, { comment = false }))

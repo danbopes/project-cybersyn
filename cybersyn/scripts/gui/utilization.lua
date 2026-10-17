@@ -24,7 +24,8 @@ local BUSY = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [S
 
 --- @class UtilizationRow
 --- @field layout_id uint
---- @field composition string
+--- @field composition string "L<CC>", or "#id" when the layout record is gone
+--- @field runs {class: int, n: int}[]? logic.composition_runs, nil when the layout record is gone
 --- @field trains int
 --- @field busy_now int trains on a delivery now
 --- @field busy number? share of the trains' time on deliveries over the period, 0..1
@@ -67,6 +68,7 @@ function utilization_tab.model(trains, layouts, minutes)
 		rows[#rows + 1] = {
 			layout_id = id,
 			composition = layout and logic.composition(layout) or ("#" .. id),
+			runs = layout and logic.composition_runs(layout) or nil,
 			trains = n,
 			busy_now = now[id] or 0,
 			busy = busy,
@@ -158,13 +160,51 @@ local function period_of(player_data)
 	return utilization_tab.PERIODS[player_data.utilization_period or DEFAULT_PERIOD] or 60
 end
 
+-- Composition icons the Layout column holds; the last one becomes "+n" when a layout has more runs.
+local LAYOUT_ICONS = math.floor(W.layout / logic.COMPOSITION_ICON)
+
+--- The Layout cell: the Trains tab's composition icons (one per run of one carriage class, the run's length as its
+--- badge), the "L<CC>" text in the tooltip.
+--- @param row UtilizationRow
+--- @return flib.GuiElemDef
+local function layout_def(row)
+	local tooltip = { "cybersyn-gui.utilization-layout-tooltip", row.composition, tostring(row.layout_id) }
+	local cell = {
+		type = "flow",
+		direction = "horizontal",
+		tooltip = tooltip,
+		style_mods = { width = W.layout, vertical_align = "center", horizontal_spacing = 0 },
+	}
+	local runs = row.runs
+	if not runs then
+		cell[1] = { type = "label", caption = row.composition, tooltip = tooltip }
+		return cell
+	end
+	local shown, over = logic.fit_slots(#runs, LAYOUT_ICONS)
+	for i = 1, shown do
+		local r = runs[i]
+		cell[i] = {
+			type = "sprite-button",
+			style = "cybersyn_composition_icon",
+			sprite = logic.CLASS_SPRITE[r.class],
+			number = r.n > 1 and r.n or nil,
+			-- Hover falls through to the cell, whose tooltip names the layout; the icons are not buttons.
+			ignored_by_interaction = true,
+		}
+	end
+	if over > 0 then
+		cell[shown + 1] = { type = "label", style = "cybersyn_overflow_label", caption = "+" .. over, tooltip = tooltip,
+			style_mods = { width = logic.COMPOSITION_ICON } }
+	end
+	return cell
+end
+
 --- @param row UtilizationRow
 --- @return flib.GuiElemDef[]
 local function row_defs(row)
 	local busy_pct = math.floor(row.busy * 100 + 0.5)
 	return {
-		{ type = "label", caption = row.composition, tooltip = { "cybersyn-gui.utilization-layout-tooltip", row.composition,
-			tostring(row.layout_id) }, style_mods = { width = W.layout } },
+		layout_def(row),
 		{ type = "label", caption = format.number(row.trains), style_mods = { width = W.trains } },
 		{
 			type = "flow",
@@ -255,8 +295,13 @@ dev.register_dump(TAB, function(player_data)
 	local tbl = refs.utilization_table
 	local rows, cells = {}, tbl and tbl.valid and tbl.children or {}
 	for i = 6, #cells, 5 do
+		local icons = {}
+		for j, icon in ipairs(cells[i].children) do
+			icons[j] = icon.type == "sprite-button" and { icon.sprite, icon.number or 1 } or icon.caption
+		end
 		rows[#rows + 1] = {
-			layout = cells[i].caption,
+			layout = cells[i].tooltip[2],
+			icons = icons,
 			trains = cells[i + 1].caption,
 			busy = cells[i + 2].children[2].caption,
 			trip = cells[i + 3].caption,

@@ -57,6 +57,8 @@ test("utilization model: one row per layout with trains, most trains first, busy
 	assert_eq({ rows[2].layout_id, rows[2].composition, rows[2].trains, rows[2].busy_now, rows[2].trip },
 		{ 2, "L<F>", 1, 1, nil })
 	assert_near(rows[2].busy, 5 * MIN / span)
+	assert_eq(rows[1].runs, { { class = 0, n = 1 }, { class = 1, n = 2 } }, "the Trains tab's composition runs")
+	assert_eq(rows[2].runs, { { class = 0, n = 1 }, { class = 2, n = 1 } })
 end)
 
 test("utilization model: a layout record that is gone shows its id; busy is capped at 100 %", function()
@@ -66,6 +68,7 @@ test("utilization model: a layout record that is gone shows its id; busy is capp
 	game.tick = MIN
 	local rows = utilization.model({ [1] = { layout_id = 9, status = STATUS_P, dispatch_tick = 0 } }, {}, 10)
 	assert_eq(rows[1].composition, "#9")
+	assert_nil(rows[1].runs, "no icons without the layout record")
 	assert_true(rows[1].busy <= 1)
 	assert_eq(utilization.model({}, {}, 10), {})
 end)
