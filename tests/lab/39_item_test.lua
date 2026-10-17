@@ -192,17 +192,18 @@ lab.suite("39_item", {
 			lab.skip("drill-down Delivered == Inventory tooltip", "Overview period is not one hour")
 		end
 
-		-- Number cells right-aligned (the value style), chips the cybersyn_chip styles.
+		-- Number cells right-aligned (the value style); the reason / queue cell is plain coloured text since PLAN4 D7
+		-- (no dead chip), in the cybersyn_reason_label styles.
 		local styles_ok = true
 		for _, tname in ipairs({ "providers", "requesters", "trains" }) do
 			for _, row in ipairs(ix.first.rendered[tname]) do
 				for _, s in pairs(row.styles or {}) do
 					if s ~= "cybersyn_unserved_value" and s ~= "cybersyn_unserved_cell" then styles_ok = false end
 				end
-				if row.chip_style and not row.chip_style:find("^cybersyn_chip_") then styles_ok = false end
+				if row.chip_style and not row.chip_style:find("^cybersyn_reason_label_") then styles_ok = false end
 			end
 		end
-		lab.check("numbers in the right-aligned value style, chips in the chip styles", styles_ok)
+		lab.check("numbers in the right-aligned value style, reasons in the reason label styles", styles_ok)
 
 		-- Back returns to the Inventory and shows its content again.
 		dev("close_item", PI)

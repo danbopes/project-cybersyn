@@ -345,4 +345,168 @@ function lab.resume()
 	lab.cur = nil
 end
 
+-- ---------------------------------------------------------------- the setup lint's view (PLAN4 D7)
+--
+-- lab.problems_verify(label) is used by 37_tabs, 39_lint and 40_reason_codes: every finding of the last lint pass is
+-- exactly once in the Stations Problems view (station subjects in their station's row, stops and combinators as
+-- registry rows after the stations; depots, refuelers and trains render on the Trains tab and are checked for their
+-- texts), each with its check's chip, fix line and detail numbers; it notes which checks it saw, so the last suite can
+-- assert that every check produced a correct row somewhere in the run (lab.problems_coverage).
+
+lab.problems_seen = lab.problems_seen or {}
+
+local function lint_key_of(c)
+	return type(c) == "table" and c[1] or c
+end
+
+local function lint_dash(name)
+	return (string.gsub(name, "_", "-"))
+end
+
+--- "12,345" as flib's format.number writes it.
+local function lint_number(v)
+	local s = tostring(math.floor(math.abs(v)))
+	local o = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+	if o:sub(1, 1) == "," then o = o:sub(2) end
+	return (v < 0 and "-" or "") .. o
+end
+
+-- The detail numbers each check shows: "n" formatted, "s" as a plain integer (masks), nil = none.
+local LINT_NUMBERS = {
+	capacity = { a = "n", b = "n" },
+	layout = { a = "n", b = "n" },
+	mask = { a = "s", b = "s" },
+	occupancy = { a = "n", b = "n" },
+	phantom = { a = "n", b = "n" },
+	depot_limit = { a = "n" },
+	depot_shared_name = { a = "n", b = "n" },
+	refueler_mask = { a = "s", b = "s" },
+	in_group = { a = "n" },
+	missing_stop = { a = "n" },
+	capacity_drift = { a = "n", b = "n" },
+	train_mask = { a = "s", b = "s" },
+	same_item = { a = "n" },
+}
+
+--- @return string? why the entry's detail is wrong
+local function lint_detail_wrong(row)
+	local detail = row.detail
+	local text = serpent.line(detail, { comment = false })
+	if row.message then
+		if lint_key_of(detail) == "cybersyn-gui.problems-world-" .. tostring(row.message) then return nil end
+		return "world key"
+	end
+	local key = lint_key_of(detail)
+	local want_key = "cybersyn-diag.lint-detail-" .. lint_dash(row.check)
+	if string.sub(key, 1, #want_key) ~= want_key then return "key " .. key end
+	local want = LINT_NUMBERS[row.check] or {}
+	for _, field in ipairs({ "a", "b" }) do
+		local how, v = want[field], row[field]
+		local skip = (row.check == "mask" and row.a == 0) or (row.check == "depot_limit" and row.a < 0)
+			or (row.check == "same_item" and row.a == 0)
+		if how and v and not skip then
+			local s = how == "n" and lint_number(v) or tostring(v)
+			if not string.find(text, '"' .. s .. '"', 1, true) then return field .. " " .. s .. " not in " .. text end
+		end
+	end
+	if row.item and row.check ~= "layout" then
+		local name = string.match(row.item, "^[^|]+")
+		if not string.find(text, name, 1, true) then return "item " .. row.item end
+	end
+	if row.network and (row.check == "layout" or row.check == "no_provider" or row.check == "refueler_mask"
+		or row.check == "train_mask" or row.check == "no_train" or row.check == "never_refuelled") then
+		if not string.find(text, row.network, 1, true) then return "network " .. row.network end
+	end
+	return nil
+end
+
+local function lint_id_of(f)
+	return f.check .. "|" .. f.subject .. "|" .. f.id .. "|" .. tostring(f.item or f.message or "")
+end
+
+--- Every finding of the last lint pass is exactly one entry of the Stations Problems view (stations and registry), or
+--- for depots, refuelers and trains has correct texts. With `collect` (inside a tick handler, where nothing can be
+--- printed) the results are appended to it as {name, ok, detail} for the caller to check later.
+--- @return table the view (dev stations_lint_view)
+function lab.problems_verify(label, collect)
+	local check = collect and function(name, ok, detail) collect[#collect + 1] = { name, ok and true or false, detail } end
+		or lab.check
+	local v = remote.call(lab.D, "stations_lint_view")
+	if not v.snapshot then
+		-- With every window closed the snapshot is released; the view reopens on a collected one.
+		remote.call(lab.D, "collect")
+		v = remote.call(lab.D, "stations_lint_view")
+	end
+	local wrong, seen = {}, {}
+	local function entry(e, where)
+		local id = lint_id_of(e)
+		seen[id] = (seen[id] or 0) + 1
+		local why = lint_detail_wrong(e)
+		if why then wrong[#wrong + 1] = where .. " " .. e.check .. " " .. e.id .. ": " .. why end
+		if lint_key_of(e.fix) ~= "cybersyn-diag.lint-fix-" .. lint_dash(e.check) then wrong[#wrong + 1] = e.check .. " fix" end
+		if lint_key_of(e.chip) ~= "cybersyn-diag.lint-chip-" .. lint_dash(e.check) then wrong[#wrong + 1] = e.check .. " chip" end
+		if not why then lab.problems_seen[e.check] = true end
+	end
+	local empty_rows = {}
+	for _, row in ipairs(v.stations) do
+		if #row.entries == 0 then empty_rows[#empty_rows + 1] = row.id end
+		for _, e in ipairs(row.entries) do
+			if e.subject ~= "station" or e.id ~= row.id then wrong[#wrong + 1] = "station row " .. row.id .. " holds " .. lint_id_of(e) end
+			entry(e, "station")
+		end
+	end
+	local registry_seen = {}
+	for _, r in ipairs(v.registry) do
+		entry(r.entry, "registry")
+		registry_seen[lint_id_of(r.entry)] = (registry_seen[lint_id_of(r.entry)] or 0) + 1
+	end
+	for _, e in ipairs(v.others) do
+		local why = lint_detail_wrong(e)
+		if why then wrong[#wrong + 1] = e.subject .. " " .. e.check .. " " .. e.id .. ": " .. why
+		else lab.problems_seen[e.check] = true end
+	end
+	-- Station findings: once each in the view.
+	local want, missing, n = {}, {}, 0
+	for _, f in ipairs(remote.call(lab.D, "lint_findings")) do
+		if f.subject == "station" then
+			want[lint_id_of(f)] = (want[lint_id_of(f)] or 0) + 1
+			n = n + 1
+		end
+	end
+	local in_view = 0
+	for id, c in pairs(seen) do
+		if string.find(id, "|station|", 1, true) then in_view = in_view + c end
+	end
+	for id, c in pairs(want) do
+		if seen[id] ~= c then missing[#missing + 1] = id end
+	end
+	check(label .. ": every station finding is exactly once in the Stations Problems view", #missing == 0 and in_view == n
+		and #empty_rows == 0, { findings = n, in_view = in_view, missing = missing, rows_without_finding = empty_rows })
+	-- Stops and combinators: once each as a registry row.
+	local raw, extra = {}, {}
+	for _, e in ipairs(v.raw_registry) do raw[lint_id_of(e)] = (raw[lint_id_of(e)] or 0) + 1 end
+	for id, c in pairs(raw) do
+		if registry_seen[id] ~= c then extra[#extra + 1] = id end
+	end
+	for id in pairs(registry_seen) do
+		if not raw[id] then extra[#extra + 1] = id end
+	end
+	check(label .. ": every stop and combinator finding is exactly once a registry row", #extra == 0,
+		{ raw = #v.raw_registry, rows = #v.registry, differ = extra })
+	check(label .. ": every finding has its check's chip, fix line and detail numbers", #wrong == 0, wrong)
+	return v
+end
+
+--- Every check has produced a correct row somewhere in the run (called by the last suite).
+function lab.problems_coverage()
+	local missing = {}
+	for _, name in ipairs({ "capacity", "layout", "mask", "no_provider", "limit_zero", "same_item", "occupancy",
+		"phantom", "depot_limit", "depot_shared_name", "refueler_mask", "never_refuelled", "in_group", "missing_stop",
+		"capacity_drift", "derelict_comb", "ghost_comb", "no_comb", "wrong_side", "double_comb", "priority",
+		"name_overlap", "train_mask", "no_train" }) do
+		if not lab.problems_seen[name] then missing[#missing + 1] = name end
+	end
+	lab.check("Problems view: every one of the 24 checks produced a correct row in this run", #missing == 0, missing)
+end
+
 out("INFO lab: lib loaded at tick " .. game.tick)

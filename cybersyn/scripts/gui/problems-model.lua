@@ -1,7 +1,7 @@
--- The Problems tab's model (PLAN3 §4.7, §4.12, §4.13): the lint findings grouped by check, acknowledged ones sunk to
--- the bottom of their group, split into pages of whole rows where every page starts with a group row, and the
--- captions of a finding's cells. Pure: plain tables in, plain tables and LocalisedStrings out, so the host unit tests
--- cover it without the engine.
+-- Texts of the setup lint's findings (PLAN3 §4.12; PLAN4 D7 folded the Problems tab into the Stations Problems
+-- column): the order a station's findings are shown in, the sort rank of a station's lint mask, and the captions,
+-- chips, fix lines and detail numbers of a finding. Pure: plain tables in, plain tables and LocalisedStrings out, so the
+-- host unit tests cover it without the engine.
 
 local format = require("__flib__.format")
 
@@ -19,203 +19,57 @@ model.DOT = {
 }
 model.ACKED_DOT = "flib_indicator_white"
 
---- @class ProblemRow
+-- A check's place in the worst-first order: severity first, then the check index.
+local RANK_STEP = 64
+
+--- @param check int
+--- @return int
+function model.rank(check)
+	return (LINT_SEVERITY[check] or DIAG_SEV_WARNING) * RANK_STEP + check
+end
+
+--- The rank of the worst check in a station's lint mask (the Problems column's sort key), nil when the mask is clean.
+--- @param mask int?
+--- @return int?
+function model.mask_rank(mask)
+	if not mask or mask == 0 then return nil end
+	local best
+	for check = 1, LINT_COUNT do
+		if bit32.btest(mask, LINT_BIT[check]) then
+			local r = model.rank(check)
+			if not best or r < best then best = r end
+		end
+	end
+	return best
+end
+
+--- @class ProblemEntry
 --- @field f LintFinding
---- @field key string row identity: check, subject, id and what the finding is about
---- @field ack_key int lint.subject_key of the subject (storage.acks.lint)
---- @field check int
 --- @field sev int DIAG_SEV_*
 --- @field ack DiagAck? the acknowledgement while it holds
 
---- @class ProblemGroup
---- @field check int
---- @field sev int
---- @field open ProblemRow[]
---- @field acked ProblemRow[]
-
---- @class ProblemsModel
---- @field groups ProblemGroup[] errors first, then by check
---- @field open {[int]: int} findings not acknowledged, per severity
---- @field acked int
---- @field total int
---- @field badge int errors not acknowledged
---- @field next_expiry uint? the earliest until_tick among the acknowledgements shown
---- @field station_subjects int distinct stations with a setup finding (the Overview's misconfigured count)
-
---- @param f LintFinding
---- @return string
-function model.row_key(f)
-	return f.check .. ":" .. f.subject .. ":" .. f.id .. ":" .. (f.item or f.message or "")
-end
-
---- @param a ProblemRow
---- @param b ProblemRow
-local function row_before(a, b)
-	local fa, fb = a.f, b.f
-	if fa.subject ~= fb.subject then return fa.subject < fb.subject end
-	if fa.id ~= fb.id then return fa.id < fb.id end
-	return a.key < b.key
-end
-
---- Groups the findings of every list by check.
---- @param lists LintFinding[][] the setup pass's findings, then the world scan's
---- @param subject_key fun(subject: int, id: uint): int lint.subject_key
---- @param is_acked fun(key: int, check: int): DiagAck?
---- @return ProblemsModel
-function model.build(lists, subject_key, is_acked)
-	local by_check = {}
-	local groups = {}
-	local open = { [DIAG_SEV_ERROR] = 0, [DIAG_SEV_WARNING] = 0, [DIAG_SEV_INFO] = 0 }
-	local acked, total = 0, 0
-	local next_expiry
-	local stations = {}
-	local station_subjects = 0
-	for _, list in ipairs(lists) do
-		for _, f in ipairs(list) do
-			local check = f.check
-			local sev = LINT_SEVERITY[check] or DIAG_SEV_WARNING
-			local g = by_check[check]
-			if not g then
-				g = { check = check, sev = sev, open = {}, acked = {} }
-				by_check[check] = g
-				groups[#groups + 1] = g
-			end
-			local ack_key = subject_key(f.subject, f.id)
-			local ack = is_acked(ack_key, check)
-			local row = { f = f, key = model.row_key(f), ack_key = ack_key, check = check, sev = sev, ack = ack }
-			total = total + 1
-			if ack then
-				g.acked[#g.acked + 1] = row
-				acked = acked + 1
-				local until_tick = ack.until_tick
-				if until_tick and (not next_expiry or until_tick < next_expiry) then next_expiry = until_tick end
-			else
-				g.open[#g.open + 1] = row
-				open[sev] = open[sev] + 1
-			end
-			if f.subject == LINT_SUBJECT_STATION and not stations[f.id] then
-				stations[f.id] = true
-				station_subjects = station_subjects + 1
-			end
-		end
+--- A station's findings in the order its cell shows them: not acknowledged first, then worst severity, check, what
+--- the finding is about and the subject id, so the first entry is the one the cell spells out.
+--- @param list LintFinding[]
+--- @param is_acked fun(f: LintFinding): DiagAck?
+--- @return ProblemEntry[]
+function model.order(list, is_acked)
+	local out = {}
+	for i, f in ipairs(list) do
+		out[i] = { f = f, sev = LINT_SEVERITY[f.check] or DIAG_SEV_WARNING, ack = is_acked(f) }
 	end
-	table.sort(groups, function(a, b)
+	table.sort(out, function(a, b)
+		local aa, ba = a.ack ~= nil, b.ack ~= nil
+		if aa ~= ba then return ba end
 		if a.sev ~= b.sev then return a.sev < b.sev end
-		return a.check < b.check
+		local fa, fb = a.f, b.f
+		if fa.check ~= fb.check then return fa.check < fb.check end
+		local ka, kb = tostring(fa.item or fa.message or ""), tostring(fb.item or fb.message or "")
+		if ka ~= kb then return ka < kb end
+		if fa.subject ~= fb.subject then return fa.subject < fb.subject end
+		return fa.id < fb.id
 	end)
-	for _, g in ipairs(groups) do
-		table.sort(g.open, row_before)
-		table.sort(g.acked, row_before)
-	end
-	return {
-		groups = groups,
-		open = open,
-		acked = acked,
-		total = total,
-		badge = open[DIAG_SEV_ERROR],
-		next_expiry = next_expiry,
-		station_subjects = station_subjects,
-	}
-end
-
---- @class ProblemsFilter
---- @field sev {[int]: boolean} severities shown (missing = shown)
---- @field acked boolean? acknowledged findings shown (greyed, below the others of their group)
-
---- @class ProblemsLine
---- @field kind "group"|"row"
---- @field group ProblemGroup
---- @field cont boolean? a group row that continues its group from the previous page
---- @field shown int? group rows: findings of the group the filter shows
---- @field hidden_acked int? group rows: acknowledged findings of the group the filter hides
---- @field row ProblemRow?
---- @field acked boolean? finding rows
-
---- @class ProblemsPage
---- @field lines ProblemsLine[]
---- @field page int
---- @field pages int
---- @field first int index of the page's first finding among those shown (0 when none)
---- @field last int
---- @field shown int findings the filter shows
-
---- @param g ProblemGroup
---- @param filter ProblemsFilter
---- @return int open
---- @return int acked shown
-local function visible(g, filter)
-	if filter.sev and filter.sev[g.sev] == false then return 0, 0 end
-	return #g.open, filter.acked and #g.acked or 0
-end
-
---- Splits the shown findings into pages of `rows` whole rows. Every page starts with a group row (repeated, marked
---- continued, when a group runs over a page break) and a group row is never the last row of a page, so the row
---- arithmetic of the window holds on every page.
---- @param m ProblemsModel
---- @param filter ProblemsFilter
---- @param rows int
---- @param page int? 1-based; clamped
---- @return ProblemsPage
-function model.page(m, filter, rows, page)
-	rows = math.max(rows or 2, 2)
-	-- One pass over the groups' sizes places every page break; only the wanted page's lines are built.
-	local breaks = {}
-	local p, used, findings = 1, 0, 0
-	local starts = { { group = 1, i = 1, before = 0 } }
-	local groups = m.groups
-	for gi, g in ipairs(groups) do
-		local n_open, n_acked = visible(g, filter)
-		local n = n_open + n_acked
-		local i = 1
-		while i <= n do
-			if used + 2 > rows then
-				p = p + 1
-				used = 0
-				starts[p] = { group = gi, i = i, before = findings }
-			end
-			used = used + 1
-			local take = math.min(rows - used, n - i + 1)
-			used = used + take
-			findings = findings + take
-			i = i + take
-		end
-	end
-	local pages = p
-	page = math.min(math.max(page or 1, 1), pages)
-	local start = starts[page]
-	local stop = starts[page + 1]
-	local lines = {}
-	local count = 0
-	local gi, i = start.group, start.i
-	while gi <= #groups and #lines < rows do
-		if stop and gi == stop.group and i >= stop.i then break end
-		local g = groups[gi]
-		local n_open, n_acked = visible(g, filter)
-		local n = n_open + n_acked
-		if i <= n then
-			lines[#lines + 1] = { kind = "group", group = g, cont = i > 1, shown = n,
-				hidden_acked = filter.acked and 0 or #g.acked }
-			while i <= n and #lines < rows do
-				if stop and gi == stop.group and i >= stop.i then break end
-				local acked = i > n_open
-				local row = acked and g.acked[i - n_open] or g.open[i]
-				lines[#lines + 1] = { kind = "row", group = g, row = row, acked = acked }
-				count = count + 1
-				i = i + 1
-			end
-		end
-		if i > n then
-			gi, i = gi + 1, 1
-		end
-	end
-	return {
-		lines = lines,
-		page = page,
-		pages = pages,
-		first = count > 0 and start.before + 1 or 0,
-		last = start.before + count,
-		shown = findings,
-	}
+	return out
 end
 
 -- ---------------------------------------------------------------- captions

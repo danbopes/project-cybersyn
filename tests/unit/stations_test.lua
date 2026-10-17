@@ -74,7 +74,7 @@ test("query: status ladder and counts", function()
 	})
 	-- Phase 4: the chip counts besides the statuses; failing = no power + disabled (+ throttling + setup).
 	assert_eq(counts, { all = 9, no_power = 1, disabled = 1, warming_up = 1, starved = 1, saturated = 1, idle = 1, ok = 3,
-		unserved = 0, setup = 0, failing = 2, stuck = 0 })
+		unserved = 0, problems = 0, failing = 2, stuck = 0 })
 end)
 
 test("station_status: idle needs an old last delivery, tps > 0 and no active request", function()
@@ -135,7 +135,7 @@ test("query: global filters narrow the set and the counts", function()
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(ids(rows), { 8, 9 })
 	assert_eq(counts, { all = 2, no_power = 0, disabled = 0, warming_up = 0, starved = 0, saturated = 0, idle = 0, ok = 2,
-		unserved = 0, setup = 0, failing = 0, stuck = 0 })
+		unserved = 0, problems = 0, failing = 0, stuck = 0 })
 	pd = { search_item = "coal" }
 	stations_tab = setup()
 	rows = stations_tab.query(pd)
@@ -246,7 +246,7 @@ test("query: a pass completed by dev collect or the regular step shows rows at o
 end)
 
 -- Phase 4 (PLAN3 §4.7): the chips besides the statuses. Each chip's count is what it shows when toggled.
-test("chips: unserved, setup, stuck and failing count what they show", function()
+test("chips: unserved, problems, stuck and failing count what they show", function()
 	local stations_tab, collector, snap = setup()
 	snap.stations[5].unserved = { count = 2, worst_reason = 1, oldest_first_tick = 1 }
 	snap.stations[6].lint = 8
@@ -257,8 +257,9 @@ test("chips: unserved, setup, stuck and failing count what they show", function(
 	snap.alerts = { { train_id = 70, kind = 1 }, { train_id = 71, kind = 2 } }
 	local pd = {}
 	local _, counts = stations_tab.query(pd)
-	assert_eq({ counts.unserved, counts.setup, counts.stuck, counts.failing }, { 2, 2, 2, 5 })
-	local want = { unserved = { 5, 8 }, setup = { 6, 8 }, stuck = { 4, 9 }, failing = { 1, 2, 6, 7, 8 } }
+	assert_eq({ counts.unserved, counts.problems, counts.stuck, counts.failing }, { 2, 2, 2, 5 })
+	-- The Problems view sorts worst first (PLAN4 D7): capacity (8) before the check behind bit 8 (6).
+	local want = { unserved = { 5, 8 }, problems = { 8, 6 }, stuck = { 4, 9 }, failing = { 1, 2, 6, 7, 8 } }
 	for chip, list in pairs(want) do
 		pd.stations_status_filter, pd.stations_chip = nil, nil
 		stations_tab.set_chip(pd, chip)
@@ -272,26 +273,115 @@ test("chips: unserved, setup, stuck and failing count what they show", function(
 	assert_eq(pd.stations_chip, "failing")
 	stations_tab.set_chip(pd, "failing")
 	assert_nil(pd.stations_chip)
-	stations_tab.set_chip(pd, "setup")
+	stations_tab.set_chip(pd, "problems")
 	stations_tab.set_chip(pd, "ok")
 	assert_eq({ pd.stations_status_filter, pd.stations_chip }, { "ok", nil })
 	-- The surface filter narrows every chip count.
 	snap.stations[8].surface_index = 2
 	local _, narrowed = stations_tab.query({ search_surface_idx = 1 })
-	assert_eq({ narrowed.unserved, narrowed.setup }, { 1, 1 })
+	assert_eq({ narrowed.unserved, narrowed.problems }, { 1, 1 })
 end)
 
 test("chips: a refilled record moves between chip counts with the change log", function()
 	local stations_tab, collector, snap = setup()
 	local pd = {}
 	local _, counts = stations_tab.query(pd)
-	assert_eq(counts.setup, 0)
+	assert_eq(counts.problems, 0)
 	snap.stations[3].lint = 4
 	local manager = storage.manager
 	manager.collect_log = manager.collect_log or { epoch = 1, base = 0, ids = {} }
 	local log = manager.collect_log
 	log.ids[#log.ids + 1] = 3
 	local _, after = stations_tab.query(pd)
-	assert_eq(after.setup, 1)
+	assert_eq(after.problems, 1)
 	assert_eq(after.failing, 3)
+end)
+
+-- PLAN4 D15 item 15: names sort by the value of their digit runs, ties keep the id order.
+test("query: natural name order (stn-1 < stn-2 < stn-10), both directions", function()
+	local stations_tab, _, snap = setup()
+	snap.stations = {
+		[1] = st(1, "stn-10"),
+		[2] = st(2, "stn-2"),
+		[3] = st(3, "stn-1"),
+		[4] = st(4, "stn-02"),
+		[5] = st(5, "Alpha"),
+	}
+	for _, record in pairs(snap.stations) do record.status = "ok" end
+	assert_eq(ids((stations_tab.query({}))), { 5, 3, 2, 4, 1 })
+	local pd = { sort = { stations_tab = { column = "name", ascending = false } } }
+	assert_eq(ids((stations_tab.query(pd))), { 1, 2, 4, 3, 5 })
+	-- Another column's ties fall back to the natural order too.
+	pd = { sort = { stations_tab = { column = "station_status", ascending = true } } }
+	assert_eq(ids((stations_tab.query(pd))), { 5, 3, 2, 4, 1 })
+end)
+
+-- PLAN4 D7: the Problems chip (round 3's Setup) opens its view sorted worst first; leaving it drops that sort.
+test("problems chip: worst severity then check order; the sort comes and goes with the chip; 'setup' maps over", function()
+	local stations_tab, _, snap = setup()
+	snap.stations[2].lint = LINT_BIT[LINT_NEVER_REFUELLED]
+	snap.stations[4].lint = LINT_BIT[LINT_LIMIT_ZERO]
+	snap.stations[6].lint = LINT_BIT[LINT_LIMIT_ZERO] + LINT_BIT[LINT_LAYOUT]
+	snap.stations[8].lint = LINT_BIT[LINT_CAPACITY]
+	local pd = {}
+	stations_tab.set_chip(pd, "problems")
+	local rows, counts, _, column, ascending = stations_tab.query(pd)
+	assert_eq({ column, ascending }, { "problems", true })
+	assert_eq(counts.problems, 4)
+	-- Errors (capacity 1, layout 2) before the warning (limit_zero) before the info (never_refuelled).
+	assert_eq(ids(rows), { 8, 6, 4, 2 })
+	stations_tab.set_chip(pd, "problems")
+	local _, _, _, column2 = stations_tab.query(pd)
+	assert_eq(column2, "name")
+	-- A stored round-3 chip is the Problems chip.
+	pd = { stations_chip = "setup" }
+	rows = stations_tab.query(pd)
+	assert_eq(pd.stations_chip, "problems")
+	assert_eq(#rows, 4)
+	-- Provided / requested stands in for Problems outside the view, and the other way round.
+	pd = { sort = { stations_tab = { column = "provided_requested", ascending = true } }, stations_chip = "problems",
+		stations_problems_view = true }
+	local _, _, _, column3 = stations_tab.query(pd)
+	assert_eq(column3, "problems")
+end)
+
+-- PLAN4 D15 item 8: "Last dispatch" reads never until the first dispatch, and sorts with the stations without one.
+test("last dispatch: never while last_delivery_tick is still the build tick; sorts last", function()
+	local stations_tab, _, snap = setup()
+	storage.stations = {
+		[5] = { last_delivery_tick = 1000, created_tick = 1000 },
+		[7] = { last_delivery_tick = 50000, created_tick = 1000 },
+		[9] = { last_delivery_tick = 50000 },
+	}
+	for _, id in ipairs({ 1, 2, 3, 4, 5, 6, 8 }) do snap.stations[id].last_delivery_tick = nil end
+	snap.stations[5].last_delivery_tick = 1000
+	assert_true(stations_tab.never_dispatched(5))
+	assert_false(stations_tab.never_dispatched(7))
+	assert_false(stations_tab.never_dispatched(9))
+	local pd = { sort = { stations_tab = { column = "last_delivery", ascending = true } } }
+	local order = ids((stations_tab.query(pd)))
+	assert_eq({ order[1], order[2] }, { 7, 9 })
+	assert_eq(order[#order], 8)
+	storage.stations = {}
+end)
+
+-- PLAN4 D15 item 13: zero-count chips hide (All and the toggled one stay), the rest wrap in order, never abbreviated.
+test("chip_lines: hide zero counts, wrap onto the second line in order, keep the toggled chip", function()
+	local stations_tab = setup()
+	local counts = { all = 30, no_power = 0, disabled = 2, warming_up = 0, starved = 3, saturated = 0, idle = 0, ok = 25,
+		unserved = 4, problems = 6, stuck = 0, failing = 8 }
+	local l1, l2 = stations_tab.chip_lines(counts, "all", 2000, 2000)
+	assert_eq(l1, { "all", "disabled", "starved", "ok", "unserved", "problems", "failing" })
+	assert_eq(l2, {})
+	-- The toggled chip shows at zero; `always` keeps a chip whose count is not known yet.
+	l1 = stations_tab.chip_lines(counts, "idle", 2000, 2000, { stuck = true })
+	assert_eq(l1, { "all", "disabled", "starved", "idle", "ok", "unserved", "problems", "stuck", "failing" })
+	-- Narrow: what does not fit goes to the second line, keeping the order; nothing is dropped while it fits there.
+	l1, l2 = stations_tab.chip_lines(counts, "all", 200, 1000)
+	assert_eq(l1, { "all", "disabled" })
+	assert_eq(l2, { "starved", "ok", "unserved", "problems", "failing" })
+	-- Once a chip went to the second line, the later ones follow it even if they would fit the first.
+	l1, l2 = stations_tab.chip_lines({ all = 1, no_power = 1, ok = 1 }, "all", 160, 1000)
+	assert_eq(l1, { "all" })
+	assert_eq(l2, { "no_power", "ok" })
 end)

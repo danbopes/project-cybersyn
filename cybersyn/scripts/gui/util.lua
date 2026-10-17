@@ -577,6 +577,18 @@ function util.search_terms(text)
 	return terms
 end
 
+--- A sort key that orders the digit runs of a string by their value ("stn-2" before "stn-10"): each run becomes its
+--- length in two digits followed by the digits without leading zeros.
+--- @param s string
+--- @return string
+function util.natural_key(s)
+	return (string.gsub(s, "%d+", function(d)
+		d = string.gsub(d, "^0+", "")
+		if d == "" then d = "0" end
+		return string.format("%02d", #d) .. d
+	end))
+end
+
 --- True when every term occurs in `name_lower` (already normalised).
 --- @param name_lower string
 --- @param terms string[]
@@ -785,12 +797,13 @@ end
 --- @param player_data PlayerData
 --- @param tab string
 --- @param total integer
+--- @param size integer? rows per page when the tab gives up some of its rows (default util.page_size)
 --- @return integer first
 --- @return integer last
 --- @return integer page
 --- @return integer pages
-function util.paginate(player_data, tab, total)
-	local size = util.page_size(player_data, tab)
+function util.paginate(player_data, tab, total, size)
+	size = size or util.page_size(player_data, tab)
 	local pages = math.max(1, math.ceil(total / size))
 	player_data.page = player_data.page or {}
 	local page = math.min(math.max(player_data.page[tab] or 1, 1), pages)

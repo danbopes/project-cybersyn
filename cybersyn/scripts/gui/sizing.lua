@@ -29,8 +29,6 @@ sizing.TAB_CHROME = {
 	trains_tab = 112,
 	-- subheader 36, gap 12, grid subheader 36, grid frame borders 8
 	inventory_tab = 92,
-	-- subheader 36, column header 20, subfooter 36, frame borders
-	problems_tab = 96,
 	-- subheader 36, gap 12, caption strip 36, frame borders 4
 	log_tab = 88,
 	-- The item drill-down (scripts/gui/item.lua) in place of a tab's content: subheader 36, then three tables of
@@ -46,7 +44,6 @@ sizing.ROW_HEIGHT = {
 	stations_tab = 32,
 	trains_tab = 36,
 	inventory_tab = 40,
-	problems_tab = 32,
 	log_tab = 28,
 	-- Shared by the drill-down's three tables (item-model.split_rows).
 	item_tab = 32,
