@@ -66,6 +66,36 @@ test("open_errors / station_rank: acknowledgements move a station behind every o
 	assert_eq(model.open_mask(7, cap + limit, is_acked), 0)
 end)
 
+-- PLAN4 D15-5: a station the Misconfigured line counts reads "Setup" instead of "OK" on Stations, the stop panel and
+-- the drill-down; a status that already says why nothing moves stays.
+test("shown_status: Setup replaces only OK, and only while an error is open", function()
+	local model = pm()
+	local acked = {}
+	local function is_acked(kind, id, check) return acked[id .. ":" .. check] end
+	local cap, limit, refuel = LINT_BIT[LINT_CAPACITY], LINT_BIT[LINT_LIMIT_ZERO], LINT_BIT[LINT_NEVER_REFUELLED]
+	assert_eq(model.shown_status("ok", 7, cap, is_acked), "setup")
+	assert_eq(model.shown_status(nil, 7, cap, is_acked), "setup", "a record without a status counts as OK")
+	assert_eq(model.shown_status("starved", 7, cap, is_acked), "starved")
+	assert_eq(model.shown_status("idle", 7, cap, is_acked), "idle")
+	assert_eq(model.shown_status("ok", 7, limit + refuel, is_acked), "ok", "warnings and info do not block")
+	assert_eq(model.shown_status("ok", 7, 0, is_acked), "ok")
+	assert_eq(model.shown_status("ok", 7, nil, is_acked), "ok")
+	local checks, mask = model.open_error_checks(7, cap + LINT_BIT[LINT_LAYOUT] + limit, is_acked)
+	assert_eq(checks, { LINT_CAPACITY, LINT_LAYOUT })
+	assert_eq(mask, cap + LINT_BIT[LINT_LAYOUT])
+	acked["7:" .. LINT_CAPACITY] = { player_index = 1 }
+	assert_eq(model.shown_status("ok", 7, cap + limit, is_acked), "ok", "an acknowledged error is OK again")
+	assert_eq(model.open_error_checks(7, cap + limit, is_acked), {})
+	local tip = model.setup_status_tooltip({ LINT_LAYOUT })
+	assert_eq(tip[2], { "cybersyn-gui.station-status-setup-tooltip" })
+	assert_eq(tip[4], model.caption(LINT_LAYOUT))
+	local many = {}
+	for check = 1, 12 do many[check] = check end
+	local long = model.setup_status_tooltip(many)
+	assert_true(#long <= 21, "a LocalisedString holds at most 20 parameters: " .. #long)
+	assert_eq(long[#long], "\n+4")
+end)
+
 test("order: open before acknowledged, then severity, check, item and subject", function()
 	local model = pm()
 	local list = {
@@ -198,7 +228,8 @@ test("locale: every lint caption, fix and detail key, and the Problems column's 
 		"stations-problems", "stations-sort-problems", "stations-problems-more", "stations-problems-none", "stations-problems-none-filtered", "stations-open-errors",
 		"stations-open-errors-acked", "stations-open-errors-tooltip",
 		"stations-registry-stop", "stations-registry-combinator", "stations-registry-tooltip", "stations-summary-registry",
-		"stations-last-dispatch", "stations-sort-last-dispatch", "stations-last-dispatch-never" }) do
+		"stations-last-dispatch", "stations-sort-last-dispatch", "stations-last-dispatch-never",
+		"station-status-setup", "station-status-setup-tooltip" }) do
 		keys[#keys + 1] = k
 	end
 	-- The Problems tab is gone (PLAN4 D7): its own keys went with it.

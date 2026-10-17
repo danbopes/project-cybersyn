@@ -29,7 +29,7 @@ lab = {
 		trains = { "train_id", true },
 		inventory = { "item_order", true },
 	},
-	STATUSES = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok" },
+	STATUSES = { "no_power", "disabled", "warming_up", "starved", "setup", "saturated", "idle", "ok" },
 	PERIODS = { 10, 60, 1440 },
 }
 

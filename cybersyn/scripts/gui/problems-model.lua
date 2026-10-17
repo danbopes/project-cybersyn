@@ -120,6 +120,56 @@ function model.is_open_error_rank(rank)
 	return rank ~= nil and rank < (DIAG_SEV_ERROR + 1) * RANK_STEP
 end
 
+--- The status a view shows for a station (PLAN4 D15-5): "setup" in place of "ok" while an error-severity finding
+--- nobody acknowledged blocks it, so a station the Overview's Misconfigured line counts never reads "OK". Every other
+--- status already says why nothing moves and stays.
+--- @param status string? SnapshotStation.status
+--- @param id uint
+--- @param bits int? the station's lint bits
+--- @param is_acked fun(kind: string, id: uint, check: int): any diag.is_acked
+--- @return string
+function model.shown_status(status, id, bits, is_acked)
+	status = status or "ok"
+	if status == "ok" and bits and bits ~= 0 and model.open_errors(id, bits, is_acked) > 0 then return "setup" end
+	return status
+end
+
+-- Checks a Setup status tooltip names; a LocalisedString holds at most 20 parameters.
+local SETUP_TOOLTIP_CHECKS = 8
+
+--- The error checks of a station nobody acknowledged, in check order, and their mask (a cache key).
+--- @param id uint
+--- @param bits int?
+--- @param is_acked fun(kind: string, id: uint, check: int): any diag.is_acked
+--- @return int[] checks
+--- @return int mask
+function model.open_error_checks(id, bits, is_acked)
+	local mask = bit32.band(model.open_mask(id, bits, is_acked), model.error_mask())
+	local checks = {}
+	if mask ~= 0 then
+		for check = 1, LINT_COUNT do
+			if bit32.btest(mask, LINT_BIT[check]) then checks[#checks + 1] = check end
+		end
+	end
+	return checks, mask
+end
+
+--- The tooltip of a Setup status: what it means, then the open error checks by name.
+--- @param checks int[] model.open_error_checks
+--- @return LocalisedString
+function model.setup_status_tooltip(checks)
+	local tip = { "", { "cybersyn-gui.station-status-setup-tooltip" } }
+	for i, check in ipairs(checks) do
+		if i > SETUP_TOOLTIP_CHECKS then
+			tip[#tip + 1] = "\n+" .. (#checks - SETUP_TOOLTIP_CHECKS)
+			break
+		end
+		tip[#tip + 1] = "\n"
+		tip[#tip + 1] = model.caption(check)
+	end
+	return tip
+end
+
 --- @class ProblemEntry
 --- @field f LintFinding
 --- @field sev int DIAG_SEV_*

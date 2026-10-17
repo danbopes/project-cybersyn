@@ -23,7 +23,7 @@ local lint_text = require("scripts.gui.lint-text")
 local stations_tab = {}
 
 --- @class PlayerData
---- @field stations_status_filter string? the status chip that is toggled (one of collector.STATUSES)
+--- @field stations_status_filter string? the status chip that is toggled (one of STATUSES)
 --- @field stations_chip "unserved"|"problems"|"stuck"|"failing"? the other chip that is toggled; never both
 --- @field stations_problems_view boolean? the Problems chip was on at the last query (its sort is set on the way in)
 
@@ -47,8 +47,9 @@ local FLAG_UNSERVED, FLAG_SETUP, FAILING = logic.FLAG_UNSERVED, logic.FLAG_SETUP
 -- Alert kind 1 is Cybersyn's stuck-train alert (storage.active_alerts).
 local ALERT_STUCK = 1
 
---- Severity order: the status sort and the filter chips both follow it.
-local STATUSES = collector.STATUSES
+--- Severity order: the status sort and the filter chips both follow it. The collector's statuses plus "setup", which
+--- this tab and the stop panel show in place of "ok" (pm.shown_status).
+local STATUSES = { "no_power", "disabled", "warming_up", "starved", "setup", "saturated", "idle", "ok" }
 local STATUS_RANK = {}
 for i, s in ipairs(STATUSES) do STATUS_RANK[s] = i end
 local STATUS_COLOR = {
@@ -56,6 +57,7 @@ local STATUS_COLOR = {
 	disabled = "purple",
 	warming_up = "cyan",
 	starved = "pink",
+	setup = "yellow",
 	saturated = "orange",
 	idle = "white",
 	ok = "green",
@@ -78,7 +80,7 @@ local CHIP_ICON = {
 -- Widths of the chips with their names and a one-digit count at the default font (English, measured on a screenshot at
 -- UI scale 1.0), so the chips that do not fit beside the search field go to the second line instead of overflowing.
 local CHIP_WIDTH = {
-	all = 50, no_power = 110, disabled = 108, warming_up = 125, starved = 92, saturated = 114, idle = 75, ok = 72,
+	all = 50, no_power = 110, disabled = 108, warming_up = 125, starved = 92, setup = 86, saturated = 114, idle = 75, ok = 72,
 	unserved = 114, problems = 108, stuck = 152, failing = 98,
 }
 -- Each further digit of a count, separators included.
@@ -441,10 +443,11 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	for _, s in ipairs(STATUSES) do counts[s] = 0 end
 	local ctx = { status = status }
 	local station_flags, passes = logic.station_flags, util.station_passes
+	local shown, is_acked = pm.shown_status, diag.is_acked
 	local all, unserved, setup, failing = 0, 0, 0, 0
 	for id, st in pairs(stations) do
 		if passes(st, f) then
-			local s = st.status or "ok"
+			local s = shown(st.status, id, st.lint, is_acked)
 			status[id] = s
 			counts[s] = counts[s] + 1
 			all = all + 1
@@ -484,7 +487,7 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 		local id = ids[i]
 		local st = stations[id]
 		local old = status[id]
-		local new = st and util.station_passes(st, f) and (st.status or "ok") or nil
+		local new = st and util.station_passes(st, f) and pm.shown_status(st.status, id, st.lint, diag.is_acked) or nil
 		local old_flags = flags[id] or 0
 		local new_flags = new and logic.station_flags(st) or 0
 		if old ~= new then
@@ -522,6 +525,19 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 			changed[id] = true
 		end
 	end
+end
+
+--- An acknowledgement turns a Setup status back into OK (and an expiry the other way) without a change-log entry, so
+--- the stations with a finding are folded in again when storage.acks.lint_version moves.
+--- @param cache table
+--- @param snapshot Snapshot
+--- @param f ManagerFilters
+local function refresh_setup_statuses(cache, snapshot, f)
+	local ids = {}
+	for id, fl in pairs(cache.flags) do
+		if band(fl, FLAG_SETUP) ~= 0 then ids[#ids + 1] = id end
+	end
+	if #ids > 0 then apply_changes(cache, snapshot, f, ids, 1, #ids) end
 end
 
 --- The display order as a comparator over station ids: key in the requested direction with nil last, then the
@@ -656,7 +672,7 @@ function stations_tab.query(player_data)
 	if cache and cache.fsig == fsig and cache.column == column and cache.flags and cache.nat then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
 	end
-	local av = column == "problems" and lint_ack_version() or nil
+	local av = lint_ack_version()
 	if ids then
 		apply_changes(cache, snapshot, f, ids, first, last)
 		cache.pos = pos
@@ -664,8 +680,9 @@ function stations_tab.query(player_data)
 		cache = rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 		cache.av = av
 	end
-	if av and cache.av ~= av then
-		refresh_problem_keys(cache, stations)
+	if cache.av ~= av then
+		if column == "problems" then refresh_problem_keys(cache, stations) end
+		refresh_setup_statuses(cache, snapshot, f)
 		cache.av = av
 	end
 	if first_build then
@@ -1050,11 +1067,13 @@ local function row_model(st, ctx)
 	end
 
 	local hashes = status == "starved" and starved_hashes(st, ctx.snapshot.starved) or nil
+	local setup_checks, setup_mask
+	if status == "setup" then setup_checks, setup_mask = pm.open_error_checks(st.id, st.lint, diag.is_acked) end
 	local unserved = st.unserved and st.unserved.count or 0
 	m.status_tip_sig = (hashes and (status .. "|" .. table.concat(hashes, ",", 1, math.min(#hashes, 10))) or status)
-		.. "|" .. unserved .. (st.throttling and "|t" or "")
+		.. "|" .. unserved .. (st.throttling and "|t" or "") .. (setup_mask and ("|s" .. setup_mask) or "")
 	m.status_tooltip = function()
-		local tooltip = { "", { status_key(status) .. "-tooltip" } }
+		local tooltip = { "", setup_checks and pm.setup_status_tooltip(setup_checks) or { status_key(status) .. "-tooltip" } }
 		if hashes then
 			local icons = {}
 			for i = 1, math.min(#hashes, 10) do

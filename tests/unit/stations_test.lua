@@ -73,8 +73,33 @@ test("query: status ladder and counts", function()
 		[6] = "ok", [7] = "idle", [8] = "ok", [9] = "ok",
 	})
 	-- Phase 4: the chip counts besides the statuses; failing = no power + disabled (+ throttling + setup).
-	assert_eq(counts, { all = 9, no_power = 1, disabled = 1, warming_up = 1, starved = 1, saturated = 1, idle = 1, ok = 3,
-		unserved = 0, problems = 0, failing = 2, stuck = 0 })
+	assert_eq(counts, { all = 9, no_power = 1, disabled = 1, warming_up = 1, starved = 1, setup = 0, saturated = 1, idle = 1,
+		ok = 3, unserved = 0, problems = 0, failing = 2, stuck = 0 })
+end)
+
+-- PLAN4 D15-5: an OK station with an open setup error reads Setup, counted in its own chip and not in OK; an
+-- acknowledgement, which writes no change-log entry, turns it back on the next query.
+test("query: Setup replaces OK while an error finding is open", function()
+	local stations_tab, _, snap = setup()
+	snap.stations[8].lint = LINT_BIT[LINT_CAPACITY]
+	snap.stations[4].lint = LINT_BIT[LINT_CAPACITY]
+	snap.stations[9].lint = LINT_BIT[LINT_LIMIT_ZERO]
+	local pd = {}
+	local _, counts, ctx = stations_tab.query(pd)
+	assert_eq(ctx.status[8], "setup")
+	assert_eq(ctx.status[4], "starved", "a status that says why stays")
+	assert_eq(ctx.status[9], "ok", "a warning does not block")
+	assert_eq(counts.setup, 1)
+	assert_eq(counts.ok, 2)
+	pd.stations_status_filter = "setup"
+	assert_eq(ids((stations_tab.query(pd))), { 8 })
+	pd.stations_status_filter = nil
+	storage.acks = { request = {}, station = {}, lint = { [8] = { [LINT_CAPACITY] = { player_index = 1 } } }, lint_version = 1 }
+	_, counts, ctx = stations_tab.query(pd)
+	assert_eq(ctx.status[8], "ok")
+	assert_eq(counts.setup, 0)
+	assert_eq(counts.ok, 3)
+	storage.acks = nil
 end)
 
 test("station_status: idle needs an old last delivery, tps > 0 and no active request", function()
@@ -134,8 +159,8 @@ test("query: global filters narrow the set and the counts", function()
 	local pd = { search_query = "hotel" }
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(ids(rows), { 8, 9 })
-	assert_eq(counts, { all = 2, no_power = 0, disabled = 0, warming_up = 0, starved = 0, saturated = 0, idle = 0, ok = 2,
-		unserved = 0, problems = 0, failing = 0, stuck = 0 })
+	assert_eq(counts, { all = 2, no_power = 0, disabled = 0, warming_up = 0, starved = 0, setup = 0, saturated = 0, idle = 0,
+		ok = 2, unserved = 0, problems = 0, failing = 0, stuck = 0 })
 	pd = { search_item = "coal" }
 	stations_tab = setup()
 	rows = stations_tab.query(pd)

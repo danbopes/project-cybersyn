@@ -4715,6 +4715,7 @@
     1142
    ],
    "saturated": {},
+   "setup": {},
    "starved": [
     742,
     746,
@@ -4731,6 +4732,7 @@
    "no_power": 0,
    "ok": 25,
    "saturated": 0,
+   "setup": 0,
    "starved": 5,
    "warming_up": 0
   },

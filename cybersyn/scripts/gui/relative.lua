@@ -76,6 +76,7 @@ local STATUS_COLOR = {
 	disabled = "purple",
 	warming_up = "cyan",
 	starved = "pink",
+	setup = "yellow",
 	saturated = "orange",
 	idle = "white",
 	ok = "green",
@@ -798,7 +799,8 @@ local function stop_model(pd, state)
 		end
 		m.nets = nc.nets
 		m.nets_key = nc.key
-		m.status = st.status
+		m.status = pm.shown_status(st.status, id, m.lint_bits, diag.is_acked)
+		if m.status == "setup" then m.setup_checks, m.setup_mask = pm.open_error_checks(id, m.lint_bits, diag.is_acked) end
 		m.deliveries = st.deliveries_total
 		m.limit = st.trains_limit
 		m.unserved = unserved_rows(state, id)
@@ -860,7 +862,7 @@ end
 local function render_stop_head(state, body, m)
 	local sig = table.concat({ m.sub, tostring(m.is_p), tostring(m.is_r), tostring(m.is_stack), tostring(m.status),
 		m.nets_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
-		tostring(m.parked) }, "|")
+		tostring(m.parked), m.setup_mask or 0 }, "|")
 	if state.sigs["head"] ~= sig then
 		section(state, body, "head", sig, function()
 			local out = {}
@@ -879,7 +881,8 @@ local function render_stop_head(state, body, m)
 			end
 			if m.status then
 				out[#out + 1] = line({ "cybersyn-gui.relative-status", status_caption(m.status) },
-					{ "cybersyn-gui.station-status-" .. string.gsub(m.status, "_", "-") .. "-tooltip" })
+					m.setup_checks and pm.setup_status_tooltip(m.setup_checks)
+					or { "cybersyn-gui.station-status-" .. string.gsub(m.status, "_", "-") .. "-tooltip" })
 			end
 			local pair = {
 				type = "flow",

@@ -7,7 +7,7 @@
 
 local D, pi = lab.D, lab.pi
 local DS, DT, DI = "cybersyn-manager-dev-stations", "cybersyn-manager-dev-trains", "cybersyn-manager-dev-inventory"
-local STATION_CHIPS = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok", "unserved", "problems",
+local STATION_CHIPS = { "no_power", "disabled", "warming_up", "starved", "setup", "saturated", "idle", "ok", "unserved", "problems",
 	"stuck", "failing" }
 local TRAIN_CHIPS = { "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
 	"not_refuelled", "in_group", "trouble", "problems" }
@@ -150,6 +150,63 @@ lab.suite("37_tabs", {
 		local o = remote.call(D, "dump", pi, "overview")
 		lab.check("Failing chip == the Overview's Stations failing tile (one number per fact)",
 			o.tiles.failing and o.tiles.failing.headline == counts.failing, { tile = o.tiles.failing, chip = counts.failing })
+
+		-- PLAN4 D15-5: an otherwise OK station with an error nobody acknowledged reads Setup (its own chip, not in
+		-- OK); every other status stays. The stop panel's Status line says the same; an acknowledgement turns it back.
+		do
+			local em = o.lint_error_mask
+			local sd = stations_dump()
+			local recs = snapshot().stations
+			local wrong, setup_id = {}, nil
+			local n_setup = 0
+			for i, id in ipairs(sd.ids) do
+				local rec = recs[id]
+				local want = rec.status or "ok"
+				if want == "ok" and bit32.band(rec.lint or 0, em) ~= 0 then want = "setup" end
+				if sd.statuses[i] ~= want then wrong[#wrong + 1] = { id = id, got = sd.statuses[i], want = want } end
+				if want == "setup" then
+					n_setup = n_setup + 1
+					if not setup_id or id < setup_id then setup_id = id end
+				end
+			end
+			lab.check("Status reads Setup for every OK station with an open error, and only for those", #wrong == 0
+				and n_setup > 0, { wrong = wrong, setup = n_setup })
+			local n_ok = 0
+			for _, x in ipairs(sd.statuses) do
+				if x == "ok" then n_ok = n_ok + 1 end
+			end
+			lab.check("Setup is its own chip and leaves OK", counts.setup == n_setup and counts.ok == n_ok,
+				{ setup = counts.setup, want = n_setup, ok = counts.ok, rows = n_ok })
+			if setup_id then
+				local function head()
+					return serpent.line(lab.dev("relative_open", pi, "stop", setup_id).sections.head.content, { comment = false })
+				end
+				local h = head()
+				lab.check("stop panel: Status reads Setup", h:find("station-status-setup", 1, true) ~= nil, h)
+				lab.dev("relative_close", pi)
+				local acked = {}
+				for check = 1, 32 do
+					if bit32.band(recs[setup_id].lint, em, bit32.lshift(1, check - 1)) ~= 0 then
+						lab.dev("diag_ack", "lint", setup_id, check, nil, pi)
+						acked[#acked + 1] = check
+					end
+				end
+				local function status_of(id)
+					local x = stations_dump()
+					for i, sid in ipairs(x.ids) do
+						if sid == id then return x.statuses[i], x.counts end
+					end
+				end
+				local after, c = status_of(setup_id)
+				local h2 = head()
+				lab.dev("relative_close", pi)
+				lab.check("acknowledged: Status is OK again on Stations and the stop panel", after == "ok" and c.setup == n_setup - 1
+					and h2:find("station-status-ok", 1, true) ~= nil, { status = after, counts = c, acked = acked })
+				for _, check in ipairs(acked) do lab.dev("diag_unack", "lint", setup_id, check, pi) end
+				after = status_of(setup_id)
+				lab.check("unacknowledged: Setup again", after == "setup", after)
+			end
+		end
 
 		-- PLAN4 D7 flipped round 3's row-level Setup chip: the Status column shows the status only (no dead button).
 		local d = stations_dump()

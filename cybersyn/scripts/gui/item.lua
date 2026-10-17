@@ -11,6 +11,7 @@ local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local dev = require("scripts.gui.dev")
 local diag = require("scripts.diag")
+local pm = require("scripts.gui.problems-model")
 local text = require("scripts.gui.unserved-text")
 local name_cell = require("scripts.gui.name-cell")
 local logic = require("scripts.gui.tab-logic")
@@ -87,6 +88,7 @@ local STATUS_COLOR = {
 	disabled = "purple",
 	warming_up = "cyan",
 	starved = "pink",
+	setup = "yellow",
 	saturated = "orange",
 	idle = "white",
 	ok = "green",
@@ -557,9 +559,9 @@ end
 local function provider_entry(r, ctx, i)
 	local st = station_view(ctx.snapshot, r.id)
 	local name = st and st.name or ""
-	local sig = table.concat({ name, r.stock, tostring(r.threshold), r.out, tostring(r.status) }, "|")
+	local status = pm.shown_status(r.status, r.id, st and st.lint, diag.is_acked)
+	local sig = table.concat({ name, r.stock, tostring(r.threshold), r.out, status }, "|")
 	return row_entry("providers", i, r.id .. "#" .. sig, function()
-		local status = r.status or "ok"
 		return {
 			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network_text(st and st.network_name) }),
 				sig = name .. "\1" .. r.id .. "\1" .. tostring(st and st.network_name) },
