@@ -23,8 +23,7 @@ local lint_text = require("scripts.gui.lint-text")
 local stations_tab = {}
 
 --- @class PlayerData
---- @field stations_status_filter string? the status chip that is toggled (one of STATUSES)
---- @field stations_chip "unserved"|"problems"|"stuck"|"failing"? the other chip that is toggled; never both
+--- @field stations_chip string? the toggled chip: one of STATUSES, or "unserved"|"problems"|"stuck"|"failing"
 --- @field stations_problems_view boolean? the Problems chip was on at the last query (its sort is set on the way in)
 
 local TAB = "stations_tab"
@@ -47,24 +46,9 @@ local FLAG_UNSERVED, FLAG_SETUP, FAILING = logic.FLAG_UNSERVED, logic.FLAG_SETUP
 -- Alert kind 1 is Cybersyn's stuck-train alert (storage.active_alerts).
 local ALERT_STUCK = 1
 
---- Severity order: the status sort and the filter chips both follow it. The collector's statuses plus "setup", which
---- this tab and the stop panel show in place of "ok" (pm.shown_status).
-local STATUSES = { "no_power", "disabled", "warming_up", "starved", "setup", "saturated", "idle", "ok" }
+local STATUSES, STATUS_COLOR, status_key = logic.STATUSES, logic.STATUS_COLOR, logic.status_key
 local STATUS_RANK = {}
 for i, s in ipairs(STATUSES) do STATUS_RANK[s] = i end
-local STATUS_COLOR = {
-	no_power = "red",
-	disabled = "purple",
-	warming_up = "cyan",
-	starved = "pink",
-	setup = "yellow",
-	saturated = "orange",
-	idle = "white",
-	ok = "green",
-}
-local function status_key(status)
-	return "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-")
-end
 
 --- Chips besides the statuses, by the station flag they test (tab-logic); stuck comes from the trains.
 local FLAG_CHIPS = { unserved = logic.FLAG_UNSERVED, problems = logic.FLAG_SETUP, failing = logic.FAILING }
@@ -342,26 +326,21 @@ local sort_keys = {
 	problems = function(st) return pm.station_rank(st.id, st.lint, diag.is_acked) end,
 }
 
---- The toggled chip: a status, one of the flag chips, or nil (All). A stale value from an older version is dropped.
+--- The toggled chip: a status, one of the flag chips, or nil (All). A value no chip has any more reads as All.
 --- @param player_data PlayerData
 --- @return string?
 local function active_chip(player_data)
-	local s = player_data.stations_status_filter
-	if s then
-		if STATUS_RANK[s] then return s end
-		player_data.stations_status_filter = nil
-	end
 	local c = player_data.stations_chip
-	if c then
-		-- The Setup chip of round 3 is the Problems chip.
-		if c == "setup" then
-			c = "problems"
-			player_data.stations_chip = c
-		end
-		if FLAG_CHIPS[c] or c == "stuck" then return c end
-		player_data.stations_chip = nil
-	end
+	if c and (STATUS_RANK[c] or FLAG_CHIPS[c] or c == "stuck") then return c end
 	return nil
+end
+
+--- The toggled chip when it is a status chip.
+--- @param player_data PlayerData
+--- @return string?
+local function status_filter(player_data)
+	local c = active_chip(player_data)
+	return c and STATUS_RANK[c] and c or nil
 end
 
 --- The sort column for the view: the Problems column sorts only while it shows, and stands in for Provided /
@@ -1582,23 +1561,26 @@ local function chip_tooltip(key, pending)
 	return tip
 end
 
---- The subheader of the tab (templates.tab_header) gets the chip flow at its right end on first use.
+--- The chip flow at the right end of a tab's subheader (templates.tab_header), added on first use.
 --- @param player_data PlayerData
---- @return LuaGuiElement?
-local function chip_flow(player_data)
+--- @param tab string
+--- @param name string the flow's element name, also its key in refs
+--- @return LuaGuiElement? flow
+--- @return boolean created true on the call that added it
+function stations_tab.chip_flow(player_data, tab, name)
 	local refs = player_data.refs
-	local flow = refs[CHIPS]
-	if flow and flow.valid then return flow end
-	local subheader = refs[TAB .. "_subheader"]
-	if not (subheader and subheader.valid) then return nil end
+	local flow = refs[name]
+	if flow and flow.valid then return flow, false end
+	local subheader = refs[tab .. "_subheader"]
+	if not (subheader and subheader.valid) then return nil, false end
 	local _, elem = gui.add(subheader, {
 		type = "flow",
-		name = CHIPS,
+		name = name,
 		direction = "horizontal",
 		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
 	})
-	refs[CHIPS] = elem
-	return elem
+	refs[name] = elem
+	return elem, true
 end
 
 --- Width left for the chips in the subheader after the search field, the item chip and the collecting note.
@@ -1626,38 +1608,22 @@ local function chip_width(key, count)
 	return CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(count or 0) - 1)
 end
 
---- Which chips show, and on which line (PLAN4 D15 item 13): a chip with nothing to show is hidden (All and the
---- toggled chip always show, `always` too); the chips take the subheader's line while they fit beside what else it
---- shows and continue on a second line below it, in order and never abbreviated; what does not fit there either is
---- dropped.
+--- Which chips show, and on which line (tab-logic chip_lines).
 --- @param counts {[string]: int}
 --- @param selected string the toggled chip or "all"
 --- @param space1 int px left in the subheader
 --- @param space2 int px of the second line
---- @param always {[string]: true}?
+--- @param always {[string]: true}? chips shown although their count is unknown or zero
 --- @return string[] line1
 --- @return string[] line2
 function stations_tab.chip_lines(counts, selected, space1, space2, always)
-	local line1, line2 = {}, {}
-	local used1, used2 = 0, 0
-	local second = false
-	for _, key in ipairs(CHIP_ORDER) do
+	local chips = {}
+	for i, key in ipairs(CHIP_ORDER) do
 		local count = counts[key]
-		if key == "all" or key == selected or (always and always[key]) or (count and count > 0) then
-			local w = chip_width(key, count)
-			if not second and used1 + w <= space1 then
-				line1[#line1 + 1] = key
-				used1 = used1 + w
-			else
-				second = true
-				if used2 + w <= space2 or key == selected then
-					line2[#line2 + 1] = key
-					used2 = used2 + w
-				end
-			end
-		end
+		chips[i] = { key = key, width = chip_width(key, count), count = count,
+			keep = key == "all" or key == selected or (always ~= nil and always[key] == true) }
 	end
-	return line1, line2
+	return logic.chip_lines(chips, selected, space1, space2)
 end
 
 --- @param flow LuaGuiElement
@@ -1703,7 +1669,7 @@ end
 --- Chips: counts over the filtered set, click to show only that set, click again for all.
 --- @return boolean wrapped the second line shows (the page has one row less)
 local function render_chips(player_data, counts)
-	local flow = chip_flow(player_data)
+	local flow = stations_tab.chip_flow(player_data, TAB, CHIPS)
 	if not flow then return false end
 	local refs = player_data.refs
 	local wanted = active_chip(player_data) or "all"
@@ -2117,7 +2083,7 @@ dev.register_dump(TAB, function(player_data)
 		counts = status_counts,
 		chip_counts = chip_counts,
 		chip = active_chip(player_data),
-		status_filter = player_data.stations_status_filter,
+		status_filter = status_filter(player_data),
 		visible = list.visible,
 		warning = player_data.refs.manager_stations_warning_flow.visible,
 		warning_caption = player_data.refs.manager_stations_warning_label.caption,
@@ -2252,14 +2218,9 @@ end
 --- @param chip string?
 function stations_tab.set_chip(player_data, chip)
 	if chip == "all" or chip == active_chip(player_data) then chip = nil end
-	player_data.stations_status_filter = nil
-	player_data.stations_chip = nil
 	player_data.stations_problems_scope = nil
-	if chip and STATUS_RANK[chip] then
-		player_data.stations_status_filter = chip
-	elseif chip and (FLAG_CHIPS[chip] or chip == "stuck") then
-		player_data.stations_chip = chip
-	end
+	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
+	player_data.stations_chip = chip
 	util.reset_page(player_data, TAB)
 end
 
@@ -2296,17 +2257,15 @@ if dev.enabled() and not remote.interfaces["cybersyn-manager-dev-stations"] then
 		set_status_filter = function(pi, status)
 			local player = game.get_player(pi)
 			local player_data = storage.manager.players[pi]
-			player_data.stations_status_filter = nil
 			player_data.stations_chip = nil
 			stations_tab.set_chip(player_data, status or nil)
 			util.rerender(player, player_data)
-			return player_data.stations_status_filter or "all"
+			return status_filter(player_data) or "all"
 		end,
 		--- Toggles any chip as a click would ("all" clears); returns the active chip or "all".
 		set_chip = function(pi, chip)
 			local player = game.get_player(pi)
 			local player_data = storage.manager.players[pi]
-			player_data.stations_status_filter = nil
 			player_data.stations_chip = nil
 			stations_tab.set_chip(player_data, chip or nil)
 			util.rerender(player, player_data)

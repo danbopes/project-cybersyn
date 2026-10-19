@@ -72,16 +72,7 @@ relative.FLEET_CHUNK = FLEET_CHUNK
 local STOP_SECTIONS = { "head", "slots", "unserved", "deliveries", "control", "setup", "effective", "events", "buttons" }
 local TRAIN_SECTIONS = { "head", "alert", "manifest", "route", "schedule", "signal", "events", "buttons" }
 
-local STATUS_COLOR = {
-	no_power = "red",
-	disabled = "purple",
-	warming_up = "cyan",
-	starved = "pink",
-	setup = "yellow",
-	saturated = "orange",
-	idle = "white",
-	ok = "green",
-}
+local STATUS_COLOR, status_key = logic.STATUS_COLOR, logic.status_key
 
 local ROLLING_STOCK = { locomotive = true, ["cargo-wagon"] = true, ["fluid-wagon"] = true, ["artillery-wagon"] = true }
 
@@ -401,19 +392,8 @@ local function update_starved(state, st)
 		state.starved = starved
 		return true
 	end
-	if storage.tick_state ~= STATE_DISPATCH then return false end
-	local economy = storage.economy
-	if not economy then return false end
-	local r_stops, p_stops = economy.all_r_stops, economy.all_p_stops
-	local starved = {}
-	for _, net in ipairs(networks_of(st.network_name, st.network_mask)) do
-		for hash, req in pairs(st.requested) do
-			if req.active then
-				local key = net.name .. ":" .. hash
-				if r_stops[key] and not p_stops[key] then starved[key] = true end
-			end
-		end
-	end
+	local starved = collector.economy_starved(st, networks_of(st.network_name, st.network_mask))
+	if not starved then return false end
 	state.starved = starved
 	return true
 end
@@ -850,7 +830,7 @@ end
 
 local function status_caption(status)
 	return { "", "[img=flib_indicator_" .. (STATUS_COLOR[status] or "white") .. "] ",
-		{ "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") } }
+		{ status_key(status) } }
 end
 
 --- The label style that says what a chip style said (cybersyn_chip_red -> cybersyn_marker_red), without looking
@@ -904,7 +884,7 @@ local function render_stop_head(state, body, m)
 			if m.status then
 				out[#out + 1] = field("cybersyn-gui.relative-status", status_caption(m.status),
 					m.setup_checks and pm.setup_status_tooltip(m.setup_checks)
-					or { "cybersyn-gui.station-status-" .. string.gsub(m.status, "_", "-") .. "-tooltip" })
+					or { status_key(m.status) .. "-tooltip" })
 			end
 			local pair = {
 				type = "flow",

@@ -43,7 +43,6 @@ local item = {}
 local TAB = "item_tab"
 local VIEW = "item_view"
 local NO_VALUE = text.NO_VALUE
-local DEFAULT_PERIOD = 60
 local ROW = 32
 -- Requesters column that shows the wait, and the step of the "last delivery n ago" tooltip age.
 local WAIT_COLUMN = 5
@@ -101,16 +100,7 @@ local function label_style(chip_style)
 	return (string.gsub(chip_style or "cybersyn_chip_grey", "^cybersyn_chip_", "cybersyn_reason_label_"))
 end
 
-local STATUS_COLOR = {
-	no_power = "red",
-	disabled = "purple",
-	warming_up = "cyan",
-	starved = "pink",
-	setup = "yellow",
-	saturated = "orange",
-	idle = "white",
-	ok = "green",
-}
+local STATUS_COLOR, status_key = logic.STATUS_COLOR, logic.status_key
 
 -- Logical px; the station / destination column of each table takes what is left of the content width.
 local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train = 72, train_status = 150 }
@@ -150,29 +140,13 @@ local COLUMNS = {
 	},
 }
 
-local TRAIN_STATUS
-
-local function train_statuses()
-	if not TRAIN_STATUS then
-		TRAIN_STATUS = { D = STATUS_D, TO_P = STATUS_TO_P, P = STATUS_P, TO_R = STATUS_TO_R, R = STATUS_R,
-			TO_D = STATUS_TO_D, TO_D_BYPASS = STATUS_TO_D_BYPASS, TO_F = STATUS_TO_F, F = STATUS_F }
-	end
-	return TRAIN_STATUS
-end
-
 --- @param t string "providers"|"requesters"|"trains"
 local function table_name(t) return "item_" .. t .. "_table" end
 
 --- @param key int row position
 local function wait_name(key) return "item_wait_" .. key end
 
---- @param player_data PlayerData
---- @return int minutes
-local function get_period(player_data)
-	local period = player_data.overview_period
-	if period ~= 10 and period ~= 60 and period ~= 1440 then period = DEFAULT_PERIOD end
-	return period
-end
+local get_period = logic.get_period
 
 --- Width of each table's flexible column for the current layout.
 --- @param content_width int
@@ -604,8 +578,8 @@ local function provider_entry(r, ctx, i)
 			{ caption = r.out > 0 and count(r.out) or NO_VALUE, sig = tostring(r.out) },
 			{
 				sprite = "flib_indicator_" .. (STATUS_COLOR[status] or "white"),
-				caption = { "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") },
-				tooltip = { "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") .. "-tooltip" },
+				caption = { status_key(status) },
+				tooltip = { status_key(status) .. "-tooltip" },
 				sig = status,
 			},
 		}
@@ -705,7 +679,7 @@ local function train_entry(r, ctx, i)
 	local from = station_view(ctx.snapshot, r.from)
 	local sig = table.concat({ r.status or -1, r.amount, to and to.name or "", from and from.name or "" }, "|")
 	return row_entry("trains", i, r.id .. "#" .. sig, function()
-		local chip = item_model.train_chip(r.status, train_statuses())
+		local chip = logic.train_chip(r.status)
 		local status = chip and { logic.train_chip_locale(chip, false) } or { "cybersyn-gui.trains-custom-status", tostring(r.status) }
 		local status_tip = chip and { logic.train_chip_locale(chip, false) .. "-tooltip" } or nil
 		local route = { "cybersyn-gui.item-train-route", from and from.name or NO_VALUE, to and to.name or NO_VALUE }

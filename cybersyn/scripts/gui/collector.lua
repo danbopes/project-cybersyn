@@ -106,6 +106,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field manifest_hashes {[string]: int}
 --- @field surface_index uint?
 --- @field is_available boolean
+--- @field disable_bypass boolean the train may not skip its depot (Train.disable_bypass)
 --- @field state defines.train_state? LuaTrain.state
 --- @field state_since uint? tick the train entered `state` (Train.state_tick; the load tick for older trains)
 --- @field in_interrupt boolean current schedule record was inserted by an interrupt
@@ -667,6 +668,7 @@ local function summarize_trains(b)
 			tr.refueler_id = train.refueler_id
 			tr.surface_index = any and any.surface_index or nil
 			tr.is_available = train.is_available == true
+			tr.disable_bypass = train.disable_bypass == true
 			local state = entity.state
 			tr.state = state
 			tr.state_since = train.state_tick
@@ -1284,6 +1286,28 @@ local function capture_economy_starved(b)
 	b.starved_items = items
 	b.starved_count = n
 	b.starved_source = "economy"
+end
+
+--- This station's active request keys that nobody on `networks` provides, from the planner's economy; nil while the
+--- economy is incomplete (outside dispatch). For a stop read live, when no pass is running to capture the set.
+--- @param st SnapshotStation
+--- @param networks {name: string}[]
+--- @return {[string]: true}?
+function collector.economy_starved(st, networks)
+	if storage.tick_state ~= STATE_DISPATCH then return nil end
+	local economy = storage.economy
+	if not economy then return nil end
+	local r_stops, p_stops = economy.all_r_stops, economy.all_p_stops
+	local starved = {}
+	for _, net in ipairs(networks) do
+		for hash, req in pairs(st.requested) do
+			if req.active then
+				local key = net.name .. ":" .. hash
+				if r_stops[key] and not p_stops[key] then starved[key] = true end
+			end
+		end
+	end
+	return starved
 end
 
 --- Request keys without a provider, unless they equal the live set: then the live tables are kept, so an unchanged

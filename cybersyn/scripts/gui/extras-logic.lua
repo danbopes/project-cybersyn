@@ -173,7 +173,7 @@ end
 -- ---------------------------------------------------------------- Recount deliveries (PLAN4 D10)
 
 local P_SIDE = { [STATUS_TO_P] = true, [STATUS_P] = true }
-local R_SIDE = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
+local R_SIDE = STATUS_ON_DELIVERY
 
 --- A station's delivery counters as the dispatcher's own bookkeeping would hold them, from the trains bound to it:
 --- create_delivery counts a train at both stations and adds the manifest to the requester's `deliveries` and

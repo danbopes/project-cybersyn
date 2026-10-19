@@ -80,7 +80,7 @@ lab.suite("38_diag", {
 		lab.check("kinds table names all 26 kinds", #st.kinds == 26 and st.kinds[2] == "served" and
 			st.kinds[26] == "slow_delivery", st.kinds)
 		-- Step 2 (phase 2b): the sweep and ring fields, the planner-cycle counters, refuel_since.
-		lab.check("schema step 3 recorded (PLAN4: the setup registry)", lab.read("fork_schema") == 3, lab.read("fork_schema"))
+		lab.check("schema step 5 recorded (the Stations chip in one field)", lab.read("fork_schema") == 5, lab.read("fork_schema"))
 		local acks = lab.read("acks")
 		lab.check("storage.acks created", acks ~= nil and acks.request ~= nil and acks.station ~= nil and acks.lint ~= nil,
 			acks)
@@ -166,7 +166,7 @@ lab.suite("38_diag", {
 		lab.wait(10)
 	end,
 	function()
-		lab.check("migration: schema step re-run", lab.read("fork_schema") == 3)
+		lab.check("migration: schema step re-run", lab.read("fork_schema") == 5)
 		lab.check("migration: storage.acks recreated", lab.read("acks", "request") ~= nil)
 		local t = lab.read("trains", dg.train)
 		lab.check("migration: train fields recreated", t ~= nil and type(t.in_interrupt) == "boolean" and

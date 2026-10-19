@@ -13,6 +13,8 @@ local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local text = require("scripts.gui.unserved-text")
 local explain = require("scripts.gui.explain")
+local extras = require("scripts.gui.extras")
+local extras_logic = require("scripts.gui.extras-logic")
 local name_cell = require("scripts.gui.name-cell")
 local logic = require("scripts.gui.tab-logic")
 
@@ -29,8 +31,7 @@ local overview_tab = {}
 
 local TAB = "overview_tab"
 local TABLE = "overview_unserved_table"
-local PERIODS = { 10, 60, 1440 }
-local DEFAULT_PERIOD = 60
+local PERIODS, DEFAULT_PERIOD = logic.PERIODS, logic.DEFAULT_PERIOD
 local NO_VALUE = text.NO_VALUE
 local HOUR = 216000
 local DAY = 24 * HOUR
@@ -66,16 +67,7 @@ local TILES = {
 }
 local FAILING_LINES = { "no_power", "disabled", "throttling", "misconfigured" }
 
---- @param player_data PlayerData
---- @return int minutes
-local function get_period(player_data)
-	local period = player_data.overview_period
-	if period ~= 10 and period ~= 60 and period ~= 1440 then
-		period = DEFAULT_PERIOD
-		player_data.overview_period = period
-	end
-	return period
-end
+local get_period = logic.get_period
 
 --- @param player_data PlayerData
 --- @return int
@@ -600,28 +592,8 @@ local function fleet_model(window, network)
 	local mins = window.min_available_by_network
 	local now = stats.get().available_count
 	-- The counters only know networks that had a train available at some point; a network whose trains are all
-	-- busy or stuck since the load is the worst of all, at 0. The networks the fleet uses are listed once a minute
-	-- for every window (in storage, so a joining peer reads the same set), not per player and update.
-	local m = storage.manager
-	local minute = math.floor(game.tick / 3600)
-	local cached = m.fleet_networks
-	if not (cached and cached.minute == minute) then
-		local set = {}
-		for _, train in pairs(storage.trains) do
-			local net = train.network_name
-			if net == NETWORK_EACH then
-				local mask = train.network_mask
-				if type(mask) == "table" then
-					for n in pairs(mask) do set[n] = true end
-				end
-			elseif net then
-				set[net] = true
-			end
-		end
-		cached = { minute = minute, set = set }
-		m.fleet_networks = cached
-	end
-	local seen = cached.set
+	-- busy or stuck since the load is the worst of all, at 0.
+	local seen = extras.train_networks(true)
 	for name in pairs(seen) do
 		if mins[name] == nil then mins[name] = 0 end
 	end
@@ -632,14 +604,7 @@ local function fleet_model(window, network)
 		return a < b
 	end)
 	local worst = names[1]
-	local free_now, free_net
-	local function consider(name, n)
-		if not free_now or n < free_now or (n == free_now and name < free_net) then free_now, free_net = n, name end
-	end
-	for name, n in pairs(now) do consider(name, n) end
-	for name in pairs(seen) do
-		if now[name] == nil then consider(name, 0) end
-	end
+	local free_now = extras_logic.hud_values({}, now, seen).headroom
 	if network then
 		local known = mins[network] ~= nil or now[network] ~= nil
 		worst = known and network or nil

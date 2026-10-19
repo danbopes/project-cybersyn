@@ -356,7 +356,7 @@ test("chip_mode: names when they fit, else compact", function()
 	assert_eq(l.chip_mode(800, 900), "compact")
 end)
 
-test("chip_lines: all with names when they fit, else zero counts hidden (All and the toggled one kept), then wrap", function()
+test("chip_lines: zero counts hide unless kept, the rest fill line 1 then line 2 in order", function()
 	local l = logic()
 	local chips = {
 		{ key = "all", width = 60, count = 6, keep = true },
@@ -364,16 +364,12 @@ test("chip_lines: all with names when they fit, else zero counts hidden (All and
 		{ key = "b", width = 100, count = 3 },
 		{ key = "c", width = 100, count = 0, keep = true },
 		{ key = "d", width = 100, count = 2 },
+		{ key = "e", width = 100, count = nil },
 	}
-	local hidden, lines = l.chip_lines(chips, 500)
-	assert_eq(hidden, {})
-	assert_eq(lines, { { "all", "a", "b", "c", "d" } })
-	hidden, lines = l.chip_lines(chips, 400)
-	assert_eq(hidden, { a = true })
-	assert_eq(lines, { { "all", "b", "c", "d" } })
-	hidden, lines = l.chip_lines(chips, 300)
-	assert_eq(hidden, { a = true })
-	assert_eq(lines, { { "all", "b", "c" }, { "d" } }, "what still does not fit wraps; nothing is shortened")
+	assert_eq({ l.chip_lines(chips, "all", 500, 500) }, { { "all", "b", "c", "d" }, {} })
+	assert_eq({ l.chip_lines(chips, "all", 300, 500) }, { { "all", "b", "c" }, { "d" } })
+	assert_eq({ l.chip_lines(chips, "all", 120, 100) }, { { "all" }, { "b" } }, "what does not fit line 2 is dropped")
+	assert_eq({ l.chip_lines(chips, "d", 120, 100) }, { { "all" }, { "b", "d" } }, "except the selected chip")
 end)
 
 test("deficit: requested minus in transit minus unpromised stock, never below 0", function()
@@ -514,4 +510,33 @@ test("unserved_split: Show acknowledged takes up to half a full page at the bott
 	assert_eq({ l.unserved_split(1, 5, 2, true) }, { 0, 1 })
 	assert_eq({ l.unserved_split(0, 5, 2, true) }, { 0, 0 })
 	assert_eq({ l.unserved_split(17, 59, 3, true) }, { 14, 3 })
+end)
+
+test("statuses: every status has a colour, and the locale key uses dashes", function()
+	local l = logic()
+	for _, s in ipairs(l.STATUSES) do assert_true(l.STATUS_COLOR[s] ~= nil, s .. " has a colour") end
+	assert_eq(l.status_key("no_power"), "cybersyn-gui.station-status-no-power")
+end)
+
+test("get_period: a stale period falls back to the default and is written back", function()
+	local l = logic()
+	local pd = { overview_period = 1440 }
+	assert_eq(l.get_period(pd), 1440)
+	pd.overview_period = 5
+	assert_eq(l.get_period(pd), l.DEFAULT_PERIOD)
+	assert_eq(pd.overview_period, l.DEFAULT_PERIOD)
+end)
+
+test("train_chip: every Cybersyn status maps to a Trains chip", function()
+	local l = logic()
+	assert_eq(l.train_chip(0), "parked")
+	assert_eq(l.train_chip(1), "to_p")
+	assert_eq(l.train_chip(2), "loading")
+	assert_eq(l.train_chip(3), "to_r")
+	assert_eq(l.train_chip(4), "unloading")
+	assert_eq(l.train_chip(5), "returning")
+	assert_eq(l.train_chip(6), "returning")
+	assert_eq(l.train_chip(7), "refuel")
+	assert_eq(l.train_chip(8), "refuel")
+	assert_eq(l.train_chip(300), nil)
 end)

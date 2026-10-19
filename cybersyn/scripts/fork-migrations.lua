@@ -82,7 +82,9 @@ local lint = require("scripts.lint")
 -- 2: the diagnostics sweep and ring fields (cycles, item_served, preallocated columns), the planner-cycle counters
 -- and refuel_since of storage.stats.
 -- 3: the setup registry (storage.lint_registry), seeded from to_comb/to_stop/to_comb_params.
-local SCHEMA = 3
+-- 4: storage.manager.fleet_networks dropped; the Overview's Fleet tile reads the HUD's cache (hud_networks).
+-- 5: the Stations tab keeps its toggled chip in stations_chip alone (stations_status_filter folded into it).
+local SCHEMA = 5
 
 local fork_migrations = {}
 
@@ -105,6 +107,13 @@ function fork_migrations.migrate_schema()
 	-- Rebuilt on every configuration change too: a mod change can add or remove combinators without the build
 	-- handlers seeing it.
 	lint.registry_seed()
+	if storage.manager then storage.manager.fleet_networks = nil end
+	for _, pd in pairs(storage.manager and storage.manager.players or {}) do
+		-- An older build's Setup chip is the Problems chip; "setup" in stations_chip now names the status.
+		if pd.stations_chip == "setup" then pd.stations_chip = "problems" end
+		if pd.stations_status_filter then pd.stations_chip = pd.stations_status_filter end
+		pd.stations_status_filter = nil
+	end
 	storage.fork_schema = SCHEMA
 end
 
