@@ -472,11 +472,6 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 	return manifest
 end
 
----@param map_data MapData
----@param mod_settings CybersynModSettings
--- B6: the no-train alerts (NO_TRAINS_ON_NETWORK and TRAIN_FILTERED) are sent once per (item, network) per planner
--- cycle, on the stop of the requester that has waited longest, instead of once per failing requester evaluation.
--- tick_dispatch only notes the evaluation (no API call, no storage.diag read); tick_init sends what the cycle noted.
 local REQUESTER_ALERT_MESSAGE = {
 	[DIAG_ALERT_MISSING_TRAIN] = "cybersyn-messages.missing-train",
 	[DIAG_ALERT_TRAINS_FILTERED] = "cybersyn-messages.trains-filtered",
@@ -485,6 +480,11 @@ local REQUESTER_ALERT_MESSAGE = {
 	[DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT] = "cybersyn-messages.no-train-matches-p-layout",
 }
 
+-- The no-train alerts (NO_TRAINS_ON_NETWORK and TRAIN_FILTERED) are sent once per (item, network) per planner
+-- cycle, on the stop of the requester that has waited longest, instead of once per failing requester evaluation:
+-- a network short of trains fails every requester of an item on every pass, which flooded the alert list and paid
+-- an API call each time. tick_dispatch only notes the evaluation (no API call, no storage.diag read); tick_init
+-- sends what the cycle noted.
 ---@param map_data MapData
 ---@return {cycle: int, sent: int, keys: {[string]: table}}
 local function alert_dedupe(map_data)
@@ -550,6 +550,8 @@ local function requester_alert(d, code, r_station, p_station, r_station_id, p_st
 	if d then diag.alert_ids(d, code, r_station_id, p_station_id) end
 end
 
+---@param map_data MapData
+---@param mod_settings CybersynModSettings
 local function tick_dispatch(map_data, mod_settings)
 	--we do not dispatch more than one train per tick
 	--psuedo-randomize what item (and what station) to check first so if trains available is low they choose orders psuedo-randomly
