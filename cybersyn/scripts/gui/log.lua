@@ -300,6 +300,12 @@ function log_tab.message(g, expanded)
 	return model.message(g, TEXT_CTX, expanded)
 end
 
+--- @param g LogGroup
+--- @return LocalisedString?
+function log_tab.message_tooltip(g)
+	return model.dispatch_tooltip(g)
+end
+
 -- ---------------------------------------------------------------- build
 
 local function hoverable(def)
@@ -732,12 +738,13 @@ local function write_cells(cells, g, m, now, key, expanded, child)
 	end
 	-- message, count
 	local pass = g.pass and g.n > 1
-	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n ..
+	-- The train is in the dispatch tooltip, not the caption.
+	local msig = g.kind .. "|" .. g.code .. "|" .. g.a .. "|" .. g.b .. "|" .. g.station2 .. "|" .. g.n .. "|" .. g.train ..
 		(pass and ("|" .. table.concat(g.lint, ",") .. (expanded and "x" or "")) or "") .. (child and "|c" or "")
 	if m.msg ~= msig then
 		local message = log_tab.message(g, expanded)
 		cells[7].caption = message
-		cells[7].tooltip = pass and { "cybersyn-gui.log-lint-pass-tooltip" } or ""
+		cells[7].tooltip = pass and { "cybersyn-gui.log-lint-pass-tooltip" } or log_tab.message_tooltip(g) or ""
 		m.msg = msig
 	end
 	local count = pass and "" or model.repeat_caption(g.n)
@@ -1908,6 +1915,7 @@ dev.register_dump(TAB, function(player_data)
 				item = target(i, "item").id,
 				elem_tooltip = c[6].elem_tooltip,
 				message = c[7].caption,
+				message_tooltip = c[7].tooltip,
 				count = c[8].caption,
 			}
 		end
