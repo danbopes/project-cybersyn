@@ -177,24 +177,77 @@ lab.suite("39_relative", {
 		local entity = trains[tid].entity
 		lab.check("Cybersyn train: panel open, stop panel hidden", t.open and t.open.kind == "train" and
 			t.mounts.train.visible == true and t.mounts.stop.visible == false, t.mounts)
-		local scale = game.get_player(PI).display_scale
-		lab.check("Cybersyn train: a screen frame right of the docked train pane", t.mounts.train.anchor == nil and
-			t.mounts.train.location.x == math.floor(459 * scale) and t.mounts.train.location.y == math.floor(48 * scale),
-			t.mounts.train)
+		-- PLAN5 D5-7: flush right of the docked pane at its top, as the stop panel docks to the train-stop window.
+		local g = dev("train_panel_geometry", PI)
+		local scale = g.scale
+		local narrow_x = math.floor(452 * scale + 0.5)
+		local wide_x = math.max(narrow_x, math.floor(28 * scale) + math.min(g.groups, g.row_count) * math.floor(71 * scale))
+		lab.check("Cybersyn train: a screen frame flush right of the docked train pane, at its top",
+			t.mounts.train.anchor == nil and not g.narrow and g.pane_right == wide_x
+			and t.mounts.train.location.x == wide_x and t.mounts.train.location.y == math.floor(40 * scale + 0.5),
+			{ g = g, mount = t.mounts.train, want = wide_x })
+		lab.check("layout-dev: the ghost cursor selection's group tabs fit the narrow pane", g.groups >= 1
+			and g.row_count == 6 and g.pane_right == narrow_x, g)
+		-- Opened from the character: the game enters remote view in the same tick, the Fuel tab is disabled.
+		remote.call("cybersyn", "write_global", game.tick, "manager", "players", PI, "remote_entered_tick")
+		dev("relative_open", PI, "train", tid)
+		g = dev("train_panel_geometry", PI)
+		lab.check("opened in the tick remote view was entered from the character: the narrow pane", g.narrow
+			and g.location.x == narrow_x, g)
+		local before = dev("relative_dump", PI).refreshes
+		dev("tick", 1)
+		local after = dev("relative_dump", PI)
+		lab.check("a train panel beside the narrow pane refreshes on the manager tick", after.open ~= nil
+			and after.refreshes == before + 1 and after.mounts.train.visible == true, { before, after.refreshes })
+		remote.call("cybersyn", "write_global", game.tick - 1, "manager", "players", PI, "remote_entered_tick")
+		dev("relative_open", PI, "train", tid)
+		g = dev("train_panel_geometry", PI)
+		lab.check("opened while already in remote view: the pane with the Fuel tab", not g.narrow and g.location.x == wide_x, g)
+		-- The lab's event order: the window opens, the controller change follows in the same tick.
+		local player = game.get_player(PI)
+		local was_remote = player.controller_type == defines.controllers.remote
+		if not was_remote then player.set_controller({ type = defines.controllers.remote, position = player.position }) end
+		dev("controller_changed", PI, defines.controllers.character)
+		g = dev("train_panel_geometry", PI)
+		lab.check("controller change from the character after the open, same tick: recorded and placed narrow",
+			g.remote_entered_tick == game.tick and g.narrow and g.location.x == narrow_x, g)
+		remote.call("cybersyn", "write_global", game.tick - 1, "manager", "players", PI, "remote_entered_tick")
+		dev("controller_changed", PI, defines.controllers.remote)
+		lab.check("a change from remote view records nothing",
+			dev("train_panel_geometry", PI).remote_entered_tick == game.tick - 1)
+		if not was_remote then player.exit_remote_view() end
+		remote.call("cybersyn", "write_global", nil, "manager", "players", PI, "remote_entered_tick")
+		-- A display change places and caps it again (still the narrow pane it was opened with).
+		dev("set_layout", PI, 1920, 1080, 1.0)
+		dev("relative_display_changed", PI)
+		g = dev("train_panel_geometry", PI)
+		lab.check("1080p at 1.0: placed at (452, 40), body capped to stay above the hotbar",
+			g.location.x == 452 and g.location.y == 40 and g.body_cap == 1080 - 40 - 150 - 110, g)
+		dev("set_layout", PI, 3840, 2160, 1.5)
+		dev("relative_display_changed", PI)
+		g = dev("train_panel_geometry", PI)
+		lab.check("4K at 1.5: placed at (678, 60), body capped", g.location.x == 678 and g.location.y == 60
+			and g.body_cap == 1440 - 300, g)
+		lab.big_screen(PI)
+		dev("relative_display_changed", PI)
+		g = dev("train_panel_geometry", PI)
+		lab.check("back on the big screen: placed and capped for it", g.location.y == math.floor(40 * g.scale + 0.5)
+			and g.body_cap == math.floor(4320 / g.scale) - 300, g)
+		t = dev("relative_dump", PI)
 		lab.check("Cybersyn train: status, state, depot from Cybersyn and the train",
 			tm.status == trains[tid].status and tm.state == entity.state and tm.depot_id == trains[tid].depot_id,
 			{ tm.status, tm.state, tm.depot_id })
 		local records = entity.get_schedule().get_records() or {}
 		lab.check("Cybersyn train: schedule records and the active one", #tm.schedule == #records and
 			tm.current == entity.get_schedule().current, { #tm.schedule, #records, tm.current })
-		lab.check("Cybersyn train: Locate, Open in manager, Path trace and Pin; Send home in the action row", (function()
+		lab.check("Cybersyn train: Open in manager and no Locate in row 1, Path trace and Pin; Send home in the action row", (function()
 			local names = {}
 			for _, c in ipairs(t.sections.buttons.content[1].children) do if c.name then names[c.name] = c end end
 			local actions = t.sections.buttons.content[2]
 			local second = {}
 			for _, c in ipairs(actions and actions.children or {}) do if c.name then second[c.name] = c end end
 			local fail = actions and actions.children and actions.children[1]
-			return names.locate ~= nil and names.open_manager ~= nil and second.path_trace and second.path_trace.enabled == true
+			return names.locate == nil and second.locate == nil and names.open_manager ~= nil and second.path_trace and second.path_trace.enabled == true
 				and second.pin ~= nil and fail ~= nil and fail.name == "fail_delivery"
 		end)(), t.sections.buttons)
 		local v = dev("relative_open", PI, "train", rx.vanilla_train.id)

@@ -236,4 +236,62 @@ function logic.stop_panel_fits(width, scale)
 	return width / scale >= logic.STOP_WINDOW_WIDTH + logic.STOP_PANEL_WIDTH
 end
 
+-- ---------------------------------------------------------------- train panel beside the docked locomotive pane (PLAN5 D5-7)
+
+-- The remote view's docked locomotive pane (2.0.77, measured with clients on layout-dev and pY 123): its top is below
+-- the 40 px "Remote view" title bar; its right edge is at 452 logical px while its Fuel tab is disabled ("Locomotive
+-- is out of reach": the window opened from the character), and further right when the Fuel tab is enabled (opened
+-- while already in remote view) and its "Ghost cursor selection" needs more room: one 71 px tab per item group with an
+-- item unlocked for the force, select_group_row_count (utility constant, 6 in base, 100 with pY) tabs per row, 28 px of margins and
+-- borders around the row; a tabbed pane is as wide as its widest tab. Each tab is floored to whole physical px.
+logic.TRAIN_PANE_NARROW = 452
+logic.TRAIN_PANE_TOP = 40
+logic.GROUP_TAB = 71
+logic.GROUP_ROW_CHROME = 28
+-- The stop panel, a relative GUI right of the train-stop window, touches that window and shares its top (measured
+-- at 4K/1.5): the train panel mirrors it.
+logic.TRAIN_PANEL_GAP = 0
+-- The panel's frame: 300 px panel, 2 × 8 padding and the border.
+logic.TRAIN_FRAME_WIDTH = 324
+-- Subheader, footer and paddings around the scroll body (135 measured, plus room for a taller footer row); and the
+-- room left below the frame for the hotbar, which a panel beside a wide pane overlaps in x (its top is 105 logical px
+-- above the bottom at 1080p/1.0).
+logic.TRAIN_PANEL_CHROME = 150
+logic.TRAIN_PANEL_BOTTOM = 110
+logic.TRAIN_BODY_MIN = 120
+
+--- The docked locomotive pane's right edge in physical px from the screen's left edge.
+--- @param narrow boolean the Fuel tab is disabled
+--- @param groups int item groups the Fuel tab's ghost cursor selection shows (0: no Fuel tab)
+--- @param row_count int group tabs per row (utility constant select_group_row_count)
+--- @param scale number UI scale
+--- @return int
+function logic.train_pane_right(narrow, groups, row_count, scale)
+	local edge = math.floor(logic.TRAIN_PANE_NARROW * scale + 0.5)
+	if narrow or groups <= 0 then return edge end
+	local columns = math.min(groups, math.max(1, row_count))
+	return math.max(edge, math.floor(logic.GROUP_ROW_CHROME * scale) + columns * math.floor(logic.GROUP_TAB * scale))
+end
+
+--- Where the train panel's frame goes: flush right of the docked pane at its top, kept on the screen.
+--- @param pane_right int physical px (train_pane_right)
+--- @param scale number UI scale
+--- @param width number screen width, physical px
+--- @return int x physical px
+--- @return int y physical px
+function logic.train_panel_place(pane_right, scale, width)
+	local x = pane_right + math.floor(logic.TRAIN_PANEL_GAP * scale)
+	x = math.max(0, math.min(x, width - math.floor(logic.TRAIN_FRAME_WIDTH * scale)))
+	return x, math.floor(logic.TRAIN_PANE_TOP * scale + 0.5)
+end
+
+--- The train panel's scroll body cap, in logical px: the frame stays above the hotbar.
+--- @param height number screen height, physical px
+--- @param scale number UI scale
+--- @return int
+function logic.train_body_cap(height, scale)
+	local free = math.floor(height / scale) - logic.TRAIN_PANE_TOP - logic.TRAIN_PANEL_CHROME - logic.TRAIN_PANEL_BOTTOM
+	return math.max(logic.TRAIN_BODY_MIN, free)
+end
+
 return logic

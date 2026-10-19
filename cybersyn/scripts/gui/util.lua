@@ -1344,48 +1344,21 @@ local function pin_for_map(player, player_data)
 	if refresh_toggles_fn then refresh_toggles_fn(player_data) end
 end
 
---- Where the camera must look so that `position` lands in the middle of the larger free strip beside the window.
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param position MapPosition
---- @return MapPosition
-local function offset_position(player, player_data, position)
-	local window = player_data.refs and player_data.refs.manager_window
-	local res = player.display_resolution
-	if not (window and window.valid and window.visible and res.width > 0) then return position end
-	local loc = window.location
-	local layout = player_data.layout
-	local width_px = (layout and layout.width or 1440) * player.display_scale
-	local left, right = loc.x, res.width - (loc.x + width_px)
-	local screen_x
-	if left >= right then
-		screen_x = left / 2
-	else
-		screen_x = loc.x + width_px + right / 2
-	end
-	-- 32 physical pixels per tile at zoom 1.
-	local per_tile = 32 * player.zoom
-	return { x = position.x - (screen_x - res.width / 2) / per_tile, y = position.y }
-end
+-- The zoom a click on a vanilla map pin lands on (measured, 2.0.77): show on map lands in the same view.
+local SHOW_ZOOM = 1.5
 
---- Shift-click on a link: remote view on the target, the target beside the manager, a marker pair on it.
+--- Shift-click on a link: the view a click on the target's map pin gives (remote view following the target at the
+--- screen centre, zoom 1.5), a marker pair on it, the manager window pinned so remote view keeps it.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param target LuaEntity
 --- @param follow LuaEntity? an entity for remote view to follow (a train's front stock)
 function util.show_on_map(player, player_data, target, follow)
 	pin_for_map(player, player_data)
-	if follow then
-		player.centered_on = follow
-	else
-		player.set_controller({ type = defines.controllers.remote, position = target.position, surface = target.surface })
-		-- Remote view keeps its own zoom, known only once the view is open.
-		local position = target.position
-		local pos = offset_position(player, player_data, position)
-		if pos ~= position then
-			player.set_controller({ type = defines.controllers.remote, position = pos, surface = target.surface })
-		end
-	end
+	-- centered_on switches to remote view and to the target's surface itself; set_controller{type = remote} would reset
+	-- the zoom to 0.6, and a zoom written before the switch does not stick.
+	player.centered_on = follow or target
+	player.zoom = SHOW_ZOOM
 	util.draw_markers(player, player_data, target)
 	local back = player_data.refs and player_data.refs.manager_back_button
 	if back and back.valid then back.visible = player_data.auto_pinned == true end

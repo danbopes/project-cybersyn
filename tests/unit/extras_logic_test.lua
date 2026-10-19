@@ -243,3 +243,51 @@ test("stop_panel_fits: vanilla 1,067 + 300 logical px against the logical screen
 	assert_eq(l.stop_panel_fits(1367, 1), true, "exactly the two widths")
 	assert_eq(l.stop_panel_fits(1366, 1), false)
 end)
+
+-- PLAN5 D5-7: the docked locomotive pane's right edge, measured with clients (2.0.77): physical px, the first pixel
+-- right of the pane's outer border. Points: layout-dev with 0, 6 and 9 lab item groups added (row count 6 and 100),
+-- pY 123 (11 groups, pypostprocessing sets the row count to 100).
+test("train_pane_right: the measured pane edges", function()
+	local l = logic()
+	local points = {
+		-- narrow, groups, row_count, scale, measured
+		{ true, 11, 100, 1.0, 452, "from the character, 1080p" },
+		{ true, 11, 6, 1.5, 678, "from the character, 4K/1.5" },
+		{ false, 11, 6, 1.0, 454, "6 group tabs per row, 1080p" },
+		{ false, 11, 6, 1.5, 678, "6 group tabs per row, 4K/1.5" },
+		{ false, 11, 100, 1.0, 809, "11 groups in one row, 1080p" },
+		{ false, 14, 100, 1.0, 1022, "14 groups in one row, 1080p" },
+		{ false, 11, 100, 1.5, 1208, "11 groups in one row, 4K/1.5 (pY 123: 1208 px = 805 logical)" },
+	}
+	for _, p in ipairs(points) do
+		assert_eq(l.train_pane_right(p[1], p[2], p[3], p[4]), p[5], p[6])
+	end
+	assert_eq(l.train_pane_right(false, 5, 6, 1.0), 452, "base layout-dev: 5 groups fit the narrow pane")
+	assert_eq(l.train_pane_right(false, 5, 6, 1.5), 678)
+	assert_eq(l.train_pane_right(false, 0, 100, 1.5), 678, "no burner, no Fuel tab")
+	assert_eq(l.train_pane_right(false, 30, 6, 1.0), 454, "more groups than a row wrap: width of one row")
+end)
+
+test("train_panel_place: flush right of the pane at its top, kept on the screen", function()
+	local l = logic()
+	local x, y = l.train_panel_place(1208, 1.5, 3840)
+	assert_eq({ x, y }, { 1208, 60 }, "pY wide pane at 4K/1.5")
+	x, y = l.train_panel_place(452, 1.0, 1920)
+	assert_eq({ x, y }, { 452, 40 }, "narrow pane at 1080p")
+	x, y = l.train_panel_place(809, 1.0, 1920)
+	assert_eq({ x, y }, { 809, 40 })
+	x, y = l.train_panel_place(1800, 1.0, 1920)
+	assert_eq({ x, y }, { 1920 - 324, 40 }, "a pane wider than the screen allows: the panel stays on it")
+	x = l.train_panel_place(1022, 1.25, 1920)
+	assert_eq(x, 1022)
+end)
+
+test("train_body_cap: the frame ends above the hotbar", function()
+	local l = logic()
+	assert_eq(l.train_body_cap(1080, 1.0), 1080 - 40 - 150 - 110)
+	assert_eq(l.train_body_cap(2160, 1.5), 1440 - 40 - 150 - 110)
+	assert_eq(l.train_body_cap(600, 1.0), 300)
+	assert_eq(l.train_body_cap(400, 1.0), 120, "never below the minimum")
+	-- Frame bottom = top + body + 135 measured chrome: above the 1080p hotbar top at 975.
+	assert_eq(40 + l.train_body_cap(1080, 1.0) + 135 <= 975, true)
+end)

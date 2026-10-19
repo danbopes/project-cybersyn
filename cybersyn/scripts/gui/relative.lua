@@ -1769,15 +1769,17 @@ local function render_train_buttons(state, body, m, pd)
 	local buttons_sig = (state.pane and "pane" or "train") .. extras_sig(player, pd, "train", state.id)
 	if state.sigs["buttons"] ~= buttons_sig then
 		section(state, body, "buttons", buttons_sig, function()
-			local locate = {
-				type = "button",
-				name = "locate",
-				caption = { "cybersyn-gui.relative-locate" },
-				tooltip = { "cybersyn-gui.relative-locate-train-tooltip" },
-				style_mods = state.pane and { minimal_width = 0, left_padding = 8, right_padding = 8 } or nil,
-				handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
-			}
-			if state.pane then return extras_rows(player, pd, "train", state.id, nil, locate) end
+			if state.pane then
+				return extras_rows(player, pd, "train", state.id, nil, {
+					type = "button",
+					name = "locate",
+					caption = { "cybersyn-gui.relative-locate" },
+					tooltip = { "cybersyn-gui.relative-locate-train-tooltip" },
+					style_mods = { minimal_width = 0, left_padding = 8, right_padding = 8 },
+					handler = { [defines.events.on_gui_click] = relative.handle.relative_locate_train },
+				})
+			end
+			-- Beside the vanilla window the remote view already follows the train it opened: no Locate (PLAN5 D5-7).
 			return extras_rows(player, pd, "train", state.id,
 				{
 					type = "flow",
@@ -1790,7 +1792,6 @@ local function render_train_buttons(state, body, m, pd)
 						tooltip = { "cybersyn-gui.relative-open-manager-train-tooltip" },
 						handler = { [defines.events.on_gui_click] = relative.handle.relative_open_manager },
 					},
-					locate,
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
 				})
 		end)
@@ -1883,9 +1884,10 @@ end
 
 -- The stop panel is anchored to the train-stop window. The train window of 2.0 is the remote view's docked side
 -- pane, and a relative GUI anchored to train_gui is drawn in the middle of the screen whatever its position (lab,
--- 2.0.77: left, right, top and bottom all land on the centre, over the train the view follows), so the train panel is
--- a screen frame placed right of that pane: 451 logical px wide below the 40 px title bar, measured at UI scale 1.5
--- on 3840x2160 and 1.0 on 1920x1080.
+-- 2.0.77: left, right, top and bottom all land on the centre, over the train the view follows; 2.0.77 has no relative
+-- type for the docked pane), so the train panel is a screen frame placed flush right of that pane. The pane's width
+-- cannot be read: it is derived from how it was opened and the item groups with an item unlocked for the force (the
+-- Fuel tab's ghost cursor selection; xlogic.train_pane_right).
 local ANCHORS = {
 	stop = { gui = defines.relative_gui_type.train_stop_gui, position = defines.relative_gui_position.right, type = "train-stop" },
 	-- A wagon opens its own window (in the middle of the screen), not the docked pane: the panel anchors to it.
@@ -1895,11 +1897,6 @@ local ANCHORS = {
 }
 -- The mount for a rolling stock window of its own; anything else (a locomotive) uses the screen frame.
 local WAGON_MOUNT = { ["cargo-wagon"] = "cargo" }
-local TRAIN_PANE_RIGHT = 451
-local TRAIN_PANE_TOP = 40
-local GAP = 8
--- Logical px of the screen height the train panel leaves free: the title bars above it and the subheader inside it.
-local SCREEN_MARGIN = 120
 -- The stop panel's body height, in logical px: an anchored panel taller than the train-stop window (767 px at 1080p
 -- scale 1) stretches that window up under the remote view's title bar. Body + subheader + footer + paddings stay below it.
 local STOP_BODY_MAX = 600
@@ -1942,14 +1939,6 @@ local function mount(player, kind, key)
 	return frame, relative.build(frame, kind, nil)
 end
 
---- Places the train panel beside the docked train pane for the player's current UI scale.
---- @param player LuaPlayer
---- @param frame LuaGuiElement
-local function place_train(player, frame)
-	local scale = player.display_scale
-	frame.location = { x = math.floor((TRAIN_PANE_RIGHT + GAP) * scale), y = math.floor((TRAIN_PANE_TOP + GAP) * scale) }
-end
-
 --- The player's screen in physical px and UI scale, or the one dev.set_layout emulates (as the manager window's sizing).
 --- @param player LuaPlayer
 --- @return number width
@@ -1961,6 +1950,106 @@ local function screen_of(player)
 	if o then return o.width, o.height, o.scale end
 	local r = player.display_resolution
 	return r.width, r.height, player.display_scale
+end
+
+-- What the Fuel tab's ghost cursor selection is built from, from prototypes only (the same in every Lua state of a
+-- multiplayer game): the visible items of each item group, the recipes that unlock each item for filter selections
+-- (an item no such recipe makes is always shown) and the group tabs per row.
+local group_items, item_recipes, group_row_count
+
+local function build_selection()
+	group_items, item_recipes = {}, {}
+	for name, item in pairs(prototypes.item) do
+		local group = item.group
+		if group and not (item.hidden or item.parameter) then
+			local list = group_items[group.name]
+			if not list then
+				list = {}
+				group_items[group.name] = list
+			end
+			list[#list + 1] = name
+		end
+	end
+	for name, recipe in pairs(prototypes.recipe) do
+		if recipe.unlock_results then
+			for _, product in pairs(recipe.products) do
+				if product.type == "item" then
+					local list = item_recipes[product.name]
+					if not list then
+						list = {}
+						item_recipes[product.name] = list
+					end
+					list[#list + 1] = name
+				end
+			end
+		end
+	end
+	group_row_count = prototypes.utility_constants.select_group_row_count or 6
+end
+
+--- The item groups the ghost cursor selection shows a tab for: those with an item unlocked for the force (2.0.77
+--- filter selections show an item once an enabled recipe that unlocks results makes it, or always when none makes
+--- it; measured: 11 tabs on pY 123, where 13 groups have visible items).
+--- @param force LuaForce
+--- @return int groups
+--- @return int row_count
+local function ghost_selection(force)
+	if not group_items then build_selection() end
+	local recipes = force.recipes
+	local n = 0
+	for _, items in pairs(group_items) do
+		for _, name in ipairs(items) do
+			local makers = item_recipes[name]
+			local shown = makers == nil
+			if not shown then
+				for _, r in ipairs(makers) do
+					local recipe = recipes[r]
+					if recipe and recipe.enabled then
+						shown = true
+						break
+					end
+				end
+			end
+			if shown then
+				n = n + 1
+				break
+			end
+		end
+	end
+	return n, group_row_count
+end
+
+--- Places the train panel flush right of the docked pane, at its top, for the player's current screen.
+--- @param player LuaPlayer
+--- @param frame LuaGuiElement
+--- @param open {pane_narrow: boolean?, groups: int?}
+local function place_train(player, frame, open)
+	local width, _, scale = screen_of(player)
+	if not group_items then build_selection() end
+	local edge = xlogic.train_pane_right(open.pane_narrow == true, open.groups or 0, group_row_count, scale)
+	local x, y = xlogic.train_panel_place(edge, scale, width)
+	frame.location = { x = x, y = y }
+end
+
+--- How the docked pane opening now for `entity` is laid out. Its Fuel tab shows the character's inventory while the
+--- character can reach the locomotive, and is disabled when this very tick switched the player from the character to
+--- remote view (the game does that to open a train from the character): both fit the narrow pane. Otherwise it shows
+--- the ghost cursor selection (lab, 2.0.77). Also returns the groups of that selection (0 without a burner, which has
+--- no Fuel tab).
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param entity LuaEntity?
+--- @return boolean narrow
+--- @return int groups
+local function pane_for(player, pd, entity)
+	if not (entity and entity.valid and entity.type == "locomotive" and entity.prototype.burner_prototype) then
+		return true, 0
+	end
+	local character = player.character
+	local narrow = pd.remote_entered_tick == game.tick
+		or (character ~= nil and character.valid and character.can_reach_entity(entity))
+	if narrow then return true, 0 end
+	return false, (ghost_selection(player.force))
 end
 
 --- Whether the stop panel is shown on this player's screen (PLAN4 D16): only where the vanilla window and the panel
@@ -1983,7 +2072,7 @@ function relative.fit(player, panel)
 	if panel.tags.kind == "stop" then
 		height = math.min(STOP_BODY_MAX, screen - STOP_SCREEN_MARGIN)
 	else
-		height = screen - SCREEN_MARGIN
+		height = xlogic.train_body_cap(h, scale)
 	end
 	local scroll = panel.scroll
 	if scroll.style.maximal_height ~= height then scroll.style.maximal_height = height end
@@ -2011,7 +2100,8 @@ end
 --- @param kind "stop"|"train"
 --- @param id uint
 --- @param key string? the mount (WAGON_MOUNT for a wagon's window); default `kind`
-function relative.open(player, pd, kind, id, key)
+--- @param entity LuaEntity? the entity whose window opened (the train panel's place depends on it)
+function relative.open(player, pd, kind, id, key, entity)
 	extras.on_selection(pd, kind, id)
 	hide_all(player)
 	key = key or kind
@@ -2022,9 +2112,14 @@ function relative.open(player, pd, kind, id, key)
 		pd.relative = state
 	end
 	panel.tags = { kind = kind, id = id }
-	pd.relative_open = { kind = kind, id = id, mount = key ~= kind and key or nil }
+	local open = { kind = kind, id = id, mount = key ~= kind and key or nil }
+	pd.relative_open = open
 	storage.manager.relative_any = true
-	if key == "train" then place_train(player, frame) end
+	if key == "train" then
+		open.tick = game.tick
+		open.pane_narrow, open.groups = pane_for(player, pd, entity)
+		place_train(player, frame, open)
+	end
 	if key == "stop" and not relative.stop_fits(player) then
 		-- Still open, so a display change that makes room shows it (relative.on_display_changed); nothing renders.
 		pd.relative_open.narrow = true
@@ -2132,7 +2227,7 @@ function relative.on_gui_opened(e)
 		relative.close(player, pd)
 		return
 	end
-	relative.open(player, pd, kind, id, WAGON_MOUNT[entity.type])
+	relative.open(player, pd, kind, id, WAGON_MOUNT[entity.type], entity)
 end
 
 --- on_gui_closed of any entity GUI hides the panels.
@@ -2251,7 +2346,7 @@ function relative.on_display_changed(player, pd)
 	local frame = mount_of(player, mount_key(open))
 	local panel = frame and frame[PANEL]
 	if not panel then return end
-	if mount_key(open) == "train" then place_train(player, frame) end
+	if mount_key(open) == "train" then place_train(player, frame, open) end
 	if mount_key(open) == "stop" then
 		local fits = relative.stop_fits(player)
 		if fits == (open.narrow == nil) then
@@ -2276,6 +2371,26 @@ function relative.on_display_changed(player, pd)
 		return
 	end
 	relative.fit(player, panel)
+end
+
+--- on_player_controller_changed: the game switches from the character to remote view to open a train from the
+--- character, in the same tick as the locomotive's on_gui_opened (either order); a panel opened earlier in this tick
+--- is placed again for the narrow pane.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+--- @param e EventData.on_player_controller_changed
+function relative.on_controller_changed(player, pd, e)
+	if not (e.old_type == defines.controllers.character
+		and player.controller_type == defines.controllers.remote) then
+		return
+	end
+	pd.remote_entered_tick = game.tick
+	local open = pd.relative_open
+	if not (open and open.tick == game.tick and mount_key(open) == "train") then return end
+	local frame = mount_of(player, "train")
+	if not frame then return end
+	open.pane_narrow = true
+	place_train(player, frame, open)
 end
 
 --- Drops a player's mounts and panel state (a mod update may change the panel's skeleton; mount() reuses a mount).
@@ -2672,6 +2787,29 @@ function dev_fns.relative_display_changed(pi)
 	local player, pd = dev_context(pi)
 	relative.on_display_changed(player, pd)
 	return dev_fns.relative_dump(pi)
+end
+
+--- The train panel's place: the docked pane's right edge it assumed (physical px), the item groups with an unlocked
+--- item it counted, the frame's location (physical px) and the scroll body's height cap.
+function dev_fns.train_panel_geometry(pi)
+	local player, pd = dev_context(pi)
+	local open = pd.relative_open
+	local frame = mount_of(player, "train")
+	local _, _, scale = screen_of(player)
+	local panel = frame and frame[PANEL]
+	return {
+		open = open ~= nil and mount_key(open) == "train",
+		groups = open and open.groups,
+		narrow = open ~= nil and open.pane_narrow == true,
+		row_count = group_row_count,
+		pane_right = open and xlogic.train_pane_right(open.pane_narrow == true, open.groups or 0, group_row_count or 6, scale),
+		location = frame and frame.location,
+		visible = frame and frame.visible,
+		scale = scale,
+		body_cap = panel and panel.scroll.style.maximal_height,
+		remote_entered_tick = pd.remote_entered_tick,
+		tick = game.tick,
+	}
 end
 
 --- Whether the open panel skips the vanilla-window check (relative_open sets it; false lets the next tick apply it).

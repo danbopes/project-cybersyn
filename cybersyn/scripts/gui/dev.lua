@@ -301,9 +301,10 @@ function interface.stop_gui_opened(pi, station_id)
 	return state(pi)
 end
 
---- on_player_controller_changed for `pi`.
-function interface.controller_changed(pi)
-	manager_gui.on_controller_changed({ name = defines.events.on_player_controller_changed, player_index = pi, tick = game.tick })
+--- on_player_controller_changed for `pi`; `old` is the event's old_type.
+function interface.controller_changed(pi, old)
+	manager_gui.on_controller_changed({ name = defines.events.on_player_controller_changed, player_index = pi, tick = game.tick,
+		old_type = old })
 	return state(pi)
 end
 
@@ -367,6 +368,10 @@ function interface.link_click(pi, kind, id, mods)
 		opened = player.opened and player.opened.name or nil,
 		item = pd.search_item,
 		tab = pd.selected_tab,
+		centered_on = player.centered_on and player.centered_on.unit_number or nil,
+		zoom = player.zoom,
+		position = player.position,
+		surface = player.surface.name,
 	}
 end
 
