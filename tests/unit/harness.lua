@@ -541,4 +541,59 @@ end
 
 harness.serialize = serpent.line
 
+-- ---------------------------------------------------------------- locale
+
+--- The locales that ship a manager.cfg. Only en is complete: the others keep just their real translations and the
+--- engine falls back to en for every key they lack, so a test must check what a player sees, not the raw file.
+harness.LOCALES = { "en", "de", "es", "fr", "ko", "ru", "sv-SE" }
+
+--- section -> key -> value of one cfg file under locale/, plus the keys in file order as sections[name].order.
+function harness.read_cfg(path)
+	local f = assert(io.open(MOD_ROOT .. "/locale/" .. path, "r"))
+	local sections, current = {}, nil
+	for line in f:lines() do
+		line = line:gsub("\r$", "")
+		local head = line:match("^%[(.-)%]%s*$")
+		if head then
+			current = sections[head] or { order = {} }
+			sections[head] = current
+		elseif current and not line:match("^%s*[;#]") then
+			local k, v = line:match("^([^=]+)=(.*)$")
+			if k then
+				if current[k] == nil then current.order[#current.order + 1] = k end
+				current[k] = v
+			end
+		end
+	end
+	f:close()
+	return sections
+end
+
+--- What a player in `loc` gets from `file` (default manager.cfg): en's sections with loc's own values on top.
+function harness.locale(loc, file)
+	file = file or "manager.cfg"
+	local out = harness.read_cfg("en/" .. file)
+	if loc ~= "en" then
+		for name, s in pairs(harness.read_cfg(loc .. "/" .. file)) do
+			local into = out[name] or { order = {} }
+			out[name] = into
+			for _, k in ipairs(s.order) do
+				if into[k] == nil then into.order[#into.order + 1] = k end
+				into[k] = s[k]
+			end
+		end
+	end
+	return out
+end
+
+--- harness.locale(loc, file) as cfg text, for tests that search it for "\nkey=" lines.
+function harness.locale_text(loc, file)
+	local parts = {}
+	for name, s in pairs(harness.locale(loc, file)) do
+		parts[#parts + 1] = "\n[" .. name .. "]"
+		for _, k in ipairs(s.order) do parts[#parts + 1] = "\n" .. k .. "=" .. s[k] end
+	end
+	return table.concat(parts) .. "\n"
+end
+
 return harness

@@ -220,14 +220,8 @@ test("captions and fix lines: one locale key per check, the fix line without num
 		{ "cybersyn-diag.lint-fix-phantom-leak" }, "a counter leak names the recount")
 end)
 
---- Every key the model and the tab use exists in the English locale, and every other locale carries it too.
-test("locale: every lint caption, fix and detail key, and the Problems column's keys, in every manager.cfg", function()
-	local function read(path)
-		local f = assert(io.open(H.mod_root .. "/locale/" .. path, "r"))
-		local text = f:read("*a")
-		f:close()
-		return text
-	end
+--- Every key the model and the tab use resolves in every locale, through its own translation or the en fallback.
+test("locale: every lint caption, fix and detail key, and the Problems column's keys, in every locale", function()
 	local keys = {}
 	for check = 1, LINT_COUNT do
 		keys[#keys + 1] = "lint-" .. LINT_KEYS[check]
@@ -262,12 +256,12 @@ test("locale: every lint caption, fix and detail key, and the Problems column's 
 	for _, k in ipairs({ "problems", "problems-scan-tooltip", "problems-sev-error", "problems-show-acked",
 		"problems-col-check", "problems-group", "problems-empty", "problems-footer", "problems-pending",
 		"problems-badge-tooltip", "stations-chip-setup", "stations-setup-chip" }) do
-		for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-			assert_true(read(loc .. "/manager.cfg"):find("\n" .. k .. "=", 1, true) == nil, loc .. " still has " .. k)
+		for _, loc in ipairs(H.LOCALES) do
+			assert_true(H.locale_text(loc):find("\n" .. k .. "=", 1, true) == nil, loc .. " still has " .. k)
 		end
 	end
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local text = read(loc .. "/manager.cfg")
+	for _, loc in ipairs(H.LOCALES) do
+		local text = H.locale_text(loc)
 		for _, k in ipairs(keys) do
 			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
 		end
