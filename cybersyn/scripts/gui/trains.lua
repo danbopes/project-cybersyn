@@ -2019,6 +2019,150 @@ local function sync_pane(player_data, selected, front)
 	end
 end
 
+--- The train a pager row shows, nil for a group row.
+--- @param item table an entry of build_sequence's list
+--- @param grouped boolean
+--- @return table?
+local function row_train(item, grouped)
+	if grouped then return item.train end
+	return item
+end
+
+--- The sequence of rows the pager pages over: trains, or group rows with the trains of expanded groups.
+--- @param player_data PlayerData
+--- @param rows table[] the filtered, sorted trains
+--- @param snapshot table
+--- @param ctx table trains_tab.query's context; grouped, gets the group stats and members
+--- @param grouped boolean
+--- @return table[]
+local function build_sequence(player_data, rows, snapshot, ctx, grouped)
+	if not grouped then
+		player_data.trains_reveal = nil
+		return rows
+	end
+	-- Members follow the chip rows (recounted once a second), the numbers the filtered trains (once a pass).
+	local chips, cache = ctx.chips, ctx.cache
+	if not chips.groups then
+		local filtering = util.filters_active(util.get_filters(player_data)) or active_chip(player_data) ~= nil
+		local names, members = depot_groups(rows, snapshot, filtering)
+		chips.groups = { names = names, members = members }
+	end
+	if not cache.group_stats then cache.group_stats = group_stats(ctx.all) end
+	ctx.group_stats = cache.group_stats
+	local reveal = player_data.trains_reveal
+	-- A cold open lists nothing yet: the reveal waits for the first complete pass.
+	if reveal and snapshot.tick then
+		local name = reveal.group
+		local id = reveal.train
+		if id then
+			for key, list in pairs(chips.groups.members) do
+				for _, tr in ipairs(list) do
+					if tr.id == id then name = key break end
+				end
+				if name then break end
+			end
+		end
+		if name then
+			local expanded = player_data.expanded_depots or {}
+			expanded[name] = true
+			player_data.expanded_depots = expanded
+		end
+		player_data.trains_reveal = nil
+	end
+	ctx.members = chips.groups.members
+	return logic.group_rows(chips.groups.names, chips.groups.members, player_data.expanded_depots)
+end
+
+--- Fuel is read for the trains on the page only, again every FUEL_EVERY renders.
+--- @param player_data PlayerData
+--- @param state table the list's gui state; its fuel map is replaced by the page's
+--- @param seq table[]
+--- @param first int
+--- @param last int
+--- @param grouped boolean
+--- @return table[] page the trains on the page
+--- @return {[uint]: table|false} fuel per train on the page
+local function refresh_fuel(player_data, state, seq, first, last, grouped)
+	local fuel = state.fuel or {}
+	local renders = (state.renders or 0) + 1
+	state.renders = renders
+	local refresh = renders % FUEL_EVERY == 1
+	local new_fuel = {}
+	local page = {}
+	local profiler = refresh and dev.enabled() and game.create_profiler() or nil
+	for i = first, last do
+		local tr = row_train(seq[i], grouped)
+		if tr then
+			page[#page + 1] = tr
+			local f = fuel[tr.id]
+			if f == nil or refresh then
+				local train = storage.trains[tr.id]
+				local entity = train and train.entity
+				f = (entity and entity.valid) and read_fuel(entity) or false
+			end
+			new_fuel[tr.id] = f
+		end
+	end
+	if profiler then
+		profiler.stop()
+		fuel_profiles[player_data.player_index] = profiler
+	end
+	state.fuel = new_fuel
+	return page, new_fuel
+end
+
+--- The sync entry of one group row. A group row is the same for as long as the chip count it was made from lives (its
+--- members and counts come from it and the query), so its view and sig are made once per recount, expanded state and
+--- widths.
+--- @param item table a group entry of build_sequence's list
+--- @param is_expanded boolean
+--- @param snapshot table
+--- @param ctx table
+--- @param w table column widths
+--- @param cells table row memos
+--- @return table
+local function group_entry(item, is_expanded, snapshot, ctx, w, cells)
+	local gviews = ctx.chips.gviews
+	if not gviews then
+		gviews = {}
+		ctx.chips.gviews = gviews
+	end
+	local view = gviews[item.group]
+	if not (view and view.expanded == is_expanded) then
+		view = group_view(item.group, snapshot, ctx.members[item.group], ctx, is_expanded)
+		gviews[item.group] = view
+	end
+	if view.wsig ~= w.sig then
+		view.wsig = w.sig
+		view.struct_w = view.struct .. "\1" .. w.sig
+		view.key_g = "g\1" .. item.group
+	end
+	-- The row is rebuilt when what it shows changed; the hover box alone (trains changing state) is written into the
+	-- row as it is.
+	local key = view.key_g
+	return {
+		key = key,
+		sig = view.struct_w .. "\2" .. view.tip_sig,
+		build = function()
+			cells[key] = view.struct_w
+			local def = { type = "frame", style = "cybersyn_group_row", style_mods = { height = ROW_HEIGHT },
+				tags = { depot_group = item.group }, tooltip = view.tip }
+			for k, child in ipairs(group_children(view, w, ctx)) do def[k] = child end
+			return util.hoverable(def, SCROLL)
+		end,
+		update = function(elem)
+			if cells[key] == view.struct_w then
+				write_group_tip(elem, view.tip)
+				return
+			end
+			cells[key] = view.struct_w
+			elem.clear()
+			for _, child in ipairs(group_children(view, w, ctx)) do gui.add(elem, child) end
+			elem.tooltip = view.tip
+		end,
+	}
+end
+
 --- @param map_data MapData
 --- @param player_data PlayerData
 function trains_tab.build(map_data, player_data)
@@ -2042,74 +2186,12 @@ function trains_tab.build(map_data, player_data)
 	local state = util.gui_state(player_data, SCROLL)
 	local grouped = player_data.trains_group_by_depot == true
 
-	-- The sequence of rows the pager pages over: trains, or group rows with the trains of expanded groups.
-	local seq
-	if grouped then
-		-- Members follow the chip rows (recounted once a second), the numbers the filtered trains (once a pass).
-		local chips, cache = ctx.chips, ctx.cache
-		if not chips.groups then
-			local filtering = util.filters_active(util.get_filters(player_data)) or active_chip(player_data) ~= nil
-			local names, members = depot_groups(rows, snapshot, filtering)
-			chips.groups = { names = names, members = members }
-		end
-		if not cache.group_stats then cache.group_stats = group_stats(ctx.all) end
-		ctx.group_stats = cache.group_stats
-		local reveal = player_data.trains_reveal
-		-- A cold open lists nothing yet: the reveal waits for the first complete pass.
-		if reveal and snapshot.tick then
-			local name = reveal.group
-			local id = reveal.train
-			if id then
-				for key, list in pairs(chips.groups.members) do
-					for _, tr in ipairs(list) do
-						if tr.id == id then name = key break end
-					end
-					if name then break end
-				end
-			end
-			if name then
-				local expanded = player_data.expanded_depots or {}
-				expanded[name] = true
-				player_data.expanded_depots = expanded
-			end
-			player_data.trains_reveal = nil
-		end
-		seq = logic.group_rows(chips.groups.names, chips.groups.members, player_data.expanded_depots)
-		ctx.members = chips.groups.members
-	else
-		player_data.trains_reveal = nil
-		seq = rows
-	end
+	local seq = build_sequence(player_data, rows, snapshot, ctx, grouped)
 	-- Grouped, the pager counts rows (group rows too) and says so; the summary beside it counts trains.
 	local first, last = util.paginate(player_data, TAB, #seq, nil, wrapped and 1 or 0,
 		grouped and "cybersyn-gui.pager-range-rows" or nil)
 
-	-- Fuel is read for the trains on the page only, again every FUEL_EVERY renders.
-	local fuel = state.fuel or {}
-	local renders = (state.renders or 0) + 1
-	state.renders = renders
-	local refresh = renders % FUEL_EVERY == 1
-	local new_fuel = {}
-	local page = {}
-	local profiler = refresh and dev.enabled() and game.create_profiler() or nil
-	for i = first, last do
-		local tr = grouped and seq[i].train or (not grouped and seq[i]) or nil
-		if tr then
-			page[#page + 1] = tr
-			local f = fuel[tr.id]
-			if f == nil or refresh then
-				local train = storage.trains[tr.id]
-				local entity = train and train.entity
-				f = (entity and entity.valid) and read_fuel(entity) or false
-			end
-			new_fuel[tr.id] = f
-		end
-	end
-	if profiler then
-		profiler.stop()
-		fuel_profiles[player_data.player_index] = profiler
-	end
-	state.fuel = new_fuel
+	local page, new_fuel = refresh_fuel(player_data, state, seq, first, last, grouped)
 
 	local cache = ctx.cache
 	if not cache.hidden then cache.hidden, cache.values = hidden_columns(ctx.all) end
@@ -2161,7 +2243,7 @@ function trains_tab.build(map_data, player_data)
 			local index = i - first + 1
 			local color = index % 2 == 0 and "dark" or "light"
 			local item = seq[i]
-			local tr = grouped and item.train or (not grouped and item) or nil
+			local tr = row_train(item, grouped)
 			if tr then
 				if tr.id == selected then color = "selected" end
 				local view = row_view(tr, ctx, alerts, filter_item, new_fuel[tr.id] or nil, w)
@@ -2177,48 +2259,7 @@ function trains_tab.build(map_data, player_data)
 					end,
 				}
 			else
-				-- A group row is the same for as long as the chip count it was made from lives (its members and counts
-				-- come from it and the query), so its view and sig are made once per recount, expanded state and widths.
-				local is_expanded = expanded[item.group] == true
-				local gviews = ctx.chips.gviews
-				if not gviews then
-					gviews = {}
-					ctx.chips.gviews = gviews
-				end
-				local view = gviews[item.group]
-				if not (view and view.expanded == is_expanded) then
-					view = group_view(item.group, snapshot, ctx.members[item.group], ctx, is_expanded)
-					gviews[item.group] = view
-				end
-				if view.wsig ~= w.sig then
-					view.wsig = w.sig
-					view.struct_w = view.struct .. "\1" .. w.sig
-					view.key_g = "g\1" .. item.group
-				end
-				-- The row is rebuilt when what it shows changed; the hover box alone (trains changing state) is
-				-- written into the row as it is.
-				local key = view.key_g
-				entries[#entries + 1] = {
-					key = key,
-					sig = view.struct_w .. "\2" .. view.tip_sig,
-					build = function()
-						cells[key] = view.struct_w
-						local def = { type = "frame", style = "cybersyn_group_row", style_mods = { height = ROW_HEIGHT },
-							tags = { depot_group = item.group }, tooltip = view.tip }
-						for k, child in ipairs(group_children(view, w, ctx)) do def[k] = child end
-						return util.hoverable(def, SCROLL)
-					end,
-					update = function(elem)
-						if cells[key] == view.struct_w then
-							write_group_tip(elem, view.tip)
-							return
-						end
-						cells[key] = view.struct_w
-						elem.clear()
-						for _, child in ipairs(group_children(view, w, ctx)) do gui.add(elem, child) end
-						elem.tooltip = view.tip
-					end,
-				}
+				entries[#entries + 1] = group_entry(item, expanded[item.group] == true, snapshot, ctx, w, cells)
 			end
 		end
 	end
