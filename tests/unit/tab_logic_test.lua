@@ -358,7 +358,7 @@ test("chip_mode: names when they fit, else compact", function()
 	assert_eq(l.chip_mode(800, 900), "compact")
 end)
 
-test("chip_lines: all with names when they fit, else zero counts hidden (All and the toggled one kept), then wrap", function()
+test("chip_lines: zero counts hide unless kept, the rest fill line 1 then line 2 in order", function()
 	local l = logic()
 	local chips = {
 		{ key = "all", width = 60, count = 6, keep = true },
@@ -366,16 +366,12 @@ test("chip_lines: all with names when they fit, else zero counts hidden (All and
 		{ key = "b", width = 100, count = 3 },
 		{ key = "c", width = 100, count = 0, keep = true },
 		{ key = "d", width = 100, count = 2 },
+		{ key = "e", width = 100, count = nil },
 	}
-	local hidden, lines = l.chip_lines(chips, 500)
-	assert_eq(hidden, {})
-	assert_eq(lines, { { "all", "a", "b", "c", "d" } })
-	hidden, lines = l.chip_lines(chips, 400)
-	assert_eq(hidden, { a = true })
-	assert_eq(lines, { { "all", "b", "c", "d" } })
-	hidden, lines = l.chip_lines(chips, 300)
-	assert_eq(hidden, { a = true })
-	assert_eq(lines, { { "all", "b", "c" }, { "d" } }, "what still does not fit wraps; nothing is shortened")
+	assert_eq({ l.chip_lines(chips, "all", 500, 500) }, { { "all", "b", "c", "d" }, {} })
+	assert_eq({ l.chip_lines(chips, "all", 300, 500) }, { { "all", "b", "c" }, { "d" } })
+	assert_eq({ l.chip_lines(chips, "all", 120, 100) }, { { "all" }, { "b" } }, "what does not fit line 2 is dropped")
+	assert_eq({ l.chip_lines(chips, "d", 120, 100) }, { { "all" }, { "b", "d" } }, "except the selected chip")
 end)
 
 test("deficit: requested minus in transit minus unpromised stock, never below 0", function()

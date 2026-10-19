@@ -569,35 +569,36 @@ function logic.train_chip_locale(key)
 	return "cybersyn-gui.trains-chip-" .. string.gsub(key, "_", "-")
 end
 
---- Which chips a subheader shows in `available` px, and on how many lines: every chip with its name when they fit;
---- else the zero-count chips go (those marked `keep`, All and the toggled one, stay); what still does not fit wraps
---- onto further lines. Captions are never shortened.
---- @param chips {key: string, width: int, count: int, keep: boolean?}[] in display order, widths with their spacing
---- @param available int
---- @return {[string]: true} hidden
---- @return string[][] lines the shown keys per line
-function logic.chip_lines(chips, available)
-	local hidden = {}
-	local total = 0
-	for _, c in ipairs(chips) do total = total + c.width end
-	if total > available then
-		for _, c in ipairs(chips) do
-			if c.count == 0 and not c.keep then hidden[c.key] = true end
-		end
-	end
-	local lines, line, used = {}, {}, 0
+--- Which chips a tab shows, and on which line: a chip with nothing to show is hidden unless marked `keep` (All, the
+--- toggled chip, a count still being worked out); the chips take the subheader's line while they fit beside what else
+--- it shows and continue on a second line below it, in order and never abbreviated. What does not fit there either is
+--- dropped, except the selected chip, so a filter in force always stays visible.
+--- @param chips {key: string, width: int, count: int?, keep: boolean?}[] in display order, widths with their spacing
+--- @param selected string? the toggled chip's key
+--- @param space1 int px left in the subheader
+--- @param space2 int px of the second line
+--- @return string[] line1
+--- @return string[] line2
+function logic.chip_lines(chips, selected, space1, space2)
+	local line1, line2 = {}, {}
+	local used1, used2 = 0, 0
+	local second = false
 	for _, c in ipairs(chips) do
-		if not hidden[c.key] then
-			if #line > 0 and used + c.width > available then
-				lines[#lines + 1] = line
-				line, used = {}, 0
+		if c.keep or (c.count and c.count > 0) then
+			local w = c.width
+			if not second and used1 + w <= space1 then
+				line1[#line1 + 1] = c.key
+				used1 = used1 + w
+			else
+				second = true
+				if used2 + w <= space2 or c.key == selected then
+					line2[#line2 + 1] = c.key
+					used2 = used2 + w
+				end
 			end
-			line[#line + 1] = c.key
-			used = used + c.width
 		end
 	end
-	if #line > 0 then lines[#lines + 1] = line end
-	return hidden, lines
+	return line1, line2
 end
 
 --- The hours of the Not refuelled chip as the caption and the tooltip show them: "1", "0.25", "2.75", "12.5".

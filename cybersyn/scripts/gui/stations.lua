@@ -1567,23 +1567,26 @@ local function chip_tooltip(key, pending)
 	return tip
 end
 
---- The subheader of the tab (templates.tab_header) gets the chip flow at its right end on first use.
+--- The chip flow at the right end of a tab's subheader (templates.tab_header), added on first use.
 --- @param player_data PlayerData
---- @return LuaGuiElement?
-local function chip_flow(player_data)
+--- @param tab string
+--- @param name string the flow's element name, also its key in refs
+--- @return LuaGuiElement? flow
+--- @return boolean created true on the call that added it
+function stations_tab.chip_flow(player_data, tab, name)
 	local refs = player_data.refs
-	local flow = refs[CHIPS]
-	if flow and flow.valid then return flow end
-	local subheader = refs[TAB .. "_subheader"]
-	if not (subheader and subheader.valid) then return nil end
+	local flow = refs[name]
+	if flow and flow.valid then return flow, false end
+	local subheader = refs[tab .. "_subheader"]
+	if not (subheader and subheader.valid) then return nil, false end
 	local _, elem = gui.add(subheader, {
 		type = "flow",
-		name = CHIPS,
+		name = name,
 		direction = "horizontal",
 		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
 	})
-	refs[CHIPS] = elem
-	return elem
+	refs[name] = elem
+	return elem, true
 end
 
 --- Width left for the chips in the subheader after the search field, the item chip and the collecting note.
@@ -1611,38 +1614,22 @@ local function chip_width(key, count)
 	return CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(count or 0) - 1)
 end
 
---- Which chips show, and on which line (PLAN4 D15 item 13): a chip with nothing to show is hidden (All and the
---- toggled chip always show, `always` too); the chips take the subheader's line while they fit beside what else it
---- shows and continue on a second line below it, in order and never abbreviated; what does not fit there either is
---- dropped.
+--- Which chips show, and on which line (tab-logic chip_lines).
 --- @param counts {[string]: int}
 --- @param selected string the toggled chip or "all"
 --- @param space1 int px left in the subheader
 --- @param space2 int px of the second line
---- @param always {[string]: true}?
+--- @param always {[string]: true}? chips shown although their count is unknown or zero
 --- @return string[] line1
 --- @return string[] line2
 function stations_tab.chip_lines(counts, selected, space1, space2, always)
-	local line1, line2 = {}, {}
-	local used1, used2 = 0, 0
-	local second = false
-	for _, key in ipairs(CHIP_ORDER) do
+	local chips = {}
+	for i, key in ipairs(CHIP_ORDER) do
 		local count = counts[key]
-		if key == "all" or key == selected or (always and always[key]) or (count and count > 0) then
-			local w = chip_width(key, count)
-			if not second and used1 + w <= space1 then
-				line1[#line1 + 1] = key
-				used1 = used1 + w
-			else
-				second = true
-				if used2 + w <= space2 or key == selected then
-					line2[#line2 + 1] = key
-					used2 = used2 + w
-				end
-			end
-		end
+		chips[i] = { key = key, width = chip_width(key, count), count = count,
+			keep = key == "all" or key == selected or (always ~= nil and always[key] == true) }
 	end
-	return line1, line2
+	return logic.chip_lines(chips, selected, space1, space2)
 end
 
 --- @param flow LuaGuiElement
@@ -1688,7 +1675,7 @@ end
 --- Chips: counts over the filtered set, click to show only that set, click again for all.
 --- @return boolean wrapped the second line shows (the page has one row less)
 local function render_chips(player_data, counts)
-	local flow = chip_flow(player_data)
+	local flow = stations_tab.chip_flow(player_data, TAB, CHIPS)
 	if not flow then return false end
 	local refs = player_data.refs
 	local wanted = active_chip(player_data) or "all"

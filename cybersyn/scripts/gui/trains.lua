@@ -1694,19 +1694,9 @@ end
 --- @param player_data PlayerData
 --- @return LuaGuiElement?
 local function chip_flow(player_data)
-	local refs = player_data.refs
-	local flow = refs[CHIPS]
-	if flow and flow.valid then return flow end
-	local subheader = refs[TAB .. "_subheader"]
-	if not (subheader and subheader.valid) then return nil end
-	local _, elem = gui.add(subheader, {
-		type = "flow",
-		name = CHIPS,
-		direction = "horizontal",
-		style_mods = { vertical_align = "center", horizontal_spacing = 4 },
-	})
-	refs[CHIPS] = elem
-	local _, toggle = gui.add(subheader, {
+	local elem, created = stations_tab.chip_flow(player_data, TAB, CHIPS)
+	if not created then return elem end
+	local _, toggle = gui.add(player_data.refs[TAB .. "_subheader"], {
 		type = "sprite-button",
 		name = "manager_trains_group_toggle",
 		style = "tool_button",
@@ -1714,22 +1704,8 @@ local function chip_flow(player_data)
 		tooltip = { "cybersyn-gui.trains-group-by-depot-tooltip" },
 		handler = { [defines.events.on_gui_click] = trains_tab.handle.on_group_by_depot },
 	})
-	refs.manager_trains_group_toggle = toggle
+	player_data.refs.manager_trains_group_toggle = toggle
 	return elem
-end
-
-local function chip_space(player_data)
-	local refs = player_data.refs
-	local layout = player_data.layout
-	local space = (layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)) - 24
-	local function shown(name)
-		local e = refs[TAB .. name]
-		return e and e.valid and e.visible
-	end
-	if shown("_search_field") then space = space - 208 end
-	if shown("_chip_flow") then space = space - 260 end
-	if shown("_collecting") then space = space - 160 end
-	return space
 end
 
 --- @param keys string[]
@@ -1771,8 +1747,8 @@ local function chip_entries(keys, counts, wanted, hours)
 	return entries
 end
 
---- The chips with their names in the subheader; when they do not fit, the zero-count ones go (All and the toggled
---- one stay), and what still does not fit wraps onto the strip above the column header (logic.chip_lines).
+--- The chips with their names in the subheader, zero-count ones hidden (All and the toggled one stay); what does not
+--- fit wraps onto the strip above the column header (logic.chip_lines, the rule the Stations tab follows too).
 --- @param player_data PlayerData
 --- @param counts {[string]: int}
 --- @param hours number
@@ -1789,13 +1765,11 @@ local function render_chips(player_data, counts, hours)
 		local count = counts[key] or 0
 		list[i] = { key = key, width = chip_width(key, count), count = count, keep = key == "all" or key == wanted }
 	end
-	-- The group toggle sits right of the chips.
-	local _, lines = logic.chip_lines(list, chip_space(player_data) - 32)
-	util.sync_children(flow, chip_entries(lines[1] or {}, counts, wanted, hours), util.gui_state(player_data, CHIPS), false)
-	local rest = {}
-	for i = 2, #lines do
-		for _, key in ipairs(lines[i]) do rest[#rest + 1] = key end
-	end
+	-- The group toggle sits right of the chips. The strip shares the table's width with the side pane, so it gets no
+	-- more than the subheader.
+	local space = stations_tab.chip_space(player_data, TAB) - 32
+	local line1, rest = logic.chip_lines(list, wanted, space, space)
+	util.sync_children(flow, chip_entries(line1, counts, wanted, hours), util.gui_state(player_data, CHIPS), false)
 	local strip, wrapped_flow = refs[CHIP_STRIP], refs[CHIPS_WRAPPED]
 	if not (strip and strip.valid and wrapped_flow and wrapped_flow.valid) then return false end
 	local wrapped = #rest > 0
