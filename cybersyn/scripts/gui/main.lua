@@ -200,6 +200,9 @@ local function init_player_fields(player_data)
 	if player_data.paused == nil then player_data.paused = false end
 	player_data.page_size = nil
 	player_data.hover = nil
+	-- Left by the removed Problems tab.
+	player_data.problems_badge, player_data.problems_scan_sig, player_data.problems_model = nil, nil, nil
+	player_data.problems_filter, player_data.problems_widths = nil, nil
 	if player_data.search_item and not util.signal_hash_valid(player_data.search_item) then
 		player_data.search_item = nil
 	end

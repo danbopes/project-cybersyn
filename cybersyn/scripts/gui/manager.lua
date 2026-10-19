@@ -740,8 +740,7 @@ end
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_open(player, player_data, refs)
 	-- A window built by an older version of this file survives a script update that has no version bump.
-	if not (refs.manager_filter_row and refs.manager_filter_row.valid)
-			or (refs.manager_problems_tab and refs.manager_problems_tab.valid) then
+	if not (refs.manager_filter_row and refs.manager_filter_row.valid) then
 		if refs.manager_window and refs.manager_window.valid then
 			refs.manager_window.destroy()
 		end
@@ -752,9 +751,6 @@ function manager.handle.manager_open(player, player_data, refs)
 	player_data.chip_sig = nil
 	player_data.collecting_shown = nil
 	player_data.trains_badge = nil
-	-- What the Problems tab (folded into Stations in round 4) kept per player.
-	player_data.problems_badge, player_data.problems_scan_sig, player_data.problems_model = nil, nil, nil
-	player_data.problems_filter, player_data.problems_widths = nil, nil
 	player_data.status_sig = nil
 	manager.refresh_banners(player_data)
 	manager.apply_layout(player, player_data)
