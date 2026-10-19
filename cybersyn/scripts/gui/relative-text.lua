@@ -248,6 +248,9 @@ function text.event_detail(ev)
 		return { verb }
 	elseif kind == DIAG_KIND_STATION_LIMIT then
 		return { "cybersyn-gui.relative-event-limit", tostring(ev.a or 0), tostring(ev.b or 0) }
+	elseif kind == DIAG_KIND_DISPATCH_FAILED then
+		local name = DIAG_DISPATCH_NAMES[code]
+		return name and { "cybersyn-diag.dispatch-" .. string.gsub(name, "_", "-") } or nil
 	end
 	return nil
 end

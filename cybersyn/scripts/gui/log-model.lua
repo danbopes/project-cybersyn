@@ -1131,6 +1131,21 @@ function model.message(g, ctx, expanded)
 	return { msg }
 end
 
+--- The message cell's why/fix tooltip of a dispatch_failed row; nil for any other row.
+--- @param g LogGroup
+--- @return LocalisedString?
+function model.dispatch_tooltip(g)
+	if g.kind ~= DIAG_KIND_DISPATCH_FAILED then return nil end
+	local name = DIAG_DISPATCH_NAMES[g.code]
+	if not name then return nil end
+	local key = string.gsub(name, "_", "-")
+	local state_name = (g.a or 0) > 0 and STATE_NAMES[g.a - 1]
+	local state = state_name and logic.state_chip(state_name).caption or { "cybersyn-diag.dispatch-state-unknown" }
+	local train = (g.train or 0) ~= 0 and tostring(g.train) or "–"
+	return { "", { "cybersyn-gui.unserved-why", { "cybersyn-diag.dispatch-why-" .. key, train, state } }, "\n",
+		{ "cybersyn-gui.unserved-fix", { "cybersyn-diag.dispatch-fix-" .. key } } }
+end
+
 --- Chat tags for a row (PLAN3 §11.6): a train by its front stock's unit number, a stop by its unit number, a map
 --- position; the engine makes each clickable in chat.
 --- @param train_unit uint? front_stock.unit_number

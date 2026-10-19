@@ -228,8 +228,19 @@ DIAG_DISPATCH_TRAIN_INVALID = 1
 DIAG_DISPATCH_DEPOT_INVALID = 2
 DIAG_DISPATCH_PROVIDER_INVALID = 3
 DIAG_DISPATCH_REQUESTER_INVALID = 4
+-- 5 is only in rings written before the cause was recorded; new rows name it with 6-8.
 DIAG_DISPATCH_SCHEDULE_REJECTED = 5
-DIAG_DISPATCH_NAMES = { "train_invalid", "depot_invalid", "provider_invalid", "requester_invalid", "schedule_rejected" }
+-- A train heading back to its depot (bypass) has no route from where it is to the provider.
+DIAG_DISPATCH_NO_PATH = 6
+-- Same pre-check: a route exists, but its start cannot be reserved now (a busy chain-signalled section).
+DIAG_DISPATCH_PATH_BLOCKED = 7
+-- The orders were written, then LuaTrain.has_path was false: they stay on the train.
+DIAG_DISPATCH_NO_PATH_AFTER_WRITE = 8
+DIAG_DISPATCH_NAMES = { "train_invalid", "depot_invalid", "provider_invalid", "requester_invalid", "schedule_rejected",
+	"no_path", "path_blocked", "no_path_after_write" }
+-- 6 and 7 heal themselves (the train drives on, the request is retried next cycle); 8 leaves untracked orders.
+DIAG_DISPATCH_SEVERITY = { DIAG_SEV_ERROR, DIAG_SEV_ERROR, DIAG_SEV_ERROR, DIAG_SEV_ERROR,
+	DIAG_SEV_WARNING, DIAG_SEV_INFO, DIAG_SEV_INFO, DIAG_SEV_WARNING }
 
 -- `code` of a delivery_failed event: who ended the delivery.
 DIAG_FAIL_TRAIN_REMOVED = 1

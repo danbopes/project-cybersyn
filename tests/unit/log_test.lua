@@ -651,6 +651,68 @@ test("locale: every key the Log builds exists in en and in the six fallback loca
 	end
 end)
 
+--- key -> value of one section of a locale file.
+local function locale_values(path, section)
+	local out, current = {}, nil
+	for line in io.lines(path) do
+		local sec = string.match(line, "^%[(.-)%]%s*$")
+		if sec then
+			current = sec
+		elseif current == section then
+			local k, v = string.match(line, "^([^=]+)=(.*)$")
+			if k then out[k] = v end
+		end
+	end
+	return out
+end
+
+test("dispatch tooltip: why/fix for every code, recorded state or not, in all seven locales; fix lines take no numbers", function()
+	setup()
+	assert_eq(#DIAG_DISPATCH_SEVERITY, #DIAG_DISPATCH_NAMES, "severity parallel to the names")
+	local used, fixes = {}, {}
+	local states, state_name = { 0 }, {}
+	for name, st in pairs(defines.train_state) do
+		states[#states + 1] = st + 1
+		state_name[st + 1] = name
+	end
+	for code = 1, #DIAG_DISPATCH_NAMES do
+		for _, a in ipairs(states) do
+			local g = { kind = DIAG_KIND_DISPATCH_FAILED, code = code, a = a, b = 0, train = 15, tick = 0, n = 1 }
+			local tip = model.dispatch_tooltip(g)
+			assert_true(type(tip) == "table", "code " .. code .. " a " .. a)
+			local why, fix = tip[2], tip[4]
+			assert_eq({ why[1], why[2][1], why[2][2], fix[1], fix[2][1] }, { "cybersyn-gui.unserved-why",
+				"cybersyn-diag.dispatch-why-" .. string.gsub(DIAG_DISPATCH_NAMES[code], "_", "-"), "15",
+				"cybersyn-gui.unserved-fix", "cybersyn-diag.dispatch-fix-" .. string.gsub(DIAG_DISPATCH_NAMES[code], "_", "-") })
+			if a == 0 then
+				assert_eq(why[2][3], { "cybersyn-diag.dispatch-state-unknown" })
+			else
+				assert_eq(why[2][3][1], "cybersyn-diag.train-state-" .. string.gsub(state_name[a], "_", "-"))
+			end
+			collect_keys(tip, used)
+			fixes[fix[2][1]] = true
+		end
+	end
+	assert_eq(model.dispatch_tooltip({ kind = DIAG_KIND_DISPATCH_FAILED, code = 99, a = 0, b = 0, train = 1 }), nil)
+	assert_eq(model.dispatch_tooltip({ kind = DIAG_KIND_SERVED, code = 1, a = 0, b = 0, train = 1 }), nil)
+	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+		local path = H.mod_root .. "/locale/" .. loc .. "/manager.cfg"
+		local sections = { ["cybersyn-gui"] = locale_values(path, "cybersyn-gui"),
+			["cybersyn-diag"] = locale_values(path, "cybersyn-diag") }
+		local missing, numbered = {}, {}
+		for key in pairs(used) do
+			local section, name = string.match(key, "^([^.]+)%.(.+)$")
+			local v = sections[section] and sections[section][name]
+			if not v then missing[#missing + 1] = loc .. ": " .. key end
+			if v and fixes[key] and string.find(v, "__", 1, true) then numbered[#numbered + 1] = loc .. ": " .. key end
+		end
+		table.sort(missing)
+		table.sort(numbered)
+		assert_eq(missing, {}, loc)
+		assert_eq(numbered, {}, loc .. " fix lines")
+	end
+end)
+
 test("lint passes: one row per pass whatever lies between its rows, counts by severity, cleared apart", function()
 	at(1000)
 	local d = setup()

@@ -464,8 +464,10 @@ function ScheduleBuilder:add_refuel_order(f_stop)
 end
 
 ---@param train LuaTrain
----@return boolean
-function ScheduleBuilder:is_path_available(train)
+---@param probe boolean? on a failure, ask once more ignoring the chain-signal start rule, to name the cause
+---@return boolean found
+---@return boolean? blocked with probe and not found: a route exists, its start cannot be reserved now
+function ScheduleBuilder:is_path_available(train, probe)
 	---@type TrainPathFinderGoal?
 	local goal = nil
 	for i = 1, self.i do
@@ -481,16 +483,18 @@ function ScheduleBuilder:is_path_available(train)
 	end
 	if not goal then return false end
 
-	local path_result = game.train_manager.request_train_path({
+	local request = {
 		type = "any-goal-accessible",
 		train = train,
 		goals = { goal },
 		search_direction = "any-direction-with-locomotives",
 		in_chain_signal_section = true,
 		shortest_path = true,
-	})
-
-	return path_result.found_path
+	}
+	if game.train_manager.request_train_path(request).found_path then return true end
+	if not probe then return false end
+	request.in_chain_signal_section = false
+	return false, game.train_manager.request_train_path(request).found_path
 end
 
 ---Inserts the given records before the first non-interrupt record in the schedule
@@ -532,6 +536,8 @@ end
 ---@param manifest Manifest
 ---@param surface_connections Cybersyn.SurfaceConnection[]
 ---@param start_at_depot boolean?
+---@return boolean dispatched
+---@return int? why DIAG_DISPATCH_* when not dispatched
 function set_manifest_schedule(
 		map_data,
 		train,
@@ -609,10 +615,13 @@ function set_manifest_schedule(
 
 	if new_schedule and next(new_schedule.records) then
 		-- only available trains that are mid-travel can run into a situation where the train will have no path
-		if train.status == STATUS_TO_D_BYPASS and not new_schedule:is_path_available(train_e) then
-			-- give the train some time to travel and avoid expensive path checks for a while
-			train.skip_path_checks_until = game.tick + NO_PATH_SKIP_TIME
-			return false
+		if train.status == STATUS_TO_D_BYPASS then
+			local found, blocked = new_schedule:is_path_available(train_e, map_data.diag ~= nil)
+			if not found then
+				-- give the train some time to travel and avoid expensive path checks for a while
+				train.skip_path_checks_until = game.tick + NO_PATH_SKIP_TIME
+				return false, blocked and DIAG_DISPATCH_PATH_BLOCKED or DIAG_DISPATCH_NO_PATH
+			end
 		end
 		clean_temporary_records(schedule)
 
@@ -622,7 +631,8 @@ function set_manifest_schedule(
 		elseif schedule.current > insert_index then
 			schedule.go_to_station(insert_index)
 		end
-		return train_e.has_path
+		if train_e.has_path then return true end
+		return false, DIAG_DISPATCH_NO_PATH_AFTER_WRITE
 	end
 
 	train_stuck()

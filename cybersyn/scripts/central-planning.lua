@@ -233,32 +233,33 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 	if not train.entity.valid then
 		on_train_broken(map_data, train_id, train)
 		interface_raise_train_dispatch_failed(train_id)
-		diag.dispatch_failed(DIAG_DISPATCH_TRAIN_INVALID, train_id, r_station_id, p_station_id)
+		diag.dispatch_failed(DIAG_DISPATCH_TRAIN_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 	if not depot.entity_stop.valid then
 		on_depot_broken(map_data, train.depot_id, depot)
 		interface_raise_train_dispatch_failed(train_id)
-		diag.dispatch_failed(DIAG_DISPATCH_DEPOT_INVALID, train_id, r_station_id, p_station_id)
+		diag.dispatch_failed(DIAG_DISPATCH_DEPOT_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 	if not p_station.entity_stop.valid then
 		on_station_broken(map_data, p_station_id, p_station)
 		interface_raise_train_dispatch_failed(train_id)
-		diag.dispatch_failed(DIAG_DISPATCH_PROVIDER_INVALID, train_id, r_station_id, p_station_id)
+		diag.dispatch_failed(DIAG_DISPATCH_PROVIDER_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 	if not r_station.entity_stop.valid then
 		on_station_broken(map_data, r_station_id, r_station)
 		interface_raise_train_dispatch_failed(train_id)
-		diag.dispatch_failed(DIAG_DISPATCH_REQUESTER_INVALID, train_id, r_station_id, p_station_id)
+		diag.dispatch_failed(DIAG_DISPATCH_REQUESTER_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 
 	local is_at_depot = remove_available_train(map_data, train_id, train)
 	--NOTE: we assume that the train is not being teleported at this time
 	--NOTE: set_manifest_schedule is allowed to cancel the delivery at the last second if applying the schedule to the train makes it lost and is_at_depot == false
-	if set_manifest_schedule(map_data, train, depot.entity_stop, not train.use_any_depot, p_station.entity_stop, p_station, r_station.entity_stop, r_station, manifest, surface_connections, is_at_depot) then
+	local dispatched, why = set_manifest_schedule(map_data, train, depot.entity_stop, not train.use_any_depot, p_station.entity_stop, p_station, r_station.entity_stop, r_station, manifest, surface_connections, is_at_depot)
+	if dispatched then
 		local old_status = train.status
 		train.status = STATUS_TO_P
 		train.p_station_id = p_station_id
@@ -342,7 +343,8 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 		interface_raise_train_status_changed(train_id, old_status, STATUS_TO_P)
 	else
 		interface_raise_train_dispatch_failed(train_id)
-		diag.dispatch_failed(DIAG_DISPATCH_SCHEDULE_REJECTED, train_id, r_station_id, p_station_id)
+		diag.dispatch_failed(why or DIAG_DISPATCH_SCHEDULE_REJECTED, train_id, r_station_id, p_station_id, manifest,
+			train.entity.state)
 	end
 end
 ---@param map_data MapData

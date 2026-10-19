@@ -1297,10 +1297,15 @@ end
 
 --- The create_delivery exits that give up on a chosen train.
 --- @param code int DIAG_DISPATCH_*
-function diag.dispatch_failed(code, train_id, r_id, p_id)
+--- @param manifest Manifest? its first item fills the item column
+--- @param state defines.train_state? stored as state + 1 in a (0 = not recorded)
+function diag.dispatch_failed(code, train_id, r_id, p_id, manifest, state)
 	local d = storage.diag
 	if not d then return end
-	diag.event(d, DIAG_KIND_DISPATCH_FAILED, DIAG_SEV_ERROR, code, 0, train_id, r_id, p_id, 0, 0, 0)
+	local first = manifest and manifest[1]
+	local item = first and intern(d, hash_item(first.name, first.quality)) or 0
+	diag.event(d, DIAG_KIND_DISPATCH_FAILED, DIAG_DISPATCH_SEVERITY[code] or DIAG_SEV_ERROR, code, 0, train_id, r_id,
+		p_id, item, state and state + 1 or 0, 0)
 end
 
 --- on_failed_delivery: a delivery ended without being completed.
