@@ -1,7 +1,7 @@
 -- Repair actions of PLAN3 §4.14 (phase 10): the manager's first buttons that change dispatcher or train state. Each
 -- runs an existing code path for one entity per click, behind the `cybersyn-manager-actions` rule (checked in the
 -- click handler, never trusted from a disabled button), a confirm step, and the audit trail of actions.audit.
---   Fail delivery and send home   interface.fail_delivery + the depot schedule (train panel)
+--   Fail delivery and send home   on_failed_delivery + the depot schedule (train panel)
 --   Recount deliveries            one station's delivery counters from the trains bound to it (stop panel, on the
 --                                 counter-leak finding only)
 --   Refresh allow-lists           update_train_layout per train, chunked by trains and stop visits (console command)
@@ -74,7 +74,7 @@ end
 
 -- ---------------------------------------------------------------- the actions
 
---- Ends the train's delivery (interface.fail_delivery: manifests off both stations, wagon filters cleared, the
+--- Ends the train's delivery (on_failed_delivery: manifests off both stations, wagon filters cleared, the
 --- failure logged) and sends it to its depot, as a train coming back from a requester does.
 --- @param train_id uint
 --- @return boolean done
@@ -86,7 +86,7 @@ function repair.fail_delivery(train_id)
 	local depot_stop = depot and depot.entity_stop
 	if not (depot_stop and depot_stop.valid) then return false, { "cybersyn-gui.action-no-depot" } end
 	local old_status = train.status
-	remote.call("cybersyn", "fail_delivery", train_id)
+	on_failed_delivery(storage, train_id, train, DIAG_FAIL_MANUAL)
 	set_depot_schedule(train.entity, depot_stop.backer_name)
 	train.status = STATUS_TO_D
 	interface_raise_train_status_changed(train_id, old_status, STATUS_TO_D)
@@ -144,7 +144,7 @@ function repair.job_tick()
 		if not logic.job_continue(n, spent, cost, job.chunk, job.budget) then break end
 		k = k + 1
 		if train then
-			remote.call("cybersyn", "update_train_layout", job.ids[k])
+			update_train_layout(storage, train)
 			job.refreshed = job.refreshed + 1
 			n = n + 1
 			spent = spent + cost

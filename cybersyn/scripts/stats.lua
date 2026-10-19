@@ -1,6 +1,7 @@
 -- Delivery throughput counters for the manager's Overview tab. Unlike the collector this is always on, because
--- throughput can only be measured as it happens; every hook is O(1) plus O(manifest) and every structure is a
--- fixed-size ring, so neither UPS nor the save grows with time.
+-- throughput can only be measured as it happens; every hook is O(1) plus O(manifest), except that a completed
+-- delivery spreads its busy time over the buckets it spanned (at most the 60 minute plus 24 hour slots), and every
+-- structure is a fixed-size ring, so neither UPS nor the save grows with time.
 
 local stats = {}
 
@@ -69,15 +70,20 @@ local function new_stats()
 	}
 end
 
---- Repairs a missing or partial table so saves from older versions keep working.
+--- The hooks run from the dispatcher, so they skip the save repairs (stats.init runs those on load). A missing table
+--- only exists before init, on a save from before stats were recorded: a hook raised by a migration starts it fresh.
 --- @return Stats
 local function get()
 	local s = storage.stats
-	if not s then
-		s = new_stats()
-		storage.stats = s
-		return s
-	end
+	if s then return s end
+	s = new_stats()
+	storage.stats = s
+	return s
+end
+
+--- Fills what older versions of the table lack.
+--- @param s Stats
+local function repair(s)
 	s.minute = s.minute or {}
 	s.hour = s.hour or {}
 	s.totals = s.totals or { deliveries = 0, dispatches = 0, items = 0, since_tick = game.tick }
@@ -93,7 +99,6 @@ local function get()
 	s.available_count = s.available_count or {}
 	s.refuel_since = s.refuel_since or game.tick
 	s.busy_since = s.busy_since or game.tick
-	return s
 end
 
 --- @param hash string
@@ -135,6 +140,7 @@ end
 
 function stats.init()
 	local s = get()
+	repair(s)
 	purge_invalid_hashes(s)
 	recount_available(s)
 end
@@ -536,6 +542,25 @@ local function closed_items_of(s, minutes, ring, oldest, current)
 	return items
 end
 
+--- The ring a period reads and its bucket range: minute buckets up to an hour, hour buckets beyond (rounded up to
+--- whole hours, at most a day).
+--- @param s Stats
+--- @param minutes int
+--- @param tick uint
+--- @return {[int]: StatsBucket} ring
+--- @return uint current start tick of the current bucket
+--- @return uint oldest start tick of the period's oldest bucket
+local function period(s, minutes, tick)
+	local ring, width, count
+	if minutes <= MINUTE_SLOTS then
+		ring, width, count = s.minute, MINUTE, minutes
+	else
+		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
+	end
+	local current = tick - tick % width
+	return ring, current, current - (count - 1) * width
+end
+
 --- Everything the Overview shows for one period: minute buckets for 10 and 60 minutes, hour buckets for longer
 --- periods (rounded up to whole hours), the current partial bucket included. Per-item amounts of the closed buckets
 --- are cached until the current bucket rolls over; the scalar sums are redone every call in ring order, so floating
@@ -546,14 +571,7 @@ end
 function stats.aggregate(minutes, summary)
 	local s = get()
 	local tick = game.tick
-	local ring, width, count
-	if minutes <= MINUTE_SLOTS then
-		ring, width, count = s.minute, MINUTE, minutes
-	else
-		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
-	end
-	local current = tick - tick % width
-	local oldest = current - (count - 1) * width
+	local ring, current, oldest = period(s, minutes, tick)
 	local since = s.totals.since_tick or 0
 	local out = {
 		minutes = minutes,
@@ -637,14 +655,7 @@ end
 function stats.layout_usage(minutes, inflight)
 	local s = get()
 	local tick = game.tick
-	local ring, width, count
-	if minutes <= MINUTE_SLOTS then
-		ring, width, count = s.minute, MINUTE, minutes
-	else
-		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
-	end
-	local current = tick - tick % width
-	local oldest = current - (count - 1) * width
+	local ring, current, oldest = period(s, minutes, tick)
 	local since = s.busy_since
 	local usage = {}
 	local function of(layout)
@@ -686,14 +697,8 @@ end
 function stats.min_available(minutes)
 	local s = get()
 	local tick = game.tick
-	local ring, width, count
-	if minutes <= MINUTE_SLOTS then
-		ring, width, count = s.minute, MINUTE, minutes
-	else
-		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
-	end
-	local current = tick - tick % width
-	return min_available(s, ring, current - (count - 1) * width, tick)
+	local ring, _, oldest = period(s, minutes, tick)
+	return min_available(s, ring, oldest, tick)
 end
 
 --- Plain-data summary for the dev interface.
