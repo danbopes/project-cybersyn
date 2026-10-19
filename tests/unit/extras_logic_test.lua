@@ -291,3 +291,13 @@ test("train_body_cap: the frame ends above the hotbar", function()
 	-- Frame bottom = top + body + 135 measured chrome: above the 1080p hotbar top at 975.
 	assert_eq(40 + l.train_body_cap(1080, 1.0) + 135 <= 975, true)
 end)
+
+test("train_body_cap: the paused banner comes out of the body", function()
+	local l = logic()
+	assert_eq(l.train_body_cap(1080, 1.0, 0), l.train_body_cap(1080, 1.0))
+	assert_eq(l.train_body_cap(1080, 1.0, l.TRAIN_PANEL_BANNER), 1080 - 40 - 150 - 110 - 36)
+	assert_eq(l.train_body_cap(2160, 1.5, l.TRAIN_PANEL_BANNER), 1440 - 40 - 150 - 110 - 36)
+	assert_eq(l.train_body_cap(400, 1.0, l.TRAIN_PANEL_BANNER), 120, "never below the minimum")
+	-- With the banner: top + banner + body + 135 measured chrome stays above the 1080p hotbar top at 975.
+	assert_eq(40 + l.TRAIN_PANEL_BANNER + l.train_body_cap(1080, 1.0, l.TRAIN_PANEL_BANNER) + 135 <= 975, true)
+end)

@@ -259,6 +259,9 @@ logic.TRAIN_FRAME_WIDTH = 324
 logic.TRAIN_PANEL_CHROME = 150
 logic.TRAIN_PANEL_BOTTOM = 110
 logic.TRAIN_BODY_MIN = 120
+-- The dispatcher-paused banner above the subheader: cybersyn_banner_frame's fixed height (cybersyn_tab_subheader),
+-- not part of the 135 measured with the planner running.
+logic.TRAIN_PANEL_BANNER = 36
 
 --- The docked locomotive pane's right edge in physical px from the screen's left edge.
 --- @param narrow boolean the Fuel tab is disabled
@@ -288,9 +291,11 @@ end
 --- The train panel's scroll body cap, in logical px: the frame stays above the hotbar.
 --- @param height number screen height, physical px
 --- @param scale number UI scale
+--- @param banner number? logical px of the paused banner while it shows (TRAIN_PANEL_BANNER), 0 or nil otherwise
 --- @return int
-function logic.train_body_cap(height, scale)
+function logic.train_body_cap(height, scale, banner)
 	local free = math.floor(height / scale) - logic.TRAIN_PANE_TOP - logic.TRAIN_PANEL_CHROME - logic.TRAIN_PANEL_BOTTOM
+		- (banner or 0)
 	return math.max(logic.TRAIN_BODY_MIN, free)
 end
 

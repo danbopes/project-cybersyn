@@ -223,6 +223,16 @@ lab.suite("39_relative", {
 		g = dev("train_panel_geometry", PI)
 		lab.check("1080p at 1.0: placed at (452, 40), body capped to stay above the hotbar",
 			g.location.x == 452 and g.location.y == 40 and g.body_cap == 1080 - 40 - 150 - 110, g)
+		dev("set_setting_as", PI, "cybersyn-enable-planner", false)
+		dev("relative_refresh_ms", PI, 1)
+		local gp = dev("train_panel_geometry", PI)
+		local bp = dev("relative_dump", PI).banner
+		dev("set_setting_as", PI, "cybersyn-enable-planner", true)
+		dev("relative_refresh_ms", PI, 1)
+		local gr = dev("train_panel_geometry", PI)
+		lab.check("1080p at 1.0 with the planner paused: the banner's 36 px come out of the body cap",
+			bp ~= nil and gp.location.y == 40 and gp.body_cap == 1080 - 40 - 150 - 110 - 36, { banner = bp, g = gp })
+		lab.check("planner resumed: the banner is gone and the body cap is back", gr.body_cap == 1080 - 40 - 150 - 110, gr)
 		dev("set_layout", PI, 3840, 2160, 1.5)
 		dev("relative_display_changed", PI)
 		g = dev("train_panel_geometry", PI)

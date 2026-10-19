@@ -1815,6 +1815,8 @@ local function render_banner(state, panel)
 		banner.banner_label.caption = who and { "cybersyn-gui.dispatch-paused-by", who.name } or { "cybersyn-gui.dispatch-paused" }
 		banner.banner_label.tooltip = { "cybersyn-gui.dispatch-paused-tooltip" }
 	end
+	-- The banner takes height from the train panel's body, which is capped to stay above the hotbar.
+	if state.kind == "train" and not state.pane then relative.fit(game.get_player(panel.player_index), panel) end
 end
 
 local function render_caption(state, panel, m, pd)
@@ -2073,7 +2075,7 @@ function relative.fit(player, panel)
 	if panel.tags.kind == "stop" then
 		height = math.min(STOP_BODY_MAX, screen - STOP_SCREEN_MARGIN)
 	else
-		height = xlogic.train_body_cap(h, scale)
+		height = xlogic.train_body_cap(h, scale, panel.banner.visible and xlogic.TRAIN_PANEL_BANNER or 0)
 	end
 	local scroll = panel.scroll
 	if scroll.style.maximal_height ~= height then scroll.style.maximal_height = height end
