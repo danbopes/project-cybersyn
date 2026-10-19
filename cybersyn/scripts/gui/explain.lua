@@ -164,7 +164,9 @@ function explain.render(player, pd, force)
 	local defs, sprite, quality = body_defs(ex.r_id, ex.hash, e)
 	for _, def in ipairs(defs) do gui.add(body, def) end
 	local title = frame.titlebar.title
-	title.caption = { "cybersyn-gui.explain-title", sprite and ("[img=" .. sprite .. "]") or "", stop_name(ex.r_id) }
+	local caption = { "cybersyn-gui.explain-title", sprite and ("[img=" .. sprite .. "]") or "", stop_name(ex.r_id) }
+	title.caption = caption
+	title.tooltip = caption
 end
 
 --- Opens Explain for one Unserved key (the row's Why chip), or closes it when it already shows that key.
@@ -189,10 +191,18 @@ function explain.open(player, pd, r_id, hash)
 			type = "flow",
 			name = "titlebar",
 			style = "flib_titlebar_flow",
-			{ type = "label", name = "title", style = "frame_title", ignored_by_interaction = true },
-			{ type = "empty-widget", name = "drag", style = "flib_titlebar_drag_handle" },
+			-- Requester names carry many icons: the title squashes (full caption in its tooltip) so the X always stays in
+			-- the frame, and the whole bar drags because the handle can be squashed to nothing.
+			{
+				type = "label",
+				name = "title",
+				style = "frame_title",
+				style_mods = { horizontally_squashable = true },
+			},
+			{ type = "empty-widget", name = "drag", style = "flib_titlebar_drag_handle", ignored_by_interaction = true },
 			{
 				type = "sprite-button",
+				name = "close",
 				style = "frame_action_button",
 				sprite = "utility/close",
 				tooltip = { "gui.close-instruction" },
@@ -207,7 +217,8 @@ function explain.open(player, pd, r_id, hash)
 			style_mods = { horizontally_stretchable = true },
 		},
 	})
-	f.titlebar.drag.drag_target = f
+	f.titlebar.drag_target = f
+	f.titlebar.title.drag_target = f
 	pd.explain = { r_id = r_id, hash = hash }
 	place(player, pd, f)
 	explain.render(player, pd, true)
@@ -274,8 +285,20 @@ dev.extend({
 		local pd = storage.manager.players[pi]
 		local frame = player.gui.screen[FRAME]
 		if not (frame and frame.valid) then return { open = false } end
-		return { open = true, key = pd.explain, title = frame.titlebar.title.caption, lines = view(frame.body, {}),
-			location = frame.location }
+		local bar = frame.titlebar
+		local close = bar.close
+		return { open = true, key = pd.explain, title = bar.title.caption, lines = view(frame.body, {}),
+			location = frame.location,
+			close = { exists = close ~= nil and close.valid, style = close and close.style.name, sprite = close and close.sprite },
+			title_squashable = bar.title.style.horizontally_squashable, title_tooltip = bar.title.tooltip,
+			drag = bar.drag_target and bar.drag_target.name, title_drag = bar.title.drag_target and bar.title.drag_target.name }
+	end,
+	explain_click_close = function(pi)
+		local frame = game.get_player(pi).gui.screen[FRAME]
+		local btn = frame and frame.valid and frame.titlebar.close
+		if not btn then return false end
+		return gui.dispatch({ name = defines.events.on_gui_click, element = btn, player_index = pi, tick = game.tick,
+			button = defines.mouse_button_type.left, shift = false, control = false, alt = false })
 	end,
 	explain_close = function(pi)
 		local player = game.get_player(pi)

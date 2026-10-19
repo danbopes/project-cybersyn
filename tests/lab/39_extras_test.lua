@@ -218,6 +218,76 @@ local STEPS = {
 	end,
 
 	function(ctx)
+		-- D5-1: a requester named with many icons squashes the title instead of pushing the X off the frame; the title's
+		-- tooltip carries the whole caption and the whole bar drags. Opened through the real Why chip, closed by the X.
+		local rows = remote.call("cybersyn-query", "query_unserved", { limit = 2 })
+		if not lab.check("two unserved rows exist for the long-name Explain", #rows == 2, rows) then return end
+		ctx.long_rows = rows
+		local stop = read("stations", rows[1].requester).entity_stop
+		ctx.long_stop, ctx.long_saved = stop, stop.backer_name
+		stop.backer_name = "[item=iron-gear-wheel][item=wooden-chest]/[item=copper-cable]/[item=fast-inserter]/[item=pipe]"
+			.. "/[item=steel-chest] Requestor for [item=automation-science-pack]"
+		dev("open", PI)
+		dev("select_tab", PI, "overview")
+		lab.big_screen(PI)
+		-- A cold open shows placeholder rows until the first collector pass completes.
+		lab.wait_until(function()
+			dev("update", PI, 1)
+			local d = dev("dump", PI, "overview")
+			return type(d) == "table" and #d.lists.unserved.rendered > 0
+		end, 1800)
+	end,
+
+	function(ctx)
+		local rows = ctx.long_rows
+		if not rows then return end
+		local row, other = rows[1], rows[2]
+		local stop, saved = ctx.long_stop, ctx.long_saved
+		local function chip_index(r)
+			local tbl
+			local function walk(node)
+				if node.name == "overview_unserved_table" then tbl = node return end
+				for _, c in ipairs(node.children) do if not tbl then walk(c) end end
+			end
+			walk(game.get_player(PI).gui.screen)
+			if not tbl then return nil end
+			for k, cell in ipairs(tbl.children) do
+				local chip = cell.children[1]
+				local tags = chip and chip.tags
+				if tags and tags.r_id == r.requester and tags.hash == r.item and cell.type ~= "label" then return k end
+			end
+		end
+		local k = chip_index(row)
+		local res = k and dev("click", PI, "overview_unserved_table", { k, 1 })
+		local ex = dev("explain_dump", PI)
+		lab.check("the Why chip opens Explain", res == true and ex.open == true and ex.key.r_id == row.requester, { k = k, res = res })
+		if ex.open then
+			lab.check("Explain keeps its X: a close frame_action_button", ex.close.exists == true
+				and ex.close.style == "frame_action_button" and ex.close.sprite == "utility/close", ex.close)
+			lab.check("Explain's title squashes and carries the whole caption as its tooltip", ex.title_squashable == true
+				and serpent.line(ex.title_tooltip) == serpent.line(ex.title)
+				and string.find(serpent.line(ex.title), "Requestor for", 1, true) ~= nil, { ex.title, ex.title_tooltip })
+			lab.check("the whole Explain title bar drags the frame", ex.drag == "cybersyn_explain"
+				and ex.title_drag == "cybersyn_explain", { ex.drag, ex.title_drag })
+			lab.check("the X closes Explain", dev("explain_click_close", PI) == true and dev("explain_dump", PI).open == false
+				and read("manager", "players", PI, "explain") == nil, dev("explain_dump", PI))
+			lab.check("closing by the X gives back what the overlay took", read("manager", "players", PI, "overlay_took") == nil)
+		end
+		-- One frame at a time: opening another row replaces the first.
+		dev("explain_open", PI, row.requester, row.item)
+		dev("explain_open", PI, other.requester, other.item)
+		local frames = 0
+		for _, c in ipairs(game.get_player(PI).gui.screen.children) do
+			if c.name == "cybersyn_explain" then frames = frames + 1 end
+		end
+		local key = dev("explain_dump", PI).key
+		lab.check("Explain is single-instance", frames == 1 and key and key.r_id == other.requester, { frames = frames, key = key })
+		dev("explain_close", PI)
+		stop.backer_name = saved
+		dev("update", PI, 2)
+	end,
+
+	function(ctx)
 		-- Breakdown: stuck-request labels read the reason the dispatcher recorded.
 		local st = ctx.stations[2] or ctx.stations[1]
 		local res = dev("breakdown_failure_labels", "iron-plate", {
