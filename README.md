@@ -1,6 +1,6 @@
 # Project Cybersyn
 
-danbopes's fork of Mami's [Project Cybersyn](https://github.com/mamoniot/project-cybersyn) for Factorio 2.0: a drop-in replacement for the stock mod with a rebuilt manager and dispatcher diagnostics. MIT licensed, like the original.
+danbopes's fork of Mami's [Project Cybersyn](https://github.com/mamoniot/project-cybersyn) for Factorio 2.0: a drop-in replacement for the stock mod that adds the [secondary inventory combinator](#the-secondary-inventory-combinator), a rebuilt manager and dispatcher diagnostics. MIT licensed, like the original.
 
 ![The manager's Overview on a Pyanodons save with 2,030 stations: four tiles and the Unserved requests table, each row with the reason the dispatcher recorded](previews/manager/overview.png)
 
@@ -10,18 +10,38 @@ Cybersyn is a train logistics mod. A cybernetic combinator next to a train stop 
 
 ## Why this fork
 
-The stock manager window is fine on a small base and falls behind on a large one. Reading its code against a 2,030-station Pyanodons save turned up the same root causes again and again:
+Two things, and the first exists only here.
+
+**The secondary inventory combinator.** Stock Cybersyn gives a train stop one inventory, one network mask, one priority and one set of thresholds. This fork adds a combinator mode that lets the same stop publish several inventories, each with its own priority, thresholds and mask, and the planner matches them as separate stops while the train still drives to the one station. It is the fork's main new feature; see [the secondary inventory combinator](#the-secondary-inventory-combinator).
+
+**A manager that holds up at 2,000 stations.** The stock manager window is fine on a small base and falls behind on a large one. Reading its code against a 2,030-station Pyanodons save turned up the same root causes again and again:
 
 - Every tab cleared itself and rebuilt every element once a second, and the Inventory tab called `get_signals` on every station each time. Items jumped around because the grids iterated hash tables, so scroll position and hover reset every second.
 - The "Max entities displayed on GUI pages" limit cut the list before sorting it, so a limited list was an arbitrary subset.
 - Search was case-sensitive on one tab and not on another, and the item filter compared plain names against keys that carry the quality, so quality items never matched.
-- Items behind a secondary inventory combinator never showed up, and the first tab you saw on opening was empty.
+- The first tab you saw on opening was empty.
 
 Fixing those one at a time wasn't enough. This fork rebuilds the manager around a snapshot that a collector fills a few stations at a time, and only while someone has the window open. Tabs read the snapshot, sort it deterministically and update rows in place. On that save, with 2,030 stations and 553 trains, every tab's median render stays inside its budget: 5 ms per update, less for the Overview and the Log.
 
 The second half of the work answers a question the stock window doesn't: *why is this request still waiting?* The dispatcher now records a reason every time it fails to serve a request (no provider, provider low, network mask, no free train, train too small, layout, and so on), and setup checks predict which reason a misconfigured stop will produce before you go looking.
 
 None of this is a criticism of upstream. Cybersyn's planner is fast and its design is sound; the manager just wasn't built for this scale. The dispatcher here stays close to Mami's, and the [dispatcher changes](#dispatcher-changes) are listed one by one.
+
+## The secondary inventory combinator
+
+A stock station is one stop with one inventory. Whatever the station combinator's input says it has is provided or requested under one network mask, one priority and one request threshold. To provide iron at low priority but hold a reserve at high priority, or to request on one sub-network and provide on another, you build a second train stop.
+
+This fork adds a sixth combinator mode, **Secondary Inventory**. Place another cybernetic combinator next to the same train stop, where a station control combinator would go, set its mode, and wire its own input. The planner treats it as a stop of its own at that station: its items are matched, prioritised and thresholded separately, and the train still drives to the one stop. A station can carry any number of them.
+
+What a secondary inventory combinator reads from its own input:
+
+- Item and fluid signals. A positive count is provided, a negative count is requested, under the station's provide and request settings; "Stack thresholds" applies as it does for the station.
+- **Request threshold**, **Fluid request threshold**, **Priority** and **Reserved fluid capacity**: its own values, with the station's as the default when a signal is absent.
+- A signal matching the station's network signal: its own network mask. With the "each" network, each virtual signal is the mask for that network.
+
+What stays with the station: the network signal itself, provide-only or request-only, per-item thresholds from a station control combinator, the train limit, the allow list and the deliveries in flight (every inventory at the stop subtracts the station's deliveries from its count, so a train already on its way counts against all of them). One stop, several entries in the economy. The manager shows a secondary inventory's items inside its station's row and in the inventory totals.
+
+Take a smelter whose stop provides plates to the main network and takes ore from a mining sub-network on a different mask bit. The station combinator carries the plate count and the main mask; a secondary inventory combinator carries the negative ore signal, the mining mask bit and a request threshold of one wagon. One stop, one train limit, two entries in the economy on two networks, where stock Cybersyn needs a second train stop.
 
 ## What's in the manager
 
@@ -111,7 +131,7 @@ Read-only commands are open to everyone: `/cybersyn-find-problems` and `/cybersy
 
 These predate the manager work and are the only changes to how trains get dispatched:
 
-- **Secondary inventory combinator.** A new combinator mode ("Secondary Inventory") lets a station publish part of its inventory under its own network, priority and thresholds. A station can have any number of them.
+- **Secondary inventory combinator.** The fork's main feature, described in [its own section](#the-secondary-inventory-combinator). Inside the planner it replaced the economy's per-station keys with per-stop records, so two combinators at one station can match different networks.
 - **Locked slots scale with the manifest.** A provider's locked slots are reserved per item type, so multi-item deliveries no longer run out of room for the later items.
 - **Polling order.** The planner rotates its queue and retires the chosen provider before creating the delivery, whether or not the delivery is then created.
 - **Warm-up.** Stations warm up on their own schedule instead of queueing behind the oldest one, and a stop with no connected rail stays in warm-up.
@@ -273,7 +293,7 @@ Placed along a station's tracks, it outputs what the parked wagon next to it sho
 
 ### Secondary inventory
 
-The fork's extra mode. See [Dispatcher changes](#dispatcher-changes).
+The fork's sixth mode: another inventory at the same stop with its own priority, thresholds and mask. See [the secondary inventory combinator](#the-secondary-inventory-combinator).
 
 ### Networks
 
