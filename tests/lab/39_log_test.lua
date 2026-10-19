@@ -466,6 +466,26 @@ lab.suite("39_log", {
 		d = dev("log_dump", pi)
 		lab.check("viewing the Log clears the badge", d.badge == "", d.badge)
 
+		-- A failed dispatch's kind icon follows its severity: the self-healing info rows wear no danger triangle.
+		dev("diag_event", "dispatch_failed", "info", { code = 7 })
+		dev("diag_event", "dispatch_failed", "info", { code = 6 })
+		dev("diag_event", "dispatch_failed", "warning", { code = 8 })
+		dev("update", pi, 2)
+		local sprites = {}
+		for _, row in ipairs(dev("log_dump", pi).rows or {}) do
+			local line = serpent.line(row.message)
+			for _, key in ipairs({ "train-invalid", "no-path", "path-blocked", "no-path-after-write" }) do
+				if line:find('"cybersyn-diag.dispatch-' .. key .. '"', 1, true) and not sprites[key] then
+					sprites[key] = row.kind_sprite
+				end
+			end
+		end
+		lab.check("dispatch rows: path_blocked and no_path (info) carry the locomotive, no danger icon",
+			sprites["path-blocked"] == "item/locomotive" and sprites["no-path"] == "item/locomotive", sprites)
+		lab.check("dispatch rows: no_path_after_write (warning) the warning icon, train_invalid (error) the danger icon",
+			sprites["no-path-after-write"] == "utility/warning_icon" and sprites["train-invalid"] == "utility/danger_icon",
+			sprites)
+
 		-- Chat print: a row about a train and a stop of the save.
 		local tid, sid = ctx.train_ids[1], ctx.station_ids[1]
 		local seq = dev("diag_event", "alert", "error", { code = 1, train = tid, station = sid })

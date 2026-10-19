@@ -114,22 +114,40 @@ local KIND_SPRITE_CANDIDATES = {
 	[DIAG_KIND_TRAIN_STATE] = { "item/locomotive" },
 	[DIAG_KIND_SLOW_DELIVERY] = { "item/locomotive" },
 }
+-- A failed dispatch takes its icon from its severity: the self-healing no_path / path_blocked rows are info and wear
+-- the other train rows' locomotive, not the danger triangle (round-5 review: "It's showing up as error").
+local DISPATCH_SEV_CANDIDATES = {
+	[DIAG_SEV_ERROR] = { "utility/danger_icon" },
+	[DIAG_SEV_WARNING] = { "utility/warning_icon" },
+	[DIAG_SEV_INFO] = { "item/locomotive" },
+}
 local kind_sprites
+local dispatch_sprites
 
---- @param kind int
---- @return string
-local function kind_sprite(kind)
-	if not kind_sprites then
-		kind_sprites = {}
-		for k, list in pairs(KIND_SPRITE_CANDIDATES) do
-			for _, path in ipairs(list) do
-				if helpers.is_valid_sprite_path(path) then
-					kind_sprites[k] = path
-					break
-				end
+--- @param candidates table<int, string[]>
+--- @return table<int, string>
+local function first_valid_sprites(candidates)
+	local out = {}
+	for k, list in pairs(candidates) do
+		for _, path in ipairs(list) do
+			if helpers.is_valid_sprite_path(path) then
+				out[k] = path
+				break
 			end
 		end
 	end
+	return out
+end
+
+--- @param kind int
+--- @param sev int? the row's severity
+--- @return string
+local function kind_sprite(kind, sev)
+	if not kind_sprites then
+		kind_sprites = first_valid_sprites(KIND_SPRITE_CANDIDATES)
+		dispatch_sprites = first_valid_sprites(DISPATCH_SEV_CANDIDATES)
+	end
+	if kind == DIAG_KIND_DISPATCH_FAILED and sev and dispatch_sprites[sev] then return dispatch_sprites[sev] end
 	return kind_sprites[kind] or "utility/questionmark"
 end
 
@@ -658,10 +676,10 @@ local function write_cells(cells, g, m, now, key, expanded, child)
 		cells[2].tooltip = { "cybersyn-diag.sev-" .. (SEV_KEYS[g.sev] or "info") }
 		m.sev = g.sev
 	end
-	if m.kind ~= g.kind then
-		cells[3].sprite = kind_sprite(g.kind)
+	if m.kind ~= g.kind or m.ksev ~= g.sev then
+		cells[3].sprite = kind_sprite(g.kind, g.sev)
 		cells[3].tooltip = { "cybersyn-diag.kind-" .. (DIAG_KIND_KEYS[g.kind] or "alert") }
-		m.kind = g.kind
+		m.kind, m.ksev = g.kind, g.sev
 	end
 	-- train
 	local train_ok = g.train ~= 0 and storage.trains[g.train] ~= nil
