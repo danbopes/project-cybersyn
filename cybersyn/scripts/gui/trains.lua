@@ -652,13 +652,6 @@ function trains_tab.query(map_data, player_data)
 	}
 end
 
---- @param train_entity LuaTrain
---- @return LuaEntity?
-local function front_locomotive(train_entity)
-	local locomotives = train_entity.locomotives
-	return locomotives.front_movers[1] or locomotives.back_movers[1]
-end
-
 -- ---------------------------------------------------------------- hidden columns
 
 --- A train's network as the Status header tooltip names it: the signal and its mask, signed like the circuit value.
