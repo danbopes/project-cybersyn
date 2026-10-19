@@ -541,6 +541,25 @@ local function closed_items_of(s, minutes, ring, oldest, current)
 	return items
 end
 
+--- The ring a period reads and its bucket range: minute buckets up to an hour, hour buckets beyond (rounded up to
+--- whole hours, at most a day).
+--- @param s Stats
+--- @param minutes int
+--- @param tick uint
+--- @return {[int]: StatsBucket} ring
+--- @return uint current start tick of the current bucket
+--- @return uint oldest start tick of the period's oldest bucket
+local function period(s, minutes, tick)
+	local ring, width, count
+	if minutes <= MINUTE_SLOTS then
+		ring, width, count = s.minute, MINUTE, minutes
+	else
+		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
+	end
+	local current = tick - tick % width
+	return ring, current, current - (count - 1) * width
+end
+
 --- Everything the Overview shows for one period: minute buckets for 10 and 60 minutes, hour buckets for longer
 --- periods (rounded up to whole hours), the current partial bucket included. Per-item amounts of the closed buckets
 --- are cached until the current bucket rolls over; the scalar sums are redone every call in ring order, so floating
@@ -551,14 +570,7 @@ end
 function stats.aggregate(minutes, summary)
 	local s = get()
 	local tick = game.tick
-	local ring, width, count
-	if minutes <= MINUTE_SLOTS then
-		ring, width, count = s.minute, MINUTE, minutes
-	else
-		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
-	end
-	local current = tick - tick % width
-	local oldest = current - (count - 1) * width
+	local ring, current, oldest = period(s, minutes, tick)
 	local since = s.totals.since_tick or 0
 	local out = {
 		minutes = minutes,
@@ -642,14 +654,7 @@ end
 function stats.layout_usage(minutes, inflight)
 	local s = get()
 	local tick = game.tick
-	local ring, width, count
-	if minutes <= MINUTE_SLOTS then
-		ring, width, count = s.minute, MINUTE, minutes
-	else
-		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
-	end
-	local current = tick - tick % width
-	local oldest = current - (count - 1) * width
+	local ring, current, oldest = period(s, minutes, tick)
 	local since = s.busy_since
 	local usage = {}
 	local function of(layout)
@@ -691,14 +696,8 @@ end
 function stats.min_available(minutes)
 	local s = get()
 	local tick = game.tick
-	local ring, width, count
-	if minutes <= MINUTE_SLOTS then
-		ring, width, count = s.minute, MINUTE, minutes
-	else
-		ring, width, count = s.hour, HOUR, math.min(math.ceil(minutes / 60), HOUR_SLOTS)
-	end
-	local current = tick - tick % width
-	return min_available(s, ring, current - (count - 1) * width, tick)
+	local ring, _, oldest = period(s, minutes, tick)
+	return min_available(s, ring, oldest, tick)
 end
 
 --- Plain-data summary for the dev interface.
