@@ -1822,10 +1822,9 @@ function stations_tab.build(map_data, player_data)
 		if deferred then collector.owe_render() end
 		local warning = refs.manager_stations_warning_flow
 		if warning and warning.valid then
-			warning.visible = not deferred
-			if not deferred then
-				refs.manager_stations_warning_label.caption = { "cybersyn-gui.stations-collecting" }
-			end
+			-- Shown even when blank: the flow stretches, which keeps the pager at the bottom of the pane.
+			warning.visible = true
+			refs.manager_stations_warning_label.caption = deferred and "" or { "cybersyn-gui.stations-collecting" }
 		end
 		if summary and summary.valid then
 			summary.caption = ""
