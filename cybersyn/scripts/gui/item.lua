@@ -55,6 +55,18 @@ local AGE_STEP = 3600
 local WRITE_BUDGET = 18
 local BUILD_COST = 3
 local RENDER_ORDER = { "requesters", "providers", "trains" }
+-- Each table scrolls inside its share of the window and holds at most the Log's page of rows. Rows below a table's
+-- viewport move nothing the player sees, so once its viewport is full they are added with what is left of FILL_ROWS
+-- new rows per update (the three tables together, viewport rows counted first), and only in an update that leaves no
+-- rewrite waiting. A new row costs 0.12-0.16 ms on pY 123: 16 keep a fill update near 3 ms.
+local MAX_ROWS = 200
+local FILL_ROWS = 16
+local HEADER = 20
+-- The scroll panes reserve their bar's width, so the rows' width does not change with their number.
+local SCROLLBAR = 12
+local CHECK_ROWS = 12
+local FULL_CHECK = 200
+local BUILD_MAX = math.max(FILL_ROWS, math.floor(WRITE_BUDGET / BUILD_COST))
 
 -- The content element of every tab that can host the drill-down (manager.lua sizes them).
 item.CONTENT_FRAMES = {
@@ -145,6 +157,9 @@ end
 --- @param t string "providers"|"requesters"|"trains"
 local function table_name(t) return "item_" .. t .. "_table" end
 
+--- @param key int row position
+local function wait_name(key) return "item_wait_" .. key end
+
 --- @param player_data PlayerData
 --- @return int minutes
 local function get_period(player_data)
@@ -161,7 +176,7 @@ local function flex_widths(content_width)
 	for t, cols in pairs(COLUMNS) do
 		local fixed = 0
 		for _, c in ipairs(cols) do fixed = fixed + (c.width or 0) end
-		out[t] = content_width - HOST_INSET - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed
+		out[t] = content_width - HOST_INSET - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
 	end
 	return out
 end
@@ -179,15 +194,16 @@ local function header_cell(caption, width, right, tooltip)
 end
 
 local function section_def(t, flex)
-	local tbl = {
+	-- The column headers stay above the scroll pane; the same style keeps them over their columns.
+	local header = {
 		type = "table",
-		name = table_name(t),
+		name = "item_" .. t .. "_header",
 		style = "cybersyn_unserved_table",
 		column_count = #COLUMNS[t],
 	}
 	for _, c in ipairs(COLUMNS[t]) do
 		local tooltip = c.header == "priority" and { "cybersyn-gui.item-priority-tooltip" } or nil
-		tbl[#tbl + 1] = header_cell({ "cybersyn-gui.item-col-" .. c.header }, c.width or flex[t],
+		header[#header + 1] = header_cell({ "cybersyn-gui.item-col-" .. c.header }, c.width or flex[t],
 			c.kind == "value" or c.kind == "train", tooltip)
 	end
 	local caption_tooltip = t == "requesters" and { "cybersyn-gui.item-requesters-tooltip" } or nil
@@ -216,19 +232,28 @@ local function section_def(t, flex)
 			name = "item_" .. t .. "_body",
 			direction = "vertical",
 			style_mods = { vertical_spacing = 0 },
-			tbl,
-			{
-				type = "flow",
-				name = "item_" .. t .. "_empty_flow",
-				direction = "horizontal",
-				style = "cybersyn_overview_empty_flow",
-				visible = false,
+			header,
+			-- Hover-aware like the rows, so the hold also covers the scroll bar and the pane's blank space.
+			util.hoverable({
+				type = "scroll-pane",
+				name = "item_" .. t .. "_scroll",
+				style = "flib_naked_scroll_pane_no_padding",
+				horizontal_scroll_policy = "never",
+				vertical_scroll_policy = "auto-and-reserve-space",
+				{ type = "table", name = table_name(t), style = "cybersyn_unserved_table", column_count = #COLUMNS[t] },
 				{
-					type = "label",
-					style = "cybersyn_overview_empty_label",
-					caption = { "cybersyn-gui.item-empty-" .. t },
+					type = "flow",
+					name = "item_" .. t .. "_empty_flow",
+					direction = "horizontal",
+					style = "cybersyn_overview_empty_flow",
+					visible = false,
+					{
+						type = "label",
+						style = "cybersyn_overview_empty_label",
+						caption = { "cybersyn-gui.item-empty-" .. t },
+					},
 				},
-			},
+			}, table_name(t)),
 		},
 	}
 end
@@ -529,6 +554,8 @@ local function row_entry(t, key, sig, values, ctx)
 				defs[i] = cell_def(col, vals[i], col.width or widths[t], scope)
 				sigs[i] = vals[i].sig
 			end
+			-- wait_clock finds the cell by name: reading tbl.children would wrap every cell of up to MAX_ROWS rows.
+			if t == "requesters" then defs[WAIT_COLUMN].name = wait_name(key) end
 			memo[key] = sigs
 			return defs
 		end,
@@ -695,13 +722,10 @@ local ENTRY = { providers = provider_entry, requesters = requester_entry, trains
 --- @param n int rows built
 --- @param now uint
 local function wait_clock(tbl, rows, n, now)
-	local children
-	local cols = #COLUMNS.requesters
 	for i = 1, n do
 		local start = rows[i] and rows[i].wait_start
 		if start then
-			children = children or tbl.children
-			local cell = children[cols * i + WAIT_COLUMN]
+			local cell = tbl[wait_name(i)]
 			local caption = util.short_duration(now - start)
 			if cell and cell.caption ~= caption then
 				cell.caption = caption
@@ -781,7 +805,9 @@ local function apply_alloc(refs, alloc)
 	for _, t in ipairs(item_model.TABLES) do
 		local rows = alloc[t]
 		local body = refs["item_" .. t .. "_body"]
-		if body and body.valid then body.style.height = 20 + rows * ROW end
+		if body and body.valid then body.style.height = HEADER + rows * ROW end
+		local scroll = refs["item_" .. t .. "_scroll"]
+		if scroll and scroll.valid then scroll.style.height = rows * ROW end
 		local empty = refs["item_" .. t .. "_empty_flow"]
 		if empty and empty.valid then empty.style.height = rows * ROW end
 	end
@@ -888,41 +914,94 @@ function item.build(map_data, player_data)
 		if not (state.cells and state.keys) then state.cells = {} end
 		ctx.memo[t] = state.cells
 	end
-	local budget, wrote, deferred = WRITE_BUDGET, false, 0
+	-- First every table's rewrite and its viewport's new rows (WRITE_BUDGET), then rows below the viewports
+	-- (FILL_ROWS); each table is synced once.
+	local budget, wrote, deferred, waiting = WRITE_BUDGET, false, 0, false
+	local full_left = FULL_CHECK
+	local plan = {}
 	for _, t in ipairs(RENDER_ORDER) do
 		local rows = m[t]
-		local n = math.min(#rows, alloc[t])
+		local n = math.min(#rows, MAX_ROWS)
 		local name = table_name(t)
 		local tbl = refs[name]
 		local state = util.gui_state(player_data, name)
-		if tbl and tbl.valid and not held[t] then
+		if tbl and tbl.valid then
 			local built = state.keys and #state.keys or 0
 			local sigs = state.keys and state.sigs
+			local view_n = math.min(n, alloc[t])
+			-- Signing a row costs about 8 µs on pY 123. Between passes only the unscrolled viewport's rows and CHECK_ROWS
+			-- more in turn are signed (all of a 200-row table within about one pass), the others keep their sigs. A table
+			-- that does not show this pass yet is signed whole, so that it is rewritten whole; stale tables past the
+			-- first wait for the next update when they would take this one past FULL_CHECK signed rows.
+			local stale = not sigs or state.model_key ~= cache.key
+			local skip = stale and full_left < n and full_left < FULL_CHECK
 			local entries, changed = {}, 0
 			local make = ENTRY[t]
-			for i = 1, n do
-				local entry = make(rows[i], ctx, i)
-				if i <= built and not (sigs and sigs[i] == entry.sig) then changed = changed + 1 end
+			local from, to = 1, math.min(n, built)
+			if not stale and to > view_n then
+				from = state.check or view_n + 1
+				if from > to then from = view_n + 1 end
+			end
+			for i = 1, skip and 0 or to do
+				local entry
+				if stale or i <= view_n or (i >= from and i < from + CHECK_ROWS) then
+					entry = make(rows[i], ctx, i)
+					if not (sigs and sigs[i] == entry.sig) then changed = changed + 1 end
+				else
+					entry = { key = i, sig = sigs[i] }
+				end
 				entries[i] = entry
 			end
-			if changed == 0 or forced or not wrote or changed <= budget then
+			-- New rows: no more than one update can add.
+			for i = to + 1, skip and 0 or math.min(n, built + BUILD_MAX) do entries[i] = make(rows[i], ctx, i) end
+			if stale and not skip then full_left = full_left - n end
+			-- A held table may only grow below rows that all still match the model: nothing under the cursor is
+			-- rewritten, and a player who hovers a list as soon as it opens still gets the rest of it.
+			local open = not skip and (not held[t] or (changed == 0 and n > built))
+			if skip then
+				waiting = true
+				deferred = deferred + n
+			elseif open and (changed == 0 or forced or not wrote or changed <= budget) then
 				budget = budget - changed
 				wrote = wrote or changed > 0
-				if n > built then
+				local keep = built
+				if keep < view_n then
 					local room = math.max(0, math.floor(budget / BUILD_COST))
 					if not wrote and room == 0 then room = 1 end
-					local keep = math.min(n, built + room)
-					for i = keep + 1, n do entries[i] = nil end
+					keep = math.min(view_n, built + room)
 					budget = budget - (keep - built) * BUILD_COST
 					wrote = wrote or keep > built
-					deferred = deferred + n - keep
 				end
-				util.sync_table_rows(tbl, #COLUMNS[t], #COLUMNS[t], entries, state)
-				state.shown, state.shown_n = rows, n
+				-- The window moves on only once its rows were synced: a change found in it waits there for its rewrite.
+				if not stale then state.check = from + CHECK_ROWS end
+				plan[#plan + 1] = { t = t, tbl = tbl, state = state, rows = rows, n = n, entries = entries,
+					keep = math.min(keep, n), view_n = view_n, built = built }
 			else
+				waiting = waiting or changed > 0
 				deferred = deferred + changed + math.max(0, n - built)
 			end
 		end
+	end
+	local fold = waiting and 0 or FILL_ROWS
+	for _, p in ipairs(plan) do fold = fold - math.max(0, p.keep - p.built) end
+	for _, p in ipairs(plan) do
+		local keep, n = p.keep, p.n
+		if keep >= p.view_n and keep < n and fold > 0 then
+			local more = math.min(n - keep, fold, p.built + BUILD_MAX - keep)
+			fold = fold - more
+			keep = keep + more
+		end
+		local entries = p.entries
+		for i = keep + 1, n do entries[i] = nil end
+		deferred = deferred + n - keep
+		util.sync_table_rows(p.tbl, #COLUMNS[p.t], 0, entries, p.state)
+		p.state.shown, p.state.shown_n = p.rows, n
+		p.state.model_key = cache.key
+	end
+	for _, t in ipairs(RENDER_ORDER) do
+		local name = table_name(t)
+		local tbl = refs[name]
+		local state = util.gui_state(player_data, name)
 		-- Wait clock, count and empty state follow the rows the table shows, not the model it may not show yet.
 		local shown = state.shown
 		if t == "requesters" and shown and tbl and tbl.valid then
@@ -932,10 +1011,13 @@ function item.build(map_data, player_data)
 		local show_empty = shown ~= nil and #shown == 0
 		if empty and empty.valid and empty.visible ~= show_empty then empty.visible = show_empty end
 		local c = refs["item_" .. t .. "_count"]
+		local capped = shown ~= nil and #shown > state.shown_n
 		local csig = shown and (state.shown_n .. "/" .. #shown) or ""
 		if c and c.valid and state.count_sig ~= csig then
 			state.count_sig = csig
-			c.caption = shown and { "cybersyn-gui.item-count", tostring(state.shown_n), tostring(#shown) } or ""
+			-- "n of m" only when the table stops at MAX_ROWS; otherwise every row is there to scroll to.
+			c.caption = not shown and "" or capped and { "cybersyn-gui.item-count", tostring(state.shown_n), tostring(#shown) }
+				or tostring(#shown)
 		end
 	end
 	cache.deferred = deferred
@@ -959,10 +1041,10 @@ function item.apply_layout(player_data, layout)
 	local refs = player_data.refs
 	for _, t in ipairs(item_model.TABLES) do
 		local tbl = refs[table_name(t)]
-		if tbl and tbl.valid then
-			local cols = #COLUMNS[t]
-			local children = tbl.children
-			for i = #children, cols + 1, -1 do children[i].destroy() end
+		if tbl and tbl.valid then tbl.clear() end
+		local header = refs["item_" .. t .. "_header"]
+		if header and header.valid then
+			local children = header.children
 			for i, col in ipairs(COLUMNS[t]) do
 				if not col.width then children[i].style.width = widths[t] end
 			end
@@ -1011,12 +1093,17 @@ util.set_item_view({
 --- Profilers of item.build while storage.manager.item_samples is on; not game state, never read back into it.
 item.samples = {}
 
+-- The rows the three viewports show: a table holds more than its share and scrolls.
 dev.register_rows(TAB, function(player_data)
 	local refs = player_data.refs
+	local alloc = player_data.item_cache and player_data.item_cache.alloc
 	local n = 0
 	for _, t in ipairs(item_model.TABLES) do
 		local tbl = refs[table_name(t)]
-		if tbl and tbl.valid then n = n + #tbl.children / #COLUMNS[t] - 1 end
+		if tbl and tbl.valid then
+			local rows = #tbl.children / #COLUMNS[t]
+			n = n + (alloc and math.min(rows, alloc[t]) or rows)
+		end
 	end
 	return n
 end)
@@ -1045,6 +1132,8 @@ local function dump(player_data)
 		deferred = cache and cache.deferred,
 		model = {},
 		rendered = {},
+		scroll = {},
+		max_rows = MAX_ROWS,
 		captions = {},
 		header = {},
 	}
@@ -1067,8 +1156,8 @@ local function dump(player_data)
 		local cols = #COLUMNS[t]
 		if tbl and tbl.valid then
 			local children = tbl.children
-			for r = 1, #children / cols - 1 do
-				local base = r * cols
+			for r = 1, #children / cols do
+				local base = (r - 1) * cols
 				local row = { cells = {} }
 				for c = 1, cols do
 					local cell = children[base + c]
@@ -1099,6 +1188,13 @@ local function dump(player_data)
 			end
 		end
 		out.rendered[t] = rows
+		local scroll = refs["item_" .. t .. "_scroll"]
+		local header = refs["item_" .. t .. "_header"]
+		out.scroll[t] = scroll and scroll.valid and { height = scroll.style.maximal_height,
+			vertical = scroll.vertical_scroll_policy, horizontal = scroll.horizontal_scroll_policy,
+			hover = scroll.raise_hover_events, holds_rows = tbl ~= nil and tbl.valid and tbl.parent == scroll,
+			header_outside = header ~= nil and header.valid and header.parent == scroll.parent,
+			header_cells = header and header.valid and #header.children or 0 } or nil
 		local cap = refs["item_" .. t .. "_caption"]
 		local cnt = refs["item_" .. t .. "_count"]
 		local empty = refs["item_" .. t .. "_empty_flow"]
@@ -1152,6 +1248,14 @@ dev.add("item_oracle", function(hash)
 		in_transit = inv.in_transit[hash],
 		tick = snapshot.tick,
 	}
+end)
+
+--- Scrolls table `t`'s pane to its "top" or bottom (the scroll position itself cannot be read back).
+dev.add("item_scroll", function(pi, t, where)
+	local pane = storage.manager.players[pi].refs["item_" .. t .. "_scroll"]
+	if not (pane and pane.valid) then return false end
+	if where == "top" then pane.scroll_to_top() else pane.scroll_to_bottom() end
+	return true
 end)
 
 dev.add("item_dump", function(pi)

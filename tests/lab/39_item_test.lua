@@ -61,6 +61,8 @@ local function ids_of(rows)
 	return out
 end
 
+local COLS = { providers = 5, requesters = 7, trains = 4 }
+
 local function sorted(list)
 	local out = {}
 	for i, v in ipairs(list) do out[i] = v end
@@ -71,8 +73,9 @@ end
 --- The checks that hold for any open drill-down: totals, row sets, sort orders, rendered rows, whole rows.
 local function model_checks(label, hash)
 	dev("collect")
-	-- A pass that re-sorts the lists spreads its row rewrites over a few updates (REWRITE_ROWS per update).
-	dev("update", PI, 4)
+	-- A pass that re-sorts the lists spreads its row rewrites over a few updates, and the rows below the viewports
+	-- follow in chunks.
+	dev("update", PI, 12)
 	local d = dev("item_dump", PI)
 	lab.check(label .. ": no row rewrite left for a later update", d.deferred == 0, d.deferred)
 	local o = dev("item_oracle", hash)
@@ -114,12 +117,13 @@ local function model_checks(label, hash)
 	end
 	lab.check(label .. ": skipped requests after the queue", groups_ok, d.model.requesters)
 
-	-- Rendered rows: the first rows of each list, at most its share; the shares add up to the layout's rows.
+	-- Rendered rows: every row of each list up to max_rows, scrolling inside its share; the shares add up to the
+	-- layout's rows.
 	local a = d.alloc
 	lab.check(label .. ": the three shares add up to the layout's rows", a and a.providers + a.requesters + a.trains == d.total_rows,
 		{ a, d.total_rows })
 	for _, tname in ipairs({ "providers", "requesters", "trains" }) do
-		local want = math.min(#d.model[tname], a[tname])
+		local want = math.min(#d.model[tname], d.max_rows)
 		local rendered = d.rendered[tname]
 		local same = #rendered == want
 		for i = 1, want do
@@ -129,8 +133,14 @@ local function model_checks(label, hash)
 		lab.check(label .. ": " .. tname .. " shows its first " .. want .. " rows in model order", same,
 			{ want = want, rendered = #rendered })
 		local cap = d.captions[tname]
-		lab.check(label .. ": " .. tname .. " caption counts n of m", cap.count and cap.count[2] == tostring(want) and
-			cap.count[3] == tostring(#d.model[tname]), cap.count)
+		local capped = #d.model[tname] > d.max_rows
+		lab.check(label .. ": " .. tname .. " caption is the plain total, n of m only when capped", capped and
+			type(cap.count) == "table" and cap.count[2] == tostring(want) and cap.count[3] == tostring(#d.model[tname]) or
+			not capped and cap.count == tostring(#d.model[tname]), cap.count)
+		local sc = d.scroll[tname]
+		lab.check(label .. ": " .. tname .. " rows scroll in a pane of its share's height, header fixed above it",
+			sc and sc.height == a[tname] * 32 and sc.vertical == "auto-and-reserve-space" and sc.horizontal == "never" and
+			sc.hover == true and sc.holds_rows and sc.header_outside and sc.header_cells == COLS[tname], sc)
 		lab.check(label .. ": " .. tname .. " empty state exactly when the list is empty", cap.empty == (#d.model[tname] == 0), cap)
 	end
 	local rows = dev("rows", PI, "item")
@@ -318,6 +328,56 @@ lab.suite("39_item", {
 		e = dev("item_escape", PI)
 		lab.check("the next Escape on the unpinned window closes the window", not e.before and not e.manager_open, e)
 		dev("open", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
+		-- A list longer than its share scrolls: on a 1080p screen every row is built, the viewport's rows first, and a
+		-- table under the cursor still gets the rows below the ones it shows (nothing it shows is rewritten).
+		dev("set_layout", PI, 1920, 1080, 1.25)
+		dev("clear_filters", PI)
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		local best, most = nil, 0
+		for _, h in ipairs(dev("dump", PI, "inventory").provided.hashes) do
+			local o = dev("item_oracle", h)
+			if #o.requesters > most then best, most = h, #o.requesters end
+		end
+		local d = dev("open_item", PI, best)
+		local fills = 0
+		while #d.rendered.requesters == 0 and fills < 3 do
+			dev("update", PI, 1)
+			fills = fills + 1
+			d = dev("item_dump", PI)
+		end
+		lab.check("scroll: the requesters list is longer than its share", d.alloc and #d.model.requesters > d.alloc.requesters,
+			{ d.alloc, #d.model.requesters })
+		local first = d.rendered.requesters
+		lab.check("scroll: the first fill builds the requesters' viewport first, nothing below it yet",
+			#first >= math.min(6, d.alloc.requesters) and #first <= d.alloc.requesters, { #first, d.alloc.requesters })
+		local h = dev("hover", PI, "item_requesters_body", 2)
+		lab.check("scroll: the requesters' pane is hover-aware for the table's hold", type(h) == "table" and h.handled and
+			h.hold == true and h.hover and h.hover.scope == "item_requesters_table", h)
+		local updates = 0
+		repeat
+			dev("update", PI, 1)
+			updates = updates + 1
+			d = dev("item_dump", PI)
+		until d.deferred == 0 or updates >= 10
+		updates = updates + fills
+		lab.check("scroll: a held table still gets the rows below the ones it shows", #d.rendered.requesters == #d.model.requesters,
+			{ #d.rendered.requesters, #d.model.requesters, d.deferred })
+		local kept = true
+		for i, r in ipairs(first) do
+			if serpent.line(r) ~= serpent.line(d.rendered.requesters[i]) then kept = false end
+		end
+		lab.check("scroll: and the rows it showed are left as they were", kept)
+		lab.check("scroll: the whole drill-down is built within a few updates", d.deferred == 0 and updates <= 6,
+			{ updates = updates, deferred = d.deferred })
+		local rows = dev("rows", PI, "item")
+		lab.check("scroll: the rows the viewports show stay within the layout's rows", rows.rendered <= rows.computed, rows)
+		dev("hover", PI, "item_requesters_body", 2, true)
+		dev("close_item", PI)
 		lab.big_screen(PI)
 	end,
 
