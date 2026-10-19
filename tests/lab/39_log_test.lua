@@ -3,8 +3,8 @@
 -- every filter against an oracle over diag_events (both rings), adjacent identical rows collapsed and one row per lint
 -- pass (expandable), the window, Follow with Pause / Newest, the hover hold over the pane,
 -- the severity counts, Summary, the unread-error badge (capped at 99+), the export (filter, rows, chunked over ticks,
--- with manager updates off, finished when diagnostics go off), chat print tags, the right-click subject chip, and the
--- tab hiding while diagnostics are off.
+-- with manager updates off, finished when diagnostics go off), chat print tags, no right-click on train and stop links
+-- (PLAN5 D5-3), and the tab hiding while diagnostics are off.
 
 local D, pi = lab.D, lab.pi
 
@@ -38,14 +38,13 @@ end
 
 local WINDOWS = { 36000, 216000, false }
 
---- The Log's filter re-implemented from the player's raw filter (severities, kind, train field, subject, window) over
+--- The Log's filter re-implemented from the player's raw filter (severities, kind, train field, window) over
 --- plain event rows. Only which kinds and alert codes make up a group comes from the mod (that is the groups' data).
 local function oracle_filter(fs, with_sev)
-	local f, ex, st2 = fs.filter, fs.export, fs.station2_kinds
+	local f, ex = fs.filter, fs.export
 	local window = WINDOWS[f.window or 3]
 	local min_tick = window and math.max(0, fs.now - window) or nil
 	local kind_name = f.kind and KIND_NAME[f.kind]
-	local subject = f.subject
 	return function(ev)
 		if min_tick and ev.tick < min_tick then return false end
 		if f.group then
@@ -55,11 +54,6 @@ local function oracle_filter(fs, with_sev)
 		end
 		if with_sev and not f.sev[SEV[ev.sev]] then return false end
 		if f.train and ev.train ~= f.train then return false end
-		if subject and subject.kind == "train" and ev.train ~= subject.id then return false end
-		if subject and subject.kind ~= "train" and ev.station ~= subject.id and
-			not (st2[ev.kind] and ev.station2 == subject.id) then
-			return false
-		end
 		if fs.item and ev.item ~= fs.item then return false end
 		return true
 	end
@@ -131,8 +125,8 @@ local function oracle_counts(fs)
 end
 
 local function reset_filter()
-	dev("log_set_filter", pi, { sev = false, kind = false, group = false, train = false, subject = false,
-		window = false, follow = true, summary = false })
+	dev("log_set_filter", pi, { sev = false, kind = false, group = false, train = false, window = false, follow = true,
+		summary = false })
 end
 
 lab.suite("39_log", {
@@ -205,8 +199,6 @@ lab.suite("39_log", {
 			{ "group trains (alerts by code)", { group = "trains" } },
 			{ "group unserved", { group = "unserved" } },
 			{ "train field", { train = ctx.train_ids[1] } },
-			{ "subject station", { subject = { kind = "station", id = ctx.station_ids[2] } } },
-			{ "subject train", { subject = { kind = "train", id = ctx.train_ids[2] } } },
 			{ "window 10 min", { window = 1 } },
 			{ "window 1 h + errors", { window = 2, sev = { true, false, false } } },
 		}
@@ -450,7 +442,7 @@ lab.suite("39_log", {
 		reset_filter()
 	end,
 
-	-- The unread-error badge; the chat print; the right-click subject chip.
+	-- The unread-error badge; the chat print; train and stop links without right-click.
 	function(ctx)
 		render()
 		dev("select_tab", pi, "overview")
@@ -486,65 +478,120 @@ lab.suite("39_log", {
 			string.find(tags, "[train-stop=" .. sid .. "]", 1, true) and string.find(tags, "[gps=", 1, true) ~= nil,
 			{ tags = tags })
 
-		-- The link cells take right-clicks (the engine filters by button before any handler sees the click).
-		local function find(elem, name)
+		-- PLAN5 D5-3: train and stop links take no right-click anywhere (the engine filters by button before any
+		-- handler sees the click); item buttons keep it (right = clear the item filter).
+		local player = game.get_player(pi)
+		local function find_named(elem, name)
 			if elem.name == name then return elem end
 			for _, c in pairs(elem.children) do
-				local f = find(c, name)
+				local f = find_named(c, name)
 				if f then return f end
 			end
 		end
-		dev("select_tab", pi, "overview")
-		local screen = game.get_player(pi).gui.screen
-		local ov = find(screen, "overview_unserved_table")
-		local cell = ov and ov.children[8 + 2]
-		local link
-		for _, part in ipairs(cell and cell.children or {}) do
-			if part.type == "button" then link = part end
+		local function handler_of(elem)
+			local h = elem.tags and elem.tags.__cybersyn_handler
+			return h and h[tostring(defines.events.on_gui_click)] or nil
 		end
-		lab.check("Overview requester links take right-clicks", link and link.mouse_button_filter.right == true,
-			link and link.mouse_button_filter)
+		local function is_item(tags)
+			return tags.kind == "item" or tags.item_hash ~= nil or tags.cell == "item"
+		end
+		local function scan(root, out)
+			if (root.type == "button" or root.type == "sprite-button") then
+				local h = handler_of(root)
+				if h and string.find(h, "link_click", 1, true) then
+					local f = root.mouse_button_filter
+					if is_item(root.tags) then
+						out.items = out.items + 1
+						if not f.right then out.item_bad[#out.item_bad + 1] = root.name ~= "" and root.name or h end
+					else
+						out.links = out.links + 1
+						if f.right or f["left-and-right"] then
+							out.bad[#out.bad + 1] = serpent.line({ name = root.name, tags = root.tags.kind or root.tags.cell })
+						end
+					end
+				end
+			end
+			for _, c in pairs(root.children) do scan(c, out) end
+			return out
+		end
+		local function census(label)
+			local out = scan(player.gui.screen, { links = 0, items = 0, bad = {}, item_bad = {} })
+			scan(player.gui.relative, out)
+			lab.check(label .. ": no train or stop link accepts right (" .. out.links .. " links)", out.links > 0 and
+				#out.bad == 0, out.bad)
+			lab.info(label .. ": " .. out.items .. " item buttons, " .. #out.item_bad .. " without right")
+			return out
+		end
+		local items_ok = true
+		for _, tab in ipairs({ "overview", "stations", "trains", "inventory" }) do
+			dev("select_tab", pi, tab)
+			dev("update", pi, 3)
+			local out = census(tab)
+			if #out.item_bad > 0 then items_ok = false end
+		end
 		dev("select_tab", pi, "log")
-		local rows = find(screen, "log_rows")
-		local first = rows and rows.children[1]
-		local name_button
-		for _, c in ipairs(first and first.children[5].children or {}) do
-			if c.type == "button" then name_button = c end
-		end
-		lab.check("Log train and station links take right-clicks", first and first.children[4].mouse_button_filter.right and
-			name_button and name_button.mouse_button_filter.right, first and first.children[4].mouse_button_filter)
+		render()
+		local out = census("log rows")
+		lab.check("log rows: the item cells keep right (clear the item filter)", out.items > 0 and #out.item_bad == 0,
+			out.item_bad)
+		dev("log_set_filter", pi, { summary = true })
+		render()
+		out = census("log summary")
+		lab.check("log summary: the item links keep right", #out.item_bad == 0, out.item_bad)
+		reset_filter()
+		render()
+		lab.check("Overview/Stations/Trains/Inventory item buttons keep right", items_ok)
+		local hash
+		for _, row in ipairs(dev("diag_unserved_rows", 50)) do hash = hash or row.hash end
+		hash = hash or "iron-plate"
+		dev("select_tab", pi, "trains")
+		dev("open_item", pi, hash)
+		dev("update", pi, 2)
+		census("item drill-down")
+		dev("close_item", pi)
+		dev("relative_open", pi, "stop", sid)
+		census("stop panel")
+		dev("relative_close", pi)
+		dev("relative_open", pi, "train", tid)
+		census("train panel")
+		dev("relative_close", pi)
 
-		-- Right-click on a station link anywhere sets the chip; the chip's click clears it.
+		-- A right-click that reaches the handler anyway (dev clicks bypass the filter) changes nothing.
 		dev("select_tab", pi, "overview")
-		dev("link_click", pi, "station", sid, { right = true })
+		local function snap()
+			local st = dev("state", pi)
+			return serpent.line({ tab = st.selected_tab, filters = st.filters, log = dev("log_filter_state", pi).filter })
+		end
+		local before = snap()
+		local res = dev("link_click", pi, "station", sid, { right = true })
+		lab.check("dev right-click on a station link: tab, filters and the Log filter unchanged", snap() == before and
+			res.tab == "overview_tab", { before = before, after = snap() })
+		before = snap()
+		dev("link_click", pi, "train", tid, { right = true })
+		lab.check("dev right-click on a train link: nothing changes", snap() == before, { before = before, after = snap() })
 		dev("select_tab", pi, "log")
 		d = render()
-		lab.check("right-click on a station link: the Log shows only that stop", d.filter.subject and
-			d.filter.subject.id == sid and d.subject_chip ~= nil, d.filter.subject)
-		local only = true
-		for _, g in ipairs(d.groups) do
-			if g.station ~= sid and g.station2 ~= sid then only = false end
+		local idx, button
+		for i, row in ipairs(d.rows) do
+			if row.station_tags.kind == "station" then idx, button = i, row.station_index break end
 		end
-		lab.check("…and every row is about that stop", only and #d.groups > 0, #d.groups)
+		before = snap()
+		if idx then dev("click", pi, "log_rows", { idx, 5, button }, { right = true }) end
+		lab.check("dev right-click on a Log row's station cell: nothing changes", idx ~= nil and snap() == before,
+			{ idx = idx, before = before, after = snap() })
+		-- Item right-click keeps its meaning.
+		dev("set_filter", pi, { item = hash })
+		dev("link_click", pi, "item", hash, { right = true })
+		lab.check("right-click on an item still clears the item filter", dev("state", pi).filters.item == nil,
+			dev("state", pi).filters)
+		dev("clear_filters", pi)
+
 		for _ = 1, 8 do d = render() dev("update", pi, 1) end
 		d = render()
-		local pool = find(screen, "log_rows")
+		local pool = find_named(player.gui.screen, "log_rows")
 		lab.check("one row element per page row; those without a group are hidden, none destroyed", pool and
 			#pool.children == d.page and d.shown == #d.groups,
 			{ children = pool and #pool.children, page = d.page, groups = #d.groups, shown = d.shown })
-		dev("click", pi, "log_subject_chip")
-		d = render()
-		lab.check("the chip's click clears it", d.filter.subject == nil and d.subject_chip == nil, d.filter.subject)
-		-- The same from a Log row's own station cell (rows are reused, so the cell finds its target from the row).
-		local idx, target, button
-		for i, row in ipairs(d.rows) do
-			if row.station_tags.kind == "station" then idx, target, button = i, row.station_tags.id, row.station_index break end
-		end
-		local res = idx and dev("click", pi, "log_rows", { idx, 5, button }, { right = true })
-		d = render()
-		lab.check("right-click on a Log row's station cell sets the chip to that stop", idx ~= nil and
-			d.filter.subject and d.filter.subject.id == target, { idx = idx, res = res, subject = d.filter.subject })
-		dev("click", pi, "log_subject_chip")
 		render()
 	end,
 

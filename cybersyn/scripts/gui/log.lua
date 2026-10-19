@@ -74,8 +74,8 @@ local ICON = 20
 local SCAN_BUDGET = 640
 -- The badge scans on every tab's render, so it gets a budget of its own.
 local BADGE_BUDGET = 1024
--- Subheader controls on the right of a fixed width (logical px), and the spacing of the subheader flow; the item and
--- subject chips share what is left of the content width.
+-- Subheader controls on the right of a fixed width (logical px), and the spacing of the subheader flow; the item chip
+-- takes what is left of the content width.
 local SEV_BUTTON_WIDTH = 84
 local FOLLOW_WIDTH = 84
 local SUBHEADER_FIXED = 3 * SEV_BUTTON_WIDTH + 190 + 40 + 72 + 140 + FOLLOW_WIDTH + 2 * 28 + 9 * 8
@@ -143,6 +143,8 @@ local function get_filter(player_data)
 		f = model.default_filter()
 		player_data.log_filter = f
 	end
+	-- The "only this train/stop" filter set by the right-click removed in round 5: nothing could clear it any more.
+	f.subject = nil
 	return f
 end
 log_tab.get_filter = get_filter
@@ -163,12 +165,11 @@ end
 local function compiled(player_data, d)
 	local f = get_filter(player_data)
 	local item = item_filter(player_data, d)
-	local s = f.subject
 	local c = player_data.log_cf
 	local sev = f.sev
 	-- Rebuilt only when the filter changed; otherwise only the window's start moves with the clock.
 	if c and c.f_group == f.group and c.f_kind == f.kind and c.f_train == f.train and c.f_window == f.window
-		and c.f_item == item and c.f_sub_kind == (s and s.kind) and c.f_sub_id == (s and s.id)
+		and c.f_item == item
 		and c.sevs[1] == (sev[1] == true) and c.sevs[2] == (sev[2] == true) and c.sevs[3] == (sev[3] == true) then
 		local window = model.WINDOWS[f.window or model.DEFAULT_WINDOW]
 		c.min_tick = window and math.max(0, game.tick - window) or nil
@@ -176,7 +177,6 @@ local function compiled(player_data, d)
 	end
 	c = model.compile(f, game.tick, item)
 	c.f_group, c.f_kind, c.f_train, c.f_window, c.f_item = f.group, f.kind, f.train, f.window, item
-	c.f_sub_kind, c.f_sub_id = s and s.kind, s and s.id
 	player_data.log_cf = c
 	return c
 end
@@ -380,16 +380,6 @@ function log_tab.subheader_right()
 			handler = { [defines.events.on_gui_text_changed] = log_tab.handle.log_train_changed },
 		},
 		{
-			type = "button",
-			name = "log_subject_chip",
-			style = "cybersyn_item_chip",
-			style_mods = { maximal_width = CHIP_MAX, horizontally_squashable = true },
-			visible = false,
-			mouse_button_filter = { "left", "right" },
-			tooltip = { "cybersyn-gui.log-subject-tooltip" },
-			handler = { [defines.events.on_gui_click] = log_tab.handle.log_subject_clear },
-		},
-		{
 			type = "drop-down",
 			name = "log_window_dropdown",
 			style = "cybersyn_log_window_dropdown",
@@ -521,12 +511,10 @@ function log_tab.apply_layout(player_data, layout)
 		player_data.log_caps.log_summary_stations = nil
 		player_data.log_caps.log_summary_items = nil
 	end
-	-- The item chip (icon 28 + caption) and the subject chip share what the fixed controls leave, each squashed to its
-	-- part, so the right end of the subheader is never pushed out of the window.
-	local free = cw - SUBHEADER_PADDING - SUBHEADER_FIXED - 2 * 8
-	local chip = math.max(60, math.min(CHIP_MAX, math.floor(free / 2)))
-	local subject = refs.log_subject_chip
-	if subject and subject.valid then subject.style.maximal_width = chip end
+	-- The item chip (icon 28 + caption) is squashed to what the fixed controls leave, so the right end of the
+	-- subheader is never pushed out of the window.
+	local free = cw - SUBHEADER_PADDING - SUBHEADER_FIXED - 8
+	local chip = math.max(60, math.min(CHIP_MAX, free))
 	local item_chip = refs[TAB .. "_chip"]
 	if item_chip and item_chip.valid then
 		item_chip.style.maximal_width = math.max(32, chip - 28)
@@ -774,7 +762,8 @@ local function make_row_tags()
 	}
 end
 
-local LEFT_RIGHT = { "left", "right" }
+-- Right on an item clears the item filter; train and stop cells take no right-click.
+local LEFT, LEFT_RIGHT = { "left" }, { "left", "right" }
 
 --- One empty row at `index` (nil = at the end); write_cells fills it. Rows are reused for other events, so their link
 --- cells carry no target: the click finds it from the row.
@@ -790,10 +779,10 @@ local function build_row(parent, index, widths)
 	row.add({ type = "label", style = "cybersyn_log_age", raise_hover_events = true, tags = t.plain }).style.width = W.age
 	row.add({ type = "sprite", style = "cybersyn_log_dot", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "sprite", style = "cybersyn_log_kind", raise_hover_events = true, tags = t.plain })
-	row.add({ type = "button", style = "cybersyn_log_link", mouse_button_filter = LEFT_RIGHT,
+	row.add({ type = "button", style = "cybersyn_log_link", mouse_button_filter = LEFT,
 		tooltip = { "cybersyn-gui.link-footer" }, raise_hover_events = true, tags = t.train }).style.width = W.train
 	name_cell.pooled_add(row, widths.station, "cybersyn_log_cell_flow", { type = "button", style = "cybersyn_log_link",
-		mouse_button_filter = LEFT_RIGHT, raise_hover_events = true, tags = t.station })
+		mouse_button_filter = LEFT, raise_hover_events = true, tags = t.station })
 	row.add({ type = "sprite-button", style = "cybersyn_log_item", mouse_button_filter = LEFT_RIGHT,
 		tooltip = { "cybersyn-gui.item-click-hint" }, raise_hover_events = true, tags = t.item })
 	row.add({ type = "label", style = "cybersyn_log_message", raise_hover_events = true, tags = t.message }).style.width =
@@ -1154,7 +1143,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 				enabled = view ~= nil,
 				tooltip = station_tooltip(view, nil),
 				tags = view and { kind = view.kind, id = e.id } or {},
-				mouse_button_filter = { "left", "right" },
+				mouse_button_filter = { "left" },
 				handler = { [defines.events.on_gui_click] = util.handle.link_click },
 			})
 		end
@@ -1293,23 +1282,6 @@ function log_tab.restore_widgets(player_data)
 		follow.tooltip = on and { "cybersyn-gui.log-pause-tooltip" } or { "cybersyn-gui.log-newest-tooltip" }
 	end
 	if refs.log_summary_toggle and refs.log_summary_toggle.valid then refs.log_summary_toggle.toggled = f.summary == true end
-	local chip = refs.log_subject_chip
-	if chip and chip.valid then
-		local s = f.subject
-		chip.visible = s ~= nil
-		if s then
-			local name
-			if s.kind == "train" then
-				name = { "cybersyn-gui.log-train", tostring(s.id) }
-			else
-				local view = station_view(s.id)
-				name = view and (view.text ~= "" and view.text or view.name) or tostring(s.id)
-				chip.tooltip = { "", view and view.name or tostring(s.id), "\n", { "cybersyn-gui.log-subject-tooltip" } }
-			end
-			chip.caption = { "cybersyn-gui.log-subject-chip", name }
-			if s.kind == "train" then chip.tooltip = { "cybersyn-gui.log-subject-tooltip" } end
-		end
-	end
 	local c = player_data.log_caps
 	if c then
 		for sev = 1, 3 do c["log_sev_" .. sev] = nil end
@@ -1533,7 +1505,7 @@ end
 
 dev.register_rows(TAB, log_tab.page_rows)
 
--- ---------------------------------------------------------------- export, chat print, the subject chip
+-- ---------------------------------------------------------------- export, chat print
 
 --- Ends of the export jobs, from diag (also when diagnostics are turned off with a job queued).
 diag.set_export_listener(function(job, cause)
@@ -1640,32 +1612,6 @@ function log_tab.print_row(player, player_data, seq)
 	return line
 end
 
---- Right-click on a train or station link anywhere in the manager: the Log shows only that train or stop.
---- @param player LuaPlayer
---- @param player_data PlayerData
---- @param kind string
---- @param id uint
-function log_tab.set_subject(player, player_data, kind, id)
-	-- The tab is hidden while diagnostics are off, so a filter set now would only surprise later; and the log knows
-	-- trains and Cybersyn stops only.
-	if not storage.diag or kind == "entity" or kind == "item" then return end
-	local f = get_filter(player_data)
-	local subject_kind = kind == "train" and "train" or "station"
-	f.subject = { kind = subject_kind, id = id }
-	f.summary = false
-	log_tab.restore_widgets(player_data)
-	local name
-	if subject_kind == "train" then
-		name = { "cybersyn-gui.log-train", tostring(id) }
-	else
-		local view = station_view(id)
-		name = view and view.name or tostring(id)
-	end
-	player.create_local_flying_text({ create_at_cursor = true, text = { "cybersyn-gui.log-subject-set", name } })
-end
-
-util.set_log_subject(log_tab.set_subject)
-
 -- ---------------------------------------------------------------- handlers
 
 log_tab.handle = {}
@@ -1704,13 +1650,6 @@ function log_tab.handle.log_train_changed(player, player_data, refs, e)
 	local f = get_filter(player_data)
 	local id = tonumber(e.element.text)
 	f.train = id and id > 0 and math.floor(id) or nil
-	changed(player, player_data)
-end
-
---- @param e EventData.on_gui_click
-function log_tab.handle.log_subject_clear(player, player_data, refs, e)
-	get_filter(player_data).subject = nil
-	log_tab.restore_widgets(player_data)
 	changed(player, player_data)
 end
 
@@ -1936,7 +1875,6 @@ dev.register_dump(TAB, function(player_data)
 		local b = refs["log_sev_" .. sev]
 		out.sev_buttons[sev] = { caption = b.caption, toggled = b.toggled }
 	end
-	out.subject_chip = refs.log_subject_chip.visible and refs.log_subject_chip.caption or nil
 	out.seen = model.seen_seq(player_data.log_seen, d)
 	out.summary_shown = refs.log_summary.visible
 	return out
@@ -1947,7 +1885,7 @@ dev.add("log_dump", function(pi)
 end)
 
 --- Keys present in `f` are applied (false clears): sev = {bool, bool, bool}, kind = kind name, group = group name,
---- train, subject = {kind, id}, window = 1..3, follow, summary. `quiet`: no render (so the next update is the one a
+--- train, window = 1..3, follow, summary. `quiet`: no render (so the next update is the one a
 --- filter change costs).
 dev.add("log_set_filter", function(pi, f, quiet)
 	local player = game.get_player(pi)
@@ -1970,7 +1908,6 @@ dev.add("log_set_filter", function(pi, f, quiet)
 		end
 	end
 	if f.train ~= nil then filter.train = f.train or nil end
-	if f.subject ~= nil then filter.subject = f.subject or nil end
 	if f.window ~= nil then filter.window = f.window or model.DEFAULT_WINDOW end
 	if f.follow ~= nil then filter.follow = f.follow end
 	if f.summary ~= nil then

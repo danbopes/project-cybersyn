@@ -1369,7 +1369,7 @@ local function row_entry(row, acked, ctx)
 						caption = lost and lost.text or "",
 						tooltip = l_tip,
 						tags = lost and { kind = "station", id = e.lost_to } or {},
-						mouse_button_filter = { "left", "right" },
+						mouse_button_filter = { "left" },
 						handler = link,
 						visible = not hide.lost,
 					}),
