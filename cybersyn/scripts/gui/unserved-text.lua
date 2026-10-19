@@ -3,6 +3,7 @@
 -- them without the engine.
 
 local format = require("__flib__.format")
+local logic = require("scripts.gui.tab-logic")
 
 local text = {}
 
@@ -71,10 +72,9 @@ end
 --- a lower bound rather than a measurement.
 --- @param ticks number
 --- @param inherited boolean
---- @param short fun(ticks: number): string util.short_duration
 --- @return string
-function text.wait_caption(ticks, inherited, short)
-	return (inherited and text.INHERITED or "") .. short(ticks)
+function text.wait_caption(ticks, inherited)
+	return (inherited and text.INHERITED or "") .. logic.short_duration(ticks)
 end
 
 --- The "why" line's parameters: __1__ = a, __2__ = b, __3__ = network, __4__..__6__ = the train-filter split.

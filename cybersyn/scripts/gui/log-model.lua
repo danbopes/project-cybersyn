@@ -1023,10 +1023,9 @@ end
 --- The age column: two units at most.
 --- @param now uint
 --- @param g LogGroup
---- @param short fun(ticks: number): string util.short_duration
 --- @return string
-function model.age_caption(now, g, short)
-	return short(now - g.tick)
+function model.age_caption(now, g)
+	return logic.short_duration(now - g.tick)
 end
 
 --- The age column's tooltip: the absolute tick and the game time it was written at (a range for a collapsed row).

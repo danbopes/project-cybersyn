@@ -257,8 +257,8 @@ logic.STATE_SPRITE = {
 --- Used for "refuel" where an install has no signal-fuel (it is a base virtual signal since 2.0).
 logic.REFUEL_FALLBACK = "utility/fuel_icon"
 
---- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h" (util.short_duration
---- is the same rule; this copy keeps the module free of the game API).
+--- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h". Lives here rather
+--- than in util so the pure modules can format durations without the game API; util re-exports it.
 --- @param ticks number
 --- @return string
 function logic.short_duration(ticks)
@@ -500,13 +500,12 @@ end
 --- A duration caption with "never" for no tick: the Last refuel and Last delivery cells.
 --- @param now number
 --- @param tick number?
---- @param fmt fun(ticks: number): string
 --- @return string|nil caption nil = never
 --- @return number? age
-function logic.age_caption(now, tick, fmt)
+function logic.age_caption(now, tick)
 	local age = logic.age(now, tick)
 	if not age then return nil, nil end
-	return fmt(age), age
+	return logic.short_duration(age), age
 end
 
 --- Fuel of a train as a percentage of what its burners hold when full, averaged over the locomotives that burn

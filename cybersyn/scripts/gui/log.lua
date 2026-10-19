@@ -231,68 +231,15 @@ end
 
 -- ---------------------------------------------------------------- names
 
-local parsed_cache = {}
-
---- A pure function of the name, so a cache that differs between Lua states cannot desync anything.
---- @param name string
---- @return RichNameParts
-local function parse_name(name)
-	local p = parsed_cache[name]
-	if not p then
-		p = util.parse_rich_name(name)
-		parsed_cache[name] = p
-	end
-	return p
-end
-
---- @class LogNameView
---- @field name string
---- @field text string
---- @field parts RichNameParts?
---- @field kind "station"|"depot"|"refueler"
-
 --- Views made during one render, by id (rows of one stop share it); emptied when the render ends, so nothing stale
 --- outlives the call.
---- @type {[uint]: LogNameView|false}?
+--- @type {[uint]: StopNameView|false}?
 local view_cache
 
---- A station, depot or refueler by its stop's unit number, from the snapshot when it holds the station.
 --- @param id uint
---- @return LogNameView?
+--- @return StopNameView?
 local function station_view(id)
-	if not id or id == 0 then return nil end
-	if view_cache then
-		local v = view_cache[id]
-		if v ~= nil then return v or nil end
-	end
-	local st = collector.get().stations[id]
-	local name, parts, kind
-	if st then
-		name, parts, kind = st.name, st.name_parts, "station"
-	else
-		local record = storage.stations[id]
-		kind = "station"
-		if not record then
-			record = storage.depots[id]
-			kind = "depot"
-		end
-		if not record then
-			record = storage.refuelers[id]
-			kind = "refueler"
-		end
-		local stop = record and record.entity_stop
-		if not (stop and stop.valid) then
-			if view_cache then view_cache[id] = false end
-			return nil
-		end
-		name = stop.backer_name
-		parts = parse_name(name)
-	end
-	local label = parts and parts.text or name
-	if label == nil or label == "" then label = name end
-	local view = { name = name, text = label, parts = parts, kind = kind }
-	if view_cache then view_cache[id] = view end
-	return view
+	return (name_cell.station_view(id, collector.get().stations, view_cache))
 end
 log_tab.station_view = station_view
 
@@ -587,20 +534,6 @@ function log_tab.held(player_data)
 	return hover ~= nil and hover.scope == ROWS and game.tick - hover.tick < HOLD_TICKS
 end
 
--- A pure function of the loaded prototypes, so the same in every Lua state.
-local sprite_ok = {}
-
---- @param path string
---- @return string
-local function valid_sprite(path)
-	local ok = sprite_ok[path]
-	if ok == nil then
-		ok = helpers.is_valid_sprite_path(path)
-		sprite_ok[path] = ok
-	end
-	return ok and path or "utility/questionmark"
-end
-
 --- Phase profilers while the dev interface measures a render (nil otherwise).
 --- @type {counts: LuaProfiler, rows: LuaProfiler, render: LuaProfiler, rest: LuaProfiler, written: int}?
 local prof
@@ -613,20 +546,7 @@ local function group_item(g)
 	return g.item ~= 0 and d and d.item_hash[g.item] or nil
 end
 
---- @param view LogNameView?
---- @param extra LocalisedString?
---- @return LocalisedString
-local function station_tooltip(view, extra)
-	if not view then return "" end
-	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]" }
-	if extra then
-		tooltip[#tooltip + 1] = "\n"
-		tooltip[#tooltip + 1] = extra
-	end
-	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = { "cybersyn-gui.link-footer" }
-	return tooltip
-end
+local station_tooltip = name_cell.station_tooltip
 
 -- Station names and train validity are read again at most this often for a row whose event did not change; each row
 -- at its own phase (by its key), so the rows are not all rewritten in one update.
@@ -805,7 +725,7 @@ local function build_row(parent, index, widths)
 	row.add({ type = "sprite", style = "cybersyn_log_dot", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "sprite", style = "cybersyn_log_kind", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "button", style = "cybersyn_log_link", mouse_button_filter = LEFT,
-		tooltip = { "cybersyn-gui.link-footer" }, raise_hover_events = true, tags = t.train }).style.width = W.train
+		tooltip = util.LINK_FOOTER, raise_hover_events = true, tags = t.train }).style.width = W.train
 	name_cell.pooled_add(row, widths.station, "cybersyn_log_cell_flow", { type = "button", style = "cybersyn_log_link",
 		mouse_button_filter = LEFT, raise_hover_events = true, tags = t.station })
 	row.add({ type = "sprite-button", style = "cybersyn_log_item", mouse_button_filter = LEFT_RIGHT,
@@ -859,13 +779,56 @@ local function row_write(elem, entry, age, still)
 		write_cells(cells, g, m, now, key, entry.x, entry.child)
 	end
 	if age or moved or not m.a then
-		local caption = model.age_caption(now, g, util.short_duration)
+		local caption = model.age_caption(now, g)
 		if m.a ~= caption then
 			cells[1].caption = caption
 			m.a = caption
 		end
 	end
 end
+
+-- Per-call context of sync_rows' hooks, in upvalues so a render allocates no closures.
+local r_viewport, r_defer = 0, false
+
+local ROW_SYNC = {
+	elems = true,
+	add = function(parent, index, entry)
+		r_memo[entry.key] = {}
+		return build_row(parent, index, r_widths)
+	end,
+	reuse = function(_, old_key, entry)
+		local memo = r_memo
+		memo[entry.key] = memo[old_key] or {}
+		memo[old_key] = nil
+	end,
+	gone = function(key)
+		r_memo[key] = nil
+	end,
+	after = function(elem, entry, i, fresh)
+		local memo = r_memo
+		local key = entry.key
+		local m = memo[key]
+		if not m then
+			m = {}
+			memo[key] = m
+		end
+		if fresh and i > r_viewport and entry.g then
+			m.stale = true
+			r_defer = true
+			if not m.hidden then
+				elem.visible = false
+				m.hidden = true
+			end
+		elseif not m.stale then
+			row_write(elem, entry, i <= r_viewport)
+		elseif i <= r_viewport then
+			m.stale = nil
+			row_write(elem, entry, true)
+		else
+			r_defer = true
+		end
+	end,
+}
 
 --- Reconciles the rows table with `entries`. Moving a row costs one swap_children (about 0.5 µs) and writing one
 --- about 40 µs on pY (building one about 75 µs), so rows are moved, not rewritten: a key still shown is swapped into
@@ -880,91 +843,10 @@ end
 --- @param build_left int rows that may be built in this call; the rest of a long fill waits for the next update
 --- @param viewport int rows from the top written now, with their ages
 local function sync_rows(parent, entries, state, build_left, viewport)
-	local cur, elems = state.keys, state.elems
-	if not (cur and elems and #cur == #elems and (not elems[1] or elems[1].valid)) then
-		parent.clear()
-		cur, elems = {}, {}
-	end
-	local memo = r_memo
-	local n = #entries
-	local wanted = {}
-	for i = 1, n do wanted[entries[i].key] = true end
-	local pos_of, free = {}, {}
-	for j = 1, #cur do
-		local key = cur[j]
-		pos_of[key] = j
-		if not wanted[key] then free[#free + 1] = key end
-	end
-	local function swap(i, j)
-		parent.swap_children(i, j)
-		cur[i], cur[j] = cur[j], cur[i]
-		elems[i], elems[j] = elems[j], elems[i]
-		pos_of[cur[i]] = i
-		pos_of[cur[j]] = j
-	end
-	local defer = false
-	local built = 0
-	local i = 1
-	while i <= n do
-		local entry = entries[i]
-		local key = entry.key
-		local fresh = false
-		if cur[i] ~= key then
-			local j = pos_of[key]
-			if j then
-				swap(i, j)
-			elseif #free > 0 then
-				-- The lowest free element, so the rows above the change are not moved.
-				local old = table.remove(free)
-				local k = pos_of[old]
-				if k ~= i then swap(i, k) end
-				pos_of[old] = nil
-				memo[key] = memo[old] or {}
-				memo[old] = nil
-				cur[i] = key
-				pos_of[key] = i
-				fresh = true
-			else
-				if built >= build_left then break end
-				local elem = build_row(parent, i <= #cur and i or nil, r_widths)
-				table.insert(cur, i, key)
-				table.insert(elems, i, elem)
-				for p = i, #cur do pos_of[cur[p]] = p end
-				memo[key] = {}
-				built = built + 1
-				fresh = true
-			end
-		end
-		local m = memo[key]
-		if not m then
-			m = {}
-			memo[key] = m
-		end
-		if fresh and i > viewport and entry.g then
-			m.stale = true
-			defer = true
-			if not m.hidden then
-				elems[i].visible = false
-				m.hidden = true
-			end
-		elseif not m.stale then
-			row_write(elems[i], entry, i <= viewport)
-		elseif i <= viewport then
-			m.stale = nil
-			row_write(elems[i], entry, true)
-		else
-			defer = true
-		end
-		i = i + 1
-	end
-	for j = #cur, i, -1 do
-		elems[j].destroy()
-		memo[cur[j]] = nil
-		cur[j] = nil
-		elems[j] = nil
-	end
-	if defer then state.defer_from = viewport + 1 end
-	state.keys, state.elems = cur, elems
+	r_viewport, r_defer = viewport, false
+	ROW_SYNC.build_budget = build_left
+	util.sync_children(parent, entries, state, false, ROW_SYNC)
+	if r_defer then state.defer_from = viewport + 1 end
 end
 
 --- Writes up to DEFER_ROWS of the rows the last rewrite left hidden, top down.
@@ -1610,9 +1492,8 @@ function log_tab.chat_line(player, g)
 	local stop_unit, gps
 	local view = station_view(g.station)
 	if view then
-		local record = storage.stations[g.station] or storage.depots[g.station] or storage.refuelers[g.station]
-		local stop = record and record.entity_stop
-		if stop and stop.valid then
+		local stop = util.stop_record(g.station)
+		if stop then
 			stop_unit = stop.unit_number
 			gps = { x = stop.position.x, y = stop.position.y, surface = stop.surface.name }
 		end
@@ -1641,14 +1522,7 @@ end
 
 log_tab.handle = {}
 
---- @param e {player_index: uint}
-function log_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
-	handler(player, player_data, player_data.refs, e)
-end
+log_tab.wrapper = util.wrapper
 
 local function changed(player, player_data)
 	util.rerender(player, player_data)

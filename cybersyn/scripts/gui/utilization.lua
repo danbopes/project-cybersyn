@@ -296,14 +296,7 @@ end
 
 utilization_tab.handle = {}
 
---- @param e {player_index: uint}
-function utilization_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
-	handler(player, player_data, player_data.refs, e)
-end
+utilization_tab.wrapper = util.wrapper
 
 ---@param player LuaPlayer
 ---@param player_data PlayerData

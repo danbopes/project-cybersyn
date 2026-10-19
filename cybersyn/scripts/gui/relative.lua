@@ -942,11 +942,6 @@ local function render_slots(state, body, m)
 	end
 end
 
-local function surface_name(index)
-	local s = game.get_surface(index)
-	return s and s.name or tostring(index)
-end
-
 --- The texts of an unserved row that move between reason changes: the four-line why (payload, evaluations, losses,
 --- wait), the stock and the wait, all on the 10 s age step.
 --- @return LocalisedString tip
@@ -971,10 +966,10 @@ local function unserved_texts(m, r, now, inherit_before)
 		wait = wait,
 		inherited = inherited,
 		n = e.n,
-		surface_name = surface_name,
+		surface_name = util.surface_name,
 	}, util.format_duration)
 	local stock = utext.stock_caption(e.reason, e.a, e.b)
-	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited, util.short_duration)
+	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited)
 end
 
 local function render_unserved(state, body, m, compact)
@@ -1255,7 +1250,8 @@ local function render_effective(state, body, m)
 							layouts[#layouts + 1] = "…"
 							break
 						end
-						layouts[#layouts + 1] = rtext.layout_text(storage.layouts[layout_id])
+						local layout = storage.layouts[layout_id]
+						layouts[#layouts + 1] = layout and logic.composition(layout) or "?"
 					end
 					local allow
 					if n.accepted == false then
@@ -1292,16 +1288,12 @@ end
 local function event_caption(ev, now, d)
 	local alert = alert_name(ev)
 	-- An alert row names the alert where other rows name their kind: "Alert" alone says nothing.
-	local caption = alert and { "", util.short_duration(rtext.age_step(now - ev.tick)), "  ", alert }
-		or rtext.event_row(ev, now, util.short_duration)
+	local caption = alert and { "", short_age(now - ev.tick), "  ", alert }
+		or rtext.event_row(ev, now)
 	local hash = ev.item ~= 0 and d and d.item_hash[ev.item] or nil
 	local _, _, item_tooltip = hash and util.item_sprite_and_tooltip(hash)
 	if item_tooltip then caption = { "", caption, "  ", item_tooltip } end
 	return caption
-end
-
-local function event_age(ev, now)
-	return util.short_duration(rtext.age_step(now - ev.tick))
 end
 
 local function render_events(state, body, kind, id, shown)
@@ -1350,7 +1342,7 @@ local function render_events(state, body, kind, id, shown)
 			end
 			for i, ev in ipairs(rows) do
 				if i > shown then break end
-				shown_ages[i] = event_age(ev, now)
+				shown_ages[i] = short_age(now - ev.tick)
 				local row = line(event_caption(ev, now, d), { "cybersyn-gui.relative-event-tooltip",
 					util.format_duration(ev.tick), tostring(ev.seq) }, sev_color(ev.sev))
 				row.name = "ev" .. i
@@ -1366,7 +1358,7 @@ local function render_events(state, body, kind, id, shown)
 		-- An age past the hour reads in minutes, so most of an old stop's rows keep their caption.
 		for i, ev in ipairs(rows) do
 			if i > shown then break end
-			local age = event_age(ev, now)
+			local age = short_age(now - ev.tick)
 			local row = shown_ages[i] ~= age and flow and flow["ev" .. i]
 			if row then
 				shown_ages[i] = age
@@ -2415,13 +2407,7 @@ end
 
 -- ---------------------------------------------------------------- handlers
 
-function relative.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	local manager_data = storage.manager
-	local pd = manager_data and manager_data.players[e.player_index]
-	if not (player and pd) then return end
-	handler(player, pd, e)
-end
+relative.wrapper = util.wrapper_pd
 
 --- The state of the panel a click came from: the one mounted in the manager (relative.mount) or the one beside the
 --- vanilla window.

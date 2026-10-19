@@ -494,12 +494,12 @@ test("age: two units in the column, the absolute tick in the tooltip, the range 
 	setup()
 	local util = H.load("scripts.gui.util")
 	local one, four = { tick = 60, first_tick = 60, n = 1 }, { tick = 120, first_tick = 60, n = 4 }
-	assert_eq(model.age_caption(7260, one, util.short_duration), "2m 00s")
-	assert_eq(model.age_caption(60, one, util.short_duration), "0s")
-	assert_eq(model.age_caption(60 + 59 * 60, one, util.short_duration), "59s")
-	assert_eq(model.age_caption(60 + 3 * 86400 * 60, one, util.short_duration), "3d 00h")
+	assert_eq(model.age_caption(7260, one), "2m 00s")
+	assert_eq(model.age_caption(60, one), "0s")
+	assert_eq(model.age_caption(60 + 59 * 60, one), "59s")
+	assert_eq(model.age_caption(60 + 3 * 86400 * 60, one), "3d 00h")
 	assert_eq(model.age_tooltip(one, util.format_duration), { "cybersyn-gui.log-age-tooltip", "60", "1s" })
-	assert_eq(model.age_caption(216000 + 120, four, util.short_duration), "1h 00m")
+	assert_eq(model.age_caption(216000 + 120, four), "1h 00m")
 	assert_eq(model.age_tooltip(four, util.format_duration),
 		{ "cybersyn-gui.log-age-range-tooltip", "60", "120", "1s", "2s", "4" })
 end)

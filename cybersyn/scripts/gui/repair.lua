@@ -537,12 +537,7 @@ end
 --- @type fun(elem: LuaGuiElement): string?, uint?
 repair.subject = function() return nil, nil end
 
-function repair.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	local pd = storage.manager and storage.manager.players[e.player_index]
-	if not (player and pd) then return end
-	handler(player, pd, e)
-end
+repair.wrapper = util.wrapper_pd
 
 gui.add_handlers(repair.handle, repair.wrapper, "cybersyn_repair")
 

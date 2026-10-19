@@ -994,69 +994,22 @@ end
 
 -- ---------------------------------------------------------------- render: Unserved table
 
---- @class OverviewNameView
---- @field name string full rich-text name, for tooltips and the cell's signature
---- @field parts RichNameParts? lead icons · text · tail icons (scripts/gui/rich-name.lua)
---- @field text string the name's text part, or the name
-
-local parsed_cache = {}
-
---- Name parts of a station the snapshot does not hold (yet): parsed once per distinct name. A pure function of the
---- name, so a cache that differs between Lua states cannot desync anything.
---- @param name string
---- @return RichNameParts
-local function parse_name(name)
-	local p = parsed_cache[name]
-	if not p then
-		p = util.parse_rich_name(name)
-		parsed_cache[name] = p
-	end
-	return p
-end
-
 --- @param id uint?
 --- @param snapshot Snapshot
---- @return OverviewNameView?
+--- @return StopNameView?
 --- @return SnapshotStation?
 local function station_view(id, snapshot)
-	if not id then return nil end
-	local st = snapshot.stations[id]
-	local name, parts
-	if st then
-		name, parts = st.name, st.name_parts
-	else
-		local station = storage.stations[id]
-		local stop = station and station.entity_stop
-		if not (stop and stop.valid) then return nil end
-		name = stop.backer_name
-		parts = parse_name(name)
-	end
-	local label = parts and parts.text or name
-	if label == nil or label == "" then label = name end
-	return { name = name, parts = parts, text = label }, st
+	return name_cell.station_view(id, snapshot.stations)
 end
 
---- @param view OverviewNameView
+--- @param view StopNameView
 --- @return string
 local function view_sig(view)
 	if not view then return "" end
 	return view.name
 end
 
---- @param view OverviewNameView?
---- @param extra LocalisedString?
---- @return LocalisedString
-local function station_tooltip(view, extra)
-	if not view then return "" end
-	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]" }
-	if extra then
-		tooltip[#tooltip + 1] = "\n"
-		tooltip[#tooltip + 1] = extra
-	end
-	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = util.LINK_FOOTER
-	return tooltip
-end
+local station_tooltip = name_cell.station_tooltip
 
 --- Every interactive cell joins the table's hover hold, so rows do not reorder under the cursor.
 --- @param def flib.GuiElemDef
@@ -1068,7 +1021,7 @@ end
 --- A station cell drawn as on the other tabs (name-cell.lua: lead icons · text · tail icons, the lead giving way first
 --- when the column is narrow; round 5 item 1). Without a target it is a disabled "–"; the click handler is attached
 --- anyway, because an in-place update rewrites only the tags (flib keeps its handler name there).
---- @param view OverviewNameView?
+--- @param view StopNameView?
 --- @param kind string
 --- @param id uint?
 --- @param width int
@@ -1091,7 +1044,7 @@ end
 
 --- Rewrites a cell built by link_cell in place; its icons are rebuilt only when the name or the target changed.
 --- @param cell LuaGuiElement
---- @param view OverviewNameView?
+--- @param view StopNameView?
 --- @param kind string
 --- @param id uint?
 --- @param width int
@@ -1189,7 +1142,7 @@ local function row_entry(row, acked, ctx)
 	-- On the 10 s step, as the stop panel shows the same entry, whichever update last wrote the row.
 	local wait_shown = wait - wait % text.READ_STEP
 	local inherited = e.first_tick < ctx.inherit_before
-	local wait_caption = text.wait_caption(wait_shown, inherited, util.short_duration)
+	local wait_caption = text.wait_caption(wait_shown, inherited)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
 	local requested
 	if r_st then
@@ -1676,14 +1629,7 @@ dev.register_stats(stats.summary)
 
 overview_tab.handle = {}
 
---- @param e {player_index: uint}
-function overview_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
-	handler(player, player_data, player_data.refs, e)
-end
+overview_tab.wrapper = util.wrapper
 
 --- @param e EventData.on_gui_selection_state_changed
 function overview_tab.handle.overview_period_changed(player, player_data, refs, e)

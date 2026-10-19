@@ -3,6 +3,7 @@
 -- LocalisedStrings, so the host unit tests cover them without the engine.
 
 local format = require("__flib__.format")
+local logic = require("scripts.gui.tab-logic")
 
 local band = bit32.band
 local bor = bit32.bor
@@ -126,18 +127,6 @@ function text.count_train(counts, train)
 	end
 end
 
---- "LCCL": one letter per carriage of a layout (0 locomotive, 1 cargo wagon, 2 fluid wagon).
---- @param layout int[]?
---- @return string
-function text.layout_text(layout)
-	if not layout then return "?" end
-	local out = {}
-	for i, v in ipairs(layout) do
-		out[i] = v == 0 and "L" or v == 1 and "C" or v == 2 and "F" or "?"
-	end
-	return table.concat(out)
-end
-
 --- The trains a stop on one network can be sent: mask match (train by train) and a layout the stop accepts, with
 --- the largest capacities among them. The one count the Effective config section shows wherever it says "trains match".
 --- @param c RelativeFleetCount?
@@ -218,12 +207,11 @@ end
 --- (the reason, the lint check, the planned and actual amounts), nil when the kind needs nothing.
 --- @param ev {tick: uint, kind: int, code: int, a: int, b: int}
 --- @param now uint
---- @param short fun(ticks: number): string util.short_duration
 --- @return LocalisedString
-function text.event_row(ev, now, short)
+function text.event_row(ev, now)
 	local key = DIAG_KIND_KEYS[ev.kind]
 	local kind = key and { "cybersyn-diag.kind-" .. key } or tostring(ev.kind)
-	local caption = { "", short(text.age_step(now - ev.tick)), "  ", kind }
+	local caption = { "", logic.short_duration(text.age_step(now - ev.tick)), "  ", kind }
 	local detail = text.event_detail(ev)
 	if detail then
 		caption[#caption + 1] = " · "

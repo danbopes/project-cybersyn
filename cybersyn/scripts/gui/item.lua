@@ -398,27 +398,9 @@ local function station_view(snapshot, id)
 	return st
 end
 
---- @param st SnapshotStation?
---- @param extra LocalisedString?
---- @return LocalisedString
-local function station_tooltip(st, extra)
-	if not st then return "" end
-	local tip = { "", "[font=default-semibold]", st.name, "[/font]" }
-	if extra then
-		tip[#tip + 1] = "\n"
-		tip[#tip + 1] = extra
-	end
-	tip[#tip + 1] = "\n"
-	tip[#tip + 1] = util.LINK_FOOTER
-	return tip
-end
+local station_tooltip = name_cell.station_tooltip
 
-local function network_text(name)
-	if not name then return "?" end
-	if name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
-	local _, image = util.generate_item_references(name)
-	return image ~= "" and image or name
-end
+local network_text = util.network_text
 
 --- One cell definition from its column and value.
 --- @param col ItemColumn
@@ -905,10 +887,7 @@ function item.build(map_data, player_data)
 		ix = d and d.item_ix[hash],
 		inherit_before = d and diag.inherit_threshold(d) or 0,
 		item_tooltip = item_tip,
-		surface_name = function(index)
-			local s = game.get_surface(index)
-			return s and s.name or tostring(index)
-		end,
+		surface_name = util.surface_name,
 	}
 	ctx.memo = {}
 	for _, t in ipairs(item_model.TABLES) do
@@ -1087,13 +1066,7 @@ end
 
 item.handle = {}
 
---- @param e {player_index: uint}
-function item.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+item.wrapper = util.wrapper
 
 function item.handle.item_back(player, player_data, refs, e)
 	item.close(player, player_data, true)

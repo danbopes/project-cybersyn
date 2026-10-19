@@ -235,7 +235,7 @@ test("state_sort_key: red, orange, signals, quiet, none; fixed while a wait ages
 	assert_true(l.state_sort_key("wait_station") < l.state_sort_key(nil))
 end)
 
-test("short_duration: the same two-unit captions as util.short_duration", function()
+test("short_duration: two units at most; util re-exports it", function()
 	local l = logic()
 	assert_eq(l.short_duration(0), "0s")
 	assert_eq(l.short_duration(42 * 60), "42s")
@@ -308,9 +308,8 @@ test("age, not_refuelled and age_caption", function()
 	assert_true(l.not_refuelled(216002, nil, 1, 1), "past its grace")
 	assert_false(l.not_refuelled(300000, nil, 1, 100000), "a train registered late gets its own hour")
 	assert_true(l.not_refuelled(300000, 1, 1, 299999), "a refuel tick wins over refuel_from")
-	local fmt = function(t) return t .. "t" end
-	assert_eq({ l.age_caption(1000, nil, fmt) }, { nil, nil })
-	assert_eq({ l.age_caption(1000, 100, fmt) }, { "900t", 900 })
+	assert_eq({ l.age_caption(1000, nil) }, { nil, nil })
+	assert_eq({ l.age_caption(1000, 100) }, { "15s", 900 })
 end)
 
 test("fuel_percent: averaged over burner locomotives, nil when electric", function()

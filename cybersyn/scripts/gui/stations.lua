@@ -354,13 +354,9 @@ local function view_column(column, problems)
 	return column
 end
 
---- Everything the filtered set depends on besides the data itself. The chip is left out: it is applied after the
---- cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
-local function filter_sig(f)
-	return table.concat({
-		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
-	}, "\1")
-end
+-- Everything the filtered set depends on besides the data itself. The chip is left out: it is applied after the
+-- cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
+local filter_sig = util.filter_signature
 
 local function view_sig(f, column, ascending)
 	return column .. "\1" .. (ascending and "+" or "-") .. "\1" .. filter_sig(f)
@@ -917,20 +913,7 @@ local function clear_problems(r)
 	r.cell.tooltip = ""
 end
 
--- Name parts of stops the snapshot does not hold: a pure function of the name, so a cache that differs between Lua
--- states cannot desync anything.
-local parsed_cache = {}
-
---- @param name string
---- @return RichNameParts
-local function parse_name(name)
-	local p = parsed_cache[name]
-	if not p then
-		p = util.parse_rich_name(name)
-		parsed_cache[name] = p
-	end
-	return p
-end
+local parse_name = name_cell.parse_name
 
 --- The stop or combinator a registry finding is about, while it exists.
 --- @param f LintFinding
@@ -1531,9 +1514,7 @@ end
 --- @return string
 local function chip_icon(key)
 	if STATUS_COLOR[key] then return "flib_indicator_" .. STATUS_COLOR[key] end
-	local icon = CHIP_ICON[key]
-	if icon and helpers.is_valid_sprite_path(icon) then return icon end
-	return "utility/warning_icon"
+	return util.valid_sprite(CHIP_ICON[key], "utility/warning_icon")
 end
 
 --- @param key string
@@ -2153,13 +2134,7 @@ dev.add("stations_lint_view", lint_view)
 
 stations_tab.handle = {}
 
---- @param e {player_index: uint}
-function stations_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+stations_tab.wrapper = util.wrapper
 
 --- @param e EventData.on_gui_click
 function stations_tab.handle.on_status_chip_click(player, player_data, refs, e)

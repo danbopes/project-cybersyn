@@ -39,9 +39,8 @@ end)
 
 test("wait_caption: ≥ only for entries older than the diagnostics state", function()
 	local t = text()
-	local short = function(ticks) return tostring(ticks / 60) .. "s" end
-	assert_eq(t.wait_caption(600, false, short), "10s")
-	assert_eq(t.wait_caption(600, true, short), "≥10s")
+	assert_eq(t.wait_caption(600, false), "10s")
+	assert_eq(t.wait_caption(600, true), "≥10s")
 end)
 
 test("why: a and b as numbers, masks raw, surfaces by name, the train split", function()

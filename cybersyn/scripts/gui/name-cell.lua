@@ -40,7 +40,7 @@ local function add_side(out, parts, side, tags, tooltip, scope)
 			out[#out + 1] = util.hoverable({
 				type = "sprite-button",
 				style = "cybersyn_name_icon",
-				sprite = helpers.is_valid_sprite_path(sprite) and sprite or "utility/questionmark",
+				sprite = util.valid_sprite(sprite, "utility/questionmark"),
 				quality = quality and quality[i] or nil,
 				tooltip = tooltip,
 				tags = { kind = tags.kind, id = tags.id },
@@ -205,19 +205,6 @@ end
 
 -- Icon slots are sprite buttons, not sprites: only a button draws an icon's quality badge.
 local SLOT = { type = "sprite-button", style = "cybersyn_name_icon", ignored_by_interaction = true }
--- A pure function of the loaded prototypes, so the same in every Lua state.
-local valid_sprite = {}
-
---- @param sprite string
---- @return string
-local function checked(sprite)
-	local ok = valid_sprite[sprite]
-	if ok == nil then
-		ok = helpers.is_valid_sprite_path(sprite)
-		valid_sprite[sprite] = ok
-	end
-	return ok and sprite or "utility/questionmark"
-end
 
 --- Writes a pooled cell's icons and text for `parts`, each part only when what it shows changed. `memo` (one per cell,
 --- kept by the caller) remembers the elements and what they show. Returns the text button.
@@ -246,13 +233,13 @@ function name_cell.write_pooled(flow, memo, parts, name, width)
 				if not elem then
 					-- Lead slots go in front of the button, tail slots after the last one; made with their icon.
 					SLOT.index = before and i or nil
-					SLOT.sprite, SLOT.quality = checked(sprite), quality
+					SLOT.sprite, SLOT.quality = util.valid_sprite(sprite, "utility/questionmark"), quality
 					elem = flow.add(SLOT)
 					SLOT.sprite, SLOT.quality = nil, nil
 					list[i] = elem
 					shown["q" .. key] = quality
 				elseif sprite then
-					elem.sprite = checked(sprite)
+					elem.sprite = util.valid_sprite(sprite, "utility/questionmark")
 					if shown["q" .. key] ~= quality then
 						elem.quality = quality
 						shown["q" .. key] = quality
@@ -280,6 +267,77 @@ function name_cell.write_pooled(flow, memo, parts, name, width)
 		memo.width = maximal
 	end
 	return button
+end
+
+-- ---------------------------------------------------------------- stop names
+
+-- A pure function of the name, so a cache that differs between Lua states cannot desync anything.
+local parsed_cache = {}
+
+--- Name parts of a stop the snapshot does not hold (yet): parsed once per distinct name.
+--- @param name string
+--- @return RichNameParts
+function name_cell.parse_name(name)
+	local p = parsed_cache[name]
+	if not p then
+		p = util.parse_rich_name(name)
+		parsed_cache[name] = p
+	end
+	return p
+end
+
+--- @class StopNameView
+--- @field name string full rich-text name, for tooltips and the cell's signature
+--- @field text string the name's text part, or the name
+--- @field parts RichNameParts? lead icons · text · tail icons (scripts/gui/rich-name.lua)
+--- @field kind "station"|"depot"|"refueler"
+
+--- A station, depot or refueler by its stop's unit number, from the snapshot when it holds the station.
+--- @param id uint?
+--- @param stations {[uint]: SnapshotStation} the snapshot's stations
+--- @param cache {[uint]: StopNameView|false}? views made during one render, so rows of one stop share one
+--- @return StopNameView?
+--- @return SnapshotStation?
+function name_cell.station_view(id, stations, cache)
+	if not id or id == 0 then return nil end
+	local st = stations[id]
+	if cache then
+		local v = cache[id]
+		if v ~= nil then return v or nil, st end
+	end
+	local name, parts, kind
+	if st then
+		name, parts, kind = st.name, st.name_parts, "station"
+	else
+		local stop, _, stop_kind = util.stop_record(id)
+		if not stop then
+			if cache then cache[id] = false end
+			return nil
+		end
+		name, kind = stop.backer_name, stop_kind
+		parts = name_cell.parse_name(name)
+	end
+	local label = parts and parts.text or name
+	if label == nil or label == "" then label = name end
+	local view = { name = name, text = label, parts = parts, kind = kind }
+	if cache then cache[id] = view end
+	return view, st
+end
+
+--- The full name in bold, an optional line under it, then the link footer.
+--- @param view StopNameView?
+--- @param extra LocalisedString?
+--- @return LocalisedString
+function name_cell.station_tooltip(view, extra)
+	if not view then return "" end
+	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]" }
+	if extra then
+		tooltip[#tooltip + 1] = "\n"
+		tooltip[#tooltip + 1] = extra
+	end
+	tooltip[#tooltip + 1] = "\n"
+	tooltip[#tooltip + 1] = util.LINK_FOOTER
+	return tooltip
 end
 
 return name_cell

@@ -7,7 +7,6 @@ local function rt()
 	return H.load("scripts.gui.relative-text")
 end
 
-local function short(ticks) return tostring(math.floor(ticks / 60)) .. "s" end
 
 test("role: provider, requester, both, none; stack mode appended", function()
 	local t = rt()
@@ -125,12 +124,6 @@ test("allow_list: accepted layouts, eligible trains and the layouts no train has
 	assert_eq(missing, { 1 })
 end)
 
-test("layout_text: one letter per carriage", function()
-	local t = rt()
-	assert_eq(t.layout_text({ 0, 1, 1, 2, 0 }), "LCCFL")
-	assert_eq(t.layout_text(nil), "?")
-end)
-
 test("schedule_row: the active record marked, stations, rail waypoints, temporary and interrupt records", function()
 	local t = rt()
 	assert_eq(t.schedule_row(1, { station = "Depot" }, 2), { caption = { "", "    ", "1", ". ", "Depot" }, active = false })
@@ -143,9 +136,9 @@ end)
 
 test("event_row: rounded age, kind, and the detail each kind needs", function()
 	local t = rt()
-	assert_eq(t.event_row({ tick = 0, kind = DIAG_KIND_UNSERVED_REASON, code = REASON_R_LAYOUT, a = 0, b = 0 }, 1250, short),
+	assert_eq(t.event_row({ tick = 0, kind = DIAG_KIND_UNSERVED_REASON, code = REASON_R_LAYOUT, a = 0, b = 0 }, 1250),
 		{ "", "20s", "  ", { "cybersyn-diag.kind-unserved-reason" }, " · ", { "cybersyn-diag.chip-r-layout" } })
-	assert_eq(t.event_row({ tick = 100, kind = DIAG_KIND_SERVED, code = REASON_R_LAYOUT, a = 60, b = 0 }, 100, short),
+	assert_eq(t.event_row({ tick = 100, kind = DIAG_KIND_SERVED, code = REASON_R_LAYOUT, a = 60, b = 0 }, 100),
 		{ "", "0s", "  ", { "cybersyn-diag.kind-served" } })
 	assert_eq(t.event_detail({ kind = DIAG_KIND_SHORT_LOAD, code = 0, a = 2000, b = 1900 }),
 		{ "cybersyn-gui.relative-event-cargo", "2,000", "1,900" })

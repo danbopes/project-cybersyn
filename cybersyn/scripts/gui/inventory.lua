@@ -381,6 +381,8 @@ local function aggregate_with_top(snapshot, f)
 	return inv, top, has_wait
 end
 
+--- Not util.filter_signature: the item filter only highlights a button here (the aggregate passes ignore_item), so
+--- picking an item must not re-aggregate.
 --- @param f ManagerFilters
 local function filter_signature(f)
 	return (f.terms and table.concat(f.terms, " ") or "") .. "|" .. (f.network or "") .. "|" .. f.mask .. "|" .. (f.surface or "")
@@ -604,44 +606,11 @@ local function entry_update(ctx, elem, entry)
 	if elem.style.name ~= style then elem.style = style end
 end
 
-local function run_update(ctx, entry, elem, sigs)
-	local sig = entry.sig
-	if sigs[entry.key] == sig then return end
-	local budget = ctx.budget
-	if budget then
-		if budget.n <= 0 then
-			ctx.deferred = true
-			return
-		end
-		budget.n = budget.n - 1
-	end
-	sigs[entry.key] = sig
-	entry_update(ctx, elem, entry)
-end
-
---- @param parent LuaGuiElement
---- @param ctx table
---- @param entries table[]
---- @param keys string[]
---- @param state table
-local function rebuild_all(parent, ctx, entries, keys, state)
-	parent.clear()
-	local sigs = {}
-	state.sigs = sigs
-	for i = 1, #entries do
-		local entry = entries[i]
-		gui.add(parent, entry_build(ctx, entry))
-		sigs[entry.key] = entry.sig
-	end
-	state.keys = keys
-	state.dirty = nil
-	return "rebuilt"
-end
-
---- util.sync_children with the same state contract, but a changed key sequence is reached by destroying the
---- vanished buttons, swapping the moved ones and inserting the new ones at their index. A completed pass usually
---- adds or drops a handful of items, and a sort change only permutes them, so this keeps hundreds of buttons (and
---- the player's scroll position) instead of recreating every button after the first difference.
+--- A changed key sequence is reached by destroying the vanished buttons, swapping the moved ones and inserting the
+--- new ones at their index. A completed pass usually adds or drops a handful of items, and a sort change only
+--- permutes them, so this keeps hundreds of buttons (and the player's scroll position) instead of recreating every
+--- button after the first difference. A button's update does not depend on its index, and the render's budget
+--- spreads a background refresh over several renders.
 --- @param parent LuaGuiElement
 --- @param ctx table
 --- @param entries table[]
@@ -649,100 +618,17 @@ end
 --- @param hold boolean
 --- @return "updated"|"held"|"rebuilt"
 local function reconcile(parent, ctx, entries, state, hold)
-	local n = #entries
-	local keys = {}
-	for i = 1, n do
-		keys[i] = entries[i].key
-	end
-	local old = state.keys
-	local elems = parent.children
-	if old and #old ~= #elems then old = nil end
-	local sigs = old and state.sigs or {}
-	state.sigs = sigs
-
-	if not old then
-		return rebuild_all(parent, ctx, entries, keys, state)
-	end
-
-	local same = #old == n
-	if same then
-		for i = 1, n do
-			if old[i] ~= keys[i] then
-				same = false
-				break
-			end
-		end
-	end
-	if same then
-		for i = 1, n do
-			run_update(ctx, entries[i], elems[i], sigs)
-		end
-		state.dirty = nil
-		return "updated"
-	end
-	local index_of = {}
-	for i = 1, n do
-		index_of[keys[i]] = i
-	end
-	if hold then
-		for j = 1, #old do
-			local i = index_of[old[j]]
-			if i then run_update(ctx, entries[i], elems[j], sigs) end
-		end
-		state.dirty = true
-		return "held"
-	end
-
-	local cur = {}
-	for j = 1, #old do
-		cur[j] = old[j]
-	end
-	for j = #cur, 1, -1 do
-		local key = cur[j]
-		if not index_of[key] then
-			elems[j].destroy()
-			table.remove(cur, j)
-			table.remove(elems, j)
-			sigs[key] = nil
-		end
-	end
-	-- Each insert renumbers every later button, so a mostly new set (clearing a narrow filter) is cheaper to
-	-- recreate than to splice into a handful of survivors.
-	if n - #cur > #cur then
-		return rebuild_all(parent, ctx, entries, keys, state)
-	end
-	local pos_of = {}
-	for j = 1, #cur do
-		pos_of[cur[j]] = j
-	end
-	for i = 1, n do
-		local key = keys[i]
-		local entry = entries[i]
-		if cur[i] ~= key then
-			local j = pos_of[key]
-			if j then
-				parent.swap_children(i, j)
-				cur[i], cur[j] = cur[j], cur[i]
-				elems[i], elems[j] = elems[j], elems[i]
-				pos_of[cur[i]] = i
-				pos_of[cur[j]] = j
-			else
-				local def = entry_build(ctx, entry)
-				def.index = i
-				local _, elem = gui.add(parent, def)
-				table.insert(cur, i, key)
-				table.insert(elems, i, elem)
-				for m = i + 1, #cur do
-					pos_of[cur[m]] = m
-				end
-				sigs[key] = entry.sig
-			end
-		end
-		run_update(ctx, entry, elems[i], sigs)
-	end
-	state.keys = keys
-	state.dirty = nil
-	return "rebuilt"
+	local opts = {
+		build = function(entry) return entry_build(ctx, entry) end,
+		update = function(elem, entry) entry_update(ctx, elem, entry) end,
+		budget = ctx.budget,
+		destroy_vanished = true,
+		rebuild_mostly_new = true,
+		moved_keeps_sig = true,
+	}
+	local result = util.sync_children(parent, entries, state, hold, opts)
+	if opts.deferred then ctx.deferred = true end
+	return result
 end
 
 --- @param player_data PlayerData
@@ -1066,13 +952,7 @@ end)
 
 inventory_tab.handle = {}
 
---- @param e {player_index: uint}
-function inventory_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+inventory_tab.wrapper = util.wrapper
 
 ---@param player LuaPlayer
 ---@param player_data PlayerData

@@ -918,7 +918,7 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 		chip_sig = chip and (chip.key .. "|" .. chip.style) or "",
 		state = state,
 		in_state = util.short_duration(in_state),
-		refuel = logic.age_caption(now, tr.refuel_tick, util.short_duration),
+		refuel = logic.age_caption(now, tr.refuel_tick),
 		refuel_overdue = has_refueler(tr, ctx.to_refuelers) and logic.not_refuelled(now, tr.refuel_tick, ctx.hours, tr.refuel_from),
 		fuel = fuel,
 		capacity = capacity,
@@ -969,22 +969,12 @@ local function state_tooltip(view)
 	return { "", view.chip.tooltip, "\n", { "cybersyn-gui.trains-slot-footer" } }
 end
 
--- Sprite paths checked once per Lua state: a pure function of the loaded prototypes.
-local sprite_ok = {}
-
 --- The state's icon, or the fallback where an install lacks it (signal-fuel predates 2.0 in no install, but a mod
 --- may hide it).
 --- @param chip StateChip
 --- @return string
 local function state_sprite(chip)
-	local sprite = chip.sprite
-	local ok = sprite_ok[sprite]
-	if ok == nil then
-		ok = helpers.is_valid_sprite_path(sprite)
-		sprite_ok[sprite] = ok
-	end
-	if ok then return sprite end
-	return chip.key == "refuel" and logic.REFUEL_FALLBACK or "utility/questionmark"
+	return util.valid_sprite(chip.sprite, chip.key == "refuel" and logic.REFUEL_FALLBACK or "utility/questionmark")
 end
 
 --- @param view table
@@ -1652,20 +1642,10 @@ end
 
 -- ---------------------------------------------------------------- chips
 
--- Chip icons checked once per Lua state (prototype data only).
-local chip_icon_ok = {}
-
 --- @param key string
 --- @return string?
 local function chip_icon(key)
-	local icon = CHIP_ICON[key]
-	if not icon then return nil end
-	local ok = chip_icon_ok[icon]
-	if ok == nil then
-		ok = helpers.is_valid_sprite_path(icon)
-		chip_icon_ok[icon] = ok
-	end
-	return ok and icon or nil
+	return util.valid_sprite(CHIP_ICON[key])
 end
 
 --- "[img] Name  n": the icon, the whole name (never shortened, D15 item 13) and the count.
@@ -2412,13 +2392,7 @@ dev.register_rows(TAB, measured_rows)
 
 trains_tab.handle = {}
 
---- @param e {player_index: uint}
-function trains_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+trains_tab.wrapper = util.wrapper
 
 --- The pane's × button.
 function trains_tab.handle.on_pane_close(player, player_data)

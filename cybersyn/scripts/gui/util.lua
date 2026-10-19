@@ -5,6 +5,8 @@ local stats = require("scripts.stats")
 local lint = require("scripts.lint")
 local diag = require("scripts.diag")
 local rich_name = require("scripts.gui.rich-name")
+local logic = require("scripts.gui.tab-logic")
+local pm = require("scripts.gui.problems-model")
 
 local util = {}
 
@@ -152,23 +154,30 @@ function util.format_duration(ticks)
 	return string.format("%ds", seconds)
 end
 
---- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h". Every tab uses it,
---- so one duration reads the same everywhere; util.format_duration has the full precision for tooltips.
---- @param ticks number
---- @return string
-function util.short_duration(ticks)
-	local s = math.floor(math.max(ticks or 0, 0) / 60)
-	if s < 60 then return s .. "s" end
-	local m = math.floor(s / 60)
-	if m < 60 then return string.format("%dm %02ds", m, s % 60) end
-	local h = math.floor(m / 60)
-	if h < 24 then return string.format("%dh %02dm", h, m % 60) end
-	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
-end
+--- Two units at most ("42s", "3m 05s", "1h 05m", "2d 03h"), so one duration reads the same in every tab;
+--- util.format_duration has the full precision for tooltips.
+util.short_duration = logic.short_duration
 
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
 local rank_cache = {}
 local sprite_cache = {}
+local sprite_valid = {}
+
+--- `path` when the loaded prototypes can draw it, else `fallback` (nil allowed). Memoised: tabs ask on every row
+--- of every update.
+--- @param path string?
+--- @param fallback string?
+--- @return string?
+function util.valid_sprite(path, fallback)
+	if not path then return fallback end
+	local ok = sprite_valid[path]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(path)
+		sprite_valid[path] = ok
+	end
+	if ok then return path end
+	return fallback
+end
 
 --- Rank of an item in the crafting-menu order (group, subgroup, order), quality as a fraction.
 --- Unknown items rank after every known one.
@@ -271,31 +280,98 @@ function util.gui_state(player_data, name)
 	return state
 end
 
-local function run_update(entry, elem, index, sigs)
-	local update = entry.update
+--- @class SyncOptions
+--- @field build fun(entry: table): flib.GuiElemDef? for entries without their own `build`
+--- @field update fun(elem: LuaGuiElement, entry: table, index: integer)? for entries without their own `update`
+--- @field reuse fun(elem: LuaGuiElement, old_key: any, entry: table)? for entries without their own `reuse`
+--- @field add fun(parent: LuaGuiElement, index: integer?, entry: table): LuaGuiElement? creates the child itself instead
+--- of `build` (index nil = append)
+--- @field after fun(elem: LuaGuiElement, entry: table, index: integer, fresh: boolean)? runs for every placed child,
+--- `fresh` when it was built or reused in this call
+--- @field gone fun(key: any)? runs for every key whose child is destroyed
+--- @field elems boolean? the children live in `state.elems` instead of being read from `parent.children` (which makes a
+--- wrapper per child on every call)
+--- @field budget {n: integer}? updates this call may run; a skipped one keeps its old sig and sets `deferred`
+--- @field build_budget integer? children this call may build; the entries after the first one over it wait for the
+--- next call
+--- @field destroy_vanished boolean? destroy children whose key vanished first instead of offering them for reuse
+--- @field rebuild_mostly_new boolean? clear and rebuild when more keys are new than survive: each insert renumbers
+--- every later child, so splicing a mostly new set into a few survivors costs more than recreating it
+--- @field moved_keeps_sig boolean? a moved child's update does not depend on its index, so moving it writes nothing
+--- @field deferred true? set by the call when `budget` ran out
+
+local function run_update(entry, elem, index, sigs, opts)
+	local update = entry.update or (opts and opts.update)
 	if not update then return end
 	local sig = entry.sig
 	if sig ~= nil then
 		if sigs[entry.key] == sig then return end
+		local budget = opts and opts.budget
+		if budget then
+			if budget.n <= 0 then
+				opts.deferred = true
+				return
+			end
+			budget.n = budget.n - 1
+		end
 		sigs[entry.key] = sig
 	end
 	update(elem, entry, index)
 end
 
 --- A re-sort mostly permutes the same rows, and rebuilding a heavy row costs far more than moving it: survivors are
---- swapped into place, a child whose key vanished is handed to a new key through `entry.reuse(elem, old_key)` when the
---- entry has one (then updated like a survivor), and only the remaining new keys are built, at their index.
-local function sync_moved(parent, entries, keys, old, elems, state, sigs)
+--- swapped into place, a child whose key vanished is handed to a new key through `reuse(elem, old_key, entry)` when
+--- there is one (then updated like a survivor), and only the remaining new keys are built, at their index.
+local function sync_moved(parent, entries, keys, old, elems, state, sigs, opts)
 	local n = #entries
+	local build_fn = opts and opts.build
+	local reuse_fn = opts and opts.reuse
+	local add = opts and opts.add
+	local after = opts and opts.after
+	local gone = opts and opts.gone
+	local build_left = opts and opts.build_budget
+	local keep_sig = opts and opts.moved_keeps_sig
 	local wanted = {}
 	for i = 1, n do
 		wanted[keys[i]] = true
 	end
 	local cur, pos_of, old_index = {}, {}, {}
 	local free = {}
-	for j = 1, #old do
-		local key = old[j]
-		cur[j] = key
+	if opts and opts.destroy_vanished then
+		local m = 0
+		for j = 1, #old do
+			local key, elem = old[j], elems[j]
+			if wanted[key] then
+				m = m + 1
+				cur[m] = key
+				elems[m] = elem
+			else
+				elem.destroy()
+				sigs[key] = nil
+				if gone then gone(key) end
+			end
+		end
+		for j = #elems, m + 1, -1 do
+			elems[j] = nil
+		end
+		if opts.rebuild_mostly_new and n - m > m then
+			parent.clear()
+			if gone then
+				for j = 1, m do gone(cur[j]) end
+			end
+			cur = {}
+			for j = m, 1, -1 do
+				elems[j] = nil
+			end
+			sigs = {}
+		end
+	else
+		for j = 1, #old do
+			cur[j] = old[j]
+		end
+	end
+	for j = 1, #cur do
+		local key = cur[j]
 		pos_of[key] = j
 		old_index[key] = j
 		if not wanted[key] then free[#free + 1] = key end
@@ -308,18 +384,22 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs)
 		pos_of[cur[i]] = i
 		pos_of[cur[j]] = j
 	end
-	for i = 1, n do
+	local i = 1
+	while i <= n do
 		local key = keys[i]
 		local entry = entries[i]
+		local fresh = false
+		local reuse = entry.reuse or reuse_fn
 		if cur[i] == key then
 			-- A child that moved must learn its new index even when its data did not change.
-			if old_index[key] ~= i then sigs[key] = nil end
-			run_update(entry, elems[i], i, sigs)
+			if not keep_sig and old_index[key] ~= i then sigs[key] = nil end
+			run_update(entry, elems[i], i, sigs, opts)
 		elseif pos_of[key] then
 			swap(i, pos_of[key])
-			sigs[key] = nil
-			run_update(entry, elems[i], i, sigs)
-		elseif entry.reuse and #free > 0 then
+			if not keep_sig then sigs[key] = nil end
+			run_update(entry, elems[i], i, sigs, opts)
+		elseif reuse and #free > 0 then
+			-- The lowest free child, so the children above the change are not moved.
 			local old_key = table.remove(free)
 			local j = pos_of[old_key]
 			if j ~= i then swap(i, j) end
@@ -327,28 +407,46 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs)
 			sigs[old_key] = nil
 			cur[i] = key
 			pos_of[key] = i
-			entry.reuse(elems[i], old_key, entry)
+			reuse(elems[i], old_key, entry)
 			sigs[key] = nil
-			run_update(entry, elems[i], i, sigs)
+			run_update(entry, elems[i], i, sigs, opts)
+			fresh = true
 		else
-			local def = entry.build(entry)
-			def.index = i
-			local _, elem = gui.add(parent, def)
-			if entry.built then entry.built(elem, entry) end
+			if build_left then
+				if build_left <= 0 then break end
+				build_left = build_left - 1
+			end
+			local elem
+			if add then
+				elem = add(parent, i <= #cur and i or nil, entry)
+			else
+				local def = (entry.build or build_fn)(entry)
+				def.index = i <= #cur and i or nil
+				local _, added = gui.add(parent, def)
+				elem = added
+				if entry.built then entry.built(elem, entry) end
+			end
 			table.insert(cur, i, key)
 			table.insert(elems, i, elem)
 			for m = i, #cur do
 				pos_of[cur[m]] = m
 			end
 			sigs[key] = entry.sig
+			fresh = true
 		end
+		if after then after(elems[i], entry, i, fresh) end
+		i = i + 1
 	end
-	for j = #cur, n + 1, -1 do
+	for j = #cur, i, -1 do
 		elems[j].destroy()
 		sigs[cur[j]] = nil
+		if gone then gone(cur[j]) end
+		cur[j] = nil
+		elems[j] = nil
 	end
 	state.sigs = sigs
-	state.keys = keys
+	state.keys = cur
+	if opts and opts.elems then state.elems = elems end
 	state.dirty = nil
 	return "rebuilt"
 end
@@ -363,22 +461,31 @@ end
 --- `built(elem)`, when given, receives each child right after `build` created it.
 --- @param parent LuaGuiElement
 --- @param entries {key: string|number, build: fun(): flib.GuiElemDef, update: fun(elem: LuaGuiElement, entry: table, index: integer)?, sig: (string|number)?}[]
---- @param state {keys: (string|number)[]?, sigs: {[string|number]: string|number}?, dirty: true?} from util.gui_state
+--- @param state {keys: (string|number)[]?, sigs: {[string|number]: string|number}?, dirty: true?, elems: LuaGuiElement[]?} from util.gui_state
 --- @param hold boolean?
---- @param movable boolean? keep children whose key survives and move them into place instead of rebuilding from the
---- first difference; `update` then also runs for a moved or reused child and must apply anything that depends on its
---- index (see sync_moved)
+--- @param movable (boolean|SyncOptions)? keep children whose key survives and move them into place instead of
+--- rebuilding from the first difference; `update` then also runs for a moved or reused child and must apply anything
+--- that depends on its index (see sync_moved). A table is movable with options.
 --- @return "updated"|"held"|"rebuilt"
 function util.sync_children(parent, entries, state, hold, movable)
+	local opts = type(movable) == "table" and movable or nil
 	local n = #entries
 	local keys = {}
 	for i = 1, n do
 		keys[i] = entries[i].key
 	end
 	local old = state.keys
-	local children = parent.children
-	if old and #old ~= #children then
-		old = nil
+	local children
+	if opts and opts.elems then
+		children = state.elems
+		if not (old and children and #old == #children and (not children[1] or children[1].valid)) then
+			old = nil
+		end
+	else
+		children = parent.children
+		if old and #old ~= #children then
+			old = nil
+		end
 	end
 	local sigs = state.sigs
 	if not old or not sigs then
@@ -393,8 +500,10 @@ function util.sync_children(parent, entries, state, hold, movable)
 			prefix = prefix + 1
 		end
 		if prefix == n and #old == n then
+			local after = opts and opts.after
 			for i = 1, n do
-				run_update(entries[i], children[i], i, sigs)
+				run_update(entries[i], children[i], i, sigs, opts)
+				if after then after(children[i], entries[i], i, false) end
 			end
 			state.dirty = nil
 			return "updated"
@@ -407,7 +516,7 @@ function util.sync_children(parent, entries, state, hold, movable)
 			for j = 1, #old do
 				local i = index_of[old[j]]
 				if i then
-					run_update(entries[i], children[j], i, sigs)
+					run_update(entries[i], children[j], i, sigs, opts)
 				end
 			end
 			state.dirty = true
@@ -415,6 +524,13 @@ function util.sync_children(parent, entries, state, hold, movable)
 		end
 	end
 
+	if opts then
+		if not old then
+			parent.clear()
+			return sync_moved(parent, entries, keys, {}, {}, state, sigs, opts)
+		end
+		return sync_moved(parent, entries, keys, old, children, state, sigs, opts)
+	end
 	if movable and old then
 		return sync_moved(parent, entries, keys, old, children, state, sigs)
 	end
@@ -450,6 +566,20 @@ util.HOVER_HOLD_TICKS = 600
 
 util.handle = {}
 
+--- A Cybersyn stop by unit number: station first, then depot, then refueler, nil when its stop entity is gone.
+--- @param id uint
+--- @return LuaEntity? stop
+--- @return (Station|Depot|Refueler)? record
+--- @return "station"|"depot"|"refueler"|nil kind
+function util.stop_record(id)
+	local record, kind = storage.stations[id], "station"
+	if not record then record, kind = storage.depots[id], "depot" end
+	if not record then record, kind = storage.refuelers[id], "refueler" end
+	local stop = record and record.entity_stop
+	if stop and stop.valid then return stop, record, kind end
+	return nil, nil, nil
+end
+
 --- @param e {player_index: uint}
 function util.wrapper(e, handler)
 	local player = game.get_player(e.player_index)
@@ -457,6 +587,16 @@ function util.wrapper(e, handler)
 	local player_data = storage.manager.players[e.player_index]
 	if not player_data then return end
 	handler(player, player_data, player_data.refs, e)
+end
+
+--- The three-argument form for panels that live outside the manager window, so they can fire before
+--- `storage.manager` exists.
+--- @param e {player_index: uint}
+function util.wrapper_pd(e, handler)
+	local player = game.get_player(e.player_index)
+	local pd = storage.manager and storage.manager.players[e.player_index]
+	if not (player and pd) then return end
+	handler(player, pd, e)
 end
 
 --- @param player_data PlayerData
@@ -758,40 +898,17 @@ function util.requester_passes(r_id, stations, f)
 	return util.network_passes(station.network_name, station.network_mask, f)
 end
 
-local error_mask
 --- Lint bits of the checks whose findings are errors (LINT_SEVERITY).
---- @return int
-function util.lint_error_mask()
-	if not error_mask then
-		local m = 0
-		for check = 1, LINT_COUNT do
-			if LINT_SEVERITY[check] == DIAG_SEV_ERROR then m = bit32.bor(m, LINT_BIT[check]) end
-		end
-		error_mask = m
-	end
-	return error_mask
-end
+util.lint_error_mask = pm.error_mask
 
---- The error-severity checks station `id` fails that are not acknowledged: the Overview's Misconfigured rule (PLAN4
---- D7). The Stations Problems chip lists exactly the stations with a non-zero count while
---- `player_data.stations_problems_scope == "errors"` (set by the Misconfigured jump), so the line and its rows agree.
+--- The error-severity checks station `id` fails that are not acknowledged: the Overview's Misconfigured rule, the
+--- one problems-model applies to the Stations rows, so the line and its rows agree.
 --- @param id uint station id
 --- @param bits int? the station's lint bits (SnapshotStation.lint)
 --- @param by_check {[int]: int}? adds 1 per open check
 --- @return int open
 function util.open_setup_errors(id, bits, by_check)
-	local mask = bit32.band(bits or 0, util.lint_error_mask())
-	local open, check = 0, 1
-	local is_acked = diag.is_acked
-	while mask ~= 0 do
-		if bit32.band(mask, 1) ~= 0 and not is_acked("lint", id, check) then
-			open = open + 1
-			if by_check then by_check[check] = (by_check[check] or 0) + 1 end
-		end
-		mask = bit32.rshift(mask, 1)
-		check = check + 1
-	end
-	return open
+	return pm.open_errors(id, bits, diag.is_acked, by_check)
 end
 
 --- Whether surface `surface_index` holds a Cybersyn station (the manager's surface default falls back to All without).
@@ -1221,7 +1338,7 @@ function util.slot_table_build_from_control_signals(st)
 	for _, name in ipairs(names) do
 		local count = st.control[name]
 		local sprite = "virtual-signal/" .. name
-		if helpers.is_valid_sprite_path(sprite) then
+		if util.valid_sprite(sprite) then
 			local proto = prototypes.virtual_signal[name]
 			children[#children + 1] = {
 				type = "sprite-button",
