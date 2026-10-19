@@ -71,10 +71,8 @@ function manager.create(player)
 		add_header(stations_tab.create(), "stations_tab", header),
 		add_header(trains_tab.create(), "trains_tab", header),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
+		add_header(utilization_tab.create(), "utilization_tab", header),
 	}
-	if analytics.setting_enabled() then
-		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
-	end
 	if analytics.is_enabled() then
 		tabs[#tabs + 1] = add_header(delivery_breakdown_tab.create(), "delivery_breakdown_tab", header)
 	end

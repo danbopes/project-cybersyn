@@ -214,7 +214,7 @@ local more = {
 		lab.wait(120)
 	end,
 
-	-- Utilization: analytics on, the table, one row per layout.
+	-- Utilization: analytics on, the table, one row per layout (the tab with analytics off is checked last).
 	function(ctx)
 		ctx.analytics = settings.global["cybersyn-enable-analytics"].value
 		dev("set_setting", "cybersyn-enable-analytics", true)
@@ -305,6 +305,10 @@ local more = {
 		lab.check("Breakdown stats: label / value rows (7 delivery rows, Stuck, one reason)", keys_ok
 			and sr[1][1][1] == "cybersyn-gui.breakdown-stat-deliveries" and sr[1][2] == "2"
 			and sr[8][1][1] == "cybersyn-gui.breakdown-stuck" and sr[9].indent == true, sr)
+		dev("set_setting", "cybersyn-enable-analytics", false)
+		dev("open", pi)
+		local tab = dev("select_tab", pi, "utilization")
+		lab.check("analytics off: the Utilization tab is there", tab == "utilization_tab", tab)
 		dev("set_setting", "cybersyn-enable-analytics", ctx.analytics)
 		dev("select_tab", pi, "overview")
 	end,

@@ -293,7 +293,7 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 			end
 		end
 	elseif e.setting == "cybersyn-enable-analytics" then
-		-- Rebuild all GUIs when analytics setting changes to show/hide tabs
+		-- The Breakdown tab exists only while analytics records, so every window is rebuilt.
 		local manager_data = storage.manager
 		if manager_data then
 			for i, v in pairs(manager_data.players) do

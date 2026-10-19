@@ -99,13 +99,6 @@ function analytics.init(map_data)
 	debug_log("Analytics initialized, surface index: " .. surface_data.surface.index)
 end
 
----The map setting alone: the Utilization tab needs nothing else.
----@return boolean
-function analytics.setting_enabled()
-	local setting = settings.global["cybersyn-enable-analytics"]
-	return setting and setting.value == true or false
-end
-
 ---Check if analytics is enabled (requires both setting AND factorio-charts library)
 ---@return boolean
 function analytics.is_enabled()
