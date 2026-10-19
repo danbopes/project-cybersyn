@@ -1,5 +1,3 @@
-local gui = require("__flib__.gui")
-local mod_gui = require("__core__.lualib.mod-gui")
 
 local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
@@ -75,25 +73,6 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field remote_entered_tick uint? last tick the controller changed from the character to remote view (the train pane's width depends on it)
 --- @field relative RelativeState? that panel's render state, see scripts/gui/relative.lua
 --- @field relative_effective_open true? the stop panel's Effective config section is expanded
-
-local function top_left_button_update(player, player_data)
-	local button_flow = mod_gui.get_button_flow(player)
-	local button = button_flow["top_left_button"]
-	if player_data.disable_top_left_button then
-		if button then
-			button.destroy()
-		end
-	elseif not button then
-		gui.add(button_flow, {
-			type = "sprite-button",
-			name = "top_left_button",
-			style = "mis_mod_gui_button_green",
-			sprite = "mis_configure_white",
-			tooltip = { "", "\n", { "cybersyn.gui.configure-tooltip" } },
-			handler = manager.handle.manager_toggle,
-		})
-	end
-end
 
 local manager_gui = {}
 manager_gui.manager = manager
@@ -223,9 +202,6 @@ local function create_player(player_index)
 	init_player_fields(player_data)
 	storage.manager.players[player_index] = player_data
 	extras.ensure_trains_anchor(player)
-
-	--manager.update(storage, player, player_data)
-	--top_left_button_update(player, player_data)
 end
 
 function manager_gui.on_player_created(e)
@@ -258,15 +234,7 @@ end
 --end)
 
 function manager_gui.on_runtime_mod_setting_changed(e)
-	if e.setting == "cybersyn-disable-top-left-button" then
-		if not e.player_index then return end
-		local player = game.get_player(e.player_index)
-		if not player then return end
-
-		local player_data = storage.manager.players[e.player_index]
-		player_data.disable_top_left_button = player.mod_settings["cybersyn-disable-top-left-button"].value
-		top_left_button_update(player, player_data)
-	elseif e.setting == "cybersyn-diagnostics" then
+	if e.setting == "cybersyn-diagnostics" then
 		-- The Log tab shows only while diagnostics are on; with manager updates off nothing else would hide it.
 		local manager_data = storage.manager
 		if not manager_data then return end

@@ -167,20 +167,4 @@ data:extend({
 		-- On in this fork: the headless lab pins startup settings from the save, which records none for this key.
 		default_value = true,
 	},
-	--{
-	--  type = "bool-setting",
-	--  name = "cybersyn-disable-top-left-button",
-	--  setting_type = "runtime-player",
-	--  default_value = false,
-	--  order = "ea",
-	--},
-	--{
-	--  type = "int-setting",
-	--  name = "cybersyn-history-length",
-	--  setting_type = "runtime-global",
-	--  minimum_value = 10,
-	--  maximum_value = 1000,
-	--  default_value = 50,
-	--  order = "eb",
-	--},
 })
