@@ -1884,7 +1884,8 @@ end
 -- pane, and a relative GUI anchored to train_gui is drawn in the middle of the screen whatever its position (lab,
 -- 2.0.77: left, right, top and bottom all land on the centre, over the train the view follows; 2.0.77 has no relative
 -- type for the docked pane), so the train panel is a screen frame placed flush right of that pane. The pane's width
--- cannot be read: it is derived from how it was opened and the locomotive's fuel items (xlogic.train_pane_right).
+-- cannot be read: it is derived from how it was opened and the item groups with an item unlocked for the force (the
+-- Fuel tab's ghost cursor selection; xlogic.train_pane_right).
 local ANCHORS = {
 	stop = { gui = defines.relative_gui_type.train_stop_gui, position = defines.relative_gui_position.right, type = "train-stop" },
 	-- A wagon opens its own window (in the middle of the screen), not the docked pane: the panel anchors to it.
@@ -2019,11 +2020,11 @@ end
 --- Places the train panel flush right of the docked pane, at its top, for the player's current screen.
 --- @param player LuaPlayer
 --- @param frame LuaGuiElement
---- @param open {narrow: boolean?, groups: int?}
+--- @param open {pane_narrow: boolean?, groups: int?}
 local function place_train(player, frame, open)
 	local width, _, scale = screen_of(player)
 	if not group_items then build_selection() end
-	local edge = xlogic.train_pane_right(open.narrow == true, open.groups or 0, group_row_count, scale)
+	local edge = xlogic.train_pane_right(open.pane_narrow == true, open.groups or 0, group_row_count, scale)
 	local x, y = xlogic.train_panel_place(edge, scale, width)
 	frame.location = { x = x, y = y }
 end
@@ -2114,7 +2115,7 @@ function relative.open(player, pd, kind, id, key, entity)
 	storage.manager.relative_any = true
 	if key == "train" then
 		open.tick = game.tick
-		open.narrow, open.groups = pane_for(player, pd, entity)
+		open.pane_narrow, open.groups = pane_for(player, pd, entity)
 		place_train(player, frame, open)
 	end
 	if key == "stop" and not relative.stop_fits(player) then
@@ -2386,7 +2387,7 @@ function relative.on_controller_changed(player, pd, e)
 	if not (open and open.tick == game.tick and mount_key(open) == "train") then return end
 	local frame = mount_of(player, "train")
 	if not frame then return end
-	open.narrow = true
+	open.pane_narrow = true
 	place_train(player, frame, open)
 end
 
@@ -2786,8 +2787,8 @@ function dev_fns.relative_display_changed(pi)
 	return dev_fns.relative_dump(pi)
 end
 
---- The train panel's place: the docked pane's right edge it assumed (logical px), the fuel item groups it counted, the
---- frame's location (physical px) and the scroll body's height cap.
+--- The train panel's place: the docked pane's right edge it assumed (physical px), the item groups with an unlocked
+--- item it counted, the frame's location (physical px) and the scroll body's height cap.
 function dev_fns.train_panel_geometry(pi)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
@@ -2797,9 +2798,9 @@ function dev_fns.train_panel_geometry(pi)
 	return {
 		open = open ~= nil and mount_key(open) == "train",
 		groups = open and open.groups,
-		narrow = open ~= nil and open.narrow == true,
+		narrow = open ~= nil and open.pane_narrow == true,
 		row_count = group_row_count,
-		pane_right = open and xlogic.train_pane_right(open.narrow == true, open.groups or 0, group_row_count or 6, scale),
+		pane_right = open and xlogic.train_pane_right(open.pane_narrow == true, open.groups or 0, group_row_count or 6, scale),
 		location = frame and frame.location,
 		visible = frame and frame.visible,
 		scale = scale,

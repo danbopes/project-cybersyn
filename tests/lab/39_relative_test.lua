@@ -194,6 +194,11 @@ lab.suite("39_relative", {
 		g = dev("train_panel_geometry", PI)
 		lab.check("opened in the tick remote view was entered from the character: the narrow pane", g.narrow
 			and g.location.x == narrow_x, g)
+		local before = dev("relative_dump", PI).refreshes
+		dev("tick", 1)
+		local after = dev("relative_dump", PI)
+		lab.check("a train panel beside the narrow pane refreshes on the manager tick", after.open ~= nil
+			and after.refreshes == before + 1 and after.mounts.train.visible == true, { before, after.refreshes })
 		remote.call("cybersyn", "write_global", game.tick - 1, "manager", "players", PI, "remote_entered_tick")
 		dev("relative_open", PI, "train", tid)
 		g = dev("train_panel_geometry", PI)
@@ -206,8 +211,10 @@ lab.suite("39_relative", {
 		g = dev("train_panel_geometry", PI)
 		lab.check("controller change from the character after the open, same tick: recorded and placed narrow",
 			g.remote_entered_tick == game.tick and g.narrow and g.location.x == narrow_x, g)
+		remote.call("cybersyn", "write_global", game.tick - 1, "manager", "players", PI, "remote_entered_tick")
 		dev("controller_changed", PI, defines.controllers.remote)
-		lab.check("a change from remote view records nothing", dev("train_panel_geometry", PI).remote_entered_tick == game.tick)
+		lab.check("a change from remote view records nothing",
+			dev("train_panel_geometry", PI).remote_entered_tick == game.tick - 1)
 		if not was_remote then player.exit_remote_view() end
 		remote.call("cybersyn", "write_global", nil, "manager", "players", PI, "remote_entered_tick")
 		-- A display change places and caps it again (still the narrow pane it was opened with).

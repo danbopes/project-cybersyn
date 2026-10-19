@@ -70,7 +70,8 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field collecting_shown int? progress the subheaders show, -1 = none
 --- @field trains_badge int? alert count on the Trains tab
 --- @field unserved_minutes int? cached cybersyn-manager-unserved-minutes
---- @field relative_open {kind: "stop"|"train", id: uint}? the Cybersyn panel beside an open vanilla window
+--- @field relative_open {kind: "stop"|"train", id: uint, mount: string?, narrow: true?, tick: uint?, pane_narrow: boolean?, groups: int?}? the Cybersyn panel beside an open vanilla window: `narrow` = stop panel hidden on a narrow screen; `tick`, `pane_narrow`, `groups` = the docked train pane it was placed beside, see relative.lua place_train
+--- @field remote_entered_tick uint? last tick the controller changed from the character to remote view (the train pane's width depends on it)
 --- @field relative RelativeState? that panel's render state, see scripts/gui/relative.lua
 --- @field relative_effective_open true? the stop panel's Effective config section is expanded
 
