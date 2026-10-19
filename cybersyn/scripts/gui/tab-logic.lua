@@ -596,6 +596,28 @@ end
 
 -- ---------------------------------------------------------------- stations
 
+--- Severity order: the Stations status sort and filter chips follow it. The collector's statuses plus "setup", which
+--- the Stations tab and the stop panel show in place of "ok" (problems-model shown_status).
+logic.STATUSES = { "no_power", "disabled", "warming_up", "starved", "setup", "saturated", "idle", "ok" }
+--- flib_indicator_<colour> per status in logic.STATUSES.
+logic.STATUS_COLOR = {
+	no_power = "red",
+	disabled = "purple",
+	warming_up = "cyan",
+	starved = "pink",
+	setup = "yellow",
+	saturated = "orange",
+	idle = "white",
+	ok = "green",
+}
+
+--- Locale key of a station status caption; append "-tooltip" for its explanation.
+--- @param status string
+--- @return string
+function logic.status_key(status)
+	return "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-")
+end
+
 logic.FLAG_UNSERVED = 1
 logic.FLAG_SETUP = 2
 logic.FLAG_THROTTLING = 4

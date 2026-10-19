@@ -521,3 +521,9 @@ test("unserved_split: Show acknowledged takes up to half a full page at the bott
 	assert_eq({ l.unserved_split(0, 5, 2, true) }, { 0, 0 })
 	assert_eq({ l.unserved_split(17, 59, 3, true) }, { 14, 3 })
 end)
+
+test("statuses: every status has a colour, and the locale key uses dashes", function()
+	local l = logic()
+	for _, s in ipairs(l.STATUSES) do assert_true(l.STATUS_COLOR[s] ~= nil, s .. " has a colour") end
+	assert_eq(l.status_key("no_power"), "cybersyn-gui.station-status-no-power")
+end)

@@ -47,24 +47,9 @@ local FLAG_UNSERVED, FLAG_SETUP, FAILING = logic.FLAG_UNSERVED, logic.FLAG_SETUP
 -- Alert kind 1 is Cybersyn's stuck-train alert (storage.active_alerts).
 local ALERT_STUCK = 1
 
---- Severity order: the status sort and the filter chips both follow it. The collector's statuses plus "setup", which
---- this tab and the stop panel show in place of "ok" (pm.shown_status).
-local STATUSES = { "no_power", "disabled", "warming_up", "starved", "setup", "saturated", "idle", "ok" }
+local STATUSES, STATUS_COLOR, status_key = logic.STATUSES, logic.STATUS_COLOR, logic.status_key
 local STATUS_RANK = {}
 for i, s in ipairs(STATUSES) do STATUS_RANK[s] = i end
-local STATUS_COLOR = {
-	no_power = "red",
-	disabled = "purple",
-	warming_up = "cyan",
-	starved = "pink",
-	setup = "yellow",
-	saturated = "orange",
-	idle = "white",
-	ok = "green",
-}
-local function status_key(status)
-	return "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-")
-end
 
 --- Chips besides the statuses, by the station flag they test (tab-logic); stuck comes from the trains.
 local FLAG_CHIPS = { unserved = logic.FLAG_UNSERVED, problems = logic.FLAG_SETUP, failing = logic.FAILING }

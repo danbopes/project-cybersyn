@@ -101,16 +101,7 @@ local function label_style(chip_style)
 	return (string.gsub(chip_style or "cybersyn_chip_grey", "^cybersyn_chip_", "cybersyn_reason_label_"))
 end
 
-local STATUS_COLOR = {
-	no_power = "red",
-	disabled = "purple",
-	warming_up = "cyan",
-	starved = "pink",
-	setup = "yellow",
-	saturated = "orange",
-	idle = "white",
-	ok = "green",
-}
+local STATUS_COLOR, status_key = logic.STATUS_COLOR, logic.status_key
 
 -- Logical px; the station / destination column of each table takes what is left of the content width.
 local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train = 72, train_status = 150 }
@@ -604,8 +595,8 @@ local function provider_entry(r, ctx, i)
 			{ caption = r.out > 0 and count(r.out) or NO_VALUE, sig = tostring(r.out) },
 			{
 				sprite = "flib_indicator_" .. (STATUS_COLOR[status] or "white"),
-				caption = { "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") },
-				tooltip = { "cybersyn-gui.station-status-" .. string.gsub(status, "_", "-") .. "-tooltip" },
+				caption = { status_key(status) },
+				tooltip = { status_key(status) .. "-tooltip" },
 				sig = status,
 			},
 		}
