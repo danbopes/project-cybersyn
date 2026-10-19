@@ -725,4 +725,22 @@ function logic.duration_ticks(max_seconds)
 	return out
 end
 
+
+--- How many open and acknowledged rows the Overview's Unserved page shows. With Show acknowledged on, the acknowledged
+--- rows sink to the bottom (PLAN3 §4.13) but may take up to half the page, so turning the toggle on always shows them
+--- even when the open rows alone would fill the page; open rows that run short leave the rest to acknowledged ones.
+--- @param rows int page rows
+--- @param open_n int open rows available
+--- @param acked_n int acknowledged rows available
+--- @param show boolean? Show acknowledged
+--- @return int open_take
+--- @return int acked_take
+function logic.unserved_split(rows, open_n, acked_n, show)
+	if rows <= 0 then return 0, 0 end
+	if not show then return math.min(open_n, rows), 0 end
+	local reserve = math.min(acked_n, math.max(1, math.floor(rows / 2)))
+	local open_take = math.min(open_n, rows - reserve)
+	return open_take, math.min(acked_n, rows - open_take)
+end
+
 return logic

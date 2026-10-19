@@ -36,6 +36,17 @@ local function overview()
 	return remote.call(D, "dump", pi, "overview")
 end
 
+--- The element named `name` in the player's screen GUI (depth-first), or nil.
+local function find(name, root)
+	root = root or game.get_player(pi).gui.screen
+	if root.name == name then return root end
+	for _, c in ipairs(root.children) do
+		local hit = find(name, c)
+		if hit then return hit end
+	end
+	return nil
+end
+
 local function contains(list, value)
 	for _, v in ipairs(list) do
 		if v == value then return true end
@@ -191,6 +202,28 @@ lab.suite("36_window", {
 		lab.check("misconfigured back once the hand-written finding is cleared",
 			d.tiles.failing.misconfigured == before and d.tiles.failing.misconfigured_acked == before_acked,
 			{ tile = d.tiles.failing, before = before })
+		-- D5-4: the split tile looks like the other three. Its button keeps the full tile height and chrome, the wrapper
+		-- draws nothing, and the link line lies over the button's last line slot in the plain lines' weight.
+		-- The buttons take their 108 px from the style (no runtime height reads back nil); their bodies get it at layout.
+		local heights, styles, own = {}, {}, {}
+		for _, name in ipairs({ "unserved", "fleet", "failing", "throughput" }) do
+			local b = find("overview_tile_" .. name)
+			heights[name] = b and b.children[1].style.minimal_height
+			own[name] = b and b.style.minimal_height or false
+			styles[name] = b and b.style.name
+		end
+		lab.check("all four tile buttons share one style and the full tile height", styles.failing == "cybersyn_overview_tile"
+			and styles.unserved == styles.failing and styles.fleet == styles.failing and styles.throughput == styles.failing
+			and own.failing == own.unserved and heights.failing == 108 and heights.unserved == 108 and heights.fleet == 108
+			and heights.throughput == 108, { heights = heights, styles = styles, own = own })
+		local wrap, link_line, link = find("overview_tile_failing_frame"), find("overview_failing_line4"),
+			find("overview_failing_line4_label")
+		lab.check("the failing tile's wrapper is an invisible frame", wrap and wrap.style.name == "invisible_frame",
+			wrap and wrap.style.name)
+		lab.check("the Misconfigured line overlays the button's last line slot", link_line and link_line.style.top_margin == -22
+			and link_line.parent == wrap and wrap.children[1].name == "overview_tile_failing", link_line and link_line.style.top_margin)
+		lab.check("the Misconfigured line reads like the plain lines", link and link.style.name == "cybersyn_overview_line_link",
+			link and link.style.name)
 		-- The line is a link of its own: Stations with the Problems chip (stations.lua reads it once phase p3 lands).
 		local res = lab.dev("click", pi, "overview_failing_line4_label")
 		lab.check("the Misconfigured line jumps to the Stations tab", res == true
@@ -226,7 +259,8 @@ lab.suite("36_window", {
 		local ack = lab.read("acks").request[row.requester_id][row.item]
 		lab.check("a plain click acknowledges for 24 h", ack.until_tick == game.tick + 24 * HOUR and ack.player_index == pi, ack)
 		d = overview()
-		lab.check("acknowledged row leaves the open rows", not contains(d.lists.unserved.keys, key), key)
+		lab.check("acknowledged row leaves the open rows", not contains(d.lists.unserved.keys, key)
+			and not contains(d.lists.unserved.shown_keys, key), key)
 		lab.check("acknowledged count +1", d.lists.unserved.acked_total == u.acked_total + 1
 			and d.lists.unserved.total == u.total - 1, { before = u.total, after = d.lists.unserved.total })
 		if old_row then
@@ -270,6 +304,88 @@ lab.suite("36_window", {
 		remote.call(D, "set_filter", pi, { item = false })
 		lab.check("clicking an acknowledged row ends it", again and not lab.dev("diag_is_acked", "request", row.requester_id, row.item))
 		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "overview_show_acked")
+		lab.dev("set_setting", "cybersyn-enable-planner", true)
+	end,
+
+	-- D5-5: with more open rows than the page holds, an acknowledgement clicked the way a player clicks (the pointer
+	-- on the table, so the hover hold is on) removes the row in the click's own event; the hold is back from the next
+	-- tick on.
+	function(ctx)
+		lab.dev("set_setting", "cybersyn-enable-planner", false)
+		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "overview_show_acked")
+		remote.call(D, "clear_filters", pi)
+		remote.call(D, "set_layout", pi, 1920, 1080, 1.0)
+		local d = overview()
+		local u = d.lists.unserved
+		lab.check("more open requests than page rows", u.total > d.rows and #u.rendered == d.rows,
+			{ total = u.total, rows = d.rows })
+		local row = u.rendered[1]
+		local key = row.requester_id .. "|" .. row.item
+		ctx.ack_key, ctx.ack_row = key, { row.requester_id, row.item }
+		local res = lab.dev("click", pi, TABLE, COLUMNS * 2, { control = true, cursor = true })
+		d = remote.call(D, "dump", pi, "overview")
+		local after = d.lists.unserved
+		lab.check("the ack click held the table like a player's click",
+			res == true and lab.read("manager", "players", pi, "hover", "scope") == TABLE, res)
+		lab.check("acknowledged: the row is gone in the same tick", not contains(after.shown_keys, key)
+			and not after.held and #after.rendered == d.rows and after.rendered[1].acked == false
+			and after.rendered[1].requester_id .. "|" .. after.rendered[1].item ~= key,
+			{ held = after.held, first = after.rendered[1], n = #after.rendered })
+		ctx.click_tick = game.tick
+		lab.wait(1)
+	end,
+	function(ctx)
+		lab.check("the next tick the hover hold is back", game.tick > ctx.click_tick
+			and lab.read("manager", "players", pi, "hover") ~= nil
+			and lab.read("manager", "players", pi, "hold_released_tick") ~= game.tick
+			and game.tick - lab.read("manager", "players", pi, "hover", "tick") < 600, lab.read("manager", "players", pi, "hover"))
+		-- Two more acknowledgements, then Show acknowledged with a stale hold on the table: acknowledged rows get the
+		-- bottom of a full page at once, greyed.
+		local acked = { ctx.ack_row }
+		for _ = 1, 2 do
+			local r = remote.call(D, "dump", pi, "overview").lists.unserved.rendered[1]
+			acked[#acked + 1] = { r.requester_id, r.item }
+			lab.dev("click", pi, TABLE, COLUMNS * 2, { cursor = true })
+		end
+		remote.call(D, "hover", pi, TABLE, COLUMNS * 3)
+		lab.check("show acknowledged hook runs", lab.dev("overview_show_acked", pi, true) == true)
+		local d = remote.call(D, "dump", pi, "overview")
+		local rendered = d.lists.unserved.rendered
+		local tail_ok = #rendered == d.rows
+		for i = #rendered - 2, #rendered do
+			local r = rendered[i]
+			if not (r and r.acked == true and r.chip_style == "cybersyn_chip_acked") then tail_ok = false end
+		end
+		lab.check("show acknowledged on a full page: the 3 acknowledged rows take the bottom at once", tail_ok
+			and rendered[#rendered - 3].acked == false and not d.lists.unserved.held,
+			{ n = #rendered, rows = d.rows, held = d.lists.unserved.held })
+		lab.check("show acknowledged: the caption counts them", string.find(serpent.line(d.lists.unserved.caption),
+			tostring(d.lists.unserved.total + d.lists.unserved.acked_total), 1, true) ~= nil, d.lists.unserved.caption)
+		-- Unacknowledge with the toggle on and the hold on: the row is open again in the same tick.
+		local last = rendered[#rendered]
+		local back = last.requester_id .. "|" .. last.item
+		lab.dev("click", pi, TABLE, COLUMNS * #rendered + COLUMNS, { cursor = true })
+		d = remote.call(D, "dump", pi, "overview")
+		local again
+		for _, r in ipairs(d.lists.unserved.rendered) do
+			if r.requester_id .. "|" .. r.item == back then again = r end
+		end
+		lab.check("unacknowledged with the hold on: open again in the same tick",
+			not lab.dev("diag_is_acked", "request", last.requester_id, last.item) and contains(d.lists.unserved.keys, back)
+			and again ~= nil and again.acked == false and not d.lists.unserved.held, again)
+		remote.call(D, "hover", pi, TABLE, COLUMNS * 3)
+		lab.dev("overview_show_acked", pi, false)
+		d = remote.call(D, "dump", pi, "overview")
+		local any = false
+		for _, r in ipairs(d.lists.unserved.rendered) do if r.acked then any = true end end
+		lab.check("show acknowledged off: no acknowledged rows at once", not any and #d.lists.unserved.rendered == d.rows
+			and not d.lists.unserved.held, #d.lists.unserved.rendered)
+		remote.call(D, "hover", pi, TABLE, COLUMNS * 3, true)
+		for _, a in ipairs(acked) do
+			if lab.dev("diag_is_acked", "request", a[1], a[2]) then lab.dev("diag_unack", "request", a[1], a[2], pi) end
+		end
+		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "overview_show_acked")
+		lab.big_screen(pi)
 		lab.dev("set_setting", "cybersyn-enable-planner", true)
 	end,
 

@@ -94,7 +94,7 @@ end
 --- Stations failing's Misconfigured line jumps on its own: to the Stations tab's Problems chip (PLAN4 D7).
 local LINK_LINES = { failing4 = true }
 local TILE_H = 108
--- The link line under the button: an 18 px line and the body's 4 px bottom padding.
+-- The link line overlays the button's last line slot: an 18 px line and the body's 4 px bottom padding.
 local LINK_H = 22
 
 local function line_def(tile, i)
@@ -109,7 +109,7 @@ local function line_def(tile, i)
 		link and {
 			type = "button",
 			name = base .. "_label",
-			style = "cybersyn_link_button",
+			style = "cybersyn_overview_line_link",
 			caption = "",
 			handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_problems_click },
 		} or { type = "label", name = base .. "_label", style = "cybersyn_overview_line_label", caption = "" },
@@ -159,16 +159,16 @@ local function tile_def(tile)
 		body,
 	}
 	if not link then return button end
-	-- Everything inside a button's ignored body is ignored too, and a button draws extra children over each other,
-	-- so a line that jumps on its own sits below the button, in a frame that looks like the rest of the tile.
-	button.style_mods = { height = TILE_H - LINK_H }
-	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4 }
+	-- A button's ignored body cannot hold a clickable child, so the line that jumps on its own is a sibling laid over
+	-- the full-height button's last line slot by a negative margin (the later sibling draws on top and takes the
+	-- input). The wrapper draws nothing, so the tile's chrome and hover glow stay the button's own, like the others.
+	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4, top_margin = -LINK_H }
 	return {
 		type = "frame",
 		name = "overview_tile_" .. tile.name .. "_frame",
 		direction = "vertical",
-		style = "inside_shallow_frame",
-		style_mods = { padding = 0, height = TILE_H },
+		style = "invisible_frame",
+		style_mods = { height = TILE_H },
 		button,
 		link,
 	}
@@ -332,13 +332,11 @@ function overview_tab.apply_layout(player_data, layout)
 			button.style.width = tile
 			local body = button.children[1]
 			body.style.width = tile
+			body.style.height = TILE_H
 			local frame = refs["overview_tile_" .. t.name .. "_frame"]
 			if frame and frame.valid then
 				frame.style.width = tile
-				body.style.height = TILE_H - LINK_H
 				frame.children[2].style.width = tile
-			else
-				body.style.height = TILE_H
 			end
 		end
 	end
@@ -1489,18 +1487,10 @@ local function render_table(player_data, model)
 		local hide = state.hide or { stock = false, lost = false }
 		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths,
 			content_sigs = content_sigs, setup = setup_index(), hide = hide }
-		local rows = model.rows
+		local open_take, acked_take = logic.unserved_split(model.rows, #u.open, #u.acked, player_data.overview_show_acked)
 		local picked = {}
-		for _, row in ipairs(u.open) do
-			if #picked >= rows then break end
-			picked[#picked + 1] = { row, false }
-		end
-		if player_data.overview_show_acked then
-			for _, row in ipairs(u.acked) do
-				if #picked >= rows then break end
-				picked[#picked + 1] = { row, true }
-			end
-		end
+		for i = 1, open_take do picked[i] = { u.open[i], false } end
+		for i = 1, acked_take do picked[open_take + i] = { u.acked[i], true } end
 		-- A column the visible rows leave empty gives its width to the requester (round 5 item 14). Rows are rebuilt
 		-- for a change, as for a new window width; while the pointer holds the table the columns stay.
 		local any_stock, any_lost = false, false
@@ -1743,6 +1733,7 @@ end
 --- @param e EventData.on_gui_checked_state_changed
 function overview_tab.handle.overview_show_acked(player, player_data, refs, e)
 	player_data.overview_show_acked = e.element.state or nil
+	util.release_hold(player_data)
 	util.rerender(player, player_data)
 end
 
@@ -1852,8 +1843,19 @@ function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
 		end
 		diag.ack("request", r_id, hash, player.index, until_tick)
 	end
+	util.release_hold(player_data)
 	util.rerender(player, player_data)
 end
+
+--- Sets Show acknowledged through its handler, as the checkbox does (dev clicks raise on_gui_click only).
+dev.add("overview_show_acked", function(pi, on)
+	local toggle = storage.manager.players[pi].refs.overview_show_acked
+	if not (toggle and toggle.valid) then return false end
+	toggle.state = on == true
+	overview_tab.wrapper({ player_index = pi, element = toggle, name = defines.events.on_gui_checked_state_changed,
+		tick = game.tick }, overview_tab.handle.overview_show_acked)
+	return true
+end)
 
 --- One Overview render of player `pi` timed by part: the three tile models, the whole model, the tiles and the table.
 dev.add("overview_profile", function(pi)
