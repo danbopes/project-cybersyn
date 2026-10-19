@@ -512,6 +512,8 @@ function manager_gui.boost_tick(any_tick)
 	if manager_data.release_at then collector.release_due() end
 	local settle = manager_data.settle
 	if settle then
+		-- Owed by a render on this very tick (collector.owe_render): one heavy render per tick.
+		if manager_data.settle_tick == game.tick then return end
 		manager_data.settle = settle > 1 and settle - 1 or nil
 		manager_data.settle_tick = game.tick
 		if probe then probe("render", settle_renders, manager_data) else settle_renders(manager_data) end

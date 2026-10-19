@@ -669,10 +669,11 @@ function stations_tab.query(player_data)
 	-- The first pass after opening is still filling records: rows and counts from part of the stations would change
 	-- on every update and disagree with the other tabs, so there are none until it completes.
 	local cache = player_data.stations_query
-	-- The first build after a boosted pass is split over the next three updates, so no tick carries more than one of
-	-- the pass's last batch, classifying every station, sorting them (together 6.4-6.6 ms on pY 123 with the chip
-	-- flags) or writing every row of the page (3.8-4.4 ms): the completing update shows the placeholder still, the
-	-- next one classifies, the one after sorts, both still showing the placeholder, and the next renders the rows.
+	-- The first build after a boosted pass is split over three renders, so no tick carries more than one of the pass's
+	-- last batch, classifying every station, sorting them (together 6.4-6.6 ms on pY 123 with the chip flags) or
+	-- writing every row of the page (3.8-4.4 ms): the completing tick shows nothing yet, the next render classifies,
+	-- the one after sorts, and the next writes the rows. Each deferred render owes the next tick one (render), so a
+	-- first visit long after the pass completed (a tab switch) also gets its rows within three ticks.
 	if not snapshot.tick or (not cache and snapshot.boosted and snapshot.tick == game.tick) then
 		return {}, {}, { status = {}, flags = {}, stuck = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
 	end
@@ -1815,10 +1816,16 @@ function stations_tab.build(map_data, player_data)
 		-- Rows from before the window was closed stay hidden rather than destroyed: most of them are reused, not
 		-- built again, once the first pass completes.
 		list.visible = false
+		-- With a snapshot in hand this is a first build split over the next ticks: a blank list for those few ticks,
+		-- not the "Collecting" text (round-5 review: "Collecting every time you navigate").
+		local deferred = ctx.snapshot.tick ~= nil
+		if deferred then collector.owe_render() end
 		local warning = refs.manager_stations_warning_flow
 		if warning and warning.valid then
-			warning.visible = true
-			refs.manager_stations_warning_label.caption = { "cybersyn-gui.stations-collecting" }
+			warning.visible = not deferred
+			if not deferred then
+				refs.manager_stations_warning_label.caption = { "cybersyn-gui.stations-collecting" }
+			end
 		end
 		if summary and summary.valid then
 			summary.caption = ""

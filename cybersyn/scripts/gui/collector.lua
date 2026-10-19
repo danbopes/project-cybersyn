@@ -1547,6 +1547,17 @@ function collector.boost_tick(any_tick)
 	return true
 end
 
+--- Owes one render to the next tick (the per-tick handler's settle path) unless renders are owed already: a tab that
+--- splits its first build over several renders finishes in as many ticks instead of as many manager updates. The
+--- render that owes it ran on this tick (a click's, an update's or a settle render), so the owed one waits a tick.
+function collector.owe_render()
+	local manager = storage.manager
+	if manager and not manager.settle then
+		manager.settle = 1
+		manager.settle_tick = game.tick
+	end
+end
+
 --- One manager update's worth of collection; no-op unless collector.wanted(), while the opening boost runs
 --- (collector.boost_tick steps it then, and the lint job waits for its result) and while its renders are owed.
 --- @return boolean ran

@@ -71,7 +71,16 @@ lab.suite("35_foundation", {
 		lab.info("cold open at " .. ctx.open_tick .. ": " .. serpent.line(raw))
 		lab.check("the pass completes within 3 ticks of the open (per-tick boost)", done ~= nil and done - ctx.open_tick <= 3,
 			{ open = ctx.open_tick, done = done })
-		lab.check("no step on the open's own tick (its first render ran there)", raw[1] and raw[1].tick > ctx.open_tick, raw[1])
+		local first_step
+		for _, e in ipairs(raw) do
+			if e.kind == "step" then
+				first_step = e
+				break
+			end
+		end
+		-- A manager update may land on the open's tick (it neither steps nor renders then); only steps count here.
+		lab.check("no step on the open's own tick (its first render ran there)", first_step and first_step.tick > ctx.open_tick,
+			first_step)
 		lab.check("no step and render share a tick", (function()
 			local steps = {}
 			for _, e in ipairs(raw) do if e.kind == "step" then steps[e.tick] = true end end
@@ -91,6 +100,55 @@ lab.suite("35_foundation", {
 		lab.check("subheader progress gone, title bar back to Updated (or hidden: renders are current)",
 			status.subheader == nil and status.collecting == nil
 			and (not status.title_visible or caption_key(status.caption) == "cybersyn-gui.updated-ago"), status)
+		ctx.ups = settings.global["cybersyn-manager-updates-per-second"].value
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", 0)
+		lab.wait(20)
+	end,
+	-- A first Stations visit long after the boosted pass completed (a tab switch, no manager update at all): its split
+	-- build runs on the next ticks behind a blank list, never behind the "Collecting" text.
+	function(ctx)
+		remote.call(D, "boost_samples", "start", pi)
+		remote.call(D, "select_tab", pi, "stations")
+		ctx.switch_tick = game.tick
+		-- Read from the elements: the stations dump runs the query, which would advance the split build itself.
+		local function find_named(elem, name)
+			if elem.name == name then return elem end
+			for _, c in pairs(elem.children) do
+				local f = find_named(c, name)
+				if f then return f end
+			end
+		end
+		local flow = find_named(game.get_player(pi).gui.screen, "manager_stations_warning_flow")
+		local label = flow and flow.children[1]
+		local rendered = remote.call(D, "rows", pi, "stations").rendered
+		lab.check("tab switch after a boosted pass: no rows yet and no Collecting text while the first build is split",
+			flow ~= nil and rendered == 0 and not (flow.visible and label and
+				caption_key(label.caption) == "cybersyn-gui.stations-collecting"),
+			{ found = flow ~= nil, visible = flow and flow.visible, caption = label and label.caption, rendered = rendered })
+		lab.check("tab switch after a boosted pass: the split build owes the next tick a render",
+			remote.call(D, "status", pi).settle == 1, remote.call(D, "status", pi))
+		lab.wait(3)
+	end,
+	function(ctx)
+		remote.call(D, "boost_samples", "stop")
+		local _, _, renders = boost_log()
+		local d = remote.call(D, "dump", pi, "stations")
+		local n = lab.dev("summary").station_count
+		local by_offset, rows_at = {}, nil
+		for _, e in ipairs(renders) do
+			by_offset[#by_offset + 1] = (e.tick - ctx.switch_tick) .. ":" .. tostring(e.rows)
+			if not rows_at and e.rows == n then rows_at = e.tick - ctx.switch_tick end
+		end
+		lab.info("stations tab switch, owed renders (ticks after the switch:rows): " .. table.concat(by_offset, " "))
+		lab.check("tab switch after a boosted pass: every row within 4 ticks, with no manager update",
+			n > 0 and rows_at ~= nil and rows_at <= 4 and d.total == n and d.visible and not d.warning,
+			{ renders = by_offset, total = d.total, n = n })
+		lab.check("tab switch after a boosted pass: the owed renders start on the next tick (one heavy render per tick)",
+			renders[1] ~= nil and renders[1].tick > ctx.switch_tick, by_offset)
+		lab.check("tab switch after a boosted pass: no render owed once the rows show",
+			remote.call(D, "status", pi).settle == nil, remote.call(D, "status", pi))
+		remote.call(D, "select_tab", pi, "overview")
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
 	end,
 
 	-- A cold boost that outlasts 30 ticks (a huge base, GC cycles) shows its progress.
