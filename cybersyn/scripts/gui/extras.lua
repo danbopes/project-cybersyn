@@ -308,10 +308,11 @@ end
 
 --- Networks that have Cybersyn trains, at most a minute old: the available-train counters only know networks that
 --- had a train available since the load, and a network whose trains were never free has 0 free trains, not none.
---- Only the HUD tick writes the cache; any other caller (the read-only query interface) reads it or scans.
+--- The HUD tick and the Overview's Fleet tile write the cache (in storage, so a joining peer reads the same set); the
+--- read-only query interface reads it or scans.
 --- @param keep boolean write the scan into the cache
 --- @return {[string]: true}
-local function train_networks(keep)
+function extras.train_networks(keep)
 	local m = storage.manager
 	local cached = m and m.hud_networks
 	if cached and game.tick - cached.tick < 3600 then return cached.set end
@@ -350,7 +351,7 @@ end
 function extras.hud_text(keep)
 	local d = storage.diag
 	local s = stats.get()
-	local v = logic.hud_values(diag.counts_by_reason(), s and s.available_count or {}, train_networks(keep == true))
+	local v = logic.hud_values(diag.counts_by_reason(), s and s.available_count or {}, extras.train_networks(keep == true))
 	local headroom = v.headroom and format.number(v.headroom) or utext.NO_VALUE
 	local line2
 	if not d then

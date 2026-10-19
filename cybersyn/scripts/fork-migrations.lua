@@ -82,7 +82,8 @@ local lint = require("scripts.lint")
 -- 2: the diagnostics sweep and ring fields (cycles, item_served, preallocated columns), the planner-cycle counters
 -- and refuel_since of storage.stats.
 -- 3: the setup registry (storage.lint_registry), seeded from to_comb/to_stop/to_comb_params.
-local SCHEMA = 3
+-- 4: storage.manager.fleet_networks dropped; the Overview's Fleet tile reads the HUD's cache (hud_networks).
+local SCHEMA = 4
 
 local fork_migrations = {}
 
@@ -105,6 +106,7 @@ function fork_migrations.migrate_schema()
 	-- Rebuilt on every configuration change too: a mod change can add or remove combinators without the build
 	-- handlers seeing it.
 	lint.registry_seed()
+	if storage.manager then storage.manager.fleet_networks = nil end
 	storage.fork_schema = SCHEMA
 end
 
