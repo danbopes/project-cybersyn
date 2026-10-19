@@ -375,13 +375,9 @@ local function view_column(column, problems)
 	return column
 end
 
---- Everything the filtered set depends on besides the data itself. The chip is left out: it is applied after the
---- cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
-local function filter_sig(f)
-	return table.concat({
-		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
-	}, "\1")
-end
+-- Everything the filtered set depends on besides the data itself. The chip is left out: it is applied after the
+-- cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
+local filter_sig = util.filter_signature
 
 local function view_sig(f, column, ascending)
 	return column .. "\1" .. (ascending and "+" or "-") .. "\1" .. filter_sig(f)

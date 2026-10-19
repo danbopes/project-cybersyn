@@ -962,11 +962,6 @@ local function render_slots(state, body, m)
 	end
 end
 
-local function surface_name(index)
-	local s = game.get_surface(index)
-	return s and s.name or tostring(index)
-end
-
 --- The texts of an unserved row that move between reason changes: the four-line why (payload, evaluations, losses,
 --- wait), the stock and the wait, all on the 10 s age step.
 --- @return LocalisedString tip
@@ -991,7 +986,7 @@ local function unserved_texts(m, r, now, inherit_before)
 		wait = wait,
 		inherited = inherited,
 		n = e.n,
-		surface_name = surface_name,
+		surface_name = util.surface_name,
 	}, util.format_duration)
 	local stock = utext.stock_caption(e.reason, e.a, e.b)
 	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited)

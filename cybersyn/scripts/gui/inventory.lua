@@ -381,6 +381,8 @@ local function aggregate_with_top(snapshot, f)
 	return inv, top, has_wait
 end
 
+--- Not util.filter_signature: the item filter only highlights a button here (the aggregate passes ignore_item), so
+--- picking an item must not re-aggregate.
 --- @param f ManagerFilters
 local function filter_signature(f)
 	return (f.terms and table.concat(f.terms, " ") or "") .. "|" .. (f.network or "") .. "|" .. f.mask .. "|" .. (f.surface or "")
