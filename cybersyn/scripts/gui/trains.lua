@@ -37,6 +37,8 @@ end
 --- @field trains_group_by_depot true? rows grouped by depot name
 --- @field expanded_depots {[string]: true}? depot groups showing their trains
 --- @field selected_train uint? the train the detail pane shows
+--- @field trains_reveal {train: uint?, group: string?}? manager.focus: expand the group of this train (or this group)
+--- once, on the first grouped build with a complete snapshot
 
 local TAB = "trains_tab"
 -- The row list; a flow since phase 4, the name kept for manager.refresh_sort_headers.
@@ -61,6 +63,8 @@ local DEFAULT_COLUMN = "train_id"
 local ROW_HEIGHT = sizing.ROW_HEIGHT[TAB]
 local SLOT = 32
 local REFUELERS = "\1refuelers"
+-- The refuelers' group key, for a focus on a refueler (relative.open_manager).
+trains_tab.REFUELERS = REFUELERS
 -- Fuel is read from the locomotives of the rows on the page, again every this many renders.
 local FUEL_EVERY = 5
 -- Rows built from nothing per update (a new or reopened list): about 0.3-0.45 ms each on pY 123, so a 27-row page
@@ -2050,9 +2054,30 @@ function trains_tab.build(map_data, player_data)
 		end
 		if not cache.group_stats then cache.group_stats = group_stats(ctx.all) end
 		ctx.group_stats = cache.group_stats
+		local reveal = player_data.trains_reveal
+		-- A cold open lists nothing yet: the reveal waits for the first complete pass.
+		if reveal and snapshot.tick then
+			local name = reveal.group
+			local id = reveal.train
+			if id then
+				for key, list in pairs(chips.groups.members) do
+					for _, tr in ipairs(list) do
+						if tr.id == id then name = key break end
+					end
+					if name then break end
+				end
+			end
+			if name then
+				local expanded = player_data.expanded_depots or {}
+				expanded[name] = true
+				player_data.expanded_depots = expanded
+			end
+			player_data.trains_reveal = nil
+		end
 		seq = logic.group_rows(chips.groups.names, chips.groups.members, player_data.expanded_depots)
 		ctx.members = chips.groups.members
 	else
+		player_data.trains_reveal = nil
 		seq = rows
 	end
 	-- Grouped, the pager counts rows (group rows too) and says so; the summary beside it counts trains.

@@ -13,6 +13,7 @@ local format = require("__flib__.format")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local manager = require("scripts.gui.manager")
+local trains_tab = require("scripts.gui.trains")
 local dev = require("scripts.gui.dev")
 local diag = require("scripts.diag")
 local lint = require("scripts.lint")
@@ -2365,40 +2366,26 @@ function relative.handle.relative_toggle_effective(player, pd)
 	rerender(player, pd)
 end
 
---- Opens the manager on the Stations tab searching for this stop (a depot: the Trains tab searching its name), or on
---- the Trains tab searching "#<id>" for a train. The other filters are cleared so the subject is in the list.
+--- Opens the manager on the Stations tab searching for this stop (a depot or refueler: the Trains tab searching its
+--- name), or on the Trains tab searching "#<id>" for a train; manager.focus clears everything else that could hide it.
 --- @param player LuaPlayer
 --- @param pd PlayerData
 function relative.open_manager(player, pd, state)
 	state = state or pd.relative
 	if not state then return end
-	local tab, query
 	if state.kind == "train" then
-		tab, query = "trains_tab", "#" .. state.id
-	else
-		local station = storage.stations[state.id]
-		local name = stop_name(station and "station" or storage.depots[state.id] and "depot" or "refueler", state.id)
-		if not name then return end
-		tab, query = station and "stations_tab" or "trains_tab", name
+		manager.focus(player, pd, "trains_tab", { query = "#" .. state.id, reveal = { train = state.id } })
+		return
 	end
-	util.set_search_query(pd, query)
-	pd.search_open = true
-	pd.search_item = nil
-	pd.search_network_name = nil
-	pd.search_network_mask = -1
-	pd.search_surface_idx = nil
-	pd.stations_status_filter = nil
-	util.reset_pages(pd)
-	pd.selected_tab = tab
-	local refs = pd.refs
-	if pd.is_manager_open then
-		util.select_tab(pd, tab)
-		manager.restore_filter_widgets(pd)
-		local window = refs.manager_window
-		if not pd.pinning and window and window.valid then player.opened = window end
-		manager.render(player, pd)
+	local station = storage.stations[state.id]
+	local kind = station and "station" or storage.depots[state.id] and "depot" or "refueler"
+	local name = stop_name(kind, state.id)
+	if not name then return end
+	if station then
+		manager.focus(player, pd, "stations_tab", { query = name })
 	else
-		manager.handle.manager_open(player, pd, refs)
+		manager.focus(player, pd, "trains_tab", { query = name,
+			reveal = { group = kind == "depot" and name or trains_tab.REFUELERS } })
 	end
 end
 

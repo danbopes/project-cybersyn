@@ -729,6 +729,30 @@ lab.suite("36_window", {
 		lab.check("Throughput says it covers all networks, the wait lines say dispatch wait",
 			string.find(serpent.line(rt.throughput.caption, { comment = false }), "overview-all-networks", 1, true) ~= nil
 			and key_of(rt.throughput.lines[2][1]) == "cybersyn-gui.overview-throughput-wait-avg", rt.throughput)
+
+		-- PLAN5 D5-8: Fleet headroom counts by network name alone, so its jump drops every other filter and the query;
+		-- with an item filter left, the Parked list (no manifest) was always empty.
+		local worst = d.tiles.fleet.worst
+		local hashes = {}
+		for _, row in ipairs(lab.dev("diag_unserved_rows", 5000)) do hashes[#hashes + 1] = row.hash end
+		table.sort(hashes)
+		remote.call(D, "set_filter", pi, { item = hashes[1] or false, surface = game.surfaces["cyb-bench"].index, mask = 3,
+			query = "stn" })
+		remote.call(D, "select_tab", pi, "overview")
+		lab.dev("click", pi, "overview_tile_fleet")
+		local f = remote.call(D, "state", pi).filters
+		local jumped = remote.call(D, "dump", pi, "trains")
+		remote.call(D, "clear_filters", pi)
+		if worst then remote.call(D, "set_filter", pi, { network = worst }) end
+		remote.call("cybersyn-manager-dev-trains", "set_chip", pi, "parked")
+		local oracle = remote.call(D, "dump", pi, "trains")
+		lab.check("the Fleet jump keeps only the worst network (no item, surface, network ID or search)",
+			serpent.line(f) == serpent.line({ mask = -1, network = worst }), { f = f, worst = worst, item = hashes[1] })
+		lab.check("the Fleet jump toggles Parked and lists the parked trains of that network", jumped.chip == "parked"
+			and serpent.line(jumped.ids) == serpent.line(oracle.ids), { jumped = jumped.ids, oracle = oracle.ids })
+		lab.info("Fleet jump: worst " .. tostring(worst) .. ", " .. #jumped.ids .. " parked trains listed")
+		remote.call("cybersyn-manager-dev-trains", "set_chip", pi, "all")
+		remote.call(D, "clear_filters", pi)
 	end,
 
 	-- PLAN4 D3: every open starts on the player's surface; a surface without Cybersyn stops falls back to All.

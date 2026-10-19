@@ -352,6 +352,115 @@ lab.suite("39_relative", {
 		dev("relative_close", PI)
 	end,
 
+	-- PLAN5 D5-8: Open in manager shows the subject whatever was set before (Daniel: "These filters should clear and it
+	-- should revert back to All"): the Trains and Stations chips, a network filter, the surface default of a closed
+	-- window, a collapsed depot group and an open drill-down could each hide it.
+	function()
+		local T, S = "cybersyn-manager-dev-trains", "cybersyn-manager-dev-stations"
+		local function toggled(d)
+			for _, c in ipairs(d.chips or {}) do
+				if c[2] then return c[1] end
+			end
+		end
+		local function has(list, v)
+			for _, x in ipairs(list or {}) do
+				if x == v then return true end
+			end
+			return false
+		end
+		local function focus_train(id)
+			dev("relative_open", PI, "train", id)
+			dev("relative_click", PI, "open_manager")
+			dev("relative_close", PI)
+			dev("collect")
+			dev("update", PI, 3)
+			return dev("dump", PI, "trains"), dev("state", PI)
+		end
+		dev("close", PI)
+		dev("clear_filters", PI)
+		dev("open", PI)
+		dev("select_tab", PI, "trains")
+		dev("collect")
+		remote.call(T, "set_chip", PI, "trouble")
+		dev("update", PI, 2)
+		local d = dev("dump", PI, "trains")
+		local id
+		for _, t in ipairs(d.all) do
+			if not has(d.ids, t) and (not id or t < id) then id = t end
+		end
+		if not id then
+			lab.skip("Open in manager clears the Trains chip", "every train is in trouble")
+			remote.call(T, "set_chip", PI, "all")
+			return
+		end
+		local want = serpent.line({ mask = -1, terms = { "#" .. id } })
+		local got, st = focus_train(id)
+		lab.check("Open in manager (window open, In trouble on): the train is listed, chip All, filters only #id",
+			serpent.line(got.ids) == serpent.line({ id }) and toggled(got) == "all"
+			and serpent.line(st.filters) == want, { ids = got.ids, chip = toggled(got), filters = st.filters, trouble = d.ids })
+
+		-- Window closed with the chip and a network filter kept, the player on the stops' surface (D3 would filter by it).
+		local p = game.get_player(PI)
+		local home = { surface = p.surface, position = p.position }
+		local bench = rx.case.surface
+		p.teleport({ 0, 0 }, bench)
+		remote.call(T, "set_chip", PI, "trouble")
+		dev("set_filter", PI, { network = "signal-B" })
+		dev("close", PI)
+		got, st = focus_train(id)
+		local h = dev("header", PI)
+		lab.check("Open in manager (window closed, on the stops' surface): listed, chip All, no surface or network filter, " ..
+			"filter row closed", st.is_open and serpent.line(got.ids) == serpent.line({ id }) and toggled(got) == "all"
+			and serpent.line(st.filters) == want and h.filter_row == false, { ids = got.ids, filters = st.filters, h = h })
+		dev("close", PI)
+		dev("open", PI)
+		st = dev("state", PI)
+		lab.check("a plain open afterwards still starts on the player's surface (D3)", st.filters.surface == bench.index,
+			st.filters)
+		p.teleport(home.position, home.surface)
+		dev("clear_filters", PI)
+
+		-- Stations flag chips: Unserved, then Problems with the Misconfigured scope.
+		for _, chip in ipairs({ "unserved", "problems" }) do
+			dev("select_tab", PI, "stations")
+			remote.call(S, "set_chip", PI, chip)
+			local sd = dev("dump", PI, "stations")
+			local sid
+			for _, cand in ipairs({ rx.provider, rx.requester, rx.both }) do
+				if cand and not has(sd.ids, cand) then sid = cand break end
+			end
+			if sid then
+				dev("relative_open", PI, "stop", sid)
+				dev("relative_click", PI, "open_manager")
+				dev("relative_close", PI)
+				dev("update", PI, 3)
+				local after = dev("dump", PI, "stations")
+				lab.check("Open in manager clears the Stations " .. chip .. " chip: the stop is listed, chip All",
+					has(after.ids, sid) and toggled(after) == "all", { ids = after.ids, chip = toggled(after), sid = sid })
+			else
+				lab.skip("Open in manager clears the Stations " .. chip .. " chip", "every stop has the chip")
+			end
+		end
+
+		-- Grouped by depot with every group collapsed: the train's group opens, the grouping stays.
+		remote.call(T, "set_grouped", PI, true, nil)
+		got = focus_train(id)
+		lab.check("Open in manager (grouped, collapsed): the train row shows, still grouped", has(got.ids, id) and
+			got.grouped == true and #got.groups >= 1, { ids = got.ids, groups = #got.groups, grouped = got.grouped })
+		remote.call(T, "set_grouped", PI, false)
+
+		-- An open drill-down with the query already "#id": it closes.
+		local hash
+		for _, row in ipairs(dev("diag_unserved_rows", 50)) do hash = hash or row.hash end
+		hash = hash or "iron-plate"
+		local od = dev("open_item", PI, hash)
+		lab.check("drill-down opened over the Trains tab", od.open == true, od)
+		focus_train(id)
+		lab.check("Open in manager with the same query again closes the drill-down", dev("item_dump", PI).open == false)
+		dev("clear_filters", PI)
+		dev("close", PI)
+	end,
+
 	function()
 		cases.destroy(rx.case)
 		dev("drop_snapshot")

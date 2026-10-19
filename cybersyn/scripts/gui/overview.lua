@@ -1746,81 +1746,58 @@ function overview_tab.handle.overview_show_acked(player, player_data, refs, e)
 	util.rerender(player, player_data)
 end
 
---- A tile or line jump to the Stations tab: the target lists under exactly the filters the Overview counted with (D2).
---- The Overview has no station search, so a query typed on another tab goes; a toggled status chip would win over
---- the flag chip (stations.lua active_chip): one chip at a time.
+--- A tile or line jump to the Stations tab: the target lists under exactly the filters the Overview counted with (D2),
+--- so the row stays; the Overview has no station search, so a query typed on another tab goes, and the other chips go
+--- (one chip at a time: a toggled status chip would win over the flag chip, stations.lua active_chip).
+--- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param chip string the Stations flag chip
-local function jump_stations(player_data, chip)
-	if player_data.search_query then
-		util.set_search_query(player_data, nil)
-		util.reset_pages(player_data)
-		local manager = overview_tab.manager
-		if manager then manager.refresh_search_fields(player_data) end
-	end
-	player_data.stations_status_filter = nil
-	player_data.stations_chip = chip
-	player_data.stations_problems_scope = nil
+--- @param sort {tab: string, column: string, ascending: boolean}?
+--- @param scope "errors"?
+local function jump_stations(player, player_data, chip, sort, scope)
+	overview_tab.manager.focus(player, player_data, "stations_tab", { keep_row = true, stations_chip = chip,
+		stations_problems_scope = scope, sort = sort })
 end
 
---- Stations tab with the Unserved chip (phase 4), longest wait first.
---- @param player_data PlayerData
-local function jump_unserved(player_data)
-	jump_stations(player_data, "unserved")
-	util.set_sort(player_data, "stations_tab", "wait", false)
-	util.select_tab(player_data, "stations_tab")
-end
+local UNSERVED_SORT = { tab = "stations_tab", column = "wait", ascending = false }
+local FAILING_SORT = { tab = "stations_tab", column = "station_status", ascending = true }
+local FLEET_SORT = { tab = "trains_tab", column = "train_status", ascending = true }
 
 --- Every tile jumps to the tab that lists what it counts (PLAN3 §4.7).
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 	local tile = e.element.tags.tile
 	if tile == "unserved" then
-		jump_unserved(player_data)
+		jump_stations(player, player_data, "unserved", UNSERVED_SORT)
 	elseif tile == "fleet" then
-		player_data.trains_chip = "parked"
+		-- Fleet headroom counts by network name alone (D2): every other filter goes, or an item filter alone would
+		-- empty the Parked list (parked trains carry no manifest).
 		local worst = overview_tab.model(player_data).fleet.worst
-		if worst then player_data.search_network_name = worst end
-		util.reset_pages(player_data)
-		util.set_sort(player_data, "trains_tab", "train_status", true)
-		util.select_tab(player_data, "trains_tab")
-		local manager = overview_tab.manager
-		if manager then manager.restore_filter_widgets(player_data) end
+		overview_tab.manager.focus(player, player_data, "trains_tab", { network = worst, trains_chip = "parked",
+			sort = FLEET_SORT })
 	elseif tile == "failing" then
-		jump_stations(player_data, "failing")
-		util.set_sort(player_data, "stations_tab", "station_status", true)
-		util.select_tab(player_data, "stations_tab")
+		jump_stations(player, player_data, "failing", FAILING_SORT)
 	elseif tile == "throughput" then
 		util.set_sort(player_data, "inventory_tab", "amount", false)
 		-- Every grid by amount: the grids' own sort buttons give way to the tab's sort.
 		player_data.inventory_sorts = nil
 		util.select_tab(player_data, "inventory_tab")
-	else
-		return
+		local manager = overview_tab.manager
+		if manager then manager.refresh_sort_headers(player_data) end
+		util.rerender(player, player_data)
 	end
-	local manager = overview_tab.manager
-	if manager then manager.refresh_sort_headers(player_data) end
-	util.rerender(player, player_data)
 end
 
 --- The Misconfigured line: Stations with the Problems chip (PLAN4 D7; stations.lua reads the chip), narrowed to the
 --- stations the line counts (an unacknowledged error-severity finding, util.open_setup_errors).
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_problems_click(player, player_data, refs, e)
-	jump_stations(player_data, "problems")
-	player_data.stations_problems_scope = "errors"
-	util.select_tab(player_data, "stations_tab")
-	local manager = overview_tab.manager
-	if manager then manager.refresh_sort_headers(player_data) end
-	util.rerender(player, player_data)
+	jump_stations(player, player_data, "problems", nil, "errors")
 end
 
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_count_click(player, player_data, refs, e)
-	jump_unserved(player_data)
-	local manager = overview_tab.manager
-	if manager then manager.refresh_sort_headers(player_data) end
-	util.rerender(player, player_data)
+	jump_stations(player, player_data, "unserved", UNSERVED_SORT)
 end
 
 --- The Why chip: Explain for that row (scripts/gui/explain.lua), a second click closes it.
