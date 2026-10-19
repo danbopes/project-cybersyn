@@ -40,9 +40,6 @@ local function report_print(entity, message)
 	end
 end
 
-local function report_noop(stop, message)
-end
-
 ---@param station LuaEntity
 local function station_search_area(station)
 	local pos = station.position
@@ -54,69 +51,40 @@ local function station_search_area(station)
 	}
 end
 
---- Find the names of all Cybersyn stations in the game.
---- @param report function(LuaEntity, LocalisedString)
----
---- @return {[integer]: string} station_types maps from train-stop unit_number to cybersyn station type (MODE_PRIMARY_IO | MODE_DEPOT | MODE_REFUELER | nil)
---- @return {[string]: boolean} station_names set of station names (requester/provider)
---- @return {[string]: boolean} depot_names set of depot names
---- @return {[string]: boolean} refueler_names set of refueler names
-local function check_single_stations_and_collect_data(report)
-	local station_names = {}
-	local depot_names = {}
-	local refueler_names = {}
-	local station_types = {}
+local NAMED_MODES = {
+	[MODE_PRIMARY_IO] = true,
+	[MODE_PRIMARY_IO_ACTIVE] = true,
+	[MODE_PRIMARY_IO_FAILED_REQUEST] = true,
+	[MODE_DEPOT] = true,
+	[MODE_REFUELER] = true,
+}
 
+--- The names of every train stop that a station, depot or refueler combinator serves, found from the entities
+--- alone so a repair command does not depend on storage.
+--- @return {[string]: true}
+local function collect_cybersyn_stop_names()
+	local names = {}
 	for _, s in pairs(game.surfaces) do
 		for _, ts in pairs(s.find_entities_filtered { name = "train-stop" }) do
-			local comb_1 = nil
-			local comb_2 = nil
-			local depot = nil
-			local refuel = nil
-
 			for _, c in pairs(s.find_entities_filtered { name = "cybersyn-combinator", area = station_search_area(ts) }) do
 				local op = c.get_control_behavior()
 				op = op and op.parameters.operation
-
-				if op == MODE_PRIMARY_IO or op == MODE_PRIMARY_IO_ACTIVE or op == MODE_PRIMARY_IO_FAILED_REQUEST then
-					if not comb_1 then comb_1 = c else report(ts, { "cybersyn-problems.double-station" }) end
-				elseif op == MODE_SECONDARY_IO then
-					if not comb_2 then comb_2 = c else report(ts, { "cybersyn-problems.double-station-control" }) end
-				elseif op == MODE_DEPOT then
-					if not depot then depot = c else report(ts, { "cybersyn-problems.double-depot" }) end
-				elseif op == MODE_REFUELER then
-					if not refuel then refuel = c else report(ts, { "cybersyn-problems.double-refueler" }) end
+				if NAMED_MODES[op] then
+					names[ts.backer_name] = true
+					break
 				end
-			end
-
-			if comb_1 and depot then report(ts, { "cybersyn-problems.station-and-depot" }) end
-			if comb_1 and refuel then report(ts, { "cybersyn-problems.station-and-refueler" }) end
-			if depot and refuel then report(ts, { "cybersyn-problems.depot-and-refueler" }) end
-
-			if comb_1 then -- station mode takes precedence
-				station_types[ts.unit_number] = MODE_PRIMARY_IO
-				station_names[ts.backer_name] = true
-			elseif depot then
-				station_types[ts.unit_number] = MODE_DEPOT
-				depot_names[ts.backer_name] = true
-			elseif refuel then
-				station_types[ts.unit_number] = MODE_REFUELER
-				refueler_names[ts.backer_name] = true
 			end
 		end
 	end
-
-	return station_types, station_names, depot_names, refueler_names
+	return names
 end
 
 local function fix_priorities_command()
-	-- don't depend on any 'storage' data for a repair command
-	local _, stations, depots, refuelers = check_single_stations_and_collect_data(report_noop)
+	local names = collect_cybersyn_stop_names()
 
 	for _, s in pairs(game.surfaces) do
 		for _, ts in pairs(s.find_entities_filtered { name = "train-stop" }) do
-			local name = ts.backer_name
-			if ts.train_stop_priority ~= 50 and (stations[name] or depots[name] or refuelers[name]) then
+			if ts.train_stop_priority ~= 50 and names[ts.backer_name] then
 				ts.train_stop_priority = 50
 				report_print(ts, { "cybersyn-problems.priority-was-reset" })
 			end
