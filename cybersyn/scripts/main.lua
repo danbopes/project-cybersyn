@@ -1078,12 +1078,18 @@ local function main()
 	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
 	script.on_event(defines.events.on_player_created, manager.on_player_created)
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
-	script.on_event(defines.events.on_gui_closed, manager.on_gui_closed)
-	-- The relative panels run after the entity GUI handlers register_gui_actions installed.
+	-- The manager's handlers run after the entity GUI handlers register_gui_actions installed: on_event keeps one
+	-- handler per event, so registering the manager's alone would drop those (the elevator panel, the combinator
+	-- window's close).
 	local entity_gui_opened = script.get_event_handler(defines.events.on_gui_opened)
 	script.on_event(defines.events.on_gui_opened, function(e)
 		if entity_gui_opened then entity_gui_opened(e) end
 		manager.on_gui_opened(e)
+	end)
+	local entity_gui_closed = script.get_event_handler(defines.events.on_gui_closed)
+	script.on_event(defines.events.on_gui_closed, function(e)
+		if entity_gui_closed then entity_gui_closed(e) end
+		manager.on_gui_closed(e)
 	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)
