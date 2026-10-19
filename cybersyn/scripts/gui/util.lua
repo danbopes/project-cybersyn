@@ -1079,8 +1079,6 @@ function util.item_button_click(player, player_data, e, hash)
 	elseif e.button == defines.mouse_button_type.left then
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
-		interop_add_recent_item(player.index, name, "cybersyn")
-		player_data.recent_panel_dirty = true
 		if e.shift or not item_view then
 			if item_view then item_view.close(player, player_data) end
 			util.set_item_filter(player_data, hash)

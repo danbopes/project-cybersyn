@@ -388,9 +388,6 @@ function manager_gui.on_migration()
 	if not storage.manager then
 		manager_gui.on_init()
 	end
-	if not storage.recent_external_items then
-		storage.recent_external_items = {}
-	end
 
 	for i, p in pairs(game.players) do
 		if storage.manager.players[i] == nil then
@@ -411,7 +408,6 @@ function manager_gui.on_init()
 	storage.manager = {
 		players = {},
 	}
-	storage.recent_external_items = {}
 	init_items(storage.manager)
 	collector.init()
 end

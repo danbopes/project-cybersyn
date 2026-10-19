@@ -1352,7 +1352,6 @@ function manager.handle.manager_update_item_search(player, player_data, refs, e)
 	if signal and signal.name then
 		player_data.search_item = hash_signal(signal)
 		interface_raise_item_selected(e.player_index, signal.name)
-		interop_add_recent_item(e.player_index, signal.name, "cybersyn")
 	else
 		player_data.search_item = nil
 	end

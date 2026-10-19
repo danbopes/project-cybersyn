@@ -1051,14 +1051,6 @@ local function main()
 
 	register_gui_actions()
 
-	-- Wire up cross-mod interop: when an external item arrives, mark player panels dirty
-	interop_on_external_item_callback = function(player_index, item_name, source)
-		local player_data = storage.manager and storage.manager.players[player_index]
-		if player_data and player_data.is_manager_open then
-			player_data.recent_panel_dirty = true
-		end
-	end
-
 	script.on_init(function()
 		init_global()
 		if analytics.is_enabled() then
@@ -1069,7 +1061,6 @@ local function main()
 		manager.on_init()
 		stats.init()
 		fork_migrations.migrate_schema()
-		interop_subscribe_to_events()
 	end)
 
 	script.on_configuration_changed(function(e)
@@ -1077,13 +1068,11 @@ local function main()
 		manager.on_migration()
 		stats.init()
 		fork_migrations.migrate_schema()
-		interop_subscribe_to_events()
 	end)
 
 	script.on_load(function()
 		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
-		interop_subscribe_to_events()
 	end)
 
 	-- flib's handle_events skips events that already have a handler; hover-hold, tab sync and the search field's
