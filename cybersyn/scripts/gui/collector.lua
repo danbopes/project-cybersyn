@@ -283,6 +283,8 @@ end
 
 local function release(manager)
 	drop_lint_job(manager)
+	-- Kept past the close with the snapshot it indexes (util.close_manager_window).
+	for _, player_data in pairs(manager.players) do player_data.stations_query = nil end
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil

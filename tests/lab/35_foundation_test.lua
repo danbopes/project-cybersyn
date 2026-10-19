@@ -219,10 +219,14 @@ lab.suite("35_foundation", {
 	-- The kept snapshot goes at its deadline, and the heap with it.
 	function(ctx)
 		remote.call(D, "open", pi)
+		remote.call(D, "select_tab", pi, "stations")
 		lab.dev("set_keep_ticks", 60)
 		remote.call(D, "close", pi)
 		ctx.mem_kept = lab.dev("mem", true)
 		lab.check("set_keep_ticks: the deadline follows it", remote.call(D, "status", pi).release_at == game.tick + 60)
+		lab.check("the Stations query cache stays with the kept snapshot",
+			lab.read("manager", "players", pi, "stations_query") ~= nil)
+		remote.call(D, "select_tab", pi, "overview")
 		lab.wait(61)
 	end,
 	function(ctx)
@@ -230,8 +234,8 @@ lab.suite("35_foundation", {
 		local mem = lab.dev("mem", true)
 		lab.info(string.format("heap released %.0f KB, kept %.0f KB, after the grace %.0f KB", ctx.mem_released,
 			ctx.mem_kept, mem))
-		lab.check("after the grace the snapshot is released", status.snapshot_tick == nil and status.release_at == nil,
-			status)
+		lab.check("after the grace the snapshot is released, the Stations query cache with it", status.snapshot_tick == nil
+			and status.release_at == nil and lab.read("manager", "players", pi, "stations_query") == nil, status)
 		-- Other state (rings, lint) moves the heap by a few hundred KB on this save between the two measurements.
 		lab.check("after the grace the heap is below the kept value and not above the released one (+5 %)",
 			mem < ctx.mem_kept and mem <= 1.05 * ctx.mem_released, { released = ctx.mem_released, kept = ctx.mem_kept, now = mem })
