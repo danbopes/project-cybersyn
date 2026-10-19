@@ -547,6 +547,21 @@ end
 logic.TRAIN_CHIPS = { "all", "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
 	"not_refuelled", "in_group", "trouble", "problems" }
 
+--- The Trains chip a Cybersyn train status belongs to, or nil for a custom status. Reads the STATUS_* globals of
+--- scripts/constants.lua.
+--- @param status int?
+--- @return string?
+function logic.train_chip(status)
+	if status == STATUS_D then return "parked" end
+	if status == STATUS_TO_P then return "to_p" end
+	if status == STATUS_P then return "loading" end
+	if status == STATUS_TO_R then return "to_r" end
+	if status == STATUS_R then return "unloading" end
+	if status == STATUS_TO_D or status == STATUS_TO_D_BYPASS then return "returning" end
+	if status == STATUS_TO_F or status == STATUS_F then return "refuel" end
+	return nil
+end
+
 --- The locale key of a Trains chip caption (the Trains subheader and the drill-down's train status).
 --- @param key string one of TRAIN_CHIPS
 --- @return string

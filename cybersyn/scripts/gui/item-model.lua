@@ -275,19 +275,4 @@ function model.build(snapshot, hash, priority_signal, changed, keep)
 	}
 end
 
---- The Trains chip a train status belongs to (tab-logic's TRAIN_CHIPS keys), or nil for a custom status.
---- @param status int?
---- @param S {D: int, TO_P: int, P: int, TO_R: int, R: int, TO_D: int, TO_D_BYPASS: int, TO_F: int, F: int} the STATUS_* values
---- @return string?
-function model.train_chip(status, S)
-	if status == S.D then return "parked" end
-	if status == S.TO_P then return "to_p" end
-	if status == S.P then return "loading" end
-	if status == S.TO_R then return "to_r" end
-	if status == S.R then return "unloading" end
-	if status == S.TO_D or status == S.TO_D_BYPASS then return "returning" end
-	if status == S.TO_F or status == S.F then return "refuel" end
-	return nil
-end
-
 return model

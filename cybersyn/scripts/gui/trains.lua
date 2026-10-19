@@ -292,21 +292,6 @@ local function status_caption(tr)
 	return t.not_available
 end
 
---- The Cybersyn status chip a train belongs to.
---- @param tr SnapshotTrain
---- @return string?
-local function status_chip(tr)
-	local s = tr.status
-	if s == STATUS_D then return "parked" end
-	if s == STATUS_TO_P then return "to_p" end
-	if s == STATUS_P then return "loading" end
-	if s == STATUS_TO_R then return "to_r" end
-	if s == STATUS_R then return "unloading" end
-	if s == STATUS_TO_D or s == STATUS_TO_D_BYPASS then return "returning" end
-	if s == STATUS_TO_F or s == STATUS_F then return "refuel" end
-	return nil
-end
-
 --- Per-build name lookups. Station names come from the snapshot; refueler names cost an API call, so they are
 --- resolved lazily and only for trains that are actually refuelling.
 --- @param snapshot Snapshot
@@ -497,7 +482,7 @@ end
 --- @return boolean
 local function count_train(tr, counts, wanted, now, hours, to_refuelers, alerts, problems)
 	local member = wanted == nil
-	local s = status_chip(tr)
+	local s = logic.train_chip(tr.status)
 	if s then
 		counts[s] = counts[s] + 1
 		if s == wanted then member = true end

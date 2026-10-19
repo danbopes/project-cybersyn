@@ -140,16 +140,6 @@ local COLUMNS = {
 	},
 }
 
-local TRAIN_STATUS
-
-local function train_statuses()
-	if not TRAIN_STATUS then
-		TRAIN_STATUS = { D = STATUS_D, TO_P = STATUS_TO_P, P = STATUS_P, TO_R = STATUS_TO_R, R = STATUS_R,
-			TO_D = STATUS_TO_D, TO_D_BYPASS = STATUS_TO_D_BYPASS, TO_F = STATUS_TO_F, F = STATUS_F }
-	end
-	return TRAIN_STATUS
-end
-
 --- @param t string "providers"|"requesters"|"trains"
 local function table_name(t) return "item_" .. t .. "_table" end
 
@@ -689,7 +679,7 @@ local function train_entry(r, ctx, i)
 	local from = station_view(ctx.snapshot, r.from)
 	local sig = table.concat({ r.status or -1, r.amount, to and to.name or "", from and from.name or "" }, "|")
 	return row_entry("trains", i, r.id .. "#" .. sig, function()
-		local chip = item_model.train_chip(r.status, train_statuses())
+		local chip = logic.train_chip(r.status)
 		local status = chip and { logic.train_chip_locale(chip, false) } or { "cybersyn-gui.trains-custom-status", tostring(r.status) }
 		local status_tip = chip and { logic.train_chip_locale(chip, false) .. "-tooltip" } or nil
 		local route = { "cybersyn-gui.item-train-route", from and from.name or NO_VALUE, to and to.name or NO_VALUE }

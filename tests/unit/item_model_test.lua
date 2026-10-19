@@ -332,21 +332,6 @@ test("build without place filters: every row, totals from inventory_all", functi
 		in_transit = 40, in_transit_stations = 1 })
 end)
 
-test("train_chip: every Cybersyn status maps to a Trains chip", function()
-	local m = model()
-	local S = { D = 0, TO_P = 1, P = 2, TO_R = 3, R = 4, TO_D = 5, TO_D_BYPASS = 6, TO_F = 7, F = 8 }
-	assert_eq(m.train_chip(0, S), "parked")
-	assert_eq(m.train_chip(1, S), "to_p")
-	assert_eq(m.train_chip(2, S), "loading")
-	assert_eq(m.train_chip(3, S), "to_r")
-	assert_eq(m.train_chip(4, S), "unloading")
-	assert_eq(m.train_chip(5, S), "returning")
-	assert_eq(m.train_chip(6, S), "returning")
-	assert_eq(m.train_chip(7, S), "refuel")
-	assert_eq(m.train_chip(8, S), "refuel")
-	assert_eq(m.train_chip(300, S), nil)
-end)
-
 test("locale: every key the drill-down uses, in every manager.cfg", function()
 	local function read(path)
 		local f = assert(io.open(H.mod_root .. "/" .. path, "r"))
