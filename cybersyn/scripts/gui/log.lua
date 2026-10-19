@@ -1486,7 +1486,7 @@ function log_tab.build(map_data, player_data)
 		end
 		if f.follow == false and rs.anchor then
 			local newer, complete = model.newer(rs, d)
-			local shown = format.number(newer) .. (complete and "" or "+")
+			local shown = model.count_text(newer, not complete)
 			status_sig = "paused" .. shown
 			status = { "cybersyn-gui.log-paused", shown, tostring(newer) }
 			seen = rs.anchor
