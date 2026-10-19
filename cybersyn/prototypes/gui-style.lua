@@ -735,20 +735,6 @@ styles.cybersyn_unserved_cell_flow = {
 	height = 32,
 }
 
-styles.cybersyn_unserved_icon_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 2,
-	width = 64,
-}
-
--- Icons after a name's text: only as wide as the icons it shows.
-styles.cybersyn_name_tail_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 2,
-}
-
 styles.cybersyn_unserved_ack = {
 	type = "button_style",
 	parent = "tool_button",
@@ -885,12 +871,6 @@ styles.cybersyn_cell_value_orange = {
 	font_color = { 1, 0.6, 0.2 },
 }
 
-styles.cybersyn_cell_value_grey = {
-	type = "label_style",
-	parent = "cybersyn_cell_value",
-	font_color = { 0.6, 0.6, 0.6 },
-}
-
 styles.cybersyn_overflow_label = {
 	type = "label_style",
 	font = "default-semibold",
@@ -908,21 +888,6 @@ styles.cybersyn_filter_chip = {
 	left_padding = 6,
 	right_padding = 6,
 }
-
--- The second, smaller chip in a Stations status cell (a setup finding) and the State chips on Trains.
-local function small_chip(parent)
-	return {
-		type = "button_style",
-		parent = parent,
-		height = 22,
-		left_padding = 4,
-		right_padding = 4,
-		font = "default-small-semibold",
-	}
-end
-styles.cybersyn_small_chip_red = small_chip("cybersyn_chip_red")
-styles.cybersyn_small_chip_orange = small_chip("cybersyn_chip_orange")
-styles.cybersyn_small_chip_grey = small_chip("cybersyn_chip_grey")
 
 styles.cybersyn_train_id_button = {
 	type = "button_style",
@@ -960,13 +925,6 @@ styles.cybersyn_inventory_grid_header = {
 styles.cybersyn_sort_tool_button = {
 	type = "button_style",
 	parent = "tool_button",
-	size = 28,
-	padding = 2,
-}
-
-styles.cybersyn_sort_tool_button_selected = {
-	type = "button_style",
-	parent = "flib_selected_tool_button",
 	size = 28,
 	padding = 2,
 }
@@ -1086,18 +1044,6 @@ styles.cybersyn_log_cell_flow = {
 	vertical_align = "center",
 	horizontal_spacing = 4,
 	height = 28,
-}
-
-styles.cybersyn_log_icon_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 0,
-}
-
-styles.cybersyn_log_icon = {
-	type = "image_style",
-	size = 20,
-	stretch_image_to_widget_size = true,
 }
 
 styles.cybersyn_log_item = {
