@@ -42,6 +42,7 @@ Date: 2026-10-19
     - (Manager) Rows are reused and only changed cells are rewritten, keeping every tab within a few milliseconds per update on a 2,000-station, 550-train base
     - (Manager) Basic diagnostics cost under 0.01 ms per tick, and the log keeps fixed-size rings so neither UPS nor the save grows with time
   Changes:
+    - The Secondary Inventory combinator now shows an "I" on its display instead of the vanilla "&"
     - Removed the "Track request wait times" setting: wait tracking is always on
     - Removed the "Max entities displayed on GUI pages" setting: paging replaces it ("Manager rows per page"), because the limit cut the list before sorting
     - New map setting "Manager actions allowed for" (Admins, Everyone, Nobody) gates /cybersyn-fix-priorities, /cybersyn-abolish-same-depot, /cybersyn-recalculate-train-size, /cybersyn-refresh-allow-lists, Send home and Recount deliveries; single player is always allowed, and every action is printed to the force and logged
