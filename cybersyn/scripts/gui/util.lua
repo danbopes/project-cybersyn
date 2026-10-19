@@ -1546,7 +1546,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	end
 
 	player.set_shortcut_toggled("cybersyn-toggle-gui", false)
-	collector.release_if_unused()
+	collector.on_last_close()
 end
 
 --- util.sync_children for a `table` element whose rows are `columns` cells wide. The first `first` children (a

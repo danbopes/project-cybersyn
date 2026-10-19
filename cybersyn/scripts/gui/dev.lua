@@ -141,8 +141,10 @@ function interface.open(pi, async)
 	-- Pinned so no player.opened is needed (the lab player is offline).
 	pd.pinning = true
 	if not pd.is_manager_open then
+		-- A snapshot kept from before the close is up to collector.KEEP_TICKS old: a synchronous open collects anew.
+		local kept = storage.manager.release_at ~= nil
 		manager.handle.manager_open(player, pd, refs)
-		if not async and collector.collecting() then
+		if not async and (kept or storage.manager.collect_boost) then
 			collector.run_to_completion()
 			manager.render(player, pd)
 		end
@@ -163,6 +165,11 @@ function interface.status(pi)
 		title_visible = label and label.valid and label.visible or false,
 		collecting = collector.collecting(),
 		snapshot_tick = collector.get().tick,
+		boost = storage.manager.collect_boost,
+		quiet = storage.manager.collect_quiet,
+		release_at = storage.manager.release_at,
+		settle = storage.manager.settle,
+		live = collector.live() ~= nil,
 	}
 end
 
@@ -458,11 +465,15 @@ function interface.update(pi, n)
 	end)
 end
 
---- Times `n` full manager ticks (collector step + render for every open player).
+--- Times `n` full manager ticks (collector step + render for every open player), each followed by the per-tick
+--- handler (opening boost, settle renders, release), as on a game tick that is also a manager update. All of them
+--- run on one game tick, so the settle renders do not skip a later manager tick here.
 function interface.tick(n)
 	n = n or 1
 	return profile(n, function()
+		storage.manager.settle_tick = nil
 		manager_gui.tick(storage)
+		manager_gui.boost_tick(true)
 	end)
 end
 
@@ -471,14 +482,14 @@ function interface.export_tick(n)
 	for _ = 1, n or 1 do manager_gui.export_tick() end
 end
 
---- One manager tick for player `pi`, its collector step and render timed separately, with the heap change (a drop
+--- One manager tick for player `pi` (or, while the opening boost runs, one boost step), its collector step and render timed separately, with the heap change (a drop
 --- means a garbage collection cycle finished inside it); flags a completed pass.
 function interface.tick_split(pi)
 	local player, pd = context(pi)
 	local before = collector.get().tick
 	local heap = collectgarbage("count")
 	local step = game.create_profiler()
-	collector.tick()
+	if storage.manager.collect_boost then collector.boost_tick(true) else collector.tick() end
 	step.stop()
 	local render = game.create_profiler()
 	manager.render(player, pd)
@@ -569,6 +580,79 @@ function interface.census()
 	out.trains = trains
 	out.manifest_entries = manifest
 	return out
+end
+
+--- Releases a snapshot kept after the last close now, whatever its deadline (no-op while a window is open).
+function interface.release()
+	if storage.manager.release_at then
+		collector.release_due(true)
+	else
+		collector.release_if_unused()
+	end
+	return { release_at = storage.manager.release_at, snapshot_tick = collector.get().tick }
+end
+
+--- The grace period after the last close in ticks (nil: back to collector.KEEP_TICKS; 0: release at the close).
+function interface.set_keep_ticks(ticks)
+	storage.manager.keep_ticks = ticks
+	return collector.keep_ticks()
+end
+
+local boost_log
+
+--- Samples of the per-tick handler's work: "start" records from now on (clearing earlier samples), "stop" ends it,
+--- "raw" returns them as plain tables without the profilers, "dump" returns the samples, one LocalisedString each: tick, kind (step / render), the profiler, the heap change
+--- in KB inside it (a drop means a GC cycle finished there), and after a render the player's rows, whether the
+--- subheader note shows and whether the rows are from a complete pass.
+--- @param cmd "start"|"stop"|"raw"|"dump"
+--- @param pi uint? the player whose rows a render sample records
+function interface.boost_samples(cmd, pi)
+	if cmd == "start" then
+		boost_log = {}
+		manager_gui.set_boost_probe(function(kind, work, m)
+			local heap = collectgarbage("count")
+			local prof = game.create_profiler()
+			local done = work(m)
+			prof.stop()
+			local delta = collectgarbage("count") - heap
+			local entry = { tick = game.tick, kind = kind, prof = prof, heap = delta,
+				done = kind == "step" and done == true or nil, progress = collector.collecting() }
+			local pd = pi and m.players[pi]
+			if kind == "render" and pd then
+				local fn = ROW_COUNTERS[canonical(pd.selected_tab or "overview")]
+				entry.rows = fn and fn(pd) or nil
+				entry.note = (pd.collecting_shown or -1) >= 0
+				entry.data = pd.rendered_snapshot_tick ~= nil
+			end
+			boost_log[#boost_log + 1] = entry
+		end)
+		return "recording"
+	elseif cmd == "stop" then
+		manager_gui.set_boost_probe(nil)
+		return #(boost_log or {})
+	elseif cmd == "raw" then
+		local out = {}
+		for i, e in ipairs(boost_log or {}) do
+			out[i] = { tick = e.tick, kind = e.kind, done = e.done, rows = e.rows, note = e.note, data = e.data,
+				progress = e.progress }
+		end
+		return out
+	end
+	local out = {}
+	for i, e in ipairs(boost_log or {}) do
+		out[i] = { "", e.tick, " ", e.kind, " ", e.prof, string.format(" heap %+.0f KB", e.heap),
+			e.done and " done" or "", e.progress and string.format(" progress %.3f", e.progress) or "",
+			e.rows and (" rows " .. e.rows) or "", e.note ~= nil and (" note " .. tostring(e.note)) or "",
+			e.data ~= nil and (" data " .. tostring(e.data)) or "" }
+	end
+	return out
+end
+
+--- Times `n` calls of the per-tick handler as it runs with nothing to do (no boost, nothing owed, nothing kept).
+function interface.boost_idle(n)
+	local m = storage.manager
+	if m.collect_boost or m.settle or m.release_at then return "not idle" end
+	return profile(n or 100000, manager_gui.boost_tick)
 end
 
 --- Discards both snapshot buffers (for measuring their memory).
@@ -1028,10 +1112,10 @@ local function finding_view(f)
 	}
 end
 
---- Runs the station and train jobs of a fresh lint pass to completion (collecting a snapshot first when there is
---- none) and returns the pass summary.
+--- Runs the station and train jobs of a fresh lint pass to completion (collecting a snapshot first when none is
+--- live: the real job only runs while a window keeps one current) and returns the pass summary.
 function interface.lint_run()
-	if not collector.get().tick then collector.run_to_completion() end
+	if not collector.live() then collector.run_to_completion() end
 	local s = lint.run_to_completion()
 	return { pass = s.pass, tick = s.tick, findings = #s.findings }
 end

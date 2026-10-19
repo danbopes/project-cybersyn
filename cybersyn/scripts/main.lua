@@ -950,6 +950,10 @@ local function register_tick()
 		if skip_nth and game.tick % skip_nth == 0 then return end
 		manager.export_tick()
 	end)
+	-- The manager's opening boost and kept-snapshot release run every tick whatever the settings (PLAN5 D5-9); the
+	-- handler reads only storage, so a joining client registers the same one. Added last: on an nth shared with the
+	-- planner or the manager update it runs after them.
+	add(1, manager.boost_tick)
 	for _, nth in ipairs(order) do
 		local list = by_nth[nth]
 		if #list == 1 then

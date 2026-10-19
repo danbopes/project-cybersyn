@@ -501,7 +501,9 @@ function manager.update_status(player_data)
 		player_data.status_sig = nil
 	end
 
-	local collecting = collector.collecting()
+	-- The placeholders show from the open (collector.collecting); the note only once a cold boost outlasts
+	-- collector.NOTE_TICKS, which a normal pass never does now that it steps every tick.
+	local collecting = collector.collecting_note()
 	local show = collecting ~= nil and not (player_data.paused and data_tick)
 	local percent = show and math.floor(collecting * 100) or -1
 	if player_data.collecting_shown ~= percent then

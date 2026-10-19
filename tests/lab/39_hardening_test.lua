@@ -1,7 +1,7 @@
 -- Phase 7 hardening (PLAN3 §5 row 7): the one Escape rule for every overlay (Explain, the item drill-down, the Trains
 -- pane, a focused search) on pinned and unpinned windows, the modal action dialog and its hand-back, lint transitions
 -- not logged twice after a dropped half pass, the per-item station index behind the drill-down, the Trains table on
--- a narrow window, relative.tick's open-panel flag and the growth sampler.
+-- a narrow window, relative.tick's open-panel flag, the growth sampler and the idle per-tick handler.
 -- Escape is emulated as the engine does it: player.opened set to nil raises on_gui_closed for the window.
 
 local DEV = "cybersyn-manager-dev"
@@ -559,5 +559,24 @@ lab.suite("39_hardening", {
 			and s.player_entries, s)
 		local st = dev("diag_state")
 		lab.check("diag_state reports both rings' heads", st.head_basic ~= nil and st.head_full ~= nil)
+	end,
+
+	-- Zero cost closed (PLAN5 D5-9): with no window and nothing kept, the every-tick handler does nothing.
+	function(ctx)
+		if dev("state", PI).is_open then dev("close", PI) end
+		dev("release")
+		local before = serpent.line({ read("manager", "snapshot", "tick"), read("manager", "snapshot_build"),
+			read("manager", "settle"), read("manager", "release_at"), read("manager", "collect_boost") })
+		local prof = dev("boost_idle", 10000)
+		lab.check("closed, nothing kept: the per-tick handler is idle", type(prof) == "table", prof)
+		lab.info({ "", "per-tick handler idle x10000: ", prof })
+		lab.check("and changed nothing", serpent.line({ read("manager", "snapshot", "tick"), read("manager", "snapshot_build"),
+			read("manager", "settle"), read("manager", "release_at"), read("manager", "collect_boost") }) == before, before)
+		dev("open", PI)
+		dev("close", PI)
+		lab.check("kept after a close: the handler is busy only with the deadline", dev("boost_idle", 1) == "not idle"
+			and read("manager", "release_at") ~= nil and read("manager", "collect_boost") == nil
+			and read("manager", "snapshot_build") == nil)
+		dev("release")
 	end,
 })

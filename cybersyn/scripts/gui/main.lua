@@ -21,6 +21,12 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field item_order table<string, int>
 --- @field snapshot Snapshot last complete snapshot (scripts/gui/collector.lua)
 --- @field snapshot_build Snapshot? pass in progress, with transient ids/i/r_keys/p_keys
+--- @field collect_boost uint? tick the opening boost started; set while collector.boost_tick steps a pass every tick
+--- @field collect_quiet true? the boost refreshes a complete snapshot: no placeholders and no "Collecting…" note
+--- @field release_at uint? the last window closed: the kept snapshot is released at this tick (collector.release_due)
+--- @field settle int? renders the per-tick handler still owes after a boosted pass completed
+--- @field settle_tick uint? tick of its latest such render: a manager update on that tick does not render again
+--- @field keep_ticks int? dev override of collector.KEEP_TICKS
 
 --- @class PlayerData
 --- @field player_index uint
@@ -242,6 +248,7 @@ end
 
 function manager_gui.on_player_removed(e)
 	storage.manager.players[e.player_index] = nil
+	-- Nobody can reopen a window to profit from a kept snapshot when the last one left with the player.
 	collector.release_if_unused()
 end
 
@@ -409,6 +416,19 @@ function manager_gui.on_init()
 end
 --gui.handle_events()
 
+--- Renders an open window, or for a paused one that already shows data only its status line.
+--- @param i uint
+--- @param v PlayerData
+local function refresh_window(i, v)
+	local player = game.get_player(i)
+	if not player then return end
+	if v.paused and (v.rendered_snapshot_tick or not collector.get().tick) then
+		manager.update_status(v)
+	else
+		manager.render(player, v)
+	end
+end
+
 ---@param global cybersyn.global
 function manager_gui.tick(storage)
 	local manager_data = storage.manager
@@ -416,6 +436,8 @@ function manager_gui.tick(storage)
 	manager_gui.settle()
 	collector.tick()
 	local surface_count
+	-- The per-tick handler renders every window on the ticks after a boosted pass (manager_gui.boost_tick).
+	local settling = manager_data.settle ~= nil or manager_data.settle_tick == game.tick
 	for i, v in pairs(manager_data.players) do
 		if not v.player_index then
 			v.player_index = i
@@ -431,11 +453,7 @@ function manager_gui.tick(storage)
 				if v.surface_count ~= surface_count then
 					manager.rebuild_surface_dropdown(v)
 				end
-				if v.paused and (v.rendered_snapshot_tick or not collector.get().tick) then
-					manager.update_status(v)
-				else
-					manager.render(player, v)
-				end
+				if not settling then refresh_window(i, v) end
 			end
 		end
 	end
@@ -443,6 +461,55 @@ function manager_gui.tick(storage)
 	repair.tick(manager_data)
 	explain.tick(manager_data)
 	relative.tick(manager_data)
+end
+
+local function settle_renders(manager_data)
+	for i, v in pairs(manager_data.players) do
+		if v.is_manager_open then refresh_window(i, v) end
+	end
+end
+
+local function boost_note(manager_data)
+	for _, v in pairs(manager_data.players) do
+		if v.is_manager_open then manager.update_status(v) end
+	end
+end
+
+local probe
+
+--- dev.boost_samples: `fn(kind, work, manager_data)` runs `work(manager_data)` and records it; nil stops recording.
+--- @param fn fun(kind: "step"|"render", work: fun(m: Manager), m: Manager)?
+function manager_gui.set_boost_probe(fn)
+	probe = fn
+end
+
+--- Every tick, whatever the settings (scripts/main.lua): frees a kept snapshot when its time is up, steps the opening
+--- boost, and renders on the ticks after the boost completed, never on a step's own tick. Reads only storage; idle it
+--- reads four fields.
+--- @param any_tick boolean? dev ticks: step on the open's tick too (collector.boost_tick)
+function manager_gui.boost_tick(any_tick)
+	local manager_data = storage.manager
+	if not manager_data then return end
+	if manager_data.release_at then collector.release_due() end
+	local settle = manager_data.settle
+	if settle then
+		manager_data.settle = settle > 1 and settle - 1 or nil
+		manager_data.settle_tick = game.tick
+		if probe then probe("render", settle_renders, manager_data) else settle_renders(manager_data) end
+		return
+	end
+	local started = manager_data.collect_boost
+	if not started or (started == game.tick and not any_tick) then return end
+	if probe then
+		probe("step", function() return collector.boost_tick(any_tick) end, manager_data)
+	else
+		collector.boost_tick(any_tick)
+	end
+	-- A boost that outlasts NOTE_TICKS (a huge base, or GC cycles inside it) shows its progress from then on.
+	if manager_data.collect_boost and not manager_data.collect_quiet and type(started) == "number"
+			and game.tick - started >= collector.NOTE_TICKS then
+		boost_note(manager_data)
+	end
 end
 
 --- Escapes that closed an overlay or the action dialog hand player.opened back on a later tick (manager.lua,

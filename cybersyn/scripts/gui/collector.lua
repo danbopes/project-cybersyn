@@ -1,5 +1,6 @@
 -- Incremental snapshot of everything the manager renders, so render code never walks entities or reads
--- circuit signals itself. It only runs while a manager window is open and unpaused (or paused before its first data).
+-- circuit signals itself. It only runs while a manager window is open and unpaused (or paused before its first data);
+-- after the last close the snapshot is kept, not refreshed, for KEEP_TICKS and then released.
 -- Aggregates (inventory_all, starved, station counts) are double-buffered and swap when a pass completes.
 -- Station and train records are refilled in place as the pass reaches them, reusing their subtables: a second full
 -- copy would roughly double the memory peak (measured ~7.5 MB per copy on a 2,030-station save), and allocating
@@ -16,12 +17,21 @@ local collector = {}
 local PASS_UPDATES = 20
 local MIN_BATCH = 25
 local MAX_BATCH = 200
--- Opening the window on a snapshot older than this starts a fresh pass at BOOST times the batch size. PLAN3 §4.1 asked
--- for 4x; on pY 123 (2,030 stations) a 4x step of the first pass took 6-7 ms and allocated ~2.7 MB, and the GC work
--- that allocation drives landed in the same updates (31-41 ms when a cycle finished). 2x keeps a step near 3.5 ms
--- (§2.11: 5 ms per update) at the price of a first pass of about 11 updates there.
+-- Opening the window on a snapshot older than this starts a fresh pass at BOOST times the batch size, one step per
+-- game tick (collector.boost_tick), not per manager update: at the default 1 update/s the pass took 10-11 s of
+-- "Collecting…" on pY 123, while the same 2x step costs 3.7-4.8 ms there, so stepping every tick ends it in 11 ticks.
+-- 4x steps took 9-10 ms (§2.11: 5 ms per update) for 5 ticks less.
 local STALE_ON_OPEN_TICKS = 600
 local BOOST = 2
+-- After the last window closes the snapshot stays this long (PLAN5 D5-9): a reopen paints its rows at once and the
+-- refreshing pass refills records in place (4.6 MB on pY) instead of allocating them (14.6 MB, a GC cycle on most
+-- cold opens). Kept, it costs ~10 MB of heap and ~0.3 MB of compressed save on pY, and no CPU.
+collector.KEEP_TICKS = 7200
+-- A cold boost shows "Collecting… n %" only once it has run this long: a normal pass ends well before.
+collector.NOTE_TICKS = 30
+-- Renders owed after a boosted pass completes, one per tick from the next one: the Stations first build needs three
+-- (classify, sort, rows), the Trains first page two.
+local SETTLE_RENDERS = 4
 local IDLE_TICKS = 30 * 60 * 60
 -- Unset train stop limits read back as uint max; the planner treats anything this large as unlimited.
 local UNLIMITED = 2100000000
@@ -121,7 +131,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field tick uint? game tick the last pass completed; nil = never collected
 --- @field started_tick uint
 --- @field pass int? counts completed passes; two passes can complete on one tick (dev collect)
---- @field boosted true? completed by the opening boost in collector.tick: views may defer a full rebuild to the next update
+--- @field boosted true? completed by the opening boost (collector.boost_tick): views may defer a full rebuild to the
+---   next render; cleared when the snapshot is kept past a close
 --- @field station_count int
 --- @field train_count int
 --- @field trains_version int bumped whenever trains, fleet, depots and alerts are summarised again
@@ -201,8 +212,11 @@ function collector.init()
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
+	manager.collect_quiet = nil
 	manager.collect_spare = nil
 	manager.name_parts = nil
+	manager.release_at = nil
+	manager.settle = nil
 	collector.reset_log()
 end
 
@@ -248,30 +262,100 @@ local function log_change(id)
 	log.ids[#log.ids + 1] = id
 end
 
---- Drops both buffers once no window is open: the snapshot is several MB on large bases and would otherwise
---- be written into every save. Opening a window rebuilds it through ensure_fresh.
-function collector.release_if_unused()
-	local manager = storage.manager
-	if not manager then return end
+local function any_open(manager)
 	for _, player_data in pairs(manager.players) do
-		if player_data.is_manager_open then return end
+		if player_data.is_manager_open then return true end
 	end
-	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then return end
-	-- A half-done lint pass holds an occupancy index of this moment and gap timestamps nobody refreshes while the
-	-- window is closed; resumed hours later they would turn stale counts into findings. The masks of the last
-	-- complete pass stay, so a reopened window shows them until the next pass ends.
+	return false
+end
+
+-- A half-done lint pass holds an occupancy index of this moment and gap timestamps nobody refreshes while the window
+-- is closed; resumed hours later they would turn stale counts into findings. The masks of the last complete pass
+-- stay, so a reopened window shows them until the next pass ends.
+local function drop_lint_job(manager)
 	local s = manager.lint
 	if s then
 		s.job = nil
 		s.occupancy_since = {}
 		s.phantom_since = {}
 	end
+end
+
+local function release(manager)
+	drop_lint_job(manager)
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
+	manager.collect_quiet = nil
 	manager.collect_spare = nil
 	manager.name_parts = nil
+	manager.release_at = nil
+	manager.settle = nil
 	collector.reset_log()
+end
+
+--- The grace period after the last close; storage.manager.keep_ticks (dev.set_keep_ticks) overrides it.
+--- @return integer
+function collector.keep_ticks()
+	local manager = storage.manager
+	return manager and manager.keep_ticks or collector.KEEP_TICKS
+end
+
+--- Drops both buffers at once when no window is open (a removed player): the snapshot is several MB on large bases
+--- and would otherwise be written into every save. Opening a window rebuilds it through ensure_fresh.
+function collector.release_if_unused()
+	local manager = storage.manager
+	if not manager or any_open(manager) then return end
+	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then
+		manager.release_at = nil
+		return
+	end
+	release(manager)
+end
+
+--- The last window closed: the lint job and a running pass stop, the snapshot, its name parts and the change log
+--- stay until collector.release_due frees them KEEP_TICKS later (at once with a grace period of 0).
+function collector.on_last_close()
+	local manager = storage.manager
+	if not manager or any_open(manager) then return end
+	local keep = collector.keep_ticks()
+	local snapshot = manager.snapshot
+	if keep <= 0 or not (snapshot and snapshot.tick) then
+		collector.release_if_unused()
+		return
+	end
+	drop_lint_job(manager)
+	manager.snapshot_build = nil
+	manager.collect_boost = nil
+	manager.collect_quiet = nil
+	manager.settle = nil
+	-- The views' deferral of a first build follows a boosted pass that just completed, not one from before the close.
+	snapshot.boosted = nil
+	manager.release_at = game.tick + keep
+end
+
+--- Frees a kept snapshot once its grace period is over and no window is open (the per-tick handler, only while
+--- storage.manager.release_at is set).
+--- @param now boolean? release whatever the deadline (dev.release)
+function collector.release_due(now)
+	local manager = storage.manager
+	local at = manager and manager.release_at
+	if not at or (not now and game.tick < at) then return end
+	if any_open(manager) then
+		manager.release_at = nil
+		return
+	end
+	release(manager)
+end
+
+--- The snapshot while some window keeps it current (collector.wanted), else nil: a panel showing a stop while the
+--- manager is closed reads the stop live rather than a snapshot kept from before the close.
+--- @return Snapshot?
+function collector.live()
+	local manager = storage.manager
+	local snapshot = manager and manager.snapshot
+	if snapshot and snapshot.tick and collector.wanted() then return snapshot end
+	return nil
 end
 
 --- The last complete snapshot (never nil).
@@ -1372,30 +1456,48 @@ end
 function collector.run_to_completion()
 	while not collector.step(math.huge) do end
 	storage.manager.collect_boost = nil
+	storage.manager.collect_quiet = nil
 end
 
---- Opening a window on a missing or stale snapshot does not collect synchronously (40-60 ms on a 2,000-station
---- base): the window shows the last snapshot while the next updates run a pass at BOOST times the batch size.
+--- Opening a window on a missing or stale snapshot does not collect synchronously (65 ms cold on a 2,000-station
+--- base): the window shows the last snapshot, or placeholders, while the next ticks run a pass at BOOST times the
+--- batch size. With a snapshot kept from before the close the boost is quiet: no placeholders and no note, the kept
+--- rows stay until the pass swaps the fresh ones in.
 function collector.ensure_fresh()
 	local manager = storage.manager
 	local snapshot = collector.get()
+	manager.release_at = nil
 	if not snapshot.tick or game.tick - snapshot.tick > STALE_ON_OPEN_TICKS then
 		local b = manager.snapshot_build
 		if b and game.tick - b.started_tick > STALE_ON_OPEN_TICKS then
 			manager.snapshot_build = nil
 		end
-		manager.collect_boost = true
+		if not manager.collect_boost then
+			manager.collect_boost = game.tick
+			manager.collect_quiet = snapshot.tick ~= nil or nil
+		end
 	end
 end
 
---- Fraction of the boosted pass done while a window waits for fresh data, else nil.
+--- Fraction of the boosted pass done while a window waits for its first data, else nil (also during a quiet boost).
 --- @return number?
 function collector.collecting()
 	local manager = storage.manager
-	if not (manager and manager.collect_boost) then return nil end
+	if not (manager and manager.collect_boost) or manager.collect_quiet then return nil end
 	local b = manager.snapshot_build
 	if not (b and b.ids) or #b.ids == 0 then return 0 end
 	return b.i / #b.ids
+end
+
+--- collecting(), but only once the boost has run NOTE_TICKS: the progress the subheaders show.
+--- @return number?
+function collector.collecting_note()
+	local progress = collector.collecting()
+	if not progress then return nil end
+	-- A boost stored by an older version of this file is `true`, with no start tick.
+	local started = storage.manager.collect_boost
+	if type(started) ~= "number" or game.tick - started >= collector.NOTE_TICKS then return progress end
+	return nil
 end
 
 --- True when any open manager is unpaused, or paused but still waiting for its first data: pausing freezes what a
@@ -1410,22 +1512,32 @@ function collector.wanted()
 	return false
 end
 
---- One manager update's worth of collection; no-op unless collector.wanted().
+--- One step of the opening boost: the per-tick handler's, so it never shares a tick with a render. No-op unless a
+--- boost runs and a window wants data, and on the tick the boost started (the open's own render ran on it). On the
+--- tick it completes the pass it leaves SETTLE_RENDERS renders owed (storage.manager.settle) to the following ticks.
+--- @param any_tick boolean? step on the open's tick too (dev ticks, which all run on one game tick)
+--- @return boolean completed
+function collector.boost_tick(any_tick)
+	local manager = storage.manager
+	local started = manager and manager.collect_boost
+	if not started or (started == game.tick and not any_tick) or not collector.wanted() then return false end
+	if not collector.step(nil, BOOST) then return false end
+	manager.collect_boost = nil
+	manager.collect_quiet = nil
+	manager.snapshot.boosted = true
+	manager.settle = SETTLE_RENDERS
+	return true
+end
+
+--- One manager update's worth of collection; no-op unless collector.wanted(), and while the opening boost runs
+--- (collector.boost_tick steps it then, and the lint job waits for its result).
 --- @return boolean ran
 function collector.tick()
 	local manager = storage.manager
 	if not manager then return false end
-	if not collector.wanted() then return false end
-	if manager.collect_boost then
-		if collector.step(nil, BOOST) then
-			manager.collect_boost = nil
-			manager.snapshot.boosted = true
-		end
-	else
-		collector.step()
-		-- Not during the opening boost: those updates already carry a double collector step.
-		lint.tick()
-	end
+	if manager.collect_boost or not collector.wanted() then return false end
+	collector.step()
+	lint.tick()
 	return true
 end
 
