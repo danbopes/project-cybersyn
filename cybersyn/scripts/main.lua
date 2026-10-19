@@ -1086,23 +1086,24 @@ local function main()
 		interop_subscribe_to_events()
 	end)
 
-	-- Ensure on_gui_elem_changed is dispatched through flib (may have been skipped
-	-- if another handler was registered first). We wrap to also call flib dispatch.
+	-- flib's handle_events skips events that already have a handler; hover-hold, tab sync and the search field's
+	-- keyboard focus (manager_util.note_input) must not hinge on that.
 	local flib_gui = require("__flib__.gui")
-	script.on_event(defines.events.on_gui_elem_changed, function(e)
-		flib_gui.dispatch(e)
-	end)
-	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
-	script.on_event({
-		defines.events.on_gui_hover,
-		defines.events.on_gui_leave,
-		defines.events.on_gui_selected_tab_changed,
-	}, flib_gui.dispatch)
 	local manager_util = require("scripts.gui.util")
+	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, flib_gui.dispatch)
+	script.on_event({
+		defines.events.on_gui_elem_changed,
+		defines.events.on_gui_selected_tab_changed,
+		defines.events.on_gui_checked_state_changed,
+		defines.events.on_gui_selection_state_changed,
+		defines.events.on_gui_switch_state_changed,
+		defines.events.on_gui_value_changed,
+		defines.events.on_gui_text_changed,
+		defines.events.on_gui_confirmed,
+	}, manager_util.dispatch)
 	script.on_event(defines.events.on_gui_click, function(e)
 		manager_util.touch_hover(e)
-		manager_util.note_click(e)
-		if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
+		if not manager_util.dispatch(e) then manager.on_unhandled_click(e) end
 	end)
 
 	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)

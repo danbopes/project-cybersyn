@@ -563,10 +563,12 @@ function util.normalize(text)
 	return helpers.multilingual_to_lower(text)
 end
 
---- Any click in the manager other than on a search field takes the keyboard away from it, so a later Escape closes
---- the window again instead of cancelling the search (manager.cancel_search).
---- @param e EventData.on_gui_click
-function util.note_click(e)
+--- Any input on a GUI element other than a search field (a click, a tab, a checkbox, a dropdown, a chooser, typing
+--- in another field...) means the engine gave the keyboard to something else. search_focused must follow, or the next
+--- Escape or E (on_gui_closed) would cancel a search nobody is typing in instead of closing the window
+--- (manager.cancel_search). Hover and leave never move the keyboard and do not come here.
+--- @param e {element: LuaGuiElement?, player_index: uint}
+function util.note_input(e)
 	local elem = e.element
 	if not (elem and elem.valid) then return end
 	local manager_data = storage.manager
@@ -576,6 +578,13 @@ function util.note_click(e)
 		player_data.search_focused = nil
 		util.overlay_closed(game.get_player(e.player_index), player_data)
 	end
+end
+
+--- The one entry of every GUI input event into flib (scripts/main.lua, and the dev interface's emulated clicks).
+--- @return boolean handled
+function util.dispatch(e)
+	util.note_input(e)
+	return gui.dispatch(e)
 end
 
 --- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
@@ -1492,6 +1501,9 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.return_to = nil
 	player_data.restore_opened = nil
 	player_data.handed_back_tick = nil
+	-- Closed by the shortcut or another mod while typing, no GUI event says the field lost the keyboard; a stale flag
+	-- would make the first Escape or E after the next open cancel a search instead of closing.
+	player_data.search_focused = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.delivered_items = nil

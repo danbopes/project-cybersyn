@@ -256,7 +256,8 @@ end
 
 --- Clicks child `index` of the element refs[ref] (or the element itself when index is nil; a list of indices walks
 --- down that many levels) through flib, with optional modifiers {shift, control, alt, right}; `cursor = true` first
---- touches the hover hold the way scripts/main.lua's on_gui_click does, so the click lands as a player's would.
+--- touches the hover hold the way scripts/main.lua's on_gui_click does, so the click lands as a player's would. It
+--- enters through util.dispatch as every real GUI input does, so it also takes the keyboard from the search field.
 function interface.click(pi, ref, index, mods)
 	local _, pd, refs = context(pi)
 	local elem = refs[ref]
@@ -277,7 +278,7 @@ function interface.click(pi, ref, index, mods)
 		alt = mods.alt == true,
 	}
 	if mods.cursor then util.touch_hover(e) end
-	return flib_gui.dispatch(e)
+	return util.dispatch(e)
 end
 
 --- Escape as an unpinned player presses it (on_gui_closed of the window); the pin is restored afterwards.

@@ -629,6 +629,82 @@ lab.suite("36_window", {
 		lab.dev("click", pi, "manager_pin_button")
 	end,
 
+	-- E and Escape (on_gui_closed of an unpinned window): with the search field holding the keyboard they cancel the
+	-- search and the window stays; once a click elsewhere in the window took the keyboard, or the window was closed
+	-- and opened again, one press closes it; with the drill-down open they close the drill-down first. on_gui_closed
+	-- is emulated as the engine raises it (player.opened set to nil), clicks through the dev click (util.dispatch).
+	function(ctx)
+		local player = game.get_player(pi)
+		local function window() return player.gui.screen.manager_window end
+		local function unpinned()
+			remote.call(D, "close", pi)
+			remote.call(D, "open", pi)
+			lab.dev("click", pi, "manager_pin_button")
+			remote.call(D, "select_tab", pi, "stations")
+		end
+		local function focused() return lab.read("manager", "players", pi, "search_focused") == true end
+		local function closes(name)
+			player.opened = nil
+			lab.check(name, not remote.call(D, "state", pi).is_open and player.opened == nil,
+				{ open = remote.call(D, "state", pi).is_open, opened = player.opened })
+		end
+		local function typing(query)
+			lab.dev("search_input", pi)
+			remote.call(D, "set_filter", pi, { query = query })
+			return focused() and player.opened == window()
+		end
+
+		unpinned()
+		lab.check("unpinned window holds player.opened", player.opened == window())
+		lab.check("Ctrl+F gives the search field the keyboard", typing("stn"))
+		player.opened = nil
+		lab.check("on_gui_closed while typing in the search: the search is cancelled, the window stays and holds player.opened",
+			remote.call(D, "state", pi).is_open and player.opened == window() and not focused()
+			and remote.call(D, "state", pi).filters.terms == nil and not remote.call(D, "header", pi).stations_tab.search)
+		closes("the next on_gui_closed closes the window")
+
+		unpinned()
+		typing("stn")
+		lab.dev("click", pi, "manager_trains_tab")
+		lab.check("a click on a tab takes the keyboard from the search field", not focused())
+		closes("then one on_gui_closed closes the window")
+
+		unpinned()
+		local item = remote.call(D, "dump", pi, "inventory").provided.hashes[1]
+		remote.call(D, "set_filter", pi, { item = item })
+		typing("stn")
+		lab.dev("click", pi, "stations_tab_chip")
+		lab.check("a click on the item chip takes the keyboard from the search field", not focused())
+		closes("then one on_gui_closed closes the window (chip)")
+
+		unpinned()
+		typing("stn")
+		remote.call(D, "close", pi)
+		lab.check("closing the window while typing forgets the search focus", not focused())
+		unpinned()
+		closes("reopened, one on_gui_closed closes the window")
+
+		unpinned()
+		closes("no search focus: one on_gui_closed closes the window")
+
+		unpinned()
+		local row = remote.call("cybersyn-query", "query_unserved", { limit = 1 })[1]
+		if not lab.check("an unserved row exists for the drill-down", row ~= nil) then return end
+		remote.call(D, "open_item", pi, row.item)
+		lab.check("drill-down open", remote.call(D, "item_dump", pi).open == true)
+		player.opened = nil
+		lab.check("on_gui_closed with the drill-down open closes the drill-down; the window stays",
+			not remote.call(D, "item_dump", pi).open and remote.call(D, "state", pi).is_open)
+		-- The hand-back of player.opened as the next planner tick runs it.
+		remote.call("cybersyn", "write_global", game.tick - 1, "manager", "pane_escapes", pi, "tick")
+		remote.call(D, "pane_escapes", pi, true)
+		lab.check("the window takes player.opened back after the drill-down", player.opened == window())
+		closes("then one on_gui_closed closes the window (drill-down)")
+		remote.call(D, "close", pi)
+		remote.call(D, "clear_filters", pi)
+		remote.call(D, "open", pi)
+	end,
+
 	-- The filter button is the row's switch and its reset (PLAN4 D4): lit = open, closing clears item, network,
 	-- network ID, surface and the Stations/Trains chips but not the station search; every path that sets a filter
 	-- opens the row, so no filter is ever hidden; the row costs a row while open.
