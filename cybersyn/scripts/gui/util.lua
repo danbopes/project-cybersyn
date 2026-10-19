@@ -160,6 +160,23 @@ util.short_duration = logic.short_duration
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
 local rank_cache = {}
 local sprite_cache = {}
+local sprite_valid = {}
+
+--- `path` when the loaded prototypes can draw it, else `fallback` (nil allowed). Memoised: tabs ask on every row
+--- of every update.
+--- @param path string?
+--- @param fallback string?
+--- @return string?
+function util.valid_sprite(path, fallback)
+	if not path then return fallback end
+	local ok = sprite_valid[path]
+	if ok == nil then
+		ok = helpers.is_valid_sprite_path(path)
+		sprite_valid[path] = ok
+	end
+	if ok then return path end
+	return fallback
+end
 
 --- Rank of an item in the crafting-menu order (group, subgroup, order), quality as a fraction.
 --- Unknown items rank after every known one.
@@ -1222,7 +1239,7 @@ function util.slot_table_build_from_control_signals(st)
 	for _, name in ipairs(names) do
 		local count = st.control[name]
 		local sprite = "virtual-signal/" .. name
-		if helpers.is_valid_sprite_path(sprite) then
+		if util.valid_sprite(sprite) then
 			local proto = prototypes.virtual_signal[name]
 			children[#children + 1] = {
 				type = "sprite-button",

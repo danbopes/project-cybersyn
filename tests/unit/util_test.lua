@@ -6,6 +6,22 @@ local function util()
 	return H.load("scripts.gui.util")
 end
 
+-- ------------------------------------------------------------------ sprites
+
+test("valid_sprite: the path when drawable, else the fallback, and each path asked once", function()
+	local u = util()
+	assert_eq(u.valid_sprite("item/iron-ore", "utility/questionmark"), "item/iron-ore")
+	assert_eq(u.valid_sprite("item/no-such-thing", "utility/questionmark"), "utility/questionmark")
+	assert_eq(u.valid_sprite("item/no-such-thing"), nil)
+	assert_eq(u.valid_sprite(nil, "utility/warning_icon"), "utility/warning_icon")
+	local real, calls = helpers.is_valid_sprite_path, 0
+	helpers.is_valid_sprite_path = function(path) calls = calls + 1 return real(path) end
+	u.valid_sprite("fluid/water")
+	u.valid_sprite("fluid/water")
+	helpers.is_valid_sprite_path = real
+	assert_eq(calls, 1)
+end)
+
 -- ------------------------------------------------------------------ durations
 
 test("format_duration: below a second, nil and negative read 0s", function()

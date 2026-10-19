@@ -1552,9 +1552,7 @@ end
 --- @return string
 local function chip_icon(key)
 	if STATUS_COLOR[key] then return "flib_indicator_" .. STATUS_COLOR[key] end
-	local icon = CHIP_ICON[key]
-	if icon and helpers.is_valid_sprite_path(icon) then return icon end
-	return "utility/warning_icon"
+	return util.valid_sprite(CHIP_ICON[key], "utility/warning_icon")
 end
 
 --- @param key string

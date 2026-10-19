@@ -587,20 +587,6 @@ function log_tab.held(player_data)
 	return hover ~= nil and hover.scope == ROWS and game.tick - hover.tick < HOLD_TICKS
 end
 
--- A pure function of the loaded prototypes, so the same in every Lua state.
-local sprite_ok = {}
-
---- @param path string
---- @return string
-local function valid_sprite(path)
-	local ok = sprite_ok[path]
-	if ok == nil then
-		ok = helpers.is_valid_sprite_path(path)
-		sprite_ok[path] = ok
-	end
-	return ok and path or "utility/questionmark"
-end
-
 --- Phase profilers while the dev interface measures a render (nil otherwise).
 --- @type {counts: LuaProfiler, rows: LuaProfiler, render: LuaProfiler, rest: LuaProfiler, written: int}?
 local prof

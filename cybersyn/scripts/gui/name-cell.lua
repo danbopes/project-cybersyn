@@ -40,7 +40,7 @@ local function add_side(out, parts, side, tags, tooltip, scope)
 			out[#out + 1] = util.hoverable({
 				type = "sprite-button",
 				style = "cybersyn_name_icon",
-				sprite = helpers.is_valid_sprite_path(sprite) and sprite or "utility/questionmark",
+				sprite = util.valid_sprite(sprite, "utility/questionmark"),
 				quality = quality and quality[i] or nil,
 				tooltip = tooltip,
 				tags = { kind = tags.kind, id = tags.id },
@@ -205,19 +205,6 @@ end
 
 -- Icon slots are sprite buttons, not sprites: only a button draws an icon's quality badge.
 local SLOT = { type = "sprite-button", style = "cybersyn_name_icon", ignored_by_interaction = true }
--- A pure function of the loaded prototypes, so the same in every Lua state.
-local valid_sprite = {}
-
---- @param sprite string
---- @return string
-local function checked(sprite)
-	local ok = valid_sprite[sprite]
-	if ok == nil then
-		ok = helpers.is_valid_sprite_path(sprite)
-		valid_sprite[sprite] = ok
-	end
-	return ok and sprite or "utility/questionmark"
-end
 
 --- Writes a pooled cell's icons and text for `parts`, each part only when what it shows changed. `memo` (one per cell,
 --- kept by the caller) remembers the elements and what they show. Returns the text button.
@@ -246,13 +233,13 @@ function name_cell.write_pooled(flow, memo, parts, name, width)
 				if not elem then
 					-- Lead slots go in front of the button, tail slots after the last one; made with their icon.
 					SLOT.index = before and i or nil
-					SLOT.sprite, SLOT.quality = checked(sprite), quality
+					SLOT.sprite, SLOT.quality = util.valid_sprite(sprite, "utility/questionmark"), quality
 					elem = flow.add(SLOT)
 					SLOT.sprite, SLOT.quality = nil, nil
 					list[i] = elem
 					shown["q" .. key] = quality
 				elseif sprite then
-					elem.sprite = checked(sprite)
+					elem.sprite = util.valid_sprite(sprite, "utility/questionmark")
 					if shown["q" .. key] ~= quality then
 						elem.quality = quality
 						shown["q" .. key] = quality
