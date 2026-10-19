@@ -20,3 +20,13 @@ test("migrate_schema: the Stations chip ends up in stations_chip alone", functio
 	for i = 1, 4 do assert_nil(p[i].stations_status_filter) end
 	assert_nil(storage.manager.fleet_networks)
 end)
+
+test("migrate_schema: a later run (every configuration change) leaves a toggled Setup status alone", function()
+	local fm = H.load("scripts.fork-migrations")
+	storage.trains = {}
+	storage.manager = { players = { [1] = { stations_status_filter = "setup" } } }
+	fm.migrate_schema()
+	assert_eq(storage.manager.players[1].stations_chip, "setup")
+	fm.migrate_schema()
+	assert_eq(storage.manager.players[1].stations_chip, "setup", "the one-time Problems mapping must not run again")
+end)

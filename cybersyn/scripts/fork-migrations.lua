@@ -109,11 +109,13 @@ function fork_migrations.migrate_schema()
 	-- handlers seeing it.
 	lint.registry_seed()
 	if storage.manager then storage.manager.fleet_networks = nil end
-	for _, pd in pairs(storage.manager and storage.manager.players or {}) do
-		-- An older build's Setup chip is the Problems chip; "setup" in stations_chip now names the status.
-		if pd.stations_chip == "setup" then pd.stations_chip = "problems" end
-		if pd.stations_status_filter then pd.stations_chip = pd.stations_status_filter end
-		pd.stations_status_filter = nil
+	-- Once only: from this step on, "setup" in stations_chip names the Setup status, not an older build's Problems chip.
+	if (storage.fork_schema or 0) < 5 then
+		for _, pd in pairs(storage.manager and storage.manager.players or {}) do
+			if pd.stations_chip == "setup" then pd.stations_chip = "problems" end
+			if pd.stations_status_filter then pd.stations_chip = pd.stations_status_filter end
+			pd.stations_status_filter = nil
+		end
 	end
 	storage.recent_external_items = nil
 	storage.fork_schema = SCHEMA

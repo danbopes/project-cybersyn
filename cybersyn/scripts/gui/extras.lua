@@ -30,7 +30,7 @@ extras.HUD_TICKS = HUD_TICKS
 
 local open_manager_fn
 
---- Lets gui/main.lua hand in the manager's open without a require cycle (manager -> overview -> explain -> extras).
+--- Lets gui/main.lua hand in the manager's open without a require cycle (manager -> overview -> extras).
 --- @param fn fun(player: LuaPlayer, player_data: PlayerData, tab: string)
 function extras.set_open_manager(fn)
 	open_manager_fn = fn

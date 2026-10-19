@@ -1741,10 +1741,12 @@ local function render_chips(player_data, counts, hours)
 		local count = counts[key] or 0
 		list[i] = { key = key, width = chip_width(key, count), count = count, keep = key == "all" or key == wanted }
 	end
-	-- The group toggle sits right of the chips. The strip shares the table's width with the side pane, so it gets no
-	-- more than the subheader.
-	local space = stations_tab.chip_space(player_data, TAB) - 32
-	local line1, rest = logic.chip_lines(list, wanted, space, space)
+	-- The group toggle sits right of the chips on the first line. The strip below spans the table, which the side
+	-- pane narrows while a train is selected.
+	local layout = player_data.layout
+	local content_width = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
+	local strip_space = logic.table_width(content_width, player_data.selected_train ~= nil) - 24
+	local line1, rest = logic.chip_lines(list, wanted, stations_tab.chip_space(player_data, TAB) - 32, strip_space)
 	util.sync_children(flow, chip_entries(line1, counts, wanted, hours), util.gui_state(player_data, CHIPS), false)
 	local strip, wrapped_flow = refs[CHIP_STRIP], refs[CHIPS_WRAPPED]
 	if not (strip and strip.valid and wrapped_flow and wrapped_flow.valid) then return false end
