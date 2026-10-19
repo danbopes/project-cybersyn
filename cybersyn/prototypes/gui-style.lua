@@ -733,6 +733,17 @@ styles.cybersyn_overview_line_value = {
 	minimal_width = 40,
 }
 
+-- The Stations failing tile's Misconfigured line: a link of its own (PLAN4 D7) that must read like the plain lines
+-- above it; the orange hover is its own cue.
+styles.cybersyn_overview_line_link = {
+	type = "button_style",
+	parent = "cybersyn_link_button",
+	font = "default",
+	default_font_color = { 0.85, 0.85, 0.85 },
+	height = 18,
+	padding = 0,
+}
+
 styles.cybersyn_overview_period_dropdown = {
 	type = "dropdown_style",
 	parent = "dropdown",

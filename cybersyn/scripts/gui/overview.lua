@@ -94,7 +94,7 @@ end
 --- Stations failing's Misconfigured line jumps on its own: to the Stations tab's Problems chip (PLAN4 D7).
 local LINK_LINES = { failing4 = true }
 local TILE_H = 108
--- The link line under the button: an 18 px line and the body's 4 px bottom padding.
+-- The link line overlays the button's last line slot: an 18 px line and the body's 4 px bottom padding.
 local LINK_H = 22
 
 local function line_def(tile, i)
@@ -109,7 +109,7 @@ local function line_def(tile, i)
 		link and {
 			type = "button",
 			name = base .. "_label",
-			style = "cybersyn_link_button",
+			style = "cybersyn_overview_line_link",
 			caption = "",
 			handler = { [defines.events.on_gui_click] = overview_tab.handle.overview_problems_click },
 		} or { type = "label", name = base .. "_label", style = "cybersyn_overview_line_label", caption = "" },
@@ -159,16 +159,16 @@ local function tile_def(tile)
 		body,
 	}
 	if not link then return button end
-	-- Everything inside a button's ignored body is ignored too, and a button draws extra children over each other,
-	-- so a line that jumps on its own sits below the button, in a frame that looks like the rest of the tile.
-	button.style_mods = { height = TILE_H - LINK_H }
-	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4 }
+	-- A button's ignored body cannot hold a clickable child, so the line that jumps on its own is a sibling laid over
+	-- the full-height button's last line slot by a negative margin (the later sibling draws on top and takes the
+	-- input). The wrapper draws nothing, so the tile's chrome and hover glow stay the button's own, like the others.
+	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4, top_margin = -LINK_H }
 	return {
 		type = "frame",
 		name = "overview_tile_" .. tile.name .. "_frame",
 		direction = "vertical",
-		style = "inside_shallow_frame",
-		style_mods = { padding = 0, height = TILE_H },
+		style = "invisible_frame",
+		style_mods = { height = TILE_H },
 		button,
 		link,
 	}
@@ -332,13 +332,11 @@ function overview_tab.apply_layout(player_data, layout)
 			button.style.width = tile
 			local body = button.children[1]
 			body.style.width = tile
+			body.style.height = TILE_H
 			local frame = refs["overview_tile_" .. t.name .. "_frame"]
 			if frame and frame.valid then
 				frame.style.width = tile
-				body.style.height = TILE_H - LINK_H
 				frame.children[2].style.width = tile
-			else
-				body.style.height = TILE_H
 			end
 		end
 	end

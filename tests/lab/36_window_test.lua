@@ -36,6 +36,17 @@ local function overview()
 	return remote.call(D, "dump", pi, "overview")
 end
 
+--- The element named `name` in the player's screen GUI (depth-first), or nil.
+local function find(name, root)
+	root = root or game.get_player(pi).gui.screen
+	if root.name == name then return root end
+	for _, c in ipairs(root.children) do
+		local hit = find(name, c)
+		if hit then return hit end
+	end
+	return nil
+end
+
 local function contains(list, value)
 	for _, v in ipairs(list) do
 		if v == value then return true end
@@ -191,6 +202,28 @@ lab.suite("36_window", {
 		lab.check("misconfigured back once the hand-written finding is cleared",
 			d.tiles.failing.misconfigured == before and d.tiles.failing.misconfigured_acked == before_acked,
 			{ tile = d.tiles.failing, before = before })
+		-- D5-4: the split tile looks like the other three. Its button keeps the full tile height and chrome, the wrapper
+		-- draws nothing, and the link line lies over the button's last line slot in the plain lines' weight.
+		-- The buttons take their 108 px from the style (no runtime height reads back nil); their bodies get it at layout.
+		local heights, styles, own = {}, {}, {}
+		for _, name in ipairs({ "unserved", "fleet", "failing", "throughput" }) do
+			local b = find("overview_tile_" .. name)
+			heights[name] = b and b.children[1].style.minimal_height
+			own[name] = b and b.style.minimal_height or false
+			styles[name] = b and b.style.name
+		end
+		lab.check("all four tile buttons share one style and the full tile height", styles.failing == "cybersyn_overview_tile"
+			and styles.unserved == styles.failing and styles.fleet == styles.failing and styles.throughput == styles.failing
+			and own.failing == own.unserved and heights.failing == 108 and heights.unserved == 108 and heights.fleet == 108
+			and heights.throughput == 108, { heights = heights, styles = styles, own = own })
+		local wrap, link_line, link = find("overview_tile_failing_frame"), find("overview_failing_line4"),
+			find("overview_failing_line4_label")
+		lab.check("the failing tile's wrapper is an invisible frame", wrap and wrap.style.name == "invisible_frame",
+			wrap and wrap.style.name)
+		lab.check("the Misconfigured line overlays the button's last line slot", link_line and link_line.style.top_margin == -22
+			and link_line.parent == wrap and wrap.children[1].name == "overview_tile_failing", link_line and link_line.style.top_margin)
+		lab.check("the Misconfigured line reads like the plain lines", link and link.style.name == "cybersyn_overview_line_link",
+			link and link.style.name)
 		-- The line is a link of its own: Stations with the Problems chip (stations.lua reads it once phase p3 lands).
 		local res = lab.dev("click", pi, "overview_failing_line4_label")
 		lab.check("the Misconfigured line jumps to the Stations tab", res == true
