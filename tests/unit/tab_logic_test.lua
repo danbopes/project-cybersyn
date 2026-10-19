@@ -527,3 +527,12 @@ test("statuses: every status has a colour, and the locale key uses dashes", func
 	for _, s in ipairs(l.STATUSES) do assert_true(l.STATUS_COLOR[s] ~= nil, s .. " has a colour") end
 	assert_eq(l.status_key("no_power"), "cybersyn-gui.station-status-no-power")
 end)
+
+test("get_period: a stale period falls back to the default and is written back", function()
+	local l = logic()
+	local pd = { overview_period = 1440 }
+	assert_eq(l.get_period(pd), 1440)
+	pd.overview_period = 5
+	assert_eq(l.get_period(pd), l.DEFAULT_PERIOD)
+	assert_eq(pd.overview_period, l.DEFAULT_PERIOD)
+end)

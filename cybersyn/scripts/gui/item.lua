@@ -43,7 +43,6 @@ local item = {}
 local TAB = "item_tab"
 local VIEW = "item_view"
 local NO_VALUE = text.NO_VALUE
-local DEFAULT_PERIOD = 60
 local ROW = 32
 -- Requesters column that shows the wait, and the step of the "last delivery n ago" tooltip age.
 local WAIT_COLUMN = 5
@@ -157,13 +156,7 @@ local function table_name(t) return "item_" .. t .. "_table" end
 --- @param key int row position
 local function wait_name(key) return "item_wait_" .. key end
 
---- @param player_data PlayerData
---- @return int minutes
-local function get_period(player_data)
-	local period = player_data.overview_period
-	if period ~= 10 and period ~= 60 and period ~= 1440 then period = DEFAULT_PERIOD end
-	return period
-end
+local get_period = logic.get_period
 
 --- Width of each table's flexible column for the current layout.
 --- @param content_width int

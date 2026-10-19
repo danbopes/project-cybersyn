@@ -703,6 +703,24 @@ function logic.unrequested(provide_keys, request_keys, network)
 	return provided
 end
 
+-- ---------------------------------------------------------------- throughput period
+
+--- Minutes of the Overview's period buttons; the Item view follows the same choice.
+logic.PERIODS = { 10, 60, 1440 }
+logic.DEFAULT_PERIOD = 60
+
+--- The player's throughput period, repairing a missing or stale value in place so every reader sees the same one.
+--- @param player_data {overview_period: int?}
+--- @return int minutes
+function logic.get_period(player_data)
+	local period = player_data.overview_period
+	if period ~= 10 and period ~= 60 and period ~= 1440 then
+		period = logic.DEFAULT_PERIOD
+		player_data.overview_period = period
+	end
+	return period
+end
+
 -- ---------------------------------------------------------------- duration axis (Delivery breakdown)
 
 --- Gridline steps of a duration axis, in seconds: each one formats exactly ("1m 30s", never a rounded "2m").

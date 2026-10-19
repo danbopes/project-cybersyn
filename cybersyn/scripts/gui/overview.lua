@@ -29,8 +29,7 @@ local overview_tab = {}
 
 local TAB = "overview_tab"
 local TABLE = "overview_unserved_table"
-local PERIODS = { 10, 60, 1440 }
-local DEFAULT_PERIOD = 60
+local PERIODS, DEFAULT_PERIOD = logic.PERIODS, logic.DEFAULT_PERIOD
 local NO_VALUE = text.NO_VALUE
 local HOUR = 216000
 local DAY = 24 * HOUR
@@ -66,16 +65,7 @@ local TILES = {
 }
 local FAILING_LINES = { "no_power", "disabled", "throttling", "misconfigured" }
 
---- @param player_data PlayerData
---- @return int minutes
-local function get_period(player_data)
-	local period = player_data.overview_period
-	if period ~= 10 and period ~= 60 and period ~= 1440 then
-		period = DEFAULT_PERIOD
-		player_data.overview_period = period
-	end
-	return period
-end
+local get_period = logic.get_period
 
 --- @param player_data PlayerData
 --- @return int
