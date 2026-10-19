@@ -657,7 +657,7 @@ lab.suite("37_tabs", {
 		lab.info(remote.call(DT, "fuel_profile", pi))
 	end,
 
-	-- Not refuelled > N h against refuel_tick, the network's refueler and the per-user setting.
+	-- Not refuelled > 1 h against refuel_tick and the network's refueler.
 	function(ctx)
 		local trains = lab.read("trains")
 		local on_a = {}
@@ -694,7 +694,6 @@ lab.suite("37_tabs", {
 			end
 			return n
 		end
-		lab.dev("set_player_setting", pi, "cybersyn-manager-refuel-hours", 1)
 		local one = chip()
 		lab.check("Not refuelled > 1 h == the collector's rule (refuel_tick, else refuel_from)", one == oracle(1),
 			{ chip = one, oracle = oracle(1), trains = #on_a })
@@ -715,19 +714,19 @@ lab.suite("37_tabs", {
 		listed = {}
 		for _, id in ipairs(trains_dump().ids) do listed[id] = true end
 		remote.call(DT, "set_chip", pi, "all")
-		lab.check("a never-refuelled train inside its grace is not counted (as not_refuelled_count)",
+		lab.check("a never-refuelled train inside its grace is not counted (as by the lint)",
 			graced == oracle(1) and not listed[fresh], { chip = graced, oracle = oracle(1), fresh = fresh })
 		remote.call("cybersyn", "write_global", ctx.fresh_seen, "trains", fresh, "seen_tick")
 		lab.dev("collect")
-		lab.dev("set_player_setting", pi, "cybersyn-manager-refuel-hours", 0.25)
-		local quarter = chip()
-		lab.check("Not refuelled > 0.25 h counts that train too (the per-user setting)", quarter == oracle(0.25) and quarter >= 1
-			and quarter >= one, { chip = quarter, oracle = oracle(0.25), one = one })
+		remote.call("cybersyn", "write_global", game.tick - 2 * HOUR, "trains", on_a[1], "refuel_tick")
+		lab.dev("collect")
+		local stale = chip()
+		lab.check("Not refuelled > 1 h counts a train refuelled 2 h ago", stale == oracle(1) and stale >= 1
+			and stale >= one, { chip = stale, oracle = oracle(1), one = one })
 		remote.call(DT, "set_chip", pi, "not_refuelled")
 		local d = trains_dump()
-		lab.check("Not refuelled chip shows its count", d.total == quarter and #d.ids == quarter, { total = d.total, chip = quarter })
+		lab.check("Not refuelled chip shows its count", d.total == stale and #d.ids == stale, { total = d.total, chip = stale })
 		remote.call(DT, "set_chip", pi, "all")
-		lab.dev("set_player_setting", pi, "cybersyn-manager-refuel-hours", 1)
 		remote.call("cybersyn", "write_global", nil, "trains", on_a[1], "refuel_tick")
 		if not ctx.had_refueler then remote.call("cybersyn", "write_global", nil, "to_refuelers", "signal-A") end
 		lab.dev("collect")

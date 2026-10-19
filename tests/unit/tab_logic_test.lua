@@ -319,7 +319,7 @@ test("age, not_refuelled and age_caption", function()
 	assert_true(l.not_refuelled(216002, 1, 1))
 	assert_false(l.not_refuelled(216002, 1, 2))
 	assert_true(l.not_refuelled(54001, 0, 0.25))
-	-- Never refuelled: the grace runs from refuel_from, as in the collector's not_refuelled_count and the lint.
+	-- Never refuelled: the grace runs from refuel_from, as in the lint.
 	assert_false(l.not_refuelled(216000, nil, 1, 1), "inside its grace")
 	assert_true(l.not_refuelled(216002, nil, 1, 1), "past its grace")
 	assert_false(l.not_refuelled(300000, nil, 1, 100000), "a train registered late gets its own hour")

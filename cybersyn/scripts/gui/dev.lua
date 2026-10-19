@@ -1264,7 +1264,7 @@ end
 function interface.fleet_capability()
 	local fleet = collector.get().fleet
 	return { capability = fleet.capability, mask_or = fleet.mask_or, in_interrupt_count = fleet.in_interrupt_count,
-		not_refuelled_count = fleet.not_refuelled_count, group_depots = fleet.group_depots }
+		group_depots = fleet.group_depots }
 end
 
 --- "network:hash" -> the lowest provider item threshold the last snapshot holds.

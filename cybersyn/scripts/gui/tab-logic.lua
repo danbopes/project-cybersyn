@@ -446,9 +446,9 @@ function logic.age(now, tick)
 	return d > 0 and d or 0
 end
 
---- Whether a train counts for the Not refuelled > N h chip: not seen at a refueler for longer than the per-user
---- hours. A train never seen at one gets the same time from `refuel_from` (lint.refuel_from: since Cybersyn first
---- saw it, or since refuels are tracked), the grace the collector's not_refuelled_count and the lint give it.
+--- Whether a train counts for the Not refuelled > N h chip: not seen at a refueler for longer than `hours`. A train
+--- never seen at one gets the same time from `refuel_from` (lint.refuel_from: since Cybersyn first saw it, or since
+--- refuels are tracked), the grace the lint gives it.
 --- @param now number
 --- @param refuel_tick number?
 --- @param hours number

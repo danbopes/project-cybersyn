@@ -459,15 +459,11 @@ local function active_chip(player_data)
 	return nil
 end
 
---- @param player_data PlayerData
---- @return number hours
-local function refuel_hours(player_data)
-	local s = settings.get_player_settings(player_data.player_index)["cybersyn-manager-refuel-hours"]
-	return s and s.value --[[@as number]] or 1
-end
+-- The chip's threshold is the lint's never-refuelled grace, so the chip and the setup finding agree.
+local REFUEL_HOURS = REFUEL_GRACE_TICKS / 216000
 
---- Whether a train is on a network some refueler serves: only those count as not refuelled (the collector's
---- not_refuelled_count follows the same rule).
+--- Whether a train is on a network some refueler serves: only those count as not refuelled (the lint follows the
+--- same rule).
 --- @param tr SnapshotTrain
 --- @param to_refuelers table?
 --- @return boolean
@@ -619,7 +615,7 @@ function trains_tab.query(map_data, player_data)
 	end
 	local key_fn = key_fn_for(column, names, layout_keys)
 	local now = game.tick
-	local hours = refuel_hours(player_data)
+	local hours = REFUEL_HOURS
 	local to_refuelers = storage.to_refuelers
 	local wanted = active_chip(player_data)
 	local alerts = cache.alerts

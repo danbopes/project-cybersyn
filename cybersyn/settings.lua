@@ -190,15 +190,6 @@ data:extend({
 		default_value = false,
 	},
 	{
-		type = "double-setting",
-		name = "cybersyn-manager-refuel-hours",
-		order = "ac",
-		setting_type = "runtime-per-user",
-		default_value = 1,
-		minimum_value = 0.25,
-		maximum_value = 24,
-	},
-	{
 		type = "bool-setting",
 		name = "cybersyn-manager-dev-interface",
 		order = "ab",
