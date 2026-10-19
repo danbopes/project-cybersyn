@@ -1,10 +1,13 @@
 --- One-time conversion of a stock Cybersyn save to this fork's storage shape.
 ---
---- This fork's info.json version tracks upstream's exactly and never moves on its own,
---- so installing the fork over stock Cybersyn is not a version change and Factorio
---- raises no migration event at all. The conversion is therefore keyed on a flag in
---- storage and checked at the start of the mod's scheduled ticks -- on_load may not
---- write to storage, and on_configuration_changed cannot be relied on to fire.
+--- From 3.0.0 the fork has its own version line, so installing it over stock Cybersyn
+--- (2.0.53 or 2.0.54) is a version change and raises on_configuration_changed. The
+--- conversion is still keyed on a flag in storage rather than on that event or its old
+--- version: the fork's earlier builds were numbered 2.0.54 like upstream and installed
+--- over stock without raising any event, so a save recorded as 2.0.54 may be a stock save
+--- or one those builds already converted, and only the flag tells them apart. The flag
+--- also lets a conversion that failed part way run again on the next load. It is checked
+--- at the start of the mod's scheduled ticks, because on_load may not write to storage.
 ---
 --- Running from the scheduled tick also means upstream's own migration chain has
 --- already finished by the time this sees the save, so it always works on a well-formed

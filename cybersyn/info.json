@@ -1,10 +1,12 @@
 {
     "name": "cybersyn",
-    "version": "2.0.54",
+    "version": "3.0.0",
     "title": "Project Cybersyn",
-    "author": "Mami",
+    "author": "danbopes (fork of Project Cybersyn by Mami)",
+    "contact": "https://github.com/danbopes/project-cybersyn/issues",
+    "homepage": "https://github.com/danbopes/project-cybersyn",
+    "description": "Fork of Project Cybersyn with a rebuilt Cybersyn Manager and diagnostics for large bases: why each request waits, setup checks, an event log. Same combinators and signals; existing saves carry over.",
     "factorio_version": "2.0",
-    "description": "Creates a feature-rich train logistics network through cybernetic combinators. With just this mod you can coordinate the economic inputs and outputs of your entire megabase.",
     "dependencies": [
         "base >= 2.0.60",
         "flib >= 0.15.0",
