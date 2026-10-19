@@ -938,20 +938,7 @@ local function clear_problems(r)
 	r.cell.tooltip = ""
 end
 
--- Name parts of stops the snapshot does not hold: a pure function of the name, so a cache that differs between Lua
--- states cannot desync anything.
-local parsed_cache = {}
-
---- @param name string
---- @return RichNameParts
-local function parse_name(name)
-	local p = parsed_cache[name]
-	if not p then
-		p = util.parse_rich_name(name)
-		parsed_cache[name] = p
-	end
-	return p
-end
+local parse_name = name_cell.parse_name
 
 --- The stop or combinator a registry finding is about, while it exists.
 --- @param f LintFinding

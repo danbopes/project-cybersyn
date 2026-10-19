@@ -231,59 +231,15 @@ end
 
 -- ---------------------------------------------------------------- names
 
-local parsed_cache = {}
-
---- A pure function of the name, so a cache that differs between Lua states cannot desync anything.
---- @param name string
---- @return RichNameParts
-local function parse_name(name)
-	local p = parsed_cache[name]
-	if not p then
-		p = util.parse_rich_name(name)
-		parsed_cache[name] = p
-	end
-	return p
-end
-
---- @class LogNameView
---- @field name string
---- @field text string
---- @field parts RichNameParts?
---- @field kind "station"|"depot"|"refueler"
-
 --- Views made during one render, by id (rows of one stop share it); emptied when the render ends, so nothing stale
 --- outlives the call.
---- @type {[uint]: LogNameView|false}?
+--- @type {[uint]: StopNameView|false}?
 local view_cache
 
---- A station, depot or refueler by its stop's unit number, from the snapshot when it holds the station.
 --- @param id uint
---- @return LogNameView?
+--- @return StopNameView?
 local function station_view(id)
-	if not id or id == 0 then return nil end
-	if view_cache then
-		local v = view_cache[id]
-		if v ~= nil then return v or nil end
-	end
-	local st = collector.get().stations[id]
-	local name, parts, kind
-	if st then
-		name, parts, kind = st.name, st.name_parts, "station"
-	else
-		local stop, _, stop_kind = util.stop_record(id)
-		kind = stop_kind
-		if not stop then
-			if view_cache then view_cache[id] = false end
-			return nil
-		end
-		name = stop.backer_name
-		parts = parse_name(name)
-	end
-	local label = parts and parts.text or name
-	if label == nil or label == "" then label = name end
-	local view = { name = name, text = label, parts = parts, kind = kind }
-	if view_cache then view_cache[id] = view end
-	return view
+	return (name_cell.station_view(id, collector.get().stations, view_cache))
 end
 log_tab.station_view = station_view
 
@@ -590,20 +546,7 @@ local function group_item(g)
 	return g.item ~= 0 and d and d.item_hash[g.item] or nil
 end
 
---- @param view LogNameView?
---- @param extra LocalisedString?
---- @return LocalisedString
-local function station_tooltip(view, extra)
-	if not view then return "" end
-	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]" }
-	if extra then
-		tooltip[#tooltip + 1] = "\n"
-		tooltip[#tooltip + 1] = extra
-	end
-	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = { "cybersyn-gui.link-footer" }
-	return tooltip
-end
+local station_tooltip = name_cell.station_tooltip
 
 -- Station names and train validity are read again at most this often for a row whose event did not change; each row
 -- at its own phase (by its key), so the rows are not all rewritten in one update.
@@ -782,7 +725,7 @@ local function build_row(parent, index, widths)
 	row.add({ type = "sprite", style = "cybersyn_log_dot", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "sprite", style = "cybersyn_log_kind", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "button", style = "cybersyn_log_link", mouse_button_filter = LEFT,
-		tooltip = { "cybersyn-gui.link-footer" }, raise_hover_events = true, tags = t.train }).style.width = W.train
+		tooltip = util.LINK_FOOTER, raise_hover_events = true, tags = t.train }).style.width = W.train
 	name_cell.pooled_add(row, widths.station, "cybersyn_log_cell_flow", { type = "button", style = "cybersyn_log_link",
 		mouse_button_filter = LEFT, raise_hover_events = true, tags = t.station })
 	row.add({ type = "sprite-button", style = "cybersyn_log_item", mouse_button_filter = LEFT_RIGHT,
