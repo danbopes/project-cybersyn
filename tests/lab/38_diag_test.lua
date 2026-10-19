@@ -80,7 +80,7 @@ lab.suite("38_diag", {
 		lab.check("kinds table names all 26 kinds", #st.kinds == 26 and st.kinds[2] == "served" and
 			st.kinds[26] == "slow_delivery", st.kinds)
 		-- Step 2 (phase 2b): the sweep and ring fields, the planner-cycle counters, refuel_since.
-		lab.check("schema step 5 recorded (the Stations chip in one field)", lab.read("fork_schema") == 5, lab.read("fork_schema"))
+		lab.check("schema step 6 recorded (latest step)", lab.read("fork_schema") == 6, lab.read("fork_schema"))
 		local acks = lab.read("acks")
 		lab.check("storage.acks created", acks ~= nil and acks.request ~= nil and acks.station ~= nil and acks.lint ~= nil,
 			acks)
@@ -166,7 +166,7 @@ lab.suite("38_diag", {
 		lab.wait(10)
 	end,
 	function()
-		lab.check("migration: schema step re-run", lab.read("fork_schema") == 5)
+		lab.check("migration: schema step re-run", lab.read("fork_schema") == 6)
 		lab.check("migration: storage.acks recreated", lab.read("acks", "request") ~= nil)
 		local t = lab.read("trains", dg.train)
 		lab.check("migration: train fields recreated", t ~= nil and type(t.in_interrupt) == "boolean" and
@@ -180,7 +180,7 @@ lab.suite("38_diag", {
 			after >= math.floor(dg.entries_before / 2), { before = dg.entries_before, after = after })
 	end,
 
-	-- The setting: off drops storage.diag (acknowledgements stay), basic creates it again, the ring size applies.
+	-- The setting: off drops storage.diag (acknowledgements stay), basic creates it again with the fixed full ring.
 	function()
 		local rows = dev("diag_unserved_rows", 1)
 		dg.key = rows[1]
@@ -192,10 +192,7 @@ lab.suite("38_diag", {
 		dev("set_setting", "cybersyn-diagnostics", "basic")
 		local st = dev("diag_state")
 		lab.check("basic again: a fresh state", st.mode == "basic" and st.seq == 0 and st.loaded_tick == game.tick, st)
-		dev("set_setting", "cybersyn-diagnostics-ring", 2048)
-		lab.check("ring setting resizes the full ring", dev("diag_state").ring_full_size == 2048)
-		dev("set_setting", "cybersyn-diagnostics-ring", 16384)
-		lab.check("ring setting back to 16,384", dev("diag_state").ring_full_size == 16384)
+		lab.check("the full ring holds 16,384 rows", dev("diag_state").ring_full_size == 16384)
 		lab.check("unack of the station acknowledgement", dev("diag_unack", "station", 424242, nil, 1) == true)
 		-- Two cycles so the fresh state has entries again.
 		lab.wait(400)

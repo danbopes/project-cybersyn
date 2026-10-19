@@ -331,21 +331,14 @@ end)
 
 -- ------------------------------------------------------------------ paging
 
-test("page_size: cached value, player setting, default", function()
+test("page_size: a lower cap on player_data, else the constant bound", function()
 	local u = util()
 	assert_eq(u.page_size({ page_size = 25 }), 25)
-	H.player_settings[1] = { ["cybersyn-manager-page-size"] = { value = 100 } }
-	local pd = { player_index = 1 }
-	assert_eq(u.page_size(pd), 100)
-	assert_eq(pd.page_size, 100)
-	-- Cached: a later setting change does not reach this player_data.
-	H.player_settings[1]["cybersyn-manager-page-size"].value = 10
-	assert_eq(u.page_size(pd), 100)
-	-- PLAN3 §4.3: the setting is the maximum (default 200); the window rows decide below it.
 	assert_eq(u.page_size({ player_index = 2 }), 200)
+	assert_eq(u.MAX_PAGE_SIZE, 200)
 end)
 
-test("page_size: a tab gets the window's rows, capped by the setting", function()
+test("page_size: a tab gets the window's rows, capped by the bound", function()
 	local u = util()
 	local pd = { page_size = 200, layout = { rows_by_tab = { stations_tab = 18, trains_tab = 12 } } }
 	assert_eq(u.page_size(pd, "stations_tab"), 18)
@@ -624,15 +617,6 @@ test("rich_text_from_signal and item_sprite_and_tooltip", function()
 	assert_eq(u.item_sprite_and_tooltip("water"), "fluid/water")
 	assert_nil(u.item_sprite_and_tooltip("nonexistent"))
 	assert_nil(u.item_sprite_and_tooltip("iron-plate|gone"))
-end)
-
-test("signed_int32: wraps values at and above 2^31", function()
-	local u = util()
-	assert_eq(u.signed_int32(0), 0)
-	assert_eq(u.signed_int32(-5), -5)
-	assert_eq(u.signed_int32(2147483647), 2147483647)
-	assert_eq(u.signed_int32(2147483648), -2147483648)
-	assert_eq(u.signed_int32(4294967295), -1)
 end)
 
 test("set_item_filter: validates the hash, updates the chooser, resets every page", function()

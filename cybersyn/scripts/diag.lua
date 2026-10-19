@@ -44,6 +44,9 @@ local EXPORT_NTH = 7
 local EVENTS_SCAN = 4096
 
 diag.BASIC_RING = BASIC_RING
+-- Rows of the full ring: at the roughly 18 rows per second a large base writes in full mode, about 15 minutes, for
+-- about 11 MB of heap. A field rather than a local so the tests can shrink it.
+diag.FULL_RING = 16384
 diag.UNSERVED_CAP = UNSERVED_CAP
 diag.FLAP_TICKS = FLAP_TICKS
 diag.FLAP_WINDOW = FLAP_WINDOW
@@ -180,12 +183,6 @@ local function fill_ring(r)
 	r.filled = true
 end
 
---- @return int
-local function full_ring_size()
-	local s = settings.global["cybersyn-diagnostics-ring"]
-	return s and s.value --[[@as int]] or 16384
-end
-
 --- @return string "off"|"basic"|"full"
 local function mode_setting()
 	local s = settings.global["cybersyn-diagnostics"]
@@ -201,7 +198,7 @@ local function new_state()
 		full = false,
 		seq = 0,
 		ring_basic = new_ring(BASIC_RING, true),
-		ring_full = new_ring(full_ring_size(), false),
+		ring_full = new_ring(diag.FULL_RING, false),
 		unserved = {},
 		unserved_count = {},
 		unserved_n = 0,
@@ -270,13 +267,13 @@ function diag.apply()
 	end
 	-- Rows of a full session would otherwise stay in every reader that does not check the mode (events, export, the
 	-- Log), next to basic rows that kept coming.
-	if mode ~= "full" and d.ring_full.count > 0 then d.ring_full = new_ring(full_ring_size(), false) end
+	if mode ~= "full" and d.ring_full.count > 0 then d.ring_full = new_ring(diag.FULL_RING, false) end
 	d.mode = mode
 	d.full = mode == "full"
 	d.unserved_dropped = d.unserved_dropped or 0
 	d.cycles = d.cycles or 0
 	d.item_served = d.item_served or {}
-	diag.resize_ring(d.ring_full, full_ring_size())
+	diag.resize_ring(d.ring_full, diag.FULL_RING)
 	fill_ring(d.ring_basic)
 	if d.full then fill_ring(d.ring_full) end
 	return d

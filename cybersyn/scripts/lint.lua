@@ -34,10 +34,6 @@ local LOOKUPS_PER_UPDATE = 2
 -- Station names for the schedule check, read from the snapshot before the train checks start: looking a name up
 -- (get_train_stops by name) costs tens of µs on a big base, reading it from a record a fraction of one.
 local SEED_PER_UPDATE = 300
--- "Never refuelled" needs this much tracked time per train: from its first sighting (Train.seen_tick), and never from
--- before refuel_tick existed (storage.stats.refuel_since), so neither a new train nor one from an older save is
--- flagged before it had the chance to visit a refueler.
-local REFUEL_GRACE = 216000
 -- Unset train limits read back as uint max.
 local UNLIMITED = 2100000000
 -- Vanilla's own; any other value misroutes trains Cybersyn sends to stops of the same name.
@@ -56,7 +52,7 @@ lint.REGISTRY_CHECKS = REGISTRY_CHECKS
 
 lint.RECORDS_PER_UPDATE = RECORDS_PER_UPDATE
 lint.TRAINS_PER_UPDATE = TRAINS_PER_UPDATE
-lint.REFUEL_GRACE = REFUEL_GRACE
+lint.REFUEL_GRACE = REFUEL_GRACE_TICKS
 
 --- @class LintFinding
 --- @field subject int LINT_SUBJECT_*
@@ -863,7 +859,7 @@ local function check_train(s, job, snap, id)
 	local never, tracked
 	if not train.refuel_tick then
 		tracked = game.tick - lint.refuel_from(train)
-		if tracked >= REFUEL_GRACE then
+		if tracked >= REFUEL_GRACE_TICKS then
 			each_network(train.network_name, train.network_mask, function(net)
 				if not never and storage.to_refuelers[net] then never = net end
 			end)

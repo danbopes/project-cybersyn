@@ -9,7 +9,6 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
-local constants = require("constants")
 local util = require("scripts.gui.util")
 local templates = require("scripts.gui.templates")
 local collector = require("scripts.gui.collector")
@@ -264,11 +263,22 @@ local function target_of(tr)
 	return nil, nil
 end
 
+local status_translations = {
+	delivering_to = { "cybersyn-gui.delivering-to" },
+	fetching_from = { "cybersyn-gui.fetching-from" },
+	loading_at = { "cybersyn-gui.loading-at" },
+	not_available = { "cybersyn-gui.not-available" },
+	parked_at_depot_with_residue = { "cybersyn-gui.parked-at-depot-with-residue" },
+	parked_at_depot = { "cybersyn-gui.parked-at-depot" },
+	returning_to_depot = { "cybersyn-gui.returning-to-depot" },
+	unloading_at = { "cybersyn-gui.unloading-at" },
+}
+
 --- @param tr SnapshotTrain
 --- @return LocalisedString
 local function status_caption(tr)
 	local s = tr.status
-	local t = constants.gui_translations
+	local t = status_translations
 	if s == STATUS_D then
 		if next(tr.manifest_hashes) then return t.parked_at_depot_with_residue end
 		return t.parked_at_depot
@@ -434,15 +444,11 @@ local function active_chip(player_data)
 	return nil
 end
 
---- @param player_data PlayerData
---- @return number hours
-local function refuel_hours(player_data)
-	local s = settings.get_player_settings(player_data.player_index)["cybersyn-manager-refuel-hours"]
-	return s and s.value --[[@as number]] or 1
-end
+-- The chip's threshold is the lint's never-refuelled grace, so the chip and the setup finding agree.
+local REFUEL_HOURS = REFUEL_GRACE_TICKS / 216000
 
---- Whether a train is on a network some refueler serves: only those count as not refuelled (the collector's
---- not_refuelled_count follows the same rule).
+--- Whether a train is on a network some refueler serves: only those count as not refuelled (the lint follows the
+--- same rule).
 --- @param tr SnapshotTrain
 --- @param to_refuelers table?
 --- @return boolean
@@ -594,7 +600,7 @@ function trains_tab.query(map_data, player_data)
 	end
 	local key_fn = key_fn_for(column, names, layout_keys)
 	local now = game.tick
-	local hours = refuel_hours(player_data)
+	local hours = REFUEL_HOURS
 	local to_refuelers = storage.to_refuelers
 	local wanted = active_chip(player_data)
 	local alerts = cache.alerts
@@ -625,13 +631,6 @@ function trains_tab.query(map_data, player_data)
 		sprite_of = new_sprite_cache(), counts = chips.counts, all = cache.all, hours = hours, now = now, column = column,
 		ascending = ascending, to_refuelers = to_refuelers, cache = cache, chips = chips, alerts = alerts,
 	}
-end
-
---- @param train_entity LuaTrain
---- @return LuaEntity?
-local function front_locomotive(train_entity)
-	local locomotives = train_entity.locomotives
-	return locomotives.front_movers[1] or locomotives.back_movers[1]
 end
 
 -- ---------------------------------------------------------------- hidden columns
@@ -2293,7 +2292,6 @@ dev.register_dump(TAB, function(player_data)
 	for _, cell in ipairs(header.children) do
 		if not cell.visible then hidden[#hidden + 1] = cell.tags.column end
 	end
-	local chips = {}
 	local flow = player_data.refs[CHIPS]
 	if flow and flow.valid then
 		for i, chip in ipairs(flow.children) do chips_shown[i] = { chip.tags.trains_chip, chip.toggled, chip.enabled } end

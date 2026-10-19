@@ -8,6 +8,20 @@ end
 
 local function id(x) return x end
 
+-- The px the shown Trains columns take with their gaps and the row padding; 20 and 8 are tab-logic's ROW_PADDING and
+-- COLUMN_GAP.
+local function train_columns_total(l, w)
+	local total, shown = 0, 0
+	for _, c in ipairs(l.TRAIN_WIDTHS) do
+		local v = w[c[1]]
+		if v then
+			total = total + v
+			shown = shown + 1
+		end
+	end
+	return total + math.max(shown - 1, 0) * 8 + 20
+end
+
 test("single_value: one distinct value hides the column, nil counts as a value", function()
 	local l = logic()
 	assert_eq({ l.single_value({ 1, 1, 1 }, id) }, { true, 1 })
@@ -50,7 +64,7 @@ test("train_widths: closed, the table takes the content width; narrow windows dr
 		if cw >= 1104 then assert_eq(next(w.dropped), nil, "nothing dropped at " .. cw) end
 		assert_true(w.dropped.shipment == nil and w.shipment ~= nil and w.shipment % 32 == 0,
 			"shipment kept in whole slots at " .. cw)
-		assert_true(l.train_columns_total(w) <= cw, "columns fit at " .. cw)
+		assert_true(train_columns_total(l, w) <= cw, "columns fit at " .. cw)
 		-- Phase 7: the closed table drops columns (pane order) rather than squeeze the status below its minimum.
 		assert_true(w.train_status >= l.TRAIN_STATUS_MIN, "status keeps its minimum at " .. cw)
 		assert_true(w.group_name >= 120 and w.group_bypass and w.group_marker == l.GROUP_MARKER, "group row at " .. cw)
@@ -72,7 +86,7 @@ test("train_widths: with the pane, Shipment goes first but only when the status 
 			local w = l.train_widths(cw, hidden, true)
 			local at = cw .. " " .. tostring(next(hidden))
 			assert_eq(w.cw, cw - 336, at)
-			assert_true(l.train_columns_total(w) <= w.cw, "columns fit at " .. at .. ": " .. l.train_columns_total(w))
+			assert_true(train_columns_total(l, w) <= w.cw, "columns fit at " .. at .. ": " .. train_columns_total(l, w))
 			assert_true(w.train_status >= l.TRAIN_STATUS_MIN, "status " .. w.train_status .. " at " .. at)
 			assert_true(w.train_id ~= nil and w.state ~= nil, "id and state stay at " .. at)
 			assert_true(w.group_name >= 120, "group name " .. w.group_name .. " at " .. at)
@@ -303,7 +317,7 @@ test("age, not_refuelled and age_caption", function()
 	assert_true(l.not_refuelled(216002, 1, 1))
 	assert_false(l.not_refuelled(216002, 1, 2))
 	assert_true(l.not_refuelled(54001, 0, 0.25))
-	-- Never refuelled: the grace runs from refuel_from, as in the collector's not_refuelled_count and the lint.
+	-- Never refuelled: the grace runs from refuel_from, as in the lint.
 	assert_false(l.not_refuelled(216000, nil, 1, 1), "inside its grace")
 	assert_true(l.not_refuelled(216002, nil, 1, 1), "past its grace")
 	assert_false(l.not_refuelled(300000, nil, 1, 100000), "a train registered late gets its own hour")
@@ -347,12 +361,6 @@ test("stuck_stations: provider and requester of trains with a stuck alert", func
 	local trains = { [1] = { p_station_id = 10, r_station_id = 11 }, [2] = { p_station_id = 12 }, [3] = {} }
 	local alerts = { { train_id = 1, kind = 1 }, { train_id = 2, kind = 2 }, { train_id = 3, kind = 1 }, { train_id = 9, kind = 1 } }
 	assert_eq(l.stuck_stations(alerts, trains, 1), { [10] = true, [11] = true })
-end)
-
-test("chip_mode: names when they fit, else compact", function()
-	local l = logic()
-	assert_eq(l.chip_mode(1000, 900), "full")
-	assert_eq(l.chip_mode(800, 900), "compact")
 end)
 
 test("chip_lines: zero counts hide unless kept, the rest fill line 1 then line 2 in order", function()

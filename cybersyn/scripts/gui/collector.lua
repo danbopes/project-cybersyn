@@ -37,9 +37,6 @@ local IDLE_TICKS = 30 * 60 * 60
 local UNLIMITED = 2100000000
 
 local WAIT_SIGNAL = defines.train_state.wait_signal
--- The Trains chip "Not refuelled > N h" applies each player's N when it renders; the per-network count in the fleet
--- summary is taken against this fixed hour.
-local REFUEL_COUNT_TICKS = 216000
 local bor = bit32.bor
 local WORKING = defines.entity_status.working
 local LOW_POWER = defines.entity_status.low_power
@@ -170,8 +167,6 @@ collector.UNLIMITED = UNLIMITED
 ---   and layout: Cybersyn trains, the largest capacities among them and the OR of their masks on that network
 --- @field mask_or {[string]: int} OR of every Cybersyn train's mask on the network
 --- @field in_interrupt_count {[string]: int} trains inside an interrupt, per network
---- @field not_refuelled_count {[string]: int} per network that has a refueler: trains not seen at one for an hour
----   (refuel_tick, or for a train never seen refuelling its refuel_from, older than REFUEL_COUNT_TICKS)
 --- @field group_depots {[string]: int} vanilla train group -> distinct depot names among its Cybersyn trains
 
 local function new_inventory()
@@ -196,7 +191,7 @@ function collector.empty()
 		starved_source = "snapshot",
 		starved_version = 0,
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
-			capability = {}, mask_or = {}, in_interrupt_count = {}, not_refuelled_count = {}, group_depots = {} },
+			capability = {}, mask_or = {}, in_interrupt_count = {}, group_depots = {} },
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
 		provider_masks = {},
@@ -577,7 +572,7 @@ local function same_manifest(old, manifest)
 end
 
 --- Adds one train to the per-network fleet facts on `network`, whose mask for the train is `mask`.
-local function add_capability(fleet, network, mask, train, refuel_counted)
+local function add_capability(fleet, network, mask, train)
 	local by_layout = fleet.capability[network]
 	if not by_layout then
 		by_layout = {}
@@ -598,10 +593,6 @@ local function add_capability(fleet, network, mask, train, refuel_counted)
 	if train.in_interrupt then
 		fleet.in_interrupt_count[network] = (fleet.in_interrupt_count[network] or 0) + 1
 	end
-	local refuelers = storage.to_refuelers
-	if refuel_counted and refuelers and refuelers[network] then
-		fleet.not_refuelled_count[network] = (fleet.not_refuelled_count[network] or 0) + 1
-	end
 end
 
 local function summarize_trains(b)
@@ -610,9 +601,8 @@ local function summarize_trains(b)
 	local trains = live.trains
 	local fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {},
 		min_available_by_network = stats.min_available(60), capability = {}, mask_or = {}, in_interrupt_count = {},
-		not_refuelled_count = {}, group_depots = {} }
+		group_depots = {} }
 	local group_names = {}
-	local now = game.tick
 	local by_name = {}
 	b.depots_by_name = by_name
 	local depot_names = {}
@@ -700,21 +690,14 @@ local function summarize_trains(b)
 			tr.refuel_tick = refuel_tick
 			local refuel_from = lint.refuel_from(train)
 			tr.refuel_from = refuel_from
-			-- A train never seen refuelling counts once it had as long as the others to get there.
-			local stale
-			if refuel_tick then
-				stale = now - refuel_tick > REFUEL_COUNT_TICKS
-			else
-				stale = now - refuel_from > REFUEL_COUNT_TICKS
-			end
 			local network = train.network_name
 			if network == NETWORK_EACH then
 				if type(train.network_mask) == "table" then
-					for name, m in pairs(train.network_mask) do add_capability(fleet, name, m, train, stale) end
+					for name, m in pairs(train.network_mask) do add_capability(fleet, name, m, train) end
 				end
 			elseif network then
 				local m = train.network_mask
-				add_capability(fleet, network, type(m) == "number" and m or 0, train, stale)
+				add_capability(fleet, network, type(m) == "number" and m or 0, train)
 			end
 			if depot_name ~= "" then
 				local g = by_name[depot_name]

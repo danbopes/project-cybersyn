@@ -84,7 +84,8 @@ local lint = require("scripts.lint")
 -- 3: the setup registry (storage.lint_registry), seeded from to_comb/to_stop/to_comb_params.
 -- 4: storage.manager.fleet_networks dropped; the Overview's Fleet tile reads the HUD's cache (hud_networks).
 -- 5: the Stations tab keeps its toggled chip in stations_chip alone (stations_status_filter folded into it).
-local SCHEMA = 5
+-- 6: drops storage.recent_external_items, whose only reader (the recent-items panel) is gone.
+local SCHEMA = 6
 
 local fork_migrations = {}
 
@@ -114,6 +115,7 @@ function fork_migrations.migrate_schema()
 		if pd.stations_status_filter then pd.stations_chip = pd.stations_status_filter end
 		pd.stations_status_filter = nil
 	end
+	storage.recent_external_items = nil
 	storage.fork_schema = SCHEMA
 end
 

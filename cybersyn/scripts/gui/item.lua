@@ -851,7 +851,7 @@ function item.build(map_data, player_data)
 	local kind = cache.rows_pending and "P" or "S"
 	cache.rows_pending = nil
 	local layout = player_data.layout
-	local total = layout and layout.rows_by_tab[TAB] or 3
+	local total = layout.rows_by_tab[TAB]
 
 	-- A table under the cursor keeps its rows as they are (the hover hold); new data waits until the cursor leaves.
 	local held, any_held = {}, false

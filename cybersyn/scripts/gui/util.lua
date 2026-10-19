@@ -999,18 +999,17 @@ function util.set_sort(player_data, tab, column, ascending)
 	util.reset_page(player_data, tab)
 end
 
---- Rows per page of a list tab: as many as its window height fits (player_data.layout), at most the
---- cybersyn-manager-page-size setting.
+-- Upper bound for a tab without a window layout: about 9 ms per Stations render at 500 rows on a 2,000-station base,
+-- so 200 stays near the 5 ms render budget.
+util.MAX_PAGE_SIZE = 200
+
+--- Rows per page of a list tab: as many as its window height fits (player_data.layout), at most
+--- player_data.page_size or util.MAX_PAGE_SIZE.
 --- @param player_data PlayerData
 --- @param tab string?
 --- @return integer
 function util.page_size(player_data, tab)
-	local size = player_data.page_size
-	if not size then
-		local setting = settings.get_player_settings(player_data.player_index)["cybersyn-manager-page-size"]
-		size = setting and setting.value --[[@as integer]] or 200
-		player_data.page_size = size
-	end
+	local size = player_data.page_size or util.MAX_PAGE_SIZE
 	local layout = tab and player_data.layout
 	local rows = layout and layout.rows_by_tab and layout.rows_by_tab[tab]
 	if rows and rows < size then return rows end
@@ -1196,8 +1195,6 @@ function util.item_button_click(player, player_data, e, hash)
 	elseif e.button == defines.mouse_button_type.left then
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
-		interop_add_recent_item(player.index, name, "cybersyn")
-		player_data.recent_panel_dirty = true
 		if e.shift or not item_view then
 			if item_view then item_view.close(player, player_data) end
 			util.set_item_filter(player_data, hash)
@@ -1358,11 +1355,6 @@ function util.slot_table_build_from_control_signals(st)
 		})
 	end
 	return children
-end
-
-local MAX_INT = 2147483648 -- math.pow(2, 31)
-function util.signed_int32(val)
-	return (val >= MAX_INT and val - (2 * MAX_INT)) or val
 end
 
 --- Opens an entity's GUI from a manager link. Taking player.opened closes an unpinned manager, so the link records

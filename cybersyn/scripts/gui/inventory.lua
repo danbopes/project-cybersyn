@@ -430,8 +430,8 @@ local function get_cache(player_data, snapshot, f)
 	return cache, true
 end
 
---- Sort key for one item of a grid. `wait` only means something for requests while wait tracking produced data;
---- otherwise it falls back to item order.
+--- Sort key for one item of a grid. `wait` only means something for requests once a requester has a tracked
+--- start (has_wait); before that it falls back to item order.
 --- @param column string
 --- @param grid string
 --- @param bucket table the grid's aggregate

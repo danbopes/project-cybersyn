@@ -15,6 +15,11 @@ end
 
 local S, D, T = LINT_SUBJECT_STATION, LINT_SUBJECT_DEPOT, LINT_SUBJECT_TRAIN
 
+-- Whether a station_rank falls in DIAG_SEV_ERROR's band; 64 is problems-model's RANK_STEP.
+local function is_open_error_rank(rank)
+	return rank ~= nil and rank < (DIAG_SEV_ERROR + 1) * 64
+end
+
 -- PLAN4 D7: the Stations Problems column sorts stations by their worst check and spells out a station's worst
 -- finding first, acknowledged ones last.
 test("rank / mask_rank: severity first, then the check index; a clean mask has none", function()
@@ -49,7 +54,7 @@ test("open_errors / station_rank: acknowledgements move a station behind every o
 	assert_eq(model.open_errors(7, nil, is_acked), 0)
 	assert_nil(model.station_rank(7, 0, is_acked))
 	assert_eq(model.station_rank(7, cap + limit, is_acked), model.rank(LINT_CAPACITY))
-	assert_true(model.is_open_error_rank(model.station_rank(7, cap + limit, is_acked)))
+	assert_true(is_open_error_rank(model.station_rank(7, cap + limit, is_acked)))
 
 	acked["7:" .. LINT_CAPACITY] = { player_index = 1 }
 	assert_eq(model.open_mask(7, cap + limit, is_acked), limit)
@@ -57,12 +62,12 @@ test("open_errors / station_rank: acknowledgements move a station behind every o
 	-- The open warning now decides the place: behind every open error, before any fully acknowledged station.
 	local warn_rank = model.station_rank(7, cap + limit, is_acked)
 	assert_eq(warn_rank, model.rank(LINT_LIMIT_ZERO))
-	assert_false(model.is_open_error_rank(warn_rank))
+	assert_false(is_open_error_rank(warn_rank))
 	assert_true(model.station_rank(8, layout, is_acked) < warn_rank, "another station's open error leads")
 	acked["7:" .. LINT_LIMIT_ZERO] = { player_index = 1 }
 	local all_acked = model.station_rank(7, cap + limit, is_acked)
 	assert_true(all_acked > model.station_rank(9, refuel, is_acked), "fully acknowledged after an open info")
-	assert_false(model.is_open_error_rank(all_acked))
+	assert_false(is_open_error_rank(all_acked))
 	assert_eq(model.open_mask(7, cap + limit, is_acked), 0)
 end)
 

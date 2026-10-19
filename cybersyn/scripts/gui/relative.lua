@@ -21,7 +21,7 @@ local utext = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
 local pm = require("scripts.gui.problems-model")
 local item_model = require("scripts.gui.item-model")
-local problems_tab = require("scripts.gui.lint-text")
+local lint_text = require("scripts.gui.lint-text")
 local extras = require("scripts.gui.extras")
 local repair = require("scripts.gui.repair")
 local logic = require("scripts.gui.tab-logic")
@@ -856,7 +856,7 @@ end
 --- @param f LintFinding
 --- @return LocalisedString
 function relative.finding_text(f)
-	return { "", "[font=default-semibold]", pm.caption(f.check), "[/font]  ", pm.detail(f, problems_tab.ENV), "\n",
+	return { "", "[font=default-semibold]", pm.caption(f.check), "[/font]  ", pm.detail(f, lint_text.ENV), "\n",
 		pm.fix(f.check, f) }
 end
 
@@ -1132,7 +1132,7 @@ local function render_setup(state, body, m, pd)
 			for _, f in ipairs(m.findings) do
 				out[#out + 1] = line({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } }, nil, sev_color(LINT_SEVERITY[f.check]))
 				-- Same detail and fix texts as the Stations Problems column, so one finding reads alike in both places.
-				out[#out + 1] = note(pm.detail(f, problems_tab.ENV))
+				out[#out + 1] = note(pm.detail(f, lint_text.ENV))
 				out[#out + 1] = note(pm.fix(f.check, f))
 				if leak and xlogic.is_counter_leak(f) then out[#out + 1] = repair.recount_button(player, pd, state.id) end
 			end
@@ -1231,7 +1231,7 @@ local function render_effective(state, body, m)
 			if ips and #ips > 0 then
 				local list = { "" }
 				for k, ip in ipairs(ips) do
-					list[#list + 1] = (k > 1 and ", " or "") .. problems_tab.ENV.item(ip.hash) .. " " .. ip.priority
+					list[#list + 1] = (k > 1 and ", " or "") .. lint_text.ENV.item(ip.hash) .. " " .. ip.priority
 				end
 				out[#out + 1] = line({ "cybersyn-gui.relative-eff-item-priority", list })
 			end

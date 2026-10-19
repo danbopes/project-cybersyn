@@ -206,7 +206,6 @@
 ---@field public fuel_threshold double
 ---@field public allow_cargo_in_depot boolean
 ---@field public alert_unexpected_cargo boolean
----@field public cargo_tolerance double percent of a fluid manifest that may be short or left aboard before the diagnostics log it
 ---@field public missing_train_alert_enabled boolean --interface setting
 ---@field public stuck_train_alert_enabled boolean --interface setting
 ---@field public react_to_train_at_incorrect_station boolean --interface setting

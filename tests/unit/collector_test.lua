@@ -160,7 +160,7 @@ test("empty: the snapshot shape", function()
 		-- PLAN3 §4.2: the hour's minimum from stats (phase 2); the fleet facts, depot groups and provider masks the lint
 		-- engine reads (phase 2b).
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
-			capability = {}, mask_or = {}, in_interrupt_count = {}, not_refuelled_count = {}, group_depots = {} },
+			capability = {}, mask_or = {}, in_interrupt_count = {}, group_depots = {} },
 		depots = { total = 0, parked = 0 },
 		depots_by_name = {},
 		provider_masks = {},
@@ -478,7 +478,6 @@ test("full pass: trains, fleet, depots and alerts", function()
 		} },
 		mask_or = { ["signal-A"] = 1 },
 		in_interrupt_count = {},
-		not_refuelled_count = {},
 		group_depots = {},
 	})
 	assert_eq(snap.depots, { total = 2, parked = 1 })

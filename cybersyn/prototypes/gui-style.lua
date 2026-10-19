@@ -55,17 +55,6 @@ for _, color in ipairs({ "default", "red", "green", "blue", "orange" }) do
 	}
 end
 
-styles.ltnm_train_minimap_button = {
-	type = "button_style",
-	parent = "button",
-	size = 60,
-	default_graphical_set = {},
-	hovered_graphical_set = {
-		base = { position = { 81, 80 }, size = 1, opacity = 0.7 },
-	},
-	clicked_graphical_set = { position = { 70, 146 }, size = 1, opacity = 0.7 },
-}
-
 -- CHECKBOX STYLES
 
 -- inactive is grey until hovered
@@ -176,41 +165,9 @@ styles.ltnm_small_slot_table_frame_light = {
 	},
 }
 
-styles.ltnm_small_slot_table_frame_dark = {
-	type = "frame_style",
-	parent = "ltnm_table_inset_frame_dark",
-	minimal_height = 36,
-	background_graphical_set = {
-		base = {
-			position = { 282, 17 },
-			corner_size = 8,
-			overall_tiling_horizontal_padding = 4,
-			overall_tiling_horizontal_size = 28,
-			overall_tiling_horizontal_spacing = 8,
-			overall_tiling_vertical_padding = 4,
-			overall_tiling_vertical_size = 28,
-			overall_tiling_vertical_spacing = 8,
-		},
-	},
-}
-
 styles.ltnm_table_inset_frame_light = {
 	type = "frame_style",
 	parent = "deep_frame_in_shallow_frame",
-}
-
-styles.ltnm_table_inset_frame_dark = {
-	type = "frame_style",
-	parent = "deep_frame_in_shallow_frame",
-	graphical_set = {
-		base = {
-			position = { 51, 0 },
-			corner_size = 8,
-			center = { position = { 42, 8 }, size = { 1, 1 } },
-			draw_type = "outer",
-		},
-		shadow = default_inner_shadow,
-	},
 }
 
 styles.ltnm_table_row_frame_light = {
@@ -246,28 +203,7 @@ styles.ltnm_table_row_frame_dark = {
 	graphical_set = {},
 }
 
-styles.ltnm_table_toolbar_frame = {
-	type = "frame_style",
-	parent = "subheader_frame",
-	left_padding = 9,
-	right_padding = 7 + 12,          -- For scrollbar
-	horizontally_stretchable = "on", -- FIXME: This causes the GUI to jump when the scrollbar appears
-	horizontal_flow_style = {
-		type = "horizontal_flow_style",
-		horizontal_spacing = 10,
-		vertical_align = "center",
-	},
-}
-
-
 -- LABEL STYLES
-
---I am unsure what this was supposed to be in 1.1
-local default_orange_color = {
-	r = 255,
-	g = 128,
-	b = 0,
-}
 
 styles.ltnm_label_signal_count_inventory = {
 	type = "label_style",
@@ -299,36 +235,6 @@ styles.ltnm_label_train_count_inventory = {
 	parent_hovered_font_color = { 1, 1, 1 },
 }
 
-styles.ltnm_label_train_count = {
-	type = "label_style",
-	parent = "ltnm_label_train_count_inventory",
-	right_padding = 6,
-	top_padding = -5,
-}
-
-local hovered_label_color = {
-	r = 0.5 * (1 + default_orange_color.r),
-	g = 0.5 * (1 + default_orange_color.g),
-	b = 0.5 * (1 + default_orange_color.b),
-}
-
-styles.ltnm_clickable_semibold_label = {
-	type = "label_style",
-	parent = "ltnm_semibold_label",
-	hovered_font_color = hovered_label_color,
-	disabled_font_color = hovered_label_color,
-}
-
-styles.ltnm_minimap_label = {
-	type = "label_style",
-	font = "default-game",
-	font_color = default_font_color,
-	size = 60,
-	vertical_align = "bottom",
-	horizontal_align = "right",
-	right_padding = 4,
-}
-
 styles.ltnm_semibold_label = {
 	type = "label_style",
 	font = "default-semibold",
@@ -340,30 +246,7 @@ styles.ltnm_column_label = {
 	left_padding = 8,
 }
 
--- MINIMAP STYLES
-
--- Smallest size at which the locomotive's surroundings stay readable; it roughly doubles the rows visible without
--- scrolling.
-styles.ltnm_train_minimap = {
-	type = "minimap_style",
-	size = 60,
-}
-
--- 67 px rows (60 minimap + 7 padding) divide the 670 px Trains scroll pane into exactly ten rows, so the last
--- visible row is never cut in half by the footer.
-styles.ltnm_train_row_frame_light = {
-	type = "frame_style",
-	parent = "ltnm_table_row_frame_light",
-	top_padding = 4,
-	bottom_padding = 3,
-}
-
-styles.ltnm_train_row_frame_dark = {
-	type = "frame_style",
-	parent = "ltnm_table_row_frame_dark",
-	top_padding = 4,
-	bottom_padding = 3,
-}
+-- SUBFOOTER STYLES
 
 styles.ltnm_subfooter_frame = {
 	type = "frame_style",
@@ -376,12 +259,6 @@ styles.ltnm_subfooter_frame = {
 		horizontal_spacing = 12,
 		vertical_align = "center",
 	},
-}
-
-styles.ltnm_squashable_semibold_label = {
-	type = "label_style",
-	parent = "ltnm_semibold_label",
-	horizontally_squashable = "on",
 }
 
 -- CHART OVERLAY BUTTON STYLE
@@ -398,15 +275,6 @@ styles.cybersyn_chart_overlay_button = {
 }
 
 -- SCROLL PANE STYLES
-
-styles.ltnm_table_scroll_pane = {
-	type = "scroll_pane_style",
-	parent = "flib_naked_scroll_pane_no_padding",
-	vertical_flow_style = {
-		type = "vertical_flow_style",
-		vertical_spacing = 0,
-	},
-}
 
 styles.ltnm_slot_table_scroll_pane = {
 	type = "scroll_pane_style",
@@ -867,20 +735,6 @@ styles.cybersyn_unserved_cell_flow = {
 	height = 32,
 }
 
-styles.cybersyn_unserved_icon_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 2,
-	width = 64,
-}
-
--- Icons after a name's text: only as wide as the icons it shows.
-styles.cybersyn_name_tail_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 2,
-}
-
 styles.cybersyn_unserved_ack = {
 	type = "button_style",
 	parent = "tool_button",
@@ -1017,12 +871,6 @@ styles.cybersyn_cell_value_orange = {
 	font_color = { 1, 0.6, 0.2 },
 }
 
-styles.cybersyn_cell_value_grey = {
-	type = "label_style",
-	parent = "cybersyn_cell_value",
-	font_color = { 0.6, 0.6, 0.6 },
-}
-
 styles.cybersyn_overflow_label = {
 	type = "label_style",
 	font = "default-semibold",
@@ -1040,21 +888,6 @@ styles.cybersyn_filter_chip = {
 	left_padding = 6,
 	right_padding = 6,
 }
-
--- The second, smaller chip in a Stations status cell (a setup finding) and the State chips on Trains.
-local function small_chip(parent)
-	return {
-		type = "button_style",
-		parent = parent,
-		height = 22,
-		left_padding = 4,
-		right_padding = 4,
-		font = "default-small-semibold",
-	}
-end
-styles.cybersyn_small_chip_red = small_chip("cybersyn_chip_red")
-styles.cybersyn_small_chip_orange = small_chip("cybersyn_chip_orange")
-styles.cybersyn_small_chip_grey = small_chip("cybersyn_chip_grey")
 
 styles.cybersyn_train_id_button = {
 	type = "button_style",
@@ -1092,13 +925,6 @@ styles.cybersyn_inventory_grid_header = {
 styles.cybersyn_sort_tool_button = {
 	type = "button_style",
 	parent = "tool_button",
-	size = 28,
-	padding = 2,
-}
-
-styles.cybersyn_sort_tool_button_selected = {
-	type = "button_style",
-	parent = "flib_selected_tool_button",
 	size = 28,
 	padding = 2,
 }
@@ -1218,18 +1044,6 @@ styles.cybersyn_log_cell_flow = {
 	vertical_align = "center",
 	horizontal_spacing = 4,
 	height = 28,
-}
-
-styles.cybersyn_log_icon_flow = {
-	type = "horizontal_flow_style",
-	vertical_align = "center",
-	horizontal_spacing = 0,
-}
-
-styles.cybersyn_log_icon = {
-	type = "image_style",
-	size = 20,
-	stretch_image_to_widget_size = true,
 }
 
 styles.cybersyn_log_item = {

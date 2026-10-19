@@ -1163,31 +1163,6 @@ function send_alert_missing_train(r_stop, p_stop)
 	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.missing-train")
 	diag.alert(DIAG_ALERT_MISSING_TRAIN, nil, r_stop, p_stop)
 end
----Trains exist on the network but every one was rejected by mask, manual mode, schedule or surface (B3).
----@param r_stop LuaEntity
----@param p_stop LuaEntity
-function send_alert_trains_filtered(r_stop, p_stop)
-	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.trains-filtered")
-	diag.alert(DIAG_ALERT_TRAINS_FILTERED, nil, r_stop, p_stop)
-end
----@param r_stop LuaEntity
----@param p_stop LuaEntity
-function send_alert_no_train_has_capacity(r_stop, p_stop)
-	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.no-train-has-capacity")
-	diag.alert(DIAG_ALERT_NO_TRAIN_HAS_CAPACITY, nil, r_stop, p_stop)
-end
----@param r_stop LuaEntity
----@param p_stop LuaEntity
-function send_alert_no_train_matches_r_layout(r_stop, p_stop)
-	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.no-train-matches-r-layout")
-	diag.alert(DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT, nil, r_stop, p_stop)
-end
----@param r_stop LuaEntity
----@param p_stop LuaEntity
-function send_alert_no_train_matches_p_layout(r_stop, p_stop)
-	send_alert_about_missing_train(r_stop, p_stop, "cybersyn-messages.no-train-matches-p-layout")
-	diag.alert(DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT, nil, r_stop, p_stop)
-end
 
 local send_stuck_train_alert_icon = { name = LOST_TRAIN_NAME, type = "fluid" }
 ---@param map_data MapData

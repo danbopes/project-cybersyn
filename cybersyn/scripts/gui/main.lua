@@ -1,5 +1,3 @@
-local gui = require("__flib__.gui")
-local mod_gui = require("__core__.lualib.mod-gui")
 
 local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
@@ -42,7 +40,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field surface_count integer? #game.surfaces when the drop-down was built
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see util.get_sort
 --- @field page {[string]: integer}? current page per tab, see util.paginate
---- @field page_size integer? cached cybersyn-manager-page-size
+--- @field page_size integer? lower row cap than util.MAX_PAGE_SIZE, set only by the lab; cleared on open
 --- @field gui_state {[string]: {keys: (string|number)[]?, dirty: true?}}? per container, see util.sync_children
 --- @field hover {tick: uint, scope: string?, index: uint}? element under the cursor, see util.hold_active
 --- @field paused boolean? title-bar pause: no renders and no collection for this player
@@ -57,11 +55,6 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field dialog_opening uint? the tick the action dialog took player.opened (the window's on_gui_closed ignores it)
 --- @field selected_tab string? "overview_tab"|"inventory_tab"|"stations_tab"|"trains_tab"|"utilization_tab"|"delivery_breakdown_tab"
 --- @field previous_tab string?
---- @field delivery_times_interval uint?
---- @field delivery_times_mode string?
---- @field delivery_times_selected {[string]: boolean}?
---- @field utilization_interval uint?
---- @field utilization_selected {[string]: boolean}?
 --- @field inventory_cache table? inventory tab aggregate + top stations for one snapshot pass and filter set; dropped on close
 --- @field inventory_version integer? bumped per inventory_cache rebuild, see inventory.get_cache
 --- @field layout ManagerLayout? window size for the player's screen, see manager.layout
@@ -75,30 +68,11 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field chip_sig string? item filter the chips show
 --- @field collecting_shown int? progress the subheaders show, -1 = none
 --- @field trains_badge int? alert count on the Trains tab
---- @field unserved_minutes int? cached cybersyn-manager-unserved-minutes
+--- @field unserved_minutes int? Overview tile threshold in place of its 5 min, set only by the lab
 --- @field relative_open {kind: "stop"|"train", id: uint, mount: string?, narrow: true?, tick: uint?, pane_narrow: boolean?, groups: int?}? the Cybersyn panel beside an open vanilla window: `narrow` = stop panel hidden on a narrow screen; `tick`, `pane_narrow`, `groups` = the docked train pane it was placed beside, see relative.lua place_train
 --- @field remote_entered_tick uint? last tick the controller changed from the character to remote view (the train pane's width depends on it)
 --- @field relative RelativeState? that panel's render state, see scripts/gui/relative.lua
 --- @field relative_effective_open true? the stop panel's Effective config section is expanded
-
-local function top_left_button_update(player, player_data)
-	local button_flow = mod_gui.get_button_flow(player)
-	local button = button_flow["top_left_button"]
-	if player_data.disable_top_left_button then
-		if button then
-			button.destroy()
-		end
-	elseif not button then
-		gui.add(button_flow, {
-			type = "sprite-button",
-			name = "top_left_button",
-			style = "mis_mod_gui_button_green",
-			sprite = "mis_configure_white",
-			tooltip = { "", "\n", { "cybersyn.gui.configure-tooltip" } },
-			handler = manager.handle.manager_toggle,
-		})
-	end
-end
 
 local manager_gui = {}
 manager_gui.manager = manager
@@ -141,9 +115,7 @@ function manager_gui.on_lua_shortcut(e)
 					manager.wrapper(e, manager.handle.manager_toggle)
 				end
 			elseif e.element.name == COMBINATOR_NAME and e.name == defines.events.on_gui_closed then
-				-- With the manager enabled, this handler overwrites the combinator's
-				-- on_gui_close handler. Copy the logic to close the combinator's GUI here
-				-- as well.
+				-- The combinator's own close handler keeps the window when its combinator is already gone.
 				local player = game.get_player(e.player_index)
 				if not player then return end
 				if player.gui.screen[COMBINATOR_NAME] then
@@ -200,6 +172,9 @@ local function init_player_fields(player_data)
 	if player_data.paused == nil then player_data.paused = false end
 	player_data.page_size = nil
 	player_data.hover = nil
+	-- Left by the removed Problems tab.
+	player_data.problems_badge, player_data.problems_scan_sig, player_data.problems_model = nil, nil, nil
+	player_data.problems_filter, player_data.problems_widths = nil, nil
 	if player_data.search_item and not util.signal_hash_valid(player_data.search_item) then
 		player_data.search_item = nil
 	end
@@ -225,9 +200,6 @@ local function create_player(player_index)
 	init_player_fields(player_data)
 	storage.manager.players[player_index] = player_data
 	extras.ensure_trains_anchor(player)
-
-	--manager.update(storage, player, player_data)
-	--top_left_button_update(player, player_data)
 end
 
 function manager_gui.on_player_created(e)
@@ -260,21 +232,7 @@ end
 --end)
 
 function manager_gui.on_runtime_mod_setting_changed(e)
-	if e.setting == "cybersyn-disable-top-left-button" then
-		if not e.player_index then return end
-		local player = game.get_player(e.player_index)
-		if not player then return end
-
-		local player_data = storage.manager.players[e.player_index]
-		player_data.disable_top_left_button = player.mod_settings["cybersyn-disable-top-left-button"].value
-		top_left_button_update(player, player_data)
-	elseif e.setting == "cybersyn-manager-page-size" then
-		local player_data = e.player_index and storage.manager.players[e.player_index]
-		if player_data then
-			player_data.page_size = nil
-			util.reset_pages(player_data)
-		end
-	elseif e.setting == "cybersyn-diagnostics" then
+	if e.setting == "cybersyn-diagnostics" then
 		-- The Log tab shows only while diagnostics are on; with manager updates off nothing else would hide it.
 		local manager_data = storage.manager
 		if not manager_data then return end
@@ -288,9 +246,6 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 		local player_data = e.player_index and storage.manager.players[e.player_index]
 		local player = e.player_index and game.get_player(e.player_index)
 		if player and player_data then extras.hud_setting_changed(player, player_data) end
-	elseif e.setting == "cybersyn-manager-unserved-minutes" then
-		local player_data = e.player_index and storage.manager.players[e.player_index]
-		if player_data then player_data.unserved_minutes = nil end
 	elseif e.setting == "cybersyn-enable-planner" then
 		-- Who paused the dispatcher, for the banner; nil player_index = the server or a script.
 		local manager_data = storage.manager
@@ -304,7 +259,7 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 			end
 		end
 	elseif e.setting == "cybersyn-enable-analytics" then
-		-- Rebuild all GUIs when analytics setting changes to show/hide tabs
+		-- The Breakdown tab exists only while analytics records, so every window is rebuilt.
 		local manager_data = storage.manager
 		if manager_data then
 			for i, v in pairs(manager_data.players) do
@@ -388,9 +343,6 @@ function manager_gui.on_migration()
 	if not storage.manager then
 		manager_gui.on_init()
 	end
-	if not storage.recent_external_items then
-		storage.recent_external_items = {}
-	end
 
 	for i, p in pairs(game.players) do
 		if storage.manager.players[i] == nil then
@@ -411,7 +363,6 @@ function manager_gui.on_init()
 	storage.manager = {
 		players = {},
 	}
-	storage.recent_external_items = {}
 	init_items(storage.manager)
 	collector.init()
 end

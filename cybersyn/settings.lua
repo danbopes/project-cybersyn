@@ -137,26 +137,6 @@ data:extend({
 		maximum_value = 60,
 	},
 	{
-		type = "int-setting",
-		name = "cybersyn-manager-page-size",
-		order = "aa",
-		setting_type = "runtime-per-user",
-		-- The most rows a list tab shows; the window's height decides how many fit (scripts/gui/sizing.lua).
-		default_value = 200,
-		minimum_value = 10,
-		-- About 9 ms per Stations render at 500 rows on a 2,000-station base; 200 stays near the 5 ms budget.
-		maximum_value = 200,
-	},
-	{
-		type = "int-setting",
-		name = "cybersyn-manager-unserved-minutes",
-		order = "ac",
-		setting_type = "runtime-per-user",
-		default_value = 5,
-		minimum_value = 1,
-		maximum_value = 60,
-	},
-	{
 		type = "string-setting",
 		name = "cybersyn-diagnostics",
 		order = "da",
@@ -165,30 +145,9 @@ data:extend({
 		allowed_values = { "off", "basic", "full" },
 	},
 	{
-		type = "int-setting",
-		name = "cybersyn-diagnostics-ring",
-		order = "db",
-		setting_type = "runtime-global",
-		-- The full ring only; the basic ring is fixed at 4,096 rows.
-		default_value = 16384,
-		minimum_value = 1024,
-		maximum_value = 65536,
-	},
-	{
-		type = "double-setting",
-		name = "cybersyn-cargo-tolerance",
-		order = "dc",
-		setting_type = "runtime-global",
-		-- Percent of a fluid manifest that may be missing at the provider or left at the requester before the log
-		-- records it; items count any shortfall.
-		default_value = 2,
-		minimum_value = 0,
-		maximum_value = 20,
-	},
-	{
 		type = "string-setting",
 		name = "cybersyn-manager-actions",
-		order = "dd",
+		order = "ae",
 		setting_type = "runtime-global",
 		default_value = "admins",
 		allowed_values = { "admins", "everyone", "nobody" },
@@ -201,15 +160,6 @@ data:extend({
 		default_value = false,
 	},
 	{
-		type = "double-setting",
-		name = "cybersyn-manager-refuel-hours",
-		order = "ac",
-		setting_type = "runtime-per-user",
-		default_value = 1,
-		minimum_value = 0.25,
-		maximum_value = 24,
-	},
-	{
 		type = "bool-setting",
 		name = "cybersyn-manager-dev-interface",
 		order = "ab",
@@ -217,20 +167,4 @@ data:extend({
 		-- On in this fork: the headless lab pins startup settings from the save, which records none for this key.
 		default_value = true,
 	},
-	--{
-	--  type = "bool-setting",
-	--  name = "cybersyn-disable-top-left-button",
-	--  setting_type = "runtime-player",
-	--  default_value = false,
-	--  order = "ea",
-	--},
-	--{
-	--  type = "int-setting",
-	--  name = "cybersyn-history-length",
-	--  setting_type = "runtime-global",
-	--  minimum_value = 10,
-	--  maximum_value = 1000,
-	--  default_value = 50,
-	--  order = "eb",
-	--},
 })

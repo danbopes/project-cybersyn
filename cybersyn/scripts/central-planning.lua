@@ -472,16 +472,19 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 	return manifest
 end
 
----@param map_data MapData
----@param mod_settings CybersynModSettings
--- B6: the no-train alerts (NO_TRAINS_ON_NETWORK and TRAIN_FILTERED) are sent once per (item, network) per planner
--- cycle, on the stop of the requester that has waited longest, instead of once per failing requester evaluation.
--- tick_dispatch only notes the evaluation (no API call, no storage.diag read); tick_init sends what the cycle noted.
-local DEDUPED_ALERT_MESSAGE = {
+local REQUESTER_ALERT_MESSAGE = {
 	[DIAG_ALERT_MISSING_TRAIN] = "cybersyn-messages.missing-train",
 	[DIAG_ALERT_TRAINS_FILTERED] = "cybersyn-messages.trains-filtered",
+	[DIAG_ALERT_NO_TRAIN_HAS_CAPACITY] = "cybersyn-messages.no-train-has-capacity",
+	[DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT] = "cybersyn-messages.no-train-matches-r-layout",
+	[DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT] = "cybersyn-messages.no-train-matches-p-layout",
 }
 
+-- The no-train alerts (NO_TRAINS_ON_NETWORK and TRAIN_FILTERED) are sent once per (item, network) per planner
+-- cycle, on the stop of the requester that has waited longest, instead of once per failing requester evaluation:
+-- a network short of trains fails every requester of an item on every pass, which flooded the alert list and paid
+-- an API call each time. tick_dispatch only notes the evaluation (no API call, no storage.diag read); tick_init
+-- sends what the cycle noted.
 ---@param map_data MapData
 ---@return {cycle: int, sent: int, keys: {[string]: table}}
 local function alert_dedupe(map_data)
@@ -530,7 +533,7 @@ local function flush_no_train_alerts(map_data, d)
 		local r, p = stations[e.r_id], stations[e.p_id]
 		local r_stop, p_stop = r and r.entity_stop, p and p.entity_stop
 		if r_stop and p_stop and r_stop.valid and p_stop.valid then
-			e.shown_text = send_alert_about_missing_train(r_stop, p_stop, DEDUPED_ALERT_MESSAGE[e.code])
+			e.shown_text = send_alert_about_missing_train(r_stop, p_stop, REQUESTER_ALERT_MESSAGE[e.code])
 			e.shown = e.r_id
 			e.sent = (e.sent or 0) + 1
 			ad.sent = ad.sent + 1
@@ -542,11 +545,13 @@ end
 
 ---The other requester alerts stay one per failing evaluation; the planner logs them with the ids it holds.
 ---@param d DiagState?
-local function requester_alert(d, message, code, r_station, p_station, r_station_id, p_station_id)
-	send_alert_about_missing_train(r_station.entity_stop, p_station.entity_stop, message)
+local function requester_alert(d, code, r_station, p_station, r_station_id, p_station_id)
+	send_alert_about_missing_train(r_station.entity_stop, p_station.entity_stop, REQUESTER_ALERT_MESSAGE[code])
 	if d then diag.alert_ids(d, code, r_station_id, p_station_id) end
 end
 
+---@param map_data MapData
+---@param mod_settings CybersynModSettings
 local function tick_dispatch(map_data, mod_settings)
 	--we do not dispatch more than one train per tick
 	--psuedo-randomize what item (and what station) to check first so if trains available is low they choose orders psuedo-randomly
@@ -1009,13 +1014,13 @@ local function tick_dispatch(map_data, mod_settings)
 						trains and DIAG_ALERT_TRAINS_FILTERED or DIAG_ALERT_MISSING_TRAIN, r_station_id, closest_id,
 						wait_so_far)
 				elseif correctness == 2 then
-					requester_alert(d, "cybersyn-messages.no-train-has-capacity", DIAG_ALERT_NO_TRAIN_HAS_CAPACITY,
+					requester_alert(d, DIAG_ALERT_NO_TRAIN_HAS_CAPACITY,
 						r_station, closest_to_correct_p_station, r_station_id, closest_id)
 				elseif correctness == 3 then
-					requester_alert(d, "cybersyn-messages.no-train-matches-r-layout", DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT,
+					requester_alert(d, DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT,
 						r_station, closest_to_correct_p_station, r_station_id, closest_id)
 				elseif correctness == 4 then
-					requester_alert(d, "cybersyn-messages.no-train-matches-p-layout", DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT,
+					requester_alert(d, DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT,
 						r_station, closest_to_correct_p_station, r_station_id, closest_id)
 				end
 			end

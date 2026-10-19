@@ -344,9 +344,6 @@ function interface.set_player_setting(pi, name, value)
 		error("not a runtime-per-user setting of " .. script.mod_name .. ": " .. tostring(name))
 	end
 	settings.get_player_settings(pi)[name] = { value = value }
-	local _, pd = context(pi)
-	pd.unserved_minutes = nil
-	pd.page_size = nil
 	return settings.get_player_settings(pi)[name].value
 end
 
@@ -1265,7 +1262,7 @@ end
 function interface.fleet_capability()
 	local fleet = collector.get().fleet
 	return { capability = fleet.capability, mask_or = fleet.mask_or, in_interrupt_count = fleet.in_interrupt_count,
-		not_refuelled_count = fleet.not_refuelled_count, group_depots = fleet.group_depots }
+		group_depots = fleet.group_depots }
 end
 
 --- "network:hash" -> the lowest provider item threshold the last snapshot holds.
@@ -1317,51 +1314,6 @@ function interface.train_schedule_changed(train_id, player_index)
 	on_train_schedule_changed({ train = train.entity, player_index = player_index, tick = game.tick,
 		name = defines.events.on_train_schedule_changed })
 	return true
-end
-
---- PLAN3 §4.5 decision check: requests the planner polled as active whose (requester, item) has no unserved entry.
---- Reads the manager snapshot (collect first); `min_wait` in ticks filters on the tracked request start.
-function interface.diag_coverage(min_wait, top)
-	local d = storage.diag
-	local snap = collector.get()
-	local now = game.tick
-	local out = { stations_active = 0, stations_uncovered = 0, keys_active = 0, keys_uncovered = 0,
-		keys_uncovered_waiting = 0, failed_display_uncovered = 0, examples = {} }
-	local examples = {}
-	for id, st in pairs(snap.stations) do
-		local station = storage.stations[id]
-		local by_item = d and d.unserved[id]
-		local active, uncovered = false, false
-		for hash, req in pairs(st.requested) do
-			if req.active then
-				active = true
-				out.keys_active = out.keys_active + 1
-				local ix = d and d.item_ix[hash]
-				if not (by_item and ix and by_item[ix]) then
-					uncovered = true
-					out.keys_uncovered = out.keys_uncovered + 1
-					local start = station and station.request_start_ticks and station.request_start_ticks[hash]
-					local wait = start and (now - start) or nil
-					if wait and wait >= (min_wait or 0) then
-						out.keys_uncovered_waiting = out.keys_uncovered_waiting + 1
-						examples[#examples + 1] = { id = id, name = st.name, item = hash, wait = wait,
-							priority = station and station.priority, deliveries = st.deliveries_total, limit = st.trains_limit,
-							last_delivery_tick = st.last_delivery_tick, display_state = station and station.display_state }
-					end
-				end
-			end
-		end
-		if active then out.stations_active = out.stations_active + 1 end
-		if uncovered then
-			out.stations_uncovered = out.stations_uncovered + 1
-			if station and bit32.band(station.display_state or 0, 2) ~= 0 then
-				out.failed_display_uncovered = out.failed_display_uncovered + 1
-			end
-		end
-	end
-	table.sort(examples, function(a, b) return a.wait > b.wait end)
-	for i = 1, math.min(top or 10, #examples) do out.examples[i] = examples[i] end
-	return out
 end
 
 --- Several functions at once (dev.add for each).

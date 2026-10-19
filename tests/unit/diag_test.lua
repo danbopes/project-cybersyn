@@ -13,7 +13,7 @@ end
 local function setup(mode, ring)
 	diag.SWEEP_EVERY = 4
 	settings.global["cybersyn-diagnostics"] = { value = mode or "basic" }
-	settings.global["cybersyn-diagnostics-ring"] = { value = ring or 16384 }
+	diag.FULL_RING = ring or 16384
 	storage.trains = storage.trains or {}
 	storage.stations = storage.stations or {}
 	return diag.apply()

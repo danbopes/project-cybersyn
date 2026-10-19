@@ -403,7 +403,6 @@ package.preload["__core__.lualib.util"] = function() return {} end
 package.preload["scripts.analytics"] = function() return {} end
 
 harness.flib_gui = flib_gui
-harness.flib_format = flib_format
 
 -- ---------------------------------------------------------------- fake LuaGuiElement
 

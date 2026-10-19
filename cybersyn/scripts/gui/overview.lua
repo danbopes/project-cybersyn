@@ -69,16 +69,13 @@ local FAILING_LINES = { "no_power", "disabled", "throttling", "misconfigured" }
 
 local get_period = logic.get_period
 
+-- Requests waiting longer than this make tile 1's first line; shorter waits are normal between planner cycles.
+local UNSERVED_MINUTES = 5
+
 --- @param player_data PlayerData
 --- @return int
 local function unserved_minutes(player_data)
-	local m = player_data.unserved_minutes
-	if not m then
-		local setting = settings.get_player_settings(player_data.player_index)["cybersyn-manager-unserved-minutes"]
-		m = setting and setting.value --[[@as int]] or 5
-		player_data.unserved_minutes = m
-	end
-	return m
+	return player_data.unserved_minutes or UNSERVED_MINUTES
 end
 
 -- ---------------------------------------------------------------- build

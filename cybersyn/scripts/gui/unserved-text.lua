@@ -62,12 +62,6 @@ function text.stock_caption(reason, a, b)
 	return text.NO_VALUE
 end
 
---- A plain-string signature of text.stock_caption's result, for sig guards.
---- @return string
-function text.stock_sig(reason, a, b)
-	return tostring(reason) .. ":" .. tostring(a) .. ":" .. tostring(b)
-end
-
 --- Wait column: two units at most, "≥" when the entry predates this diagnostics state (the save load), so the wait is
 --- a lower bound rather than a measurement.
 --- @param ticks number

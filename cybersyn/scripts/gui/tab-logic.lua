@@ -190,21 +190,6 @@ function logic.train_widths(content_width, hidden, pane)
 	return w
 end
 
---- The px the shown Trains columns take with their gaps and the row padding (logic.train_widths).
---- @param w table
---- @return int
-function logic.train_columns_total(w)
-	local total, shown = 0, 0
-	for _, c in ipairs(logic.TRAIN_WIDTHS) do
-		local v = w[c[1]]
-		if v then
-			total = total + v
-			shown = shown + 1
-		end
-	end
-	return total + math.max(shown - 1, 0) * COLUMN_GAP + ROW_PADDING
-end
-
 --- How many slots of a one-line slot strip show items when `n` items share `capacity` slots: when they do not all
 --- fit, the last slot becomes the "+n" overflow count, so a row never wraps.
 --- @param n int
@@ -461,9 +446,9 @@ function logic.age(now, tick)
 	return d > 0 and d or 0
 end
 
---- Whether a train counts for the Not refuelled > N h chip: not seen at a refueler for longer than the per-user
---- hours. A train never seen at one gets the same time from `refuel_from` (lint.refuel_from: since Cybersyn first
---- saw it, or since refuels are tracked), the grace the collector's not_refuelled_count and the lint give it.
+--- Whether a train counts for the Not refuelled > N h chip: not seen at a refueler for longer than `hours`. A train
+--- never seen at one gets the same time from `refuel_from` (lint.refuel_from: since Cybersyn first saw it, or since
+--- refuels are tracked), the grace the lint gives it.
 --- @param now number
 --- @param refuel_tick number?
 --- @param hours number
@@ -673,14 +658,6 @@ function logic.stuck_stations(alerts, trains, stuck_kind)
 		end
 	end
 	return out
-end
-
---- Chip captions: names with counts when they all fit next to what else the subheader shows, else icon and count.
---- @param available int px left in the subheader
---- @param full int px the chips need with names
---- @return "full"|"compact"
-function logic.chip_mode(available, full)
-	return full <= available and "full" or "compact"
 end
 
 -- ---------------------------------------------------------------- inventory

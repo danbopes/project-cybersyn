@@ -3,7 +3,6 @@ local manager = require("gui.main")
 local manager_dev = require("scripts.gui.dev")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 local analytics = require("scripts.analytics")
-local stats = require("scripts.stats")
 local diag = require("scripts.diag")
 local fork_migrations = require("scripts.fork-migrations")
 local lint = require("scripts.lint")
@@ -587,7 +586,8 @@ function combinator_update(map_data, comb, reset_display)
 		if type == nil then
 			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
 		end
-		if type == 1 or type == 2 then
+		-- 5 = a secondary inventory combinator, whose id is its station's
+		if type == 1 or type == 2 or type == 5 then
 			--NOTE: these updates have to be queued to occur at tick init since central planning is expecting them not to change between ticks
 			queue_station_for_combinator_update(map_data, id)
 		elseif type == 3 then
@@ -605,16 +605,6 @@ function combinator_update(map_data, comb, reset_display)
 			end
 		elseif type == 4 then
 			set_refueler_from_comb(map_data, mod_settings, id, entity --[[@as Refueler]])
-		else
-			-- Check if it's a secondary inventory combinator
-			local stop = map_data.to_stop[unit_number]
-			if stop and stop.valid then
-				local station_id = stop.unit_number --[[@as uint]]
-				local station = map_data.stations[station_id]
-				if station then
-					queue_station_for_combinator_update(map_data, station_id)
-				end
-			end
 		end
 	end
 
@@ -625,7 +615,7 @@ function combinator_update(map_data, comb, reset_display)
 			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
 		end
 		--depots do not cache any combinator values so we don't have to update them here
-		if type == 1 or type == 2 then
+		if type == 1 or type == 2 or type == 5 then
 			--NOTE: these updates have to be queued to occur at tick init since central planning is expecting them not to change between ticks
 			queue_station_for_combinator_update(map_data, id)
 		elseif type == 4 then
@@ -634,16 +624,6 @@ function combinator_update(map_data, comb, reset_display)
 			set_refueler_from_comb(map_data, mod_settings, id, refueler)
 			if refueler.allows_all_trains ~= pre then
 				update_stop_if_auto(map_data, refueler, false)
-			end
-		else
-			-- Check if it's a secondary inventory combinator
-			local stop = map_data.to_stop[unit_number]
-			if stop and stop.valid then
-				local station_id = stop.unit_number --[[@as uint]]
-				local station = map_data.stations[station_id]
-				if station then
-					queue_station_for_combinator_update(map_data, station_id)
-				end
 			end
 		end
 	end
@@ -906,7 +886,6 @@ local function grab_all_settings()
 	mod_settings.allow_cargo_in_depot = settings.global["cybersyn-allow-cargo-in-depot"].value --[[@as boolean]]
 	mod_settings.manager_ups = settings.global["cybersyn-manager-updates-per-second"].value --[[@as double]]
 	mod_settings.alert_unexpected_cargo = settings.global["cybersyn-alert-unexpected-cargo"].value --[[@as boolean]]
-	mod_settings.cargo_tolerance = settings.global["cybersyn-cargo-tolerance"].value --[[@as double]]
 end
 local function register_tick()
 	script.on_nth_tick(nil)
@@ -973,7 +952,7 @@ local function on_settings_changed(event)
 	grab_all_settings()
 	if event.setting == "cybersyn-ticks-per-second" or event.setting == "cybersyn-manager-updates-per-second" then
 		register_tick()
-	elseif event.setting == "cybersyn-diagnostics" or event.setting == "cybersyn-diagnostics-ring" then
+	elseif event.setting == "cybersyn-diagnostics" then
 		diag.apply()
 	end
 	manager.on_runtime_mod_setting_changed(event)
@@ -1050,14 +1029,6 @@ local function main()
 
 	register_gui_actions()
 
-	-- Wire up cross-mod interop: when an external item arrives, mark player panels dirty
-	interop_on_external_item_callback = function(player_index, item_name, source)
-		local player_data = storage.manager and storage.manager.players[player_index]
-		if player_data and player_data.is_manager_open then
-			player_data.recent_panel_dirty = true
-		end
-	end
-
 	script.on_init(function()
 		init_global()
 		if analytics.is_enabled() then
@@ -1066,23 +1037,18 @@ local function main()
 		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
 		manager.on_init()
-		stats.init()
 		fork_migrations.migrate_schema()
-		interop_subscribe_to_events()
 	end)
 
 	script.on_configuration_changed(function(e)
 		on_config_changed(e)
 		manager.on_migration()
-		stats.init()
 		fork_migrations.migrate_schema()
-		interop_subscribe_to_events()
 	end)
 
 	script.on_load(function()
 		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
-		interop_subscribe_to_events()
 	end)
 
 	-- flib's handle_events skips events that already have a handler; hover-hold, tab sync and the search field's
@@ -1111,12 +1077,18 @@ local function main()
 	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
 	script.on_event(defines.events.on_player_created, manager.on_player_created)
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
-	script.on_event(defines.events.on_gui_closed, manager.on_gui_closed)
-	-- The relative panels run after the entity GUI handlers register_gui_actions installed.
+	-- The manager's handlers run after the entity GUI handlers register_gui_actions installed: on_event keeps one
+	-- handler per event, so registering the manager's alone would drop those (the elevator panel, the combinator
+	-- window's close).
 	local entity_gui_opened = script.get_event_handler(defines.events.on_gui_opened)
 	script.on_event(defines.events.on_gui_opened, function(e)
 		if entity_gui_opened then entity_gui_opened(e) end
 		manager.on_gui_opened(e)
+	end)
+	local entity_gui_closed = script.get_event_handler(defines.events.on_gui_closed)
+	script.on_event(defines.events.on_gui_closed, function(e)
+		if entity_gui_closed then entity_gui_closed(e) end
+		manager.on_gui_closed(e)
 	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)

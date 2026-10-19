@@ -348,8 +348,7 @@ lab.suite("39_bundle", {
 		lab.check("cases.lua loaded", cases ~= nil and cases.base ~= nil)
 		bx.setting = settings.global["cybersyn-diagnostics"].value
 		dev("set_setting", "cybersyn-diagnostics", "basic")
-		lab.check("cargo tolerance defaults to 2 %", settings.global["cybersyn-cargo-tolerance"].value == 2,
-			settings.global["cybersyn-cargo-tolerance"].value)
+		lab.check("cargo tolerance is a fixed 2 %, not a setting", prototypes.mod_setting["cybersyn-cargo-tolerance"] == nil)
 		script.on_event(remote.call("cybersyn", "get_on_tick_init"), function()
 			local ok, err = pcall(function()
 				bx.inits[#bx.inits + 1] = { tick = game.tick, dispatches = bx.dispatches, cycle = dev("cycle") }

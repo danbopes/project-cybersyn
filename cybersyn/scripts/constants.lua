@@ -349,6 +349,12 @@ LINT_SUBJECT_NAMES = { "station", "depot", "refueler", "train", "stop", "combina
 DIAG_LINT_APPEARED = 1
 DIAG_LINT_CLEARED = 2
 
+-- A train on a network some refueler serves counts as not refuelled (the lint, the Trains chip) once it went this
+-- long without visiting one, measured from its first sighting (Train.seen_tick) and never from before refuel_tick
+-- existed (storage.stats.refuel_since), so neither a new train nor one from an older save is flagged before it had
+-- the chance to visit a refueler. One hour.
+REFUEL_GRACE_TICKS = 216000
+
 -- `a` of a manual_action event: what a state-changing command or action did.
 ACTION_FIX_PRIORITIES = 1
 ACTION_ABOLISH_SAME_DEPOT = 2
