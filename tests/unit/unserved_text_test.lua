@@ -92,23 +92,6 @@ test("read_ago and read_step: rounded down to 10 s so tooltips are not rebuilt e
 	assert_eq(t.read_step(nil), -1)
 end)
 
---- Values of one section of a cfg file, by key.
-local function cfg_section(path, section)
-	local f = assert(io.open(path, "r"))
-	local out, current = {}, nil
-	for line in f:lines() do
-		local head = line:match("^%[(.-)%]")
-		if head then
-			current = head
-		elseif current == section then
-			local k, v = line:match("^([^=;#]+)=(.*)$")
-			if k then out[k] = v end
-		end
-	end
-	f:close()
-	return out
-end
-
 --- Highest __n__ a locale value refers to.
 local function max_param(value)
 	local n = 0
@@ -116,10 +99,10 @@ local function max_param(value)
 	return n
 end
 
-test("locale: every reason's chip, why and fix line gets every __n__ it names, in every manager.cfg", function()
+test("locale: every reason's chip, why and fix line gets every __n__ it names, in every locale", function()
 	local t = text()
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local cfg = cfg_section(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "cybersyn-diag")
+	for _, loc in ipairs(H.LOCALES) do
+		local cfg = H.locale(loc)["cybersyn-diag"]
 		for code, key in pairs(REASON_KEYS) do
 			local rendered = {
 				t.chip_caption(code),

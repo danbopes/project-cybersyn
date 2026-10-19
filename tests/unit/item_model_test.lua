@@ -347,7 +347,7 @@ test("train_chip: every Cybersyn status maps to a Trains chip", function()
 	assert_eq(m.train_chip(300, S), nil)
 end)
 
-test("locale: every key the drill-down uses, in every manager.cfg", function()
+test("locale: every key the drill-down uses, in every locale with the en fallback", function()
 	local function read(path)
 		local f = assert(io.open(H.mod_root .. "/" .. path, "r"))
 		local text = f:read("*a")
@@ -380,8 +380,8 @@ test("locale: every key the drill-down uses, in every manager.cfg", function()
 	local n = 0
 	for _ in pairs(keys) do n = n + 1 end
 	assert_true(n > 40, "found the keys")
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local text = read("locale/" .. loc .. "/manager.cfg")
+	for _, loc in ipairs(H.LOCALES) do
+		local text = H.locale_text(loc)
 		for k in pairs(keys) do
 			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
 		end

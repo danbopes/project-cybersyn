@@ -17,11 +17,11 @@ test("breakdown ranges: every button covers exactly the span its caption names",
 	assert_eq({ analytics.range_ticks("1m"), analytics.range_ticks("10h"), analytics.range_ticks("5s") }, { 3600, 2160000, nil })
 end)
 
-test("breakdown ranges: each range has its caption and tooltip in every manager.cfg", function()
+test("breakdown ranges: each range has its caption and tooltip in every locale", function()
 	for _, r in ipairs(analytics.BREAKDOWN_RANGES) do
 		for _, key in ipairs({ "breakdown-range-" .. r.key, "breakdown-range-tooltip-" .. r.key }) do
-			for _, lang in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-				local text = io.open("cybersyn/locale/" .. lang .. "/manager.cfg"):read("*a")
+			for _, lang in ipairs(H.LOCALES) do
+				local text = H.locale_text(lang)
 				assert_true(text:find("\n" .. key .. "=", 1, true) ~= nil, lang .. " " .. key)
 			end
 		end

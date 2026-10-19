@@ -551,16 +551,14 @@ test("locale: a plural parameter is never one the code fills with a grouped numb
 		["log-badge-tooltip"] = 2, ["log-lint-errors"] = 2, ["log-lint-warnings"] = 2, ["log-lint-infos"] = 2,
 		["log-header"] = 3,
 	}
-	for _, lang in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local f = assert(io.open(H.mod_root .. "/locale/" .. lang .. "/manager.cfg", "r"))
-		for line in f:lines() do
+	for _, lang in ipairs(H.LOCALES) do
+		for line in H.locale_text(lang):gmatch("[^\n]+") do
 			local key = line:match("^([%w%-]+)=")
 			if key and plain[key] then
 				local n = tonumber(line:match("__plural_for_parameter__(%d+)__"))
 				assert_eq(n, plain[key], lang .. " " .. key)
 			end
 		end
-		f:close()
 	end
 end)
 
@@ -572,24 +570,6 @@ test("chat tags: train by front stock unit number, stop by unit number, item, gp
 	assert_eq(model.chat_tags(nil, 7, nil, nil), "[train-stop=7]")
 end)
 
---- Keys of one section of a locale file.
-local function locale_keys(path, section)
-	local f = io.open(path, "r")
-	if not f then return nil end
-	local keys, current = {}, nil
-	for line in f:lines() do
-		local s = string.match(line, "^%[(.-)%]%s*$")
-		if s then
-			current = s
-		elseif current == section then
-			local k = string.match(line, "^([^=]+)=")
-			if k then keys[k] = true end
-		end
-	end
-	f:close()
-	return keys
-end
-
 --- Every [section] key inside a LocalisedString.
 local function collect_keys(ls, out)
 	if type(ls) ~= "table" then return end
@@ -598,7 +578,7 @@ local function collect_keys(ls, out)
 	for i = 2, #ls do collect_keys(ls[i], out) end
 end
 
-test("locale: every key the Log builds exists in en, the fallback of every other locale", function()
+test("locale: every key the Log builds resolves in every locale", function()
 	setup()
 	local used = {}
 	local ctx = {
@@ -648,9 +628,9 @@ test("locale: every key the Log builds exists in en, the fallback of every other
 	for key in string.gmatch(src, '"(cybersyn%-diag%.[%w%-]+)"') do
 		if not string.match(key, "%-$") then used[key] = true end
 	end
-	for _, loc in ipairs({ "en" }) do
-		local path = H.mod_root .. "/locale/" .. loc .. "/manager.cfg"
-		local sections = { ["cybersyn-gui"] = locale_keys(path, "cybersyn-gui"), ["cybersyn-diag"] = locale_keys(path, "cybersyn-diag") }
+	for _, loc in ipairs(H.LOCALES) do
+		local cfg = H.locale(loc)
+		local sections = { ["cybersyn-gui"] = cfg["cybersyn-gui"], ["cybersyn-diag"] = cfg["cybersyn-diag"] }
 		local missing = {}
 		for key in pairs(used) do
 			local section, name = string.match(key, "^([^.]+)%.(.+)$")
@@ -661,22 +641,7 @@ test("locale: every key the Log builds exists in en, the fallback of every other
 	end
 end)
 
---- key -> value of one section of a locale file.
-local function locale_values(path, section)
-	local out, current = {}, nil
-	for line in io.lines(path) do
-		local sec = string.match(line, "^%[(.-)%]%s*$")
-		if sec then
-			current = sec
-		elseif current == section then
-			local k, v = string.match(line, "^([^=]+)=(.*)$")
-			if k then out[k] = v end
-		end
-	end
-	return out
-end
-
-test("dispatch tooltip: why/fix for every code, recorded state or not, in all seven locales; fix lines take no numbers", function()
+test("dispatch tooltip: why/fix for every code, recorded state or not, in every locale; fix lines take no numbers", function()
 	setup()
 	assert_eq(#DIAG_DISPATCH_SEVERITY, #DIAG_DISPATCH_NAMES, "severity parallel to the names")
 	local used, fixes = {}, {}
@@ -705,10 +670,9 @@ test("dispatch tooltip: why/fix for every code, recorded state or not, in all se
 	end
 	assert_eq(model.dispatch_tooltip({ kind = DIAG_KIND_DISPATCH_FAILED, code = 99, a = 0, b = 0, train = 1 }), nil)
 	assert_eq(model.dispatch_tooltip({ kind = DIAG_KIND_SERVED, code = 1, a = 0, b = 0, train = 1 }), nil)
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local path = H.mod_root .. "/locale/" .. loc .. "/manager.cfg"
-		local sections = { ["cybersyn-gui"] = locale_values(path, "cybersyn-gui"),
-			["cybersyn-diag"] = locale_values(path, "cybersyn-diag") }
+	for _, loc in ipairs(H.LOCALES) do
+		local cfg = H.locale(loc)
+		local sections = { ["cybersyn-gui"] = cfg["cybersyn-gui"], ["cybersyn-diag"] = cfg["cybersyn-diag"] }
 		local missing, numbered = {}, {}
 		for key in pairs(used) do
 			local section, name = string.match(key, "^([^.]+)%.(.+)$")

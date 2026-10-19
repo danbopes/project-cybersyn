@@ -199,15 +199,13 @@ test("state sprites: every defines.train_state, residue and refuel map to a spri
 	end
 end)
 
-test("state locale: one train-state-* set in every manager.cfg; the trains-state-*, relative-state-* and trains-group-state-* sets are gone", function()
+test("state locale: one train-state-* set in every locale; the trains-state-*, relative-state-* and trains-group-state-* sets are gone", function()
 	local l = logic()
 	local keys = {}
 	for _, name in ipairs(ALL_STATES) do keys[#keys + 1] = "train-state-" .. name:gsub("_", "-") end
 	for _, k in ipairs({ "residue", "refuel", "unknown" }) do keys[#keys + 1] = "train-state-" .. k end
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
-		local text = f:read("*a")
-		f:close()
+	for _, loc in ipairs(H.LOCALES) do
+		local text = H.locale_text(loc)
 		for _, k in ipairs(keys) do
 			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
 		end
@@ -388,7 +386,7 @@ test("deficit: requested minus in transit minus unpromised stock, never below 0"
 	assert_eq(l.deficit(-1000, 400, -400), 600, "stock all promised (negative) counts as none")
 end)
 
-test("train chips: every caption and tooltip key in every manager.cfg, no short captions left", function()
+test("train chips: every caption and tooltip key in every locale, no short captions left", function()
 	local l = logic()
 	local keys = {}
 	for _, key in ipairs(l.TRAIN_CHIPS) do
@@ -397,10 +395,8 @@ test("train chips: every caption and tooltip key in every manager.cfg, no short 
 	end
 	assert_eq(l.train_chip_locale("to_p"), "cybersyn-gui.trains-chip-to-p")
 	assert_eq(l.train_chip_locale("to_p", true), "cybersyn-gui.trains-chip-to-p", "D15 item 13: never abbreviated")
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		local f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
-		local text = f:read("*a")
-		f:close()
+	for _, loc in ipairs(H.LOCALES) do
+		local text = H.locale_text(loc)
 		for _, k in ipairs(keys) do
 			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
 		end
@@ -408,7 +404,7 @@ test("train chips: every caption and tooltip key in every manager.cfg, no short 
 	end
 end)
 
-test("detail pane: its locale keys in every manager.cfg, and no key the code uses is missing", function()
+test("detail pane: its locale keys in every locale, and no key the code uses is missing", function()
 	local keys = { "trains-pane-caption", "trains-pane-close-tooltip", "trains-pane-camera-tooltip" }
 	local f = assert(io.open(H.mod_root .. "/scripts/gui/trains.lua", "r"))
 	local code = f:read("*a")
@@ -418,10 +414,8 @@ test("detail pane: its locale keys in every manager.cfg, and no key the code use
 		for _, k in ipairs(keys) do known = known or k == key end
 		assert_true(known, "trains.lua uses " .. key .. ", not in this list")
 	end
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
-		f = assert(io.open(H.mod_root .. "/locale/" .. loc .. "/manager.cfg", "r"))
-		local text = f:read("*a")
-		f:close()
+	for _, loc in ipairs(H.LOCALES) do
+		local text = H.locale_text(loc)
 		for _, k in ipairs(keys) do
 			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
 		end
