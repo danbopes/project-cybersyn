@@ -352,12 +352,6 @@ test("stuck_stations: provider and requester of trains with a stuck alert", func
 	assert_eq(l.stuck_stations(alerts, trains, 1), { [10] = true, [11] = true })
 end)
 
-test("chip_mode: names when they fit, else compact", function()
-	local l = logic()
-	assert_eq(l.chip_mode(1000, 900), "full")
-	assert_eq(l.chip_mode(800, 900), "compact")
-end)
-
 test("chip_lines: all with names when they fit, else zero counts hidden (All and the toggled one kept), then wrap", function()
 	local l = logic()
 	local chips = {

@@ -638,14 +638,6 @@ function logic.stuck_stations(alerts, trains, stuck_kind)
 	return out
 end
 
---- Chip captions: names with counts when they all fit next to what else the subheader shows, else icon and count.
---- @param available int px left in the subheader
---- @param full int px the chips need with names
---- @return "full"|"compact"
-function logic.chip_mode(available, full)
-	return full <= available and "full" or "compact"
-end
-
 -- ---------------------------------------------------------------- inventory
 
 --- What one network is still short of: requested − in transit − the providers' stock not yet promised to a delivery
