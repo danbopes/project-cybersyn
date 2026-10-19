@@ -147,7 +147,7 @@ data:extend({
 	{
 		type = "string-setting",
 		name = "cybersyn-manager-actions",
-		order = "dd",
+		order = "ae",
 		setting_type = "runtime-global",
 		default_value = "admins",
 		allowed_values = { "admins", "everyone", "nobody" },
