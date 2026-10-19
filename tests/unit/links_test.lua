@@ -316,3 +316,48 @@ test("open_train_gui: the main locomotive opens as a manager link", function()
 	assert_same(player.opened, loco)
 	assert_same(pd.return_to.entity, loco)
 end)
+
+-- PLAN5 D5-3: right-click on a train or stop link does nothing (it set the Log's "only this" chip on a hidden tab);
+-- on an item it still clears the item filter.
+local function right_click(kind, id)
+	local _, manager, util, player, pd = setup()
+	local renders, texts = 0, {}
+	util.set_rerender(function() renders = renders + 1 end)
+	player.create_local_flying_text = function(spec) texts[#texts + 1] = spec.text end
+	storage.trains = { [5] = { entity = { valid = true, id = 5, locomotives = { front_movers = {}, back_movers = {} } } } }
+	storage.stations = {}
+	pd.search_item = "iron-plate"
+	util.handle_link_click(player, pd, { element = { tags = { kind = kind, id = id } },
+		button = defines.mouse_button_type.right })
+	util.set_rerender(manager.render)
+	return player, pd, renders, texts
+end
+
+test("right-click on a station link: no handler, no re-render, nothing set", function()
+	local player, pd, renders, texts = right_click("station", 3)
+	assert_eq(renders, 0)
+	assert_eq(texts, {})
+	assert_nil(pd.log_filter)
+	assert_nil(pd.return_to)
+	assert_same(player.opened, pd.refs.manager_window)
+	assert_eq(pd.search_item, "iron-plate")
+end)
+
+test("right-click on a train link: no handler, no re-render, nothing set", function()
+	local player, pd, renders, texts = right_click("train", 5)
+	assert_eq(renders, 0)
+	assert_eq(texts, {})
+	assert_nil(pd.log_filter)
+	assert_same(player.opened, pd.refs.manager_window)
+end)
+
+test("right-click on an item still clears the item filter and re-renders", function()
+	local _, pd, renders = right_click("item", "iron-plate")
+	assert_nil(pd.search_item)
+	assert_eq(renders, 1)
+end)
+
+test("util offers no hook that scopes the Log to a subject", function()
+	local _, _, util = load()
+	for k in pairs(util) do assert(not string.find(k, "subject", 1, true), k) end
+end)

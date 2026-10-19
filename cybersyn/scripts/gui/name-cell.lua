@@ -44,7 +44,7 @@ local function add_side(out, parts, side, tags, tooltip, scope)
 				quality = quality and quality[i] or nil,
 				tooltip = tooltip,
 				tags = { kind = tags.kind, id = tags.id },
-				mouse_button_filter = { "left", "right" },
+				mouse_button_filter = { "left" },
 				handler = { [defines.events.on_gui_click] = util.handle.link_click },
 			}, scope)
 		end
@@ -75,7 +75,7 @@ local function children(parts, name, tags, width, tooltip, scope)
 		caption = text_of(parts, name),
 		tooltip = tooltip,
 		tags = { kind = tags.kind, id = tags.id },
-		mouse_button_filter = { "left", "right" },
+		mouse_button_filter = { "left" },
 		handler = { [defines.events.on_gui_click] = util.handle.link_click },
 	}, scope)
 	add_side(out, parts, "tail", tags, tooltip, scope)

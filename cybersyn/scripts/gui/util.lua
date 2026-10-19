@@ -1378,14 +1378,6 @@ local function link_target(e)
 	return nil, nil
 end
 
-local log_subject_fn
-
---- Lets log.lua take right-clicks on train and station links without a require cycle.
---- @param fn fun(player: LuaPlayer, player_data: PlayerData, kind: string, id: uint)
-function util.set_log_subject(fn)
-	log_subject_fn = fn
-end
-
 local pin_fn
 
 --- Lets extras.lua take control+shift clicks (add a map pin) without a require cycle.
@@ -1395,8 +1387,7 @@ function util.set_pin(fn)
 end
 
 --- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
---- control + shift = a map pin, right on an item = clear the item filter, right on a train or a stop = the Log's
---- "this train/stop" chip.
+--- control + shift = a map pin, right on an item = clear the item filter. Train and stop links take no right-click.
 --- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
 --- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it. The
 --- older tag shapes of the Stations and Trains rows are read too.
@@ -1410,13 +1401,6 @@ function util.handle_link_click(player, player_data, e, kind, id)
 	if not kind then return end
 	if kind == "item" then
 		util.item_button_click(player, player_data, e, id)
-		return
-	end
-	if e.button == defines.mouse_button_type.right then
-		if log_subject_fn then
-			log_subject_fn(player, player_data, kind, id)
-			util.rerender(player, player_data)
-		end
 		return
 	end
 	if e.button and e.button ~= defines.mouse_button_type.left then return end

@@ -252,6 +252,66 @@ function manager.apply_surface_default(player, player_data)
 	end
 end
 
+--- @class ManagerFocus what manager.focus shows
+--- @field query string? the search that names the subject ("#<id>", a stop or depot name); nil clears the search
+--- @field keep_row true? leave network, network ID, surface and item as they are (the Overview's Stations jumps: the
+--- tile counted under them, D2)
+--- @field item string? item hash to filter by
+--- @field network string? network name to filter by
+--- @field stations_chip string? a Stations flag chip ("unserved"|"failing"|"problems")
+--- @field stations_problems_scope "errors"?
+--- @field trains_chip string? a Trains chip ("parked")
+--- @field reveal {train: uint?, group: string?}? grouped Trains: expand the group holding this train, or this group
+--- @field sort {tab: string, column: string, ascending: boolean}?
+
+--- @class PlayerData
+--- @field focus_open true? the next manager_open comes from manager.focus: it keeps the focus's filters (no D3 default)
+
+--- Shows `tab` with exactly the subject in it. Every chip and overlay goes, and without keep_row every row filter too,
+--- so nothing set earlier can hide what the player asked for (Daniel 2026-10-18: "revert back to All"). Each entry
+--- point used to list the fields it reset by hand, and missed the chips added after it.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param tab string
+--- @param focus ManagerFocus
+function manager.focus(player, player_data, tab, focus)
+	item.close(player, player_data)
+	explain.close(player, player_data)
+	if focus.keep_row then
+		player_data.stations_status_filter = nil
+		player_data.stations_chip = nil
+		player_data.stations_problems_scope = nil
+		player_data.trains_chip = nil
+		util.reset_pages(player_data)
+	else
+		player_data.filter_row_open = nil
+		clear_row_filters(player_data)
+	end
+	util.set_search_query(player_data, focus.query)
+	if focus.query then player_data.search_open = true end
+	if focus.item then util.set_item_filter(player_data, focus.item) end
+	if focus.network then player_data.search_network_name = focus.network end
+	player_data.stations_chip = focus.stations_chip
+	player_data.stations_problems_scope = focus.stations_problems_scope
+	player_data.trains_chip = focus.trains_chip
+	local sort = focus.sort
+	if sort then util.set_sort(player_data, sort.tab, sort.column, sort.ascending) end
+	player_data.trains_reveal = focus.reveal
+	player_data.selected_tab = tab
+	if player_data.is_manager_open then
+		util.select_tab(player_data, tab)
+		manager.restore_filter_widgets(player_data)
+		manager.refresh_sort_headers(player_data)
+		local window = player_data.refs.manager_window
+		if not player_data.pinning and window and window.valid and player.opened ~= window then player.opened = window end
+		manager.render(player, player_data)
+	else
+		-- The subject may be on another surface than the player: a surface default would hide it again.
+		if not focus.keep_row then player_data.focus_open = true end
+		manager.handle.manager_open(player, player_data, player_data.refs)
+	end
+end
+
 --- The window size for this player's screen (or the screen dev.set_layout emulates); stored in player_data.layout.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
@@ -714,7 +774,11 @@ function manager.handle.manager_open(player, player_data, refs)
 
 	player_data.page_size = nil
 	player_data.hover = nil
-	manager.apply_surface_default(player, player_data)
+	if player_data.focus_open then
+		player_data.focus_open = nil
+	else
+		manager.apply_surface_default(player, player_data)
+	end
 	-- The row opens with the window exactly when a filter is set, so it never shows lit and empty from an earlier open.
 	player_data.filter_row_open = row_filters_active(player_data) or nil
 	manager.restore_filter_widgets(player_data)

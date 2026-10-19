@@ -435,7 +435,7 @@ local function cell_def(col, v, width, scope)
 			caption = v.caption,
 			tooltip = v.tooltip,
 			tags = { kind = "train", id = v.id },
-			mouse_button_filter = { "left", "right" },
+			mouse_button_filter = { "left" },
 			handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		}, scope)
 	elseif kind == "chip" then
