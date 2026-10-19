@@ -1269,9 +1269,9 @@ local function render_sev_buttons(player_data, cs, building)
 			local c = caps(player_data)
 			if c[button.name] ~= sig then
 				c[button.name] = sig
-				local count = format.number(n) .. (building and "+" or "")
+				local count = model.count_text(n, building)
 				-- Five digits and more in short form, so the fixed-width button never truncates; the tooltip has it all.
-				local short = n >= 10000 and (format.number(n, true) .. (building and "+" or "")) or count
+				local short = model.count_text(n, building, true)
 				button.caption = "[img=" .. SEV_SPRITES[sev] .. "] " .. short
 				if button.toggled ~= shown then button.toggled = shown end
 				button.tooltip = { "cybersyn-gui.log-sev-tooltip", { "cybersyn-diag.sev-" .. SEV_KEYS[sev] }, count }

@@ -312,6 +312,16 @@ test("counts: equal a brute-force count through eviction, a moving window and a 
 	assert_eq(cs2.total, oracle_counts(d, all))
 end)
 
+test("count text: a building count is a lower bound with a plus, except a zero; short form from five digits", function()
+	setup()
+	assert_eq(model.count_text(0, true), "0")
+	assert_eq(model.count_text(0, false), "0")
+	assert_eq(model.count_text(21, true), "21+")
+	assert_eq(model.count_text(21, false), "21")
+	assert_eq(model.count_text(12345, true, true), "12.3 k+")
+	assert_eq(model.count_text(9999, false, true), model.count_text(9999, false))
+end)
+
 test("budget: rows and counts report the rows they examined and never pass the budget they were given", function()
 	at(0)
 	local d = setup("full", 4096)

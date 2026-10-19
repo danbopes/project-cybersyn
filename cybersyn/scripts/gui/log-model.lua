@@ -713,6 +713,18 @@ function model.pass_counts(c)
 	return out
 end
 
+--- A severity count's caption. While the count is still building, "+" says the true total may be higher; on a zero
+--- it reads as nonsense, so a zero stays plain until the scan finds one.
+--- @param n int
+--- @param building boolean
+--- @param short boolean? five digits and more in short form
+--- @return string
+function model.count_text(n, building, short)
+	local s = format.number(n, short and n >= 10000 or nil)
+	if building and n > 0 then s = s .. "+" end
+	return s
+end
+
 --- While paused: how many events newer than the frozen rows the filter selects, and whether that count is complete.
 --- @param rs LogRowsState
 --- @param d DiagState
