@@ -270,18 +270,9 @@ local function station_view(id)
 	if st then
 		name, parts, kind = st.name, st.name_parts, "station"
 	else
-		local record = storage.stations[id]
-		kind = "station"
-		if not record then
-			record = storage.depots[id]
-			kind = "depot"
-		end
-		if not record then
-			record = storage.refuelers[id]
-			kind = "refueler"
-		end
-		local stop = record and record.entity_stop
-		if not (stop and stop.valid) then
+		local stop, _, stop_kind = util.stop_record(id)
+		kind = stop_kind
+		if not stop then
 			if view_cache then view_cache[id] = false end
 			return nil
 		end
@@ -1596,9 +1587,8 @@ function log_tab.chat_line(player, g)
 	local stop_unit, gps
 	local view = station_view(g.station)
 	if view then
-		local record = storage.stations[g.station] or storage.depots[g.station] or storage.refuelers[g.station]
-		local stop = record and record.entity_stop
-		if stop and stop.valid then
+		local stop = util.stop_record(g.station)
+		if stop then
 			stop_unit = stop.unit_number
 			gps = { x = stop.position.x, y = stop.position.y, surface = stop.surface.name }
 		end

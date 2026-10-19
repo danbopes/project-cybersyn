@@ -12,7 +12,6 @@ local diag = require("scripts.diag")
 local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
 local problems_tab = require("scripts.gui.lint-text")
-local extras = require("scripts.gui.extras")
 local dev = require("scripts.gui.dev")
 
 --- @class PlayerData
@@ -38,7 +37,7 @@ local function entry_of(r_id, hash)
 end
 
 local function stop_name(id)
-	local stop = extras.stop_record(id)
+	local stop = util.stop_record(id)
 	return stop and stop.backer_name or tostring(id)
 end
 

@@ -51,19 +51,7 @@ function extras.panel_subject(elem)
 	return nil, nil
 end
 
---- @param id uint
---- @return LuaEntity? stop
---- @return (Station|Depot|Refueler)? record
---- @return "station"|"depot"|"refueler"|nil kind
-local function stop_record(id)
-	local record, kind = storage.stations[id], "station"
-	if not record then record, kind = storage.depots[id], "depot" end
-	if not record then record, kind = storage.refuelers[id], "refueler" end
-	local stop = record and record.entity_stop
-	if stop and stop.valid then return stop, record, kind end
-	return nil, nil, nil
-end
-extras.stop_record = stop_record
+local stop_record = util.stop_record
 
 --- @param id uint
 --- @return LuaTrain?

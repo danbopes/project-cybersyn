@@ -458,6 +458,20 @@ util.HOVER_HOLD_TICKS = 600
 
 util.handle = {}
 
+--- A Cybersyn stop by unit number: station first, then depot, then refueler, nil when its stop entity is gone.
+--- @param id uint
+--- @return LuaEntity? stop
+--- @return (Station|Depot|Refueler)? record
+--- @return "station"|"depot"|"refueler"|nil kind
+function util.stop_record(id)
+	local record, kind = storage.stations[id], "station"
+	if not record then record, kind = storage.depots[id], "depot" end
+	if not record then record, kind = storage.refuelers[id], "refueler" end
+	local stop = record and record.entity_stop
+	if stop and stop.valid then return stop, record, kind end
+	return nil, nil, nil
+end
+
 --- @param e {player_index: uint}
 function util.wrapper(e, handler)
 	local player = game.get_player(e.player_index)
