@@ -164,17 +164,6 @@ data:extend({
 		maximum_value = 65536,
 	},
 	{
-		type = "double-setting",
-		name = "cybersyn-cargo-tolerance",
-		order = "dc",
-		setting_type = "runtime-global",
-		-- Percent of a fluid manifest that may be missing at the provider or left at the requester before the log
-		-- records it; items count any shortfall.
-		default_value = 2,
-		minimum_value = 0,
-		maximum_value = 20,
-	},
-	{
 		type = "string-setting",
 		name = "cybersyn-manager-actions",
 		order = "dd",

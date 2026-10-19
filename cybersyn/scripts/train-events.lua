@@ -22,6 +22,9 @@ end
 
 -- One filter table for every count of check_cargo (the engine reads it during the call and keeps nothing).
 local COUNT_FILTER = { name = "", quality = "normal" }
+-- Percent of a fluid manifest that may be short at the provider or left at the requester before the log records it:
+-- fluid transfers rarely end on the exact amount. Items count any shortfall.
+local FLUID_TOLERANCE = 2
 
 --- Cargo against the manifest as the train leaves its provider (`at_r` false) or requester. The P side also drives
 --- the unexpected-cargo alert, so the log keeps one row for it (the unexpected_cargo event, not an alert event).
@@ -39,7 +42,6 @@ local function check_cargo(map_data, train_id, train, station, at_r)
 	if not at_r and is_fuel_manifest(manifest) then return end
 	local entity = train.entity
 	local has_fluid = (train.fluid_capacity or 0) > 0
-	local tolerance = mod_settings.cargo_tolerance or 2
 	-- The usual departure has nothing to report: a few counts prove that without building the contents tables.
 	if at_r then
 		if entity.get_item_count() == 0 and not (has_fluid and entity.get_fluid_count() >= 1) then return end
@@ -48,7 +50,7 @@ local function check_cargo(map_data, train_id, train, station, at_r)
 		for _, m in ipairs(manifest) do
 			if m.type == "fluid" then
 				local n = entity.get_fluid_count(m.name)
-				if n < m.count * (1 - tolerance / 100) then
+				if n < m.count * (1 - FLUID_TOLERANCE / 100) then
 					clean = false
 					break
 				end
@@ -70,7 +72,7 @@ local function check_cargo(map_data, train_id, train, station, at_r)
 	end
 	local contents = entity.get_contents()
 	local fluids = has_fluid and entity.get_fluid_contents() or NO_FLUIDS
-	local findings, item_extra = diag.cargo_check(manifest, contents, fluids, tolerance, at_r)
+	local findings, item_extra = diag.cargo_check(manifest, contents, fluids, FLUID_TOLERANCE, at_r)
 	if not findings[1] then return end
 	if alert and station and item_extra then
 		local stop = station.entity_stop

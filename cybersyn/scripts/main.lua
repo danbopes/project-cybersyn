@@ -906,7 +906,6 @@ local function grab_all_settings()
 	mod_settings.allow_cargo_in_depot = settings.global["cybersyn-allow-cargo-in-depot"].value --[[@as boolean]]
 	mod_settings.manager_ups = settings.global["cybersyn-manager-updates-per-second"].value --[[@as double]]
 	mod_settings.alert_unexpected_cargo = settings.global["cybersyn-alert-unexpected-cargo"].value --[[@as boolean]]
-	mod_settings.cargo_tolerance = settings.global["cybersyn-cargo-tolerance"].value --[[@as double]]
 end
 local function register_tick()
 	script.on_nth_tick(nil)
