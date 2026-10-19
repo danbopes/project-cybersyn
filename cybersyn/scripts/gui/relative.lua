@@ -2815,14 +2815,21 @@ function dev_fns.relative_toggle_effective(pi)
 	return pd.relative_effective_open == true
 end
 
---- Clicks a button of the open panel by its element name ("open_manager", "comb1", "locate", ...).
+--- Clicks a button of the open panel by its element name ("open_manager", "comb1", "locate", ...), or the first link
+--- or slot whose tags match `name` when it is a table ({kind = "item", id = hash}: the unnamed item slots).
 function dev_fns.relative_click(pi, name)
 	local player, pd = dev_context(pi)
 	local open = pd.relative_open
 	if not open then return "no panel open" end
 	local panel = mount_of(player, mount_key(open))[PANEL]
+	local by_tags = type(name) == "table"
 	local function find(elem)
-		if elem.name == name then return elem end
+		if by_tags then
+			local tags = elem.tags
+			if tags and tags.kind == name.kind and tags.id == name.id then return elem end
+		elseif elem.name == name then
+			return elem
+		end
 		for _, c in ipairs(elem.children) do
 			local hit = find(c)
 			if hit then return hit end

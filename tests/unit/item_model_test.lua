@@ -242,6 +242,96 @@ test("build: an item nobody handles gives empty tables and zero totals", functio
 	assert_eq(r.queued, 0)
 end)
 
+-- The manager's place filters (network name, network ID, surface) as item.lua's get_cache passes them: the item filter
+-- and the station search are dropped, every station and train goes through util's own predicates.
+local function place_keep(u, f)
+	return {
+		station = function(st) return u.station_passes(st, f, true) end,
+		train = function(tr) return u.train_passes(tr, f, true) end,
+	}
+end
+
+local function filter_snapshot()
+	local H_ = "iron-plate"
+	local function st(net, mask, surface, t)
+		t.network_name, t.network_mask, t.surface_index, t.name_lower = net, mask, surface, "s"
+		return station(t)
+	end
+	return H_, {
+		tick = 5,
+		stations = {
+			-- signal-A ID 1 on surface 1
+			[10] = st("signal-A", 1, 1, { provided = { [H_] = 500 } }),
+			[20] = st("signal-A", 1, 1, { requested = { [H_] = { count = -300, threshold = 1, active = true } },
+				deliveries = { [H_] = 40 } }),
+			-- signal-B ID 2 on surface 1
+			[11] = st("signal-B", 2, 1, { provided = { [H_] = 900 } }),
+			[21] = st("signal-B", 2, 1, { requested = { [H_] = { count = -700, threshold = 1, active = true } } }),
+			-- signal-A ID 2 on surface 2
+			[12] = st("signal-A", 2, 2, { provided = { [H_] = 60 } }),
+			[22] = st("signal-A", 2, 2, { requested = { [H_] = { count = -5, threshold = 1, active = false } } }),
+		},
+		trains = {
+			[1] = { status = 3, manifest_hashes = { [H_] = 40 }, network_name = "signal-A", network_mask = 1, surface_index = 1 },
+			[2] = { status = 3, manifest_hashes = { [H_] = 80 }, network_name = "signal-B", network_mask = 2, surface_index = 1 },
+			[3] = { status = 3, manifest_hashes = { [H_] = 10 }, network_name = "signal-A", network_mask = 2, surface_index = 2 },
+		},
+		inventory_all = {
+			provided = { [H_] = { count = 1460, stations = 3 } },
+			requested = { [H_] = { count = -1000, stations = 2 } },
+			in_transit = { [H_] = { count = 40, stations = 1 } },
+		},
+	}
+end
+
+local function ids_of(rows)
+	local out = {}
+	for i, r in ipairs(rows) do out[i] = r.id end
+	table.sort(out)
+	return out
+end
+
+test("build with place filters: a network keeps that network's rows, totals summed from them", function()
+	local m, u = model(), H.load("scripts.gui.util")
+	local H_, snapshot = filter_snapshot()
+	local r = m.build(snapshot, H_, PRIORITY, nil, place_keep(u, { network = "signal-B", mask = -1 }))
+	assert_true(r.filtered)
+	assert_eq(ids_of(r.providers), { 11 })
+	assert_eq(ids_of(r.requesters), { 21 })
+	assert_eq(ids_of(r.trains), { 2 })
+	assert_eq(r.totals, { provided = 900, provided_stations = 1, requested = 700, requested_stations = 1,
+		in_transit = 0, in_transit_stations = 0 })
+end)
+
+test("build with place filters: a network ID and a surface each drop the right rows and totals", function()
+	local m, u = model(), H.load("scripts.gui.util")
+	local H_, snapshot = filter_snapshot()
+	local r = m.build(snapshot, H_, PRIORITY, nil, place_keep(u, { mask = 1 }))
+	assert_eq(ids_of(r.providers), { 10 })
+	assert_eq(ids_of(r.requesters), { 20 })
+	assert_eq(ids_of(r.trains), { 1 })
+	assert_eq(r.totals, { provided = 500, provided_stations = 1, requested = 300, requested_stations = 1,
+		in_transit = 40, in_transit_stations = 1 })
+	r = m.build(snapshot, H_, PRIORITY, nil, place_keep(u, { mask = -1, surface = 2 }))
+	assert_eq(ids_of(r.providers), { 12 })
+	assert_eq(ids_of(r.requesters), { 22 }, "below threshold: listed, not in the requested total")
+	assert_eq(ids_of(r.trains), { 3 })
+	assert_eq(r.totals, { provided = 60, provided_stations = 1, requested = 0, requested_stations = 0,
+		in_transit = 0, in_transit_stations = 0 })
+end)
+
+test("build without place filters: every row, totals from inventory_all", function()
+	local m = model()
+	local H_, snapshot = filter_snapshot()
+	local r = m.build(snapshot, H_, PRIORITY)
+	assert_false(r.filtered)
+	assert_eq(ids_of(r.providers), { 10, 11, 12 })
+	assert_eq(ids_of(r.requesters), { 20, 21, 22 })
+	assert_eq(ids_of(r.trains), { 1, 2, 3 })
+	assert_eq(r.totals, { provided = 1460, provided_stations = 3, requested = 1000, requested_stations = 2,
+		in_transit = 40, in_transit_stations = 1 })
+end)
+
 test("train_chip: every Cybersyn status maps to a Trains chip", function()
 	local m = model()
 	local S = { D = 0, TO_P = 1, P = 2, TO_R = 3, R = 4, TO_D = 5, TO_D_BYPASS = 6, TO_F = 7, F = 8 }

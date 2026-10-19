@@ -146,6 +146,7 @@ end
 --- @field requesters ItemRequesterRow[]
 --- @field trains ItemTrainRow[]
 --- @field queued int requesters in the dispatcher's queue
+--- @field filtered boolean the rows and totals are limited by the manager's place filters
 
 --- Every station and train of the snapshot that provides, requests, carries or has a delivery of `hash` (as the
 --- Stations tab filtered to the item lists them), sorted: providers by stock, requesters in the dispatcher's order,
@@ -155,9 +156,14 @@ end
 --- @param hash string
 --- @param priority_signal string
 --- @param changed uint[]? stations whose records changed since the index was built (the collector's change log)
+--- @param keep {station: fun(st: table): boolean, train: fun(tr: table): boolean}? the manager's place filters; with
+--- them the totals are summed from the stations kept, since the snapshot's totals count every network and surface
 --- @return ItemModel
-function model.build(snapshot, hash, priority_signal, changed)
+function model.build(snapshot, hash, priority_signal, changed, keep)
 	local providers, requesters, trains = {}, {}, {}
+	local keep_station, keep_train = keep and keep.station, keep and keep.train
+	local sums = keep and { provided = 0, provided_stations = 0, requested = 0, requested_stations = 0, in_transit = 0,
+		in_transit_stations = 0 }
 	local stations = snapshot.stations
 	-- The collector's per-item index (a complete pass) names the few stations to look at; without it, all of them.
 	local ids = snapshot.item_stations and (snapshot.item_stations[hash] or {})
@@ -182,9 +188,26 @@ function model.build(snapshot, hash, priority_signal, changed)
 	end
 	for _, id in ipairs(ids or list) do
 		local st = stations[id]
+		if st and keep_station and not keep_station(st) then st = nil end
 		local stock = st and st.provided and st.provided[hash]
 		local d = st and st.deliveries and st.deliveries[hash] or 0
 		local req = st and st.requested and st.requested[hash]
+		if sums and st then
+			-- The same figures the collector's inventory_all counts: stock, active requests, incoming deliveries.
+			local own = st.provided and st.provided[hash]
+			if own then
+				sums.provided = sums.provided + own
+				sums.provided_stations = sums.provided_stations + 1
+			end
+			if req and req.active then
+				sums.requested = sums.requested - req.count
+				sums.requested_stations = sums.requested_stations + 1
+			end
+			if d > 0 then
+				sums.in_transit = sums.in_transit + d
+				sums.in_transit_stations = sums.in_transit_stations + 1
+			end
+		end
 		if st and not stock and d < 0 then stock = 0 end
 		if stock then
 			providers[#providers + 1] = {
@@ -211,7 +234,7 @@ function model.build(snapshot, hash, priority_signal, changed)
 	end
 	for id, tr in pairs(snapshot.trains) do
 		local amount = tr.manifest_hashes and tr.manifest_hashes[hash]
-		if amount then
+		if amount and not (keep_train and not keep_train(tr)) then
 			trains[#trains + 1] = { id = id, status = tr.status, amount = amount, to = tr.r_station_id, from = tr.p_station_id }
 		end
 	end
@@ -225,13 +248,12 @@ function model.build(snapshot, hash, priority_signal, changed)
 			r.position = i
 		end
 	end
-	local inv = snapshot.inventory_all or {}
-	local p = inv.provided and inv.provided[hash]
-	local r = inv.requested and inv.requested[hash]
-	local t = inv.in_transit and inv.in_transit[hash]
-	return {
-		hash = hash,
-		tick = snapshot.tick,
+	local totals = sums
+	if not totals then
+		local inv = snapshot.inventory_all or {}
+		local p = inv.provided and inv.provided[hash]
+		local r = inv.requested and inv.requested[hash]
+		local t = inv.in_transit and inv.in_transit[hash]
 		totals = {
 			provided = p and p.count or 0,
 			provided_stations = p and p.stations or 0,
@@ -239,7 +261,13 @@ function model.build(snapshot, hash, priority_signal, changed)
 			requested_stations = r and r.stations or 0,
 			in_transit = t and t.count or 0,
 			in_transit_stations = t and t.stations or 0,
-		},
+		}
+	end
+	return {
+		hash = hash,
+		tick = snapshot.tick,
+		filtered = sums ~= nil,
+		totals = totals,
 		providers = providers,
 		requesters = requesters,
 		trains = trains,

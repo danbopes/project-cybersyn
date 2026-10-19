@@ -773,7 +773,7 @@ local function render_header(player_data, cache)
 	local collecting = collector.collecting_note()
 	local percent = collecting and math.floor(collecting * 100) or -1
 	local sig = table.concat({ hash, t.provided, t.provided_stations, t.in_transit, t.in_transit_stations, t.requested,
-		t.requested_stations, cache.delivered, period, percent }, "|")
+		t.requested_stations, cache.delivered, period, percent, m.filtered and 1 or 0 }, "|")
 	if cache.header_sig == sig then return end
 	cache.header_sig = sig
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
@@ -788,19 +788,23 @@ local function render_header(player_data, cache)
 		icon.tags = tags
 	end
 	set_caption(refs.item_name, name_tooltip and name_tooltip[4] or hash)
-	local function total(name, key, value, stations, tooltip_key)
+	local function total(name, key, value, stations, tooltip_key, note)
 		local elem = refs["item_total_" .. name]
 		if not (elem and elem.valid) then return end
 		elem.caption = { "cybersyn-gui.item-" .. key, count(value) }
-		elem.tooltip = stations and { tooltip_key or "cybersyn-gui.item-total-tooltip", format.number(value),
+		local tooltip = stations and { tooltip_key or "cybersyn-gui.item-total-tooltip", format.number(value),
 			tostring(stations) } or nil
+		if tooltip and note then tooltip = { "", tooltip, "\n", note } end
+		elem.tooltip = tooltip
 	end
 	-- Stock only; the Providers table also lists stations a loading train emptied, so its "n of m" can count more.
 	total("provided", "provided", t.provided, t.provided_stations, "cybersyn-gui.item-provided-tooltip")
 	total("in_transit", "in-transit", t.in_transit, t.in_transit_stations)
 	-- Active requests only (the Inventory's figure); the Requesters table also lists those below threshold and the
 	-- stops the dispatcher skips, so its "n of m" counts more stations. The tooltip says which.
-	total("requested", "requested", t.requested, t.requested_stations, "cybersyn-gui.item-requested-tooltip")
+	-- The Overview's marker for the same place filters; its wording names the requesting station, so only here.
+	total("requested", "requested", t.requested, t.requested_stations, "cybersyn-gui.item-requested-tooltip",
+		m.filtered and { "cybersyn-gui.overview-filtered-requester" } or nil)
 	local delivered = refs.item_total_delivered
 	if delivered and delivered.valid then
 		delivered.caption = { "cybersyn-gui.item-delivered", { "cybersyn-gui.item-period-" .. period }, count(cache.delivered) }
@@ -834,13 +838,22 @@ end
 --- @return boolean refreshed the model was (re)built in this call: for a new collector pass, a new item or a new view
 local function get_cache(player_data, hash)
 	local snapshot = collector.get()
-	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass)
+	-- The drill-down is about one item and has no station search: like the Overview it leaves out the item filter and
+	-- the search terms (a query typed on another tab would hide rows invisibly), and keeps network, ID and surface.
+	local f = util.get_filters(player_data)
+	f.terms, f.item = nil, nil
+	local filtered = util.place_filters_active(f)
+	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. util.filter_signature(f)
 	local cache = player_data.item_cache
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
+	local keep = filtered and {
+		station = function(st) return util.station_passes(st, f, true) end,
+		train = function(tr) return util.train_passes(tr, f, true) end,
+	} or nil
 	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
 	-- does not (the Stations tab, filtered to the item, reads those records too).
 	local log = storage.manager.collect_log
-	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids)
+	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
 		return cache, true
@@ -1171,6 +1184,7 @@ local function dump(player_data)
 		delivered = cache and cache.delivered,
 		period = get_period(player_data),
 		queued = m and m.queued,
+		filtered = m and m.filtered,
 		deferred = cache and cache.deferred,
 		model = {},
 		rendered = {},

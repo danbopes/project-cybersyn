@@ -61,6 +61,7 @@ Date: 2026-10-19
     - Locked slots are reserved per item type in the manifest, so a multi-item delivery no longer runs out of room for its later items
     - A request whose usable trains are all inside interrupts is reported as such instead of as a layout mismatch
     - /cybersyn-recalculate-train-size no longer inflates the layout train counts on every run
+    - (Manager) The item drill-down honours the Network filter, Network ID and Surface like every other tab; it ignores only the item filter and the station search
     - (Manager) Opening a station or train from the manager no longer closes an unpinned manager, and closing that window returns to it
     - (Manager) Opening a train without a locomotive shows a message instead of doing nothing
     - (Manager) Text search is case-insensitive plain text with space-separated terms, and applies to trains through their depot and station names

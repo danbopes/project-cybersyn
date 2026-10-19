@@ -336,6 +336,104 @@ lab.suite("39_item", {
 	end,
 
 	function()
+		-- The drill-down honours the place filters (network name, network ID, surface) and leaves out the item filter
+		-- and the station search, as the Overview does: rows and totals of the matching stations only.
+		dev("clear_filters", PI)
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		dev("update", PI, 3)
+		local stations = read("stations")
+		local function net_of(id) return stations[id] and stations[id].network_name end
+		local hash, net, others
+		local hashes = dev("dump", PI, "inventory").provided.hashes
+		for _, h in ipairs(hashes) do
+			local o = dev("item_oracle", h)
+			local nets, first = {}, nil
+			for _, id in ipairs(o.providers) do
+				local n = net_of(id)
+				if n and n ~= "signal-each" then
+					nets[n] = (nets[n] or 0) + 1
+					first = first or n
+				end
+			end
+			if lab.count(nets) >= 2 then
+				hash, net, others = h, first, o
+				break
+			end
+		end
+		if not hash then
+			lab.skip("place filters on the drill-down", "no item provided on two networks")
+			return
+		end
+		ix.filter_hash = hash
+		local other = hashes[1] ~= hash and hashes[1] or hashes[2]
+		dev("set_filter", PI, { network = net, item = other or false })
+		dev("open_item", PI, hash)
+		dev("collect")
+		dev("update", PI, 12)
+		local d = dev("item_dump", PI)
+		local want_p, want_r = {}, {}
+		for _, id in ipairs(others.providers) do if net_of(id) == net then want_p[#want_p + 1] = id end end
+		for _, id in ipairs(others.requesters) do if net_of(id) == net then want_r[#want_r + 1] = id end end
+		lab.check("network filter: the drill-down opens though the item filter names another item",
+			d.open and d.hash == hash, { d.open, d.hash })
+		lab.check("network filter: provider rows are that network's providers only",
+			lab.same_list(sorted(ids_of(d.model.providers)), sorted(want_p)), { ids_of(d.model.providers), want_p })
+		lab.check("network filter: requester rows are that network's requesters only",
+			lab.same_list(sorted(ids_of(d.model.requesters)), sorted(want_r)), { ids_of(d.model.requesters), want_r })
+		local all = others.provided and others.provided.count or 0
+		lab.check("network filter: provided total and station count from the filtered rows, marked filtered",
+			d.filtered == true and d.totals.provided_stations == #want_p and d.totals.provided > 0 and d.totals.provided < all,
+			{ d.totals, #want_p, all })
+		-- A filter change reaches an open drill-down in the next update (the cache key carries the filters).
+		dev("clear_filters", PI)
+		dev("update", PI, 12)
+		d = dev("item_dump", PI)
+		lab.check("filters cleared: every provider and requester is back", d.open and
+			lab.same_list(sorted(ids_of(d.model.providers)), others.providers) and
+			lab.same_list(sorted(ids_of(d.model.requesters)), others.requesters), { ids_of(d.model.providers), others.providers })
+		lab.check("filters cleared: totals are inventory_all again", d.filtered == false and
+			d.totals.provided == (others.provided and others.provided.count or 0) and
+			d.totals.provided_stations == (others.provided and others.provided.stations or 0), { d.totals, others.provided })
+		dev("close_item", PI)
+	end,
+
+	function()
+		-- Daniel 2026-10-19: an item slot of the stop panel with the manager closed opens the manager on the
+		-- drill-down in one click; the open's surface default (D3) applies to it like to any tab.
+		local hash = ix.filter_hash
+		if not hash then
+			lab.skip("stop panel item click with the manager closed", "no item from the filter step")
+			return
+		end
+		local o = dev("item_oracle", hash)
+		dev("clear_filters", PI)
+		dev("close", PI)
+		local sid = o.providers[1]
+		dev("relative_open", PI, "stop", sid)
+		local r = dev("relative_click", PI, { kind = "item", id = hash })
+		dev("update", PI, 12)
+		local s = dev("state", PI)
+		local d = dev("item_dump", PI)
+		lab.check("stop panel item click, manager closed: the manager opens on the drill-down of that item",
+			s.is_open and d.open and d.hash == hash, { r, s.is_open, d.open, d.hash })
+		local surface = s.filters.surface
+		local stations = read("stations")
+		local on_surface = true
+		for _, id in ipairs(d.model and d.model.providers or {}) do
+			local st = stations[id]
+			if surface and st and st.entity_stop.surface_index ~= surface then on_surface = false end
+		end
+		lab.check("and its rows follow the open's surface default", on_surface and d.filtered == (surface ~= nil),
+			{ surface, d.filtered })
+		dev("relative_close", PI)
+		dev("close_item", PI)
+		dev("clear_filters", PI)
+		dev("open", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
 		-- A list longer than its share scrolls: on a 1080p screen every row is built, the viewport's rows first, and a
 		-- table under the cursor still gets the rows below the ones it shows (nothing it shows is rewritten).
 		dev("set_layout", PI, 1920, 1080, 1.25)
