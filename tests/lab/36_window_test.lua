@@ -822,6 +822,62 @@ lab.suite("36_window", {
 		d = overview()
 	end,
 
+	-- PLAN5 D5-2: show on map lands where a click on the target's map pin lands (remote view following the target at
+	-- the screen centre, zoom 1.5), from the character view and from remote view; a train follows its front stock;
+	-- the window is still auto-pinned and Back still leaves remote view.
+	function(ctx)
+		local player = game.get_player(pi)
+		local d = overview()
+		local rows = d.lists.unserved.rendered
+		if not (rows[1] and rows[2]) then return lab.skip("show on map", "fewer than two Unserved rows") end
+		local function stop_of(row) return lab.read("stations", row.requester_id).entity_stop end
+		local function lands(name, stop)
+			local pos, c = player.position, player.centered_on
+			lab.check(name, player.controller_type == defines.controllers.remote and c ~= nil and c.valid
+				and c.unit_number == stop.unit_number and player.surface == stop.surface
+				and math.abs(pos.x - stop.position.x) <= 0.01 and math.abs(pos.y - stop.position.y) <= 0.01
+				and player.zoom == 1.5,
+				{ controller = player.controller_type, centered_on = c and c.valid and c.unit_number, want = stop.unit_number,
+					position = pos, stop = stop.position, zoom = player.zoom })
+		end
+		if player.controller_type == defines.controllers.remote then player.exit_remote_view() end
+		local was_pinning = lab.read("manager", "players", pi, "pinning")
+		remote.call("cybersyn", "write_global", false, "manager", "players", pi, "pinning")
+		local stop1 = stop_of(rows[1])
+		local res = lab.dev("click", pi, TABLE, { COLUMNS + 2, 1 }, { shift = true })
+		lands("shift-click from the character view: the pin's view (centred on the stop, zoom 1.5)", stop1)
+		local pd = lab.read("manager", "players", pi)
+		lab.check("show on map auto-pins the window and shows Back", pd.auto_pinned == true and pd.pinning == true
+			and remote.call(D, "header", pi).back_button == true, { auto = pd.auto_pinned, pinning = pd.pinning, res = res })
+		lab.check("the marker pair is drawn", pd.markers ~= nil and #pd.markers == 2, pd.markers)
+		player.zoom = 0.3
+		player.centered_on = nil
+		local stop2 = stop_of(rows[2])
+		lab.dev("click", pi, TABLE, { 2 * COLUMNS + 2, 1 }, { shift = true })
+		lands("shift-click from remote view at zoom 0.3: the pin's view of the second row", stop2)
+		lab.check("still auto-pinned in remote view", lab.read("manager", "players", pi, "auto_pinned") == true)
+		local tid, train = next(lab.read("trains"))
+		local front = train and train.entity and train.entity.valid and train.entity.front_stock
+		if front then
+			local t = lab.dev("link_click", pi, "train", tid, { shift = true })
+			lab.check("a train link follows the front stock at zoom 1.5", t.centered_on == front.unit_number and t.zoom == 1.5
+				and t.controller == defines.controllers.remote, t)
+		end
+		-- Back as an auto-pinned window has it: remote view is left; the window keeps its pin only through the hand pin.
+		local ok, err = pcall(remote.call, D, "click", pi, "manager_back_button")
+		lab.check("Back leaves remote view", player.controller_type ~= defines.controllers.remote, { ok = ok, err = err })
+		lab.check("Back ends the auto-pin", lab.read("manager", "players", pi, "auto_pinned") == nil)
+		remote.call("cybersyn", "write_global", true, "manager", "players", pi, "pinning")
+		-- With the window hand-pinned no auto-pin is recorded and Back stays hidden, as before.
+		lab.dev("click", pi, TABLE, { COLUMNS + 2, 1 }, { shift = true })
+		lands("shift-click on a hand-pinned window: the same view", stop1)
+		lab.check("a hand-pinned window is not auto-pinned", lab.read("manager", "players", pi, "auto_pinned") == nil)
+		if player.controller_type == defines.controllers.remote then player.exit_remote_view() end
+		remote.call("cybersyn", "write_global", was_pinning, "manager", "players", pi, "pinning")
+		lab.dev("controller_changed", pi)
+		remote.call(D, "select_tab", pi, "overview")
+	end,
+
 	-- PLAN4 D16: back from remote view with a pinned window's overlay open, the hand-back to player.opened is armed
 	-- for the manager tick.
 	function(ctx)

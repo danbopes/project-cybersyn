@@ -357,6 +357,10 @@ function interface.link_click(pi, kind, id, mods)
 		opened = player.opened and player.opened.name or nil,
 		item = pd.search_item,
 		tab = pd.selected_tab,
+		centered_on = player.centered_on and player.centered_on.unit_number or nil,
+		zoom = player.zoom,
+		position = player.position,
+		surface = player.surface.name,
 	}
 end
 
