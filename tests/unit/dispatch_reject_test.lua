@@ -92,7 +92,6 @@ end)
 
 test("dispatch_failed: severity by cause, the first item interned, a = state + 1", function()
 	settings.global["cybersyn-diagnostics"] = { value = "basic" }
-	settings.global["cybersyn-diagnostics-ring"] = { value = 16384 }
 	storage.trains, storage.stations = {}, {}
 	local diag = H.load("scripts.diag")
 	local d = diag.apply()

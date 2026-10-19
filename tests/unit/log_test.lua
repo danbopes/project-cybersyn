@@ -12,10 +12,10 @@ end
 
 local function setup(mode, ring)
 	settings.global["cybersyn-diagnostics"] = { value = mode or "basic" }
-	settings.global["cybersyn-diagnostics-ring"] = { value = ring or 16384 }
 	storage.trains = storage.trains or {}
 	storage.stations = storage.stations or {}
 	diag = H.load("scripts.diag")
+	diag.FULL_RING = ring or 16384
 	model = H.load("scripts.gui.log-model")
 	return diag.apply()
 end

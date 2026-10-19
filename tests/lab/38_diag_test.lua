@@ -180,7 +180,7 @@ lab.suite("38_diag", {
 			after >= math.floor(dg.entries_before / 2), { before = dg.entries_before, after = after })
 	end,
 
-	-- The setting: off drops storage.diag (acknowledgements stay), basic creates it again, the ring size applies.
+	-- The setting: off drops storage.diag (acknowledgements stay), basic creates it again with the fixed full ring.
 	function()
 		local rows = dev("diag_unserved_rows", 1)
 		dg.key = rows[1]
@@ -192,10 +192,7 @@ lab.suite("38_diag", {
 		dev("set_setting", "cybersyn-diagnostics", "basic")
 		local st = dev("diag_state")
 		lab.check("basic again: a fresh state", st.mode == "basic" and st.seq == 0 and st.loaded_tick == game.tick, st)
-		dev("set_setting", "cybersyn-diagnostics-ring", 2048)
-		lab.check("ring setting resizes the full ring", dev("diag_state").ring_full_size == 2048)
-		dev("set_setting", "cybersyn-diagnostics-ring", 16384)
-		lab.check("ring setting back to 16,384", dev("diag_state").ring_full_size == 16384)
+		lab.check("the full ring holds 16,384 rows", dev("diag_state").ring_full_size == 16384)
 		lab.check("unack of the station acknowledgement", dev("diag_unack", "station", 424242, nil, 1) == true)
 		-- Two cycles so the fresh state has entries again.
 		lab.wait(400)

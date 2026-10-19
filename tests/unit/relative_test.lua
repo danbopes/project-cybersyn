@@ -177,7 +177,6 @@ local diag = H.load("scripts.diag")
 
 local function setup(mode)
 	settings.global["cybersyn-diagnostics"] = { value = mode or "full" }
-	settings.global["cybersyn-diagnostics-ring"] = { value = 16384 }
 	storage.trains = storage.trains or {}
 	storage.stations = storage.stations or {}
 	return diag.apply()

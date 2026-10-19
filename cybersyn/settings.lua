@@ -154,16 +154,6 @@ data:extend({
 		allowed_values = { "off", "basic", "full" },
 	},
 	{
-		type = "int-setting",
-		name = "cybersyn-diagnostics-ring",
-		order = "db",
-		setting_type = "runtime-global",
-		-- The full ring only; the basic ring is fixed at 4,096 rows.
-		default_value = 16384,
-		minimum_value = 1024,
-		maximum_value = 65536,
-	},
-	{
 		type = "string-setting",
 		name = "cybersyn-manager-actions",
 		order = "dd",

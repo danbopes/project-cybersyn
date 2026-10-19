@@ -973,7 +973,7 @@ local function on_settings_changed(event)
 	grab_all_settings()
 	if event.setting == "cybersyn-ticks-per-second" or event.setting == "cybersyn-manager-updates-per-second" then
 		register_tick()
-	elseif event.setting == "cybersyn-diagnostics" or event.setting == "cybersyn-diagnostics-ring" then
+	elseif event.setting == "cybersyn-diagnostics" then
 		diag.apply()
 	end
 	manager.on_runtime_mod_setting_changed(event)

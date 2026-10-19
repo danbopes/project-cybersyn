@@ -210,7 +210,6 @@ test("old Log rows: the retired action codes 5 and 7 and the new 8 still read th
 	storage.trains = storage.trains or {}
 	storage.stations = storage.stations or {}
 	settings.global["cybersyn-diagnostics"] = { value = "basic" }
-	settings.global["cybersyn-diagnostics-ring"] = { value = 16384 }
 	H.load("scripts.diag").apply()
 	local model = H.load("scripts.gui.log-model")
 	local ctx = { player = function() return "Daniel" end }
