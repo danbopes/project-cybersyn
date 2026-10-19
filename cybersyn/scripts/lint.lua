@@ -828,14 +828,8 @@ end
 -- cannot change without the train becoming a new one; reading them costs up to 120 µs per train (get_records
 -- builds every record, rail targets included), so they are read between trips and carried while the train is out.
 -- A train first seen on a trip has nothing to carry and is read once it is back.
-local ON_TRIP = {
-	[STATUS_TO_P] = true,
-	[STATUS_P] = true,
-	[STATUS_TO_R] = true,
-	[STATUS_R] = true,
-	[STATUS_TO_F] = true,
-	[STATUS_F] = true,
-}
+local ON_TRIP = { [STATUS_TO_F] = true, [STATUS_F] = true }
+for status in pairs(STATUS_ON_DELIVERY) do ON_TRIP[status] = true end
 
 --- @param s LintState
 --- @param job LintJob

@@ -27,9 +27,6 @@ local LAYOUT_MIN = 240
 local ROW_CHROME = 8 + 8 + 4 * 8
 local ROW_HEIGHT = 32
 
--- Statuses on a delivery (to provider, loading, to requester, unloading): what "busy" counts.
-local BUSY = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
-
 --- @class UtilizationRow
 --- @field layout_id uint
 --- @field composition string "L<CC>", or "#id" when the layout record is gone
@@ -53,7 +50,7 @@ function utilization_tab.model(trains, layouts, minutes)
 		local id = train.layout_id
 		if id then
 			count[id] = (count[id] or 0) + 1
-			if BUSY[train.status] then
+			if STATUS_ON_DELIVERY[train.status] then
 				now[id] = (now[id] or 0) + 1
 				local t = train.dispatch_tick
 				if t then

@@ -70,6 +70,8 @@ STATUS_TO_D_BYPASS = 6
 STATUS_TO_F = 7
 STATUS_F = 8
 STATUS_CUSTOM = 256 --this status and any status greater than it can be used by other mods (I've reserved the lower integers for myself in case I want to add more statuses)
+-- A train bound to a delivery: to the provider, loading, to the requester, unloading.
+STATUS_ON_DELIVERY = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
 
 FAILURE_REASON_NO_PROVIDER_STOCK = 0
 FAILURE_REASON_NO_TRAIN_AVAILABLE = 1

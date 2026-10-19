@@ -32,7 +32,6 @@ local repair = {}
 repair.handle = {}
 
 local DIALOG = "cybersyn_action_dialog"
-local DELIVERY_STATUSES = { [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true, [STATUS_R] = true }
 
 --- @param id uint
 --- @return Train?
@@ -47,7 +46,7 @@ end
 --- @return boolean
 function repair.can_fail(id)
 	local train = train_record(id)
-	return train ~= nil and train.manifest ~= nil and DELIVERY_STATUSES[train.status] == true
+	return train ~= nil and train.manifest ~= nil and STATUS_ON_DELIVERY[train.status] == true
 end
 
 --- Whether Recount deliveries has a station to act on. The combinators too: recount writes comb2's output, and an
