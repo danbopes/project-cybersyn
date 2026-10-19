@@ -787,6 +787,49 @@ local function row_write(elem, entry, age, still)
 	end
 end
 
+-- Per-call context of sync_rows' hooks, in upvalues so a render allocates no closures.
+local r_viewport, r_defer = 0, false
+
+local ROW_SYNC = {
+	elems = true,
+	add = function(parent, index, entry)
+		r_memo[entry.key] = {}
+		return build_row(parent, index, r_widths)
+	end,
+	reuse = function(_, old_key, entry)
+		local memo = r_memo
+		memo[entry.key] = memo[old_key] or {}
+		memo[old_key] = nil
+	end,
+	gone = function(key)
+		r_memo[key] = nil
+	end,
+	after = function(elem, entry, i, fresh)
+		local memo = r_memo
+		local key = entry.key
+		local m = memo[key]
+		if not m then
+			m = {}
+			memo[key] = m
+		end
+		if fresh and i > r_viewport and entry.g then
+			m.stale = true
+			r_defer = true
+			if not m.hidden then
+				elem.visible = false
+				m.hidden = true
+			end
+		elseif not m.stale then
+			row_write(elem, entry, i <= r_viewport)
+		elseif i <= r_viewport then
+			m.stale = nil
+			row_write(elem, entry, true)
+		else
+			r_defer = true
+		end
+	end,
+}
+
 --- Reconciles the rows table with `entries`. Moving a row costs one swap_children (about 0.5 µs) and writing one
 --- about 40 µs on pY (building one about 75 µs), so rows are moved, not rewritten: a key still shown is swapped into
 --- its place, a new key takes the element of a key that left (or a built one), and only those elements are written.
@@ -800,91 +843,10 @@ end
 --- @param build_left int rows that may be built in this call; the rest of a long fill waits for the next update
 --- @param viewport int rows from the top written now, with their ages
 local function sync_rows(parent, entries, state, build_left, viewport)
-	local cur, elems = state.keys, state.elems
-	if not (cur and elems and #cur == #elems and (not elems[1] or elems[1].valid)) then
-		parent.clear()
-		cur, elems = {}, {}
-	end
-	local memo = r_memo
-	local n = #entries
-	local wanted = {}
-	for i = 1, n do wanted[entries[i].key] = true end
-	local pos_of, free = {}, {}
-	for j = 1, #cur do
-		local key = cur[j]
-		pos_of[key] = j
-		if not wanted[key] then free[#free + 1] = key end
-	end
-	local function swap(i, j)
-		parent.swap_children(i, j)
-		cur[i], cur[j] = cur[j], cur[i]
-		elems[i], elems[j] = elems[j], elems[i]
-		pos_of[cur[i]] = i
-		pos_of[cur[j]] = j
-	end
-	local defer = false
-	local built = 0
-	local i = 1
-	while i <= n do
-		local entry = entries[i]
-		local key = entry.key
-		local fresh = false
-		if cur[i] ~= key then
-			local j = pos_of[key]
-			if j then
-				swap(i, j)
-			elseif #free > 0 then
-				-- The lowest free element, so the rows above the change are not moved.
-				local old = table.remove(free)
-				local k = pos_of[old]
-				if k ~= i then swap(i, k) end
-				pos_of[old] = nil
-				memo[key] = memo[old] or {}
-				memo[old] = nil
-				cur[i] = key
-				pos_of[key] = i
-				fresh = true
-			else
-				if built >= build_left then break end
-				local elem = build_row(parent, i <= #cur and i or nil, r_widths)
-				table.insert(cur, i, key)
-				table.insert(elems, i, elem)
-				for p = i, #cur do pos_of[cur[p]] = p end
-				memo[key] = {}
-				built = built + 1
-				fresh = true
-			end
-		end
-		local m = memo[key]
-		if not m then
-			m = {}
-			memo[key] = m
-		end
-		if fresh and i > viewport and entry.g then
-			m.stale = true
-			defer = true
-			if not m.hidden then
-				elems[i].visible = false
-				m.hidden = true
-			end
-		elseif not m.stale then
-			row_write(elems[i], entry, i <= viewport)
-		elseif i <= viewport then
-			m.stale = nil
-			row_write(elems[i], entry, true)
-		else
-			defer = true
-		end
-		i = i + 1
-	end
-	for j = #cur, i, -1 do
-		elems[j].destroy()
-		memo[cur[j]] = nil
-		cur[j] = nil
-		elems[j] = nil
-	end
-	if defer then state.defer_from = viewport + 1 end
-	state.keys, state.elems = cur, elems
+	r_viewport, r_defer = viewport, false
+	ROW_SYNC.build_budget = build_left
+	util.sync_children(parent, entries, state, false, ROW_SYNC)
+	if r_defer then state.defer_from = viewport + 1 end
 end
 
 --- Writes up to DEFER_ROWS of the rows the last rewrite left hidden, top down.

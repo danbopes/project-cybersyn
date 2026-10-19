@@ -854,6 +854,93 @@ test("sync_children: children changed behind its back force a full rebuild", fun
 	assert_eq(child_names(parent), { "c", "a", "b" })
 end)
 
+test("sync_children options: a write budget defers updates and keeps their old sigs", function()
+	local u = util()
+	local parent = H.element({ name = "list" })
+	local state, log = {}, {}
+	u.sync_children(parent, entries_for({ "a", "b", "c" }, log, { 1, 1, 1 }), state)
+	local opts = { budget = { n = 2 } }
+	assert_eq(u.sync_children(parent, entries_for({ "a", "b", "c" }, log, { 2, 2, 2 }), state, false, opts), "updated")
+	assert_eq(log, { "a@1", "b@2" })
+	assert_true(opts.deferred)
+	assert_eq(state.sigs, { a = 2, b = 2, c = 1 })
+	opts = { budget = { n = 2 } }
+	u.sync_children(parent, entries_for({ "a", "b", "c" }, log, { 2, 2, 2 }), state, false, opts)
+	assert_eq(log, { "a@1", "b@2", "c@3" })
+	assert_nil(opts.deferred)
+end)
+
+test("sync_children options: after sees every placed child, fresh when built or reused; gone sees destroyed keys", function()
+	local u = util()
+	local parent = H.element({ name = "list" })
+	local state, seen, gone = {}, {}, {}
+	local opts = {
+		elems = true,
+		build = function(e) return { type = "label", name = e.key } end,
+		reuse = function(elem, _, e) elem.name = e.key end,
+		after = function(elem, e, i, fresh) seen[#seen + 1] = e.key .. "@" .. i .. (fresh and "+" or "") .. elem.name end,
+		gone = function(key) gone[#gone + 1] = key end,
+	}
+	local function plain(keys)
+		local out = {}
+		for i, k in ipairs(keys) do out[i] = { key = k } end
+		return out
+	end
+	u.sync_children(parent, plain({ "a", "b" }), state, false, opts)
+	assert_eq(seen, { "a@1+a", "b@2+b" })
+	assert_eq(#state.elems, 2)
+	seen = {}
+	assert_eq(u.sync_children(parent, plain({ "a", "b" }), state, false, opts), "updated")
+	assert_eq(seen, { "a@1a", "b@2b" })
+	seen = {}
+	H.gui_log = {}
+	u.sync_children(parent, plain({ "x", "a" }), state, false, opts)
+	assert_eq(child_names(parent), { "x", "a" })
+	assert_eq(H.count_ops("add"), 0)
+	assert_eq(seen, { "x@1+x", "a@2a" })
+	u.sync_children(parent, plain({ "a" }), state, false, opts)
+	assert_eq(gone, { "x" })
+	assert_eq(state.keys, { "a" })
+	assert_same(state.elems[1], parent.children[1])
+end)
+
+test("sync_children options: a build budget stops at the first build over it and drops the rest", function()
+	local u = util()
+	local parent = H.element({ name = "list" })
+	local state, log = {}, {}
+	u.sync_children(parent, entries_for({ "a", "b", "c", "d" }, log), state, false, { build_budget = 2 })
+	assert_eq(child_names(parent), { "a", "b" })
+	assert_eq(state.keys, { "a", "b" })
+	u.sync_children(parent, entries_for({ "a", "b", "c", "d" }, log), state, false, { build_budget = 2 })
+	assert_eq(child_names(parent), { "a", "b", "c", "d" })
+	-- A new key at the top over the budget: everything below it waits, survivors included.
+	u.sync_children(parent, entries_for({ "n", "a", "b", "c", "d" }, log), state, false, { build_budget = 0 })
+	assert_eq(child_names(parent), {})
+	assert_eq(state.keys, {})
+end)
+
+test("sync_children options: destroy_vanished never reuses, rebuild_mostly_new recreates a mostly new set", function()
+	local u = util()
+	local parent = H.element({ name = "list" })
+	local state, log = {}, {}
+	local opts = { destroy_vanished = true, rebuild_mostly_new = true, moved_keeps_sig = true }
+	u.sync_children(parent, entries_for({ "a", "b", "c" }, log, { 1, 1, 1 }), state)
+	local entries = entries_for({ "c", "x", "a" }, log, { 1, 1, 1 })
+	entries[2].reuse = function() error("reused") end
+	H.gui_log = {}
+	assert_eq(u.sync_children(parent, entries, state, false, opts), "rebuilt")
+	assert_eq(child_names(parent), { "c", "x", "a" })
+	assert_eq(H.count_ops("destroy"), 1)
+	assert_eq(H.count_ops("add"), 1)
+	assert_eq(log, {}, "moved children keep their sigs")
+	H.gui_log = {}
+	assert_eq(u.sync_children(parent, entries_for({ "a", "p", "q" }, log, { 1, 1, 1 }), state, false, opts), "rebuilt")
+	assert_eq(child_names(parent), { "a", "p", "q" })
+	assert_eq(H.count_ops("clear"), 1)
+	assert_eq(H.count_ops("add"), 3)
+	assert_eq(state.sigs, { a = 1, p = 1, q = 1 })
+end)
+
 local function table_row(key, log)
 	return {
 		key = key,
