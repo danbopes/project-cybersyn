@@ -795,6 +795,26 @@ styles.cybersyn_unserved_table = {
 	},
 }
 
+-- The drill-down's rows, without the header row they used to follow: the first row keeps its tint.
+styles.cybersyn_item_rows_table = {
+	type = "table_style",
+	parent = "cybersyn_unserved_table",
+	odd_row_graphical_set = {},
+	even_row_graphical_set = {
+		filename = "__core__/graphics/gui-new.png",
+		position = { 472, 25 },
+		size = 1,
+	},
+}
+
+-- No inner-shadow outline, and no dark background showing through the bar space a short table reserves.
+styles.cybersyn_item_scroll_pane = {
+	type = "scroll_pane_style",
+	parent = "flib_naked_scroll_pane_no_padding",
+	graphical_set = {},
+	background_graphical_set = {},
+}
+
 styles.cybersyn_unserved_item = {
 	type = "button_style",
 	parent = "transparent_slot",

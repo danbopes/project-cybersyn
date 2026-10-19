@@ -141,6 +141,10 @@ local function model_checks(label, hash)
 		lab.check(label .. ": " .. tname .. " rows scroll in a pane of its share's height, header fixed above it",
 			sc and sc.height == a[tname] * 32 and sc.vertical == "auto-and-reserve-space" and sc.horizontal == "never" and
 			sc.hover == true and sc.holds_rows and sc.header_outside and sc.header_cells == COLS[tname], sc)
+		if #rendered > 0 then
+			lab.check(label .. ": " .. tname .. " header and rows share the flexible column's width",
+				sc and sc.header_flex ~= nil and sc.header_flex == sc.row_flex, sc)
+		end
 		lab.check(label .. ": " .. tname .. " empty state exactly when the list is empty", cap.empty == (#d.model[tname] == 0), cap)
 	end
 	local rows = dev("rows", PI, "item")
@@ -376,9 +380,96 @@ lab.suite("39_item", {
 			{ updates = updates, deferred = d.deferred })
 		local rows = dev("rows", PI, "item")
 		lab.check("scroll: the rows the viewports show stay within the layout's rows", rows.rendered <= rows.computed, rows)
+
+		-- While held, a new pass that changes a shown row is not written (and nothing is appended under it); once the
+		-- cursor leaves, the row follows the pass.
+		local stations = read("stations")
+		local target = d.rendered.requesters[1].id
+		local stop = stations[target] and stations[target].entity_stop
+		local old_name = stop and stop.backer_name
+		if stop then
+			local before = serpent.line(d.rendered.requesters)
+			stop.backer_name = "zz-held-" .. old_name
+			dev("collect")
+			dev("hover", PI, "item_requesters_body", 2)
+			for _ = 1, 4 do dev("update", PI, 1) end
+			d = dev("item_dump", PI)
+			lab.check("scroll: a held table keeps its rows when the new pass changes one of them",
+				serpent.line(d.rendered.requesters) == before, d.rendered.requesters[1])
+			dev("hover", PI, "item_requesters_body", 2, true)
+			for _ = 1, 4 do dev("update", PI, 1) end
+			d = dev("item_dump", PI)
+			lab.check("scroll: and the changed row follows the pass once the cursor leaves",
+				d.rendered.requesters[1].cells[1] == "zz-held-" .. old_name, d.rendered.requesters[1].cells[1])
+			stop.backer_name = old_name
+			dev("collect")
+		else
+			lab.skip("scroll: held table and a new pass", "no stop for the first requester")
+		end
 		dev("hover", PI, "item_requesters_body", 2, true)
 		dev("close_item", PI)
 		lab.big_screen(PI)
+	end,
+
+	function()
+		-- A requester below the viewport whose reason gets acknowledged between passes is rewritten within one turn
+		-- of the CHECK_ROWS window.
+		local CHECK_ROWS = 6
+		dev("set_layout", PI, 1366, 768, 1.5)
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		local found
+		for _, h in ipairs(dev("dump", PI, "inventory").provided.hashes) do
+			dev("open_item", PI, h)
+			for _ = 1, 6 do dev("update", PI, 1) end
+			local d = dev("item_dump", PI)
+			for i, r in ipairs(d.rendered.requesters) do
+				if i > d.alloc.requesters and r.chip_tooltip and r.chip_style ~= "cybersyn_reason_label_acked" then
+					found = { hash = h, row = i, id = r.id, n = #d.rendered.requesters, view = d.alloc.requesters }
+					break
+				end
+			end
+			if found then break end
+			dev("close_item", PI)
+		end
+		if not found then
+			lab.skip("scroll: a below-fold requester follows an ack", "no unserved requester below a viewport")
+			lab.big_screen(PI)
+			return
+		end
+		dev("diag_ack", "request", found.id, found.hash, nil, PI)
+		local limit = math.ceil((found.n - found.view) / CHECK_ROWS) + 1
+		local updates, style = 0, nil
+		repeat
+			dev("update", PI, 1)
+			updates = updates + 1
+			local r = dev("item_dump", PI).rendered.requesters[found.row]
+			style = r and r.chip_style
+		until style == "cybersyn_reason_label_acked" or updates >= limit + 3
+		lab.check("scroll: a requester below the viewport shows its acknowledgement within one window turn",
+			style == "cybersyn_reason_label_acked" and updates <= limit, { updates = updates, limit = limit, found = found })
+		dev("diag_unack", "request", found.id, found.hash, PI)
+		dev("close_item", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
+		-- A table longer than the cap: "n of m", the first n rows, built within model_checks' updates.
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		local best, most = nil, 0
+		for _, h in ipairs(dev("dump", PI, "inventory").provided.hashes) do
+			local o = dev("item_oracle", h)
+			if #o.providers > most then best, most = h, #o.providers end
+		end
+		dev("item_max_rows", 3)
+		dev("open_item", PI, best)
+		local d = model_checks("capped at 3", best)
+		lab.check("capped: the providers table stops at the cap", #d.model.providers > 3 and #d.rendered.providers == 3 and
+			type(d.captions.providers.count) == "table" and d.captions.providers.count[1] == "cybersyn-gui.item-count",
+			{ #d.model.providers, #d.rendered.providers, d.captions.providers.count })
+		dev("item_max_rows", nil)
+		dev("close_item", PI)
 	end,
 
 	function()
@@ -478,6 +569,12 @@ lab.suite("39_item", {
 			local r = dev("rows", PI, "item")
 			local a = d.alloc
 			local label = screen[1] .. "x" .. screen[2] .. "@" .. screen[3]
+			local widths_ok = true
+			for _, tname in ipairs({ "providers", "requesters", "trains" }) do
+				local sc = d.scroll[tname]
+				if #d.rendered[tname] > 0 and not (sc and sc.header_flex == sc.row_flex) then widths_ok = false end
+			end
+			lab.check(label .. ": header and rows share the flexible width after the resize", widths_ok, d.scroll)
 			lab.check(label .. ": shares add up to the computed rows, rendered within them",
 				a and a.providers + a.requesters + a.trains == r.computed and r.rendered <= r.computed and
 				r.computed >= 3 and 256 + r.computed * 32 <= r.content_height and 256 + (r.computed + 1) * 32 > r.content_height,

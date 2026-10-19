@@ -64,9 +64,15 @@ local FILL_ROWS = 16
 local HEADER = 20
 -- The scroll panes reserve their bar's width, so the rows' width does not change with their number.
 local SCROLLBAR = 12
-local CHECK_ROWS = 12
+-- Signing a row costs about 8 µs on pY 123: between passes Requesters below the viewport are signed CHECK_ROWS per
+-- update in turn (Ash's 23 in 4 updates, a 200-row table in about a pass and a half), and at most WINDOW_WRITES of
+-- them are rewritten.
+local CHECK_ROWS = 6
+local WINDOW_WRITES = 4
+-- Signed rows of tables that show an older pass, per update (about 1.6 ms); the first such table always goes.
 local FULL_CHECK = 200
-local BUILD_MAX = math.max(FILL_ROWS, math.floor(WRITE_BUDGET / BUILD_COST))
+-- Wait clocks below the viewport written per update, in turn.
+local CLOCK_ROWS = 6
 
 -- The content element of every tab that can host the drill-down (manager.lua sizes them).
 item.CONTENT_FRAMES = {
@@ -237,10 +243,10 @@ local function section_def(t, flex)
 			util.hoverable({
 				type = "scroll-pane",
 				name = "item_" .. t .. "_scroll",
-				style = "flib_naked_scroll_pane_no_padding",
+				style = "cybersyn_item_scroll_pane",
 				horizontal_scroll_policy = "never",
 				vertical_scroll_policy = "auto-and-reserve-space",
-				{ type = "table", name = table_name(t), style = "cybersyn_unserved_table", column_count = #COLUMNS[t] },
+				{ type = "table", name = table_name(t), style = "cybersyn_item_rows_table", column_count = #COLUMNS[t] },
 				{
 					type = "flow",
 					name = "item_" .. t .. "_empty_flow",
@@ -716,23 +722,33 @@ end
 
 local ENTRY = { providers = provider_entry, requesters = requester_entry, trains = train_entry }
 
---- The Wait column of the shown requester rows, every update: one caption write per row whose seconds moved.
+--- The Wait column of the shown requester rows: one caption write per row whose seconds moved, every update for the
+--- unscrolled viewport's rows and CLOCK_ROWS of the others in turn (a scrolled-to clock steps a few seconds at a time,
+--- as the Log's ages do).
 --- @param tbl LuaGuiElement
 --- @param rows ItemRequesterRow[] the model rows the table shows (the previous pass's while its rewrite waits)
 --- @param n int rows built
+--- @param view int rows of the unscrolled viewport
+--- @param from int? first row below the viewport to write in this update
 --- @param now uint
-local function wait_clock(tbl, rows, n, now)
-	for i = 1, n do
+--- @return int? where the next update continues below the viewport
+local function wait_clock(tbl, rows, n, view, from, now)
+	local function write(i)
 		local start = rows[i] and rows[i].wait_start
-		if start then
-			local cell = tbl[wait_name(i)]
-			local caption = util.short_duration(now - start)
-			if cell and cell.caption ~= caption then
-				cell.caption = caption
-				cell.tooltip = { "cybersyn-gui.waiting-for", util.format_duration(now - start) }
-			end
+		if not start then return end
+		local cell = tbl[wait_name(i)]
+		local caption = util.short_duration(now - start)
+		if cell and cell.caption ~= caption then
+			cell.caption = caption
+			cell.tooltip = { "cybersyn-gui.waiting-for", util.format_duration(now - start) }
 		end
 	end
+	for i = 1, math.min(n, view) do write(i) end
+	if n <= view then return nil end
+	if not from or from > n or from <= view then from = view + 1 end
+	local last = math.min(n, from + CLOCK_ROWS - 1)
+	for i = from, last do write(i) end
+	return last + 1
 end
 
 local function set_caption(elem, caption)
@@ -918,10 +934,11 @@ function item.build(map_data, player_data)
 	-- (FILL_ROWS); each table is synced once.
 	local budget, wrote, deferred, waiting = WRITE_BUDGET, false, 0, false
 	local full_left = FULL_CHECK
+	local max_rows = storage.manager.item_max_rows or MAX_ROWS
 	local plan = {}
 	for _, t in ipairs(RENDER_ORDER) do
 		local rows = m[t]
-		local n = math.min(#rows, MAX_ROWS)
+		local n = math.min(#rows, max_rows)
 		local name = table_name(t)
 		local tbl = refs[name]
 		local state = util.gui_state(player_data, name)
@@ -929,38 +946,56 @@ function item.build(map_data, player_data)
 			local built = state.keys and #state.keys or 0
 			local sigs = state.keys and state.sigs
 			local view_n = math.min(n, alloc[t])
-			-- Signing a row costs about 8 µs on pY 123. Between passes only the unscrolled viewport's rows and CHECK_ROWS
-			-- more in turn are signed (all of a 200-row table within about one pass), the others keep their sigs. A table
-			-- that does not show this pass yet is signed whole, so that it is rewritten whole; stale tables past the
-			-- first wait for the next update when they would take this one past FULL_CHECK signed rows.
-			local stale = not sigs or state.model_key ~= cache.key
-			local skip = stale and full_left < n and full_left < FULL_CHECK
-			local entries, changed = {}, 0
+			local to = math.min(n, built)
 			local make = ENTRY[t]
-			local from, to = 1, math.min(n, built)
-			if not stale and to > view_n then
-				from = state.check or view_n + 1
-				if from > to then from = view_n + 1 end
-			end
-			for i = 1, skip and 0 or to do
-				local entry
-				if stale or i <= view_n or (i >= from and i < from + CHECK_ROWS) then
-					entry = make(rows[i], ctx, i)
-					if not (sigs and sigs[i] == entry.sig) then changed = changed + 1 end
-				else
-					entry = { key = i, sig = sigs[i] }
-				end
+			-- A table that does not show this pass yet (stale) is signed whole, so that it is rewritten whole; stale
+			-- tables past the first wait for the next update when they would take it past FULL_CHECK signed rows. A
+			-- held one is signed once per pass: what it found waits for the hold to end.
+			local stale = not sigs or state.model_key ~= cache.key
+			local held_skip = held[t] and stale and state.held_key == cache.key
+			local skip = held_skip or (stale and full_left < to and full_left < FULL_CHECK)
+			local entries, changed = {}, 0
+			local function sign(i)
+				local entry = make(rows[i], ctx, i)
+				if not (sigs and sigs[i] == entry.sig) then changed = changed + 1 end
 				entries[i] = entry
 			end
-			-- New rows: no more than one update can add.
-			for i = to + 1, skip and 0 or math.min(n, built + BUILD_MAX) do entries[i] = make(rows[i], ctx, i) end
-			if stale and not skip then full_left = full_left - n end
+			local next_check
+			if skip then
+				-- nothing signed
+			elseif stale then
+				for i = 1, to do sign(i) end
+				full_left = full_left - to
+			else
+				for i = 1, math.min(view_n, to) do sign(i) end
+				-- Below the viewport only Requesters' sigs move between passes (wait, reason, acks, last delivery):
+				-- CHECK_ROWS of them are signed in turn, and the window stops at its WINDOW_WRITES-th changed row, so
+				-- rows nobody may be looking at never take an update's whole budget.
+				if t == "requesters" and to > view_n then
+					local i = state.check
+					if not i or i > to or i <= view_n then i = view_n + 1 end
+					local stop, writes = i + CHECK_ROWS, 0
+					while i <= to and i < stop and writes < WINDOW_WRITES do
+						local before = changed
+						sign(i)
+						if changed > before then writes = writes + 1 end
+						i = i + 1
+					end
+					next_check = i
+				end
+				for i = view_n + 1, to do
+					if not entries[i] then
+						-- Keeps its sig; built from the current model if the table ever has to be rebuilt.
+						entries[i] = { key = i, sig = sigs[i], build = function() return make(rows[i], ctx, i).build() end }
+					end
+				end
+			end
 			-- A held table may only grow below rows that all still match the model: nothing under the cursor is
 			-- rewritten, and a player who hovers a list as soon as it opens still gets the rest of it.
-			local open = not skip and (not held[t] or (changed == 0 and n > built))
+			local open = not skip and (not held[t] or (changed == 0 and n >= built))
 			if skip then
-				waiting = true
-				deferred = deferred + n
+				if not held_skip then waiting = true end
+				deferred = deferred + math.max(1, n - built)
 			elseif open and (changed == 0 or forced or not wrote or changed <= budget) then
 				budget = budget - changed
 				wrote = wrote or changed > 0
@@ -973,11 +1008,15 @@ function item.build(map_data, player_data)
 					wrote = wrote or keep > built
 				end
 				-- The window moves on only once its rows were synced: a change found in it waits there for its rewrite.
-				if not stale then state.check = from + CHECK_ROWS end
-				plan[#plan + 1] = { t = t, tbl = tbl, state = state, rows = rows, n = n, entries = entries,
+				if next_check then state.check = next_check end
+				plan[#plan + 1] = { t = t, tbl = tbl, state = state, rows = rows, n = n, entries = entries, make = make,
 					keep = math.min(keep, n), view_n = view_n, built = built }
 			else
-				waiting = waiting or changed > 0
+				if held[t] then
+					state.held_key = stale and cache.key or nil
+				else
+					waiting = waiting or changed > 0
+				end
 				deferred = deferred + changed + math.max(0, n - built)
 			end
 		end
@@ -987,16 +1026,18 @@ function item.build(map_data, player_data)
 	for _, p in ipairs(plan) do
 		local keep, n = p.keep, p.n
 		if keep >= p.view_n and keep < n and fold > 0 then
-			local more = math.min(n - keep, fold, p.built + BUILD_MAX - keep)
+			local more = math.min(n - keep, fold)
 			fold = fold - more
 			keep = keep + more
 		end
 		local entries = p.entries
-		for i = keep + 1, n do entries[i] = nil end
+		-- New rows are signed only once it is known how many this update keeps.
+		for i = p.built + 1, keep do entries[i] = p.make(p.rows[i], ctx, i) end
 		deferred = deferred + n - keep
 		util.sync_table_rows(p.tbl, #COLUMNS[p.t], 0, entries, p.state)
 		p.state.shown, p.state.shown_n = p.rows, n
 		p.state.model_key = cache.key
+		p.state.held_key = nil
 	end
 	for _, t in ipairs(RENDER_ORDER) do
 		local name = table_name(t)
@@ -1005,7 +1046,8 @@ function item.build(map_data, player_data)
 		-- Wait clock, count and empty state follow the rows the table shows, not the model it may not show yet.
 		local shown = state.shown
 		if t == "requesters" and shown and tbl and tbl.valid then
-			wait_clock(tbl, shown, math.min(state.keys and #state.keys or 0, state.shown_n), ctx.now)
+			state.clock = wait_clock(tbl, shown, math.min(state.keys and #state.keys or 0, state.shown_n), alloc.requesters,
+				state.clock, ctx.now)
 		end
 		local empty = refs["item_" .. t .. "_empty_flow"]
 		local show_empty = shown ~= nil and #shown == 0
@@ -1133,7 +1175,7 @@ local function dump(player_data)
 		model = {},
 		rendered = {},
 		scroll = {},
-		max_rows = MAX_ROWS,
+		max_rows = storage.manager.item_max_rows or MAX_ROWS,
 		captions = {},
 		header = {},
 	}
@@ -1195,6 +1237,14 @@ local function dump(player_data)
 			hover = scroll.raise_hover_events, holds_rows = tbl ~= nil and tbl.valid and tbl.parent == scroll,
 			header_outside = header ~= nil and header.valid and header.parent == scroll.parent,
 			header_cells = header and header.valid and #header.children or 0 } or nil
+		-- The flexible column's width in the header and in the first row: they must match for the columns to align.
+		local flex_col
+		for c, col in ipairs(COLUMNS[t]) do if not col.width then flex_col = c end end
+		if out.scroll[t] and header and header.valid then
+			local first = tbl and tbl.valid and tbl.children[flex_col]
+			out.scroll[t].header_flex = header.children[flex_col].style.minimal_width
+			out.scroll[t].row_flex = first and first.style.minimal_width or nil
+		end
 		local cap = refs["item_" .. t .. "_caption"]
 		local cnt = refs["item_" .. t .. "_count"]
 		local empty = refs["item_" .. t .. "_empty_flow"]
@@ -1248,6 +1298,12 @@ dev.add("item_oracle", function(hash)
 		in_transit = inv.in_transit[hash],
 		tick = snapshot.tick,
 	}
+end)
+
+--- Lowers the per-table row cap (nil restores MAX_ROWS), so a capped table can be tested on a small save.
+dev.add("item_max_rows", function(n)
+	storage.manager.item_max_rows = n
+	return storage.manager.item_max_rows or MAX_ROWS
 end)
 
 --- Scrolls table `t`'s pane to its "top" or bottom (the scroll position itself cannot be read back).
