@@ -42,7 +42,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field surface_count integer? #game.surfaces when the drop-down was built
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see util.get_sort
 --- @field page {[string]: integer}? current page per tab, see util.paginate
---- @field page_size integer? cached cybersyn-manager-page-size
+--- @field page_size integer? lower row cap than util.MAX_PAGE_SIZE, set only by the lab; cleared on open
 --- @field gui_state {[string]: {keys: (string|number)[]?, dirty: true?}}? per container, see util.sync_children
 --- @field hover {tick: uint, scope: string?, index: uint}? element under the cursor, see util.hold_active
 --- @field paused boolean? title-bar pause: no renders and no collection for this player
@@ -266,12 +266,6 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 		local player_data = storage.manager.players[e.player_index]
 		player_data.disable_top_left_button = player.mod_settings["cybersyn-disable-top-left-button"].value
 		top_left_button_update(player, player_data)
-	elseif e.setting == "cybersyn-manager-page-size" then
-		local player_data = e.player_index and storage.manager.players[e.player_index]
-		if player_data then
-			player_data.page_size = nil
-			util.reset_pages(player_data)
-		end
 	elseif e.setting == "cybersyn-diagnostics" then
 		-- The Log tab shows only while diagnostics are on; with manager updates off nothing else would hide it.
 		local manager_data = storage.manager

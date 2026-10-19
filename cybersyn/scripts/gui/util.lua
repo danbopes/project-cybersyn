@@ -882,18 +882,17 @@ function util.set_sort(player_data, tab, column, ascending)
 	util.reset_page(player_data, tab)
 end
 
---- Rows per page of a list tab: as many as its window height fits (player_data.layout), at most the
---- cybersyn-manager-page-size setting.
+-- Upper bound for a tab without a window layout: about 9 ms per Stations render at 500 rows on a 2,000-station base,
+-- so 200 stays near the 5 ms render budget.
+util.MAX_PAGE_SIZE = 200
+
+--- Rows per page of a list tab: as many as its window height fits (player_data.layout), at most
+--- player_data.page_size or util.MAX_PAGE_SIZE.
 --- @param player_data PlayerData
 --- @param tab string?
 --- @return integer
 function util.page_size(player_data, tab)
-	local size = player_data.page_size
-	if not size then
-		local setting = settings.get_player_settings(player_data.player_index)["cybersyn-manager-page-size"]
-		size = setting and setting.value --[[@as integer]] or 200
-		player_data.page_size = size
-	end
+	local size = player_data.page_size or util.MAX_PAGE_SIZE
 	local layout = tab and player_data.layout
 	local rows = layout and layout.rows_by_tab and layout.rows_by_tab[tab]
 	if rows and rows < size then return rows end

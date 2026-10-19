@@ -346,7 +346,6 @@ function interface.set_player_setting(pi, name, value)
 	settings.get_player_settings(pi)[name] = { value = value }
 	local _, pd = context(pi)
 	pd.unserved_minutes = nil
-	pd.page_size = nil
 	return settings.get_player_settings(pi)[name].value
 end
 

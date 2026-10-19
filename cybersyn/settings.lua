@@ -138,17 +138,6 @@ data:extend({
 	},
 	{
 		type = "int-setting",
-		name = "cybersyn-manager-page-size",
-		order = "aa",
-		setting_type = "runtime-per-user",
-		-- The most rows a list tab shows; the window's height decides how many fit (scripts/gui/sizing.lua).
-		default_value = 200,
-		minimum_value = 10,
-		-- About 9 ms per Stations render at 500 rows on a 2,000-station base; 200 stays near the 5 ms budget.
-		maximum_value = 200,
-	},
-	{
-		type = "int-setting",
 		name = "cybersyn-manager-unserved-minutes",
 		order = "ac",
 		setting_type = "runtime-per-user",

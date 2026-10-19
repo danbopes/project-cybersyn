@@ -315,21 +315,14 @@ end)
 
 -- ------------------------------------------------------------------ paging
 
-test("page_size: cached value, player setting, default", function()
+test("page_size: a lower cap on player_data, else the constant bound", function()
 	local u = util()
 	assert_eq(u.page_size({ page_size = 25 }), 25)
-	H.player_settings[1] = { ["cybersyn-manager-page-size"] = { value = 100 } }
-	local pd = { player_index = 1 }
-	assert_eq(u.page_size(pd), 100)
-	assert_eq(pd.page_size, 100)
-	-- Cached: a later setting change does not reach this player_data.
-	H.player_settings[1]["cybersyn-manager-page-size"].value = 10
-	assert_eq(u.page_size(pd), 100)
-	-- PLAN3 §4.3: the setting is the maximum (default 200); the window rows decide below it.
 	assert_eq(u.page_size({ player_index = 2 }), 200)
+	assert_eq(u.MAX_PAGE_SIZE, 200)
 end)
 
-test("page_size: a tab gets the window's rows, capped by the setting", function()
+test("page_size: a tab gets the window's rows, capped by the bound", function()
 	local u = util()
 	local pd = { page_size = 200, layout = { rows_by_tab = { stations_tab = 18, trains_tab = 12 } } }
 	assert_eq(u.page_size(pd, "stations_tab"), 18)
