@@ -337,7 +337,21 @@ lab.suite("39_item", {
 		local case = ix.case
 		if not case then return end
 		lab.check("LOST_PRIORITY train parked", cases.trains_ready(case))
+		-- The planner polls one station after the other over several ticks: a request set from RCON between hi's
+		-- poll and lo's would be seen alone for one cycle and served. Lo's request appears only once hi's has been
+		-- polled, so every cycle that sees lo also sees hi.
 		case.stages[1].run(case)
+		ix.lo_signals = case.r.signals
+		cases.set_signals(case.r, {})
+		lab.wait_until(function() return (cases.polled(case.hi.id, case.item) or 0) < 0 end, 4800, SPEED)
+	end,
+
+	function()
+		local case = ix.case
+		if not case then return end
+		lab.check("hi's request is polled before lo's is set", (cases.polled(case.hi.id, case.item) or 0) < 0 and
+			cases.polled(case.r_station, case.item) == nil, { hi = cases.polled(case.hi.id, case.item) })
+		cases.set_signals(case.r, ix.lo_signals)
 		lab.wait_until(function()
 			local e = dev("diag_unserved", case.r_station)[case.item]
 			return e ~= nil and e.lost_n > 0
