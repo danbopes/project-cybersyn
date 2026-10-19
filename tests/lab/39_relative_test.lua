@@ -253,7 +253,9 @@ lab.suite("39_relative", {
 		lab.check("effective: threshold in stacks = ceil(threshold / stack size)", item and item.hash == case.item and
 			item.need == math.ceil(item.effective / stack), item)
 
-		-- With a snapshot: capability from the collector's fleet facts, the same match counts.
+		-- With a snapshot: capability from the collector's fleet facts, the same match counts. The panel reads the
+		-- snapshot only while a window keeps it current (PLAN5 D5-9: one kept after the close is not live).
+		dev("open", PI)
 		dev("collect")
 		dev("lint_run")
 		for _ = 1, 10 do dev("relative_refresh_ms", PI, 1) end
@@ -306,6 +308,7 @@ lab.suite("39_relative", {
 		lab.info({ "", "refresh requester, effective open: ", dev("relative_refresh_ms", PI, 50) })
 		dev("relative_toggle_effective", PI)
 		lab.info({ "", "refresh requester, effective closed: ", dev("relative_refresh_ms", PI, 50) })
+		dev("close", PI)
 
 		-- The dispatcher-paused banner.
 		dev("set_setting_as", PI, "cybersyn-enable-planner", false)

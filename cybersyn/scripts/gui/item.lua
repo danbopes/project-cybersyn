@@ -730,7 +730,7 @@ local function render_header(player_data, cache)
 		cache.delivered = util.delivered_items(player_data, period)[hash] or 0
 	end
 	local t = m.totals
-	local collecting = collector.collecting()
+	local collecting = collector.collecting_note()
 	local percent = collecting and math.floor(collecting * 100) or -1
 	local sig = table.concat({ hash, t.provided, t.provided_stations, t.in_transit, t.in_transit_stations, t.requested,
 		t.requested_stations, cache.delivered, period, percent }, "|")

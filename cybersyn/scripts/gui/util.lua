@@ -1524,7 +1524,6 @@ function util.close_manager_window(player, player_data, refs, force)
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.delivered_items = nil
-	player_data.stations_query = nil
 	player_data.trains_query = nil
 	player_data.overview_cache = nil
 	player_data.overview_failing = nil
@@ -1546,7 +1545,10 @@ function util.close_manager_window(player, player_data, refs, force)
 	end
 
 	player.set_shortcut_toggled("cybersyn-toggle-gui", false)
-	collector.release_if_unused()
+	collector.on_last_close()
+	-- The Stations query cache stays with a kept snapshot: a reopen folds in what changed instead of classifying and
+	-- sorting every station in its first paint (12-15 ms on pY 123). collector.release drops it.
+	if not storage.manager.release_at then player_data.stations_query = nil end
 end
 
 --- util.sync_children for a `table` element whose rows are `columns` cells wide. The first `first` children (a

@@ -462,12 +462,13 @@ local function age_due(state, now)
 	return a ~= nil and a ~= math.floor(now / rtext.AGE_STEP)
 end
 
---- The station record the panel shows: the manager snapshot's while one is live, else a live read of the stop.
+--- The station record the panel shows: the manager snapshot's while a window keeps it current, else a live read of
+--- the stop (a snapshot kept after the last close is up to collector.KEEP_TICKS old).
 --- @return SnapshotStation?
 --- @return "snapshot"|"live"
 local function station_record(state, id)
-	local snap = collector.get()
-	local st = snap.tick and snap.stations[id]
+	local snap = collector.live()
+	local st = snap and snap.stations[id]
 	if st then
 		state.st, state.spare, state.read = nil, nil, false
 		return st, "snapshot"
@@ -649,7 +650,7 @@ end
 --- The Effective config numbers (PLAN3 §4.9, A8 + B15). The fleet numbers come from the panel's own walk, train by
 --- train: snapshot.fleet.capability ORs the masks of a layout's trains, which cannot tell how many of them match.
 local function build_effective(state, st, station, nets, counts, progress)
-	local snap = collector.get()
+	local snap = collector.live()
 	local control = st.control
 	local m = {
 		base_item = control[REQUEST_THRESHOLD] and math.abs(control[REQUEST_THRESHOLD]) or (mod_settings.r_threshold or 1),
@@ -661,7 +662,7 @@ local function build_effective(state, st, station, nets, counts, progress)
 		nets = {},
 		items = {},
 		-- The providers' own item thresholds are a pass aggregate of the snapshot; a live read has none.
-		overrides_known = snap.tick ~= nil,
+		overrides_known = snap ~= nil,
 	}
 	if control[REQUEST_FLUID_THRESHOLD] then
 		m.base_fluid, m.base_fluid_signal = math.abs(control[REQUEST_FLUID_THRESHOLD]), true
@@ -706,7 +707,7 @@ local function build_effective(state, st, station, nets, counts, progress)
 		local is_fluid = prototypes.fluid[name] ~= nil
 		local override
 		for _, net in ipairs(nets) do
-			local o = snap.provider_overrides and snap.provider_overrides[net.name .. ":" .. hash]
+			local o = snap and snap.provider_overrides and snap.provider_overrides[net.name .. ":" .. hash]
 			if o and (not override or o < override) then override = o end
 		end
 		local effective, overridden = rtext.effective_threshold(req.threshold, override)
@@ -751,7 +752,8 @@ end
 local function effective_model(state, st, station, nets, nets_key)
 	local counts, progress = fleet_counts(state, nets, nets_key)
 	local c = state.eff
-	local snap_tick = collector.get().tick
+	local snap = collector.live()
+	local snap_tick = snap and snap.tick
 	local done = state.fleet and state.fleet.done_tick
 	-- What the section reads from the record: a live record is refilled every refresh, mostly with the same values.
 	local inputs = record_sig(state, "eff_inputs", st, eff_inputs_content)

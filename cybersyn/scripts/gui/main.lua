@@ -21,6 +21,12 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field item_order table<string, int>
 --- @field snapshot Snapshot last complete snapshot (scripts/gui/collector.lua)
 --- @field snapshot_build Snapshot? pass in progress, with transient ids/i/r_keys/p_keys
+--- @field collect_boost uint? tick the opening boost started; set while collector.boost_tick steps a pass every tick
+--- @field collect_quiet true? the boost refreshes a complete snapshot: no placeholders and no "Collecting…" note
+--- @field release_at uint? the last window closed: the kept snapshot is released at this tick (collector.release_due)
+--- @field settle int? renders the per-tick handler still owes after a boosted pass completed
+--- @field settle_tick uint? tick of its latest such render: a manager update on that tick does not render again
+--- @field keep_ticks int? dev override of collector.KEEP_TICKS
 
 --- @class PlayerData
 --- @field player_index uint
@@ -242,6 +248,7 @@ end
 
 function manager_gui.on_player_removed(e)
 	storage.manager.players[e.player_index] = nil
+	-- Nobody can reopen a window to profit from a kept snapshot when the last one left with the player.
 	collector.release_if_unused()
 end
 
@@ -409,12 +416,34 @@ function manager_gui.on_init()
 end
 --gui.handle_events()
 
----@param global cybersyn.global
-function manager_gui.tick(storage)
-	local manager_data = storage.manager
-	if not manager_data then return end
+--- Renders an open window, or for a paused one that already shows data only its status line.
+--- @param i uint
+--- @param v PlayerData
+--- @param owed boolean? a settle render: a paused window already showing this snapshot renders too, so a first build
+---   the tab deferred over these renders (Stations, Trains) finishes instead of leaving its placeholder until unpause
+local function refresh_window(i, v, owed)
+	local player = game.get_player(i)
+	if not player then return end
+	local tick = collector.get().tick
+	if v.paused and (v.rendered_snapshot_tick or not tick) and not (owed and v.rendered_snapshot_tick == tick) then
+		manager.update_status(v)
+	else
+		manager.render(player, v)
+	end
+end
+
+local probe
+
+--- One manager update. While the opening boost runs, and on the ticks after it, the per-tick handler owns the
+--- collection and the renders (manager_gui.boost_tick): the update then neither steps nor renders, only refreshes
+--- the status lines, so a step and a render never share a tick whichever handler the engine calls first.
+--- @param manager_data Manager
+--- @return boolean ran collected or rendered
+local function update(manager_data)
 	manager_gui.settle()
-	collector.tick()
+	local boosting = manager_data.collect_boost ~= nil and collector.wanted()
+	local held = boosting or manager_data.settle ~= nil or manager_data.settle_tick == game.tick
+	local ran = not held and collector.tick()
 	local surface_count
 	for i, v in pairs(manager_data.players) do
 		if not v.player_index then
@@ -431,10 +460,11 @@ function manager_gui.tick(storage)
 				if v.surface_count ~= surface_count then
 					manager.rebuild_surface_dropdown(v)
 				end
-				if v.paused and (v.rendered_snapshot_tick or not collector.get().tick) then
+				if not held then
+					refresh_window(i, v)
+					ran = true
+				elseif boosting then
 					manager.update_status(v)
-				else
-					manager.render(player, v)
 				end
 			end
 		end
@@ -443,6 +473,61 @@ function manager_gui.tick(storage)
 	repair.tick(manager_data)
 	explain.tick(manager_data)
 	relative.tick(manager_data)
+	return ran
+end
+
+---@param global cybersyn.global
+function manager_gui.tick(storage)
+	local manager_data = storage.manager
+	if not manager_data then return end
+	if probe then probe("update", update, manager_data) else update(manager_data) end
+end
+
+local function settle_renders(manager_data)
+	for i, v in pairs(manager_data.players) do
+		if v.is_manager_open then refresh_window(i, v, true) end
+	end
+end
+
+local function boost_note(manager_data)
+	for _, v in pairs(manager_data.players) do
+		if v.is_manager_open then manager.update_status(v) end
+	end
+end
+
+--- dev.boost_samples: `fn(kind, work, manager_data)` runs `work(manager_data)` and records it; nil stops recording.
+--- @param fn fun(kind: "step"|"render"|"update", work: fun(m: Manager): boolean?, m: Manager)?
+function manager_gui.set_boost_probe(fn)
+	probe = fn
+end
+
+--- Every tick, whatever the settings (scripts/main.lua): frees a kept snapshot when its time is up, steps the opening
+--- boost, and renders on the ticks after the boost completed, never on a step's own tick. Reads only storage; idle it
+--- reads four fields.
+--- @param any_tick boolean? dev ticks: step on the open's tick too (collector.boost_tick)
+function manager_gui.boost_tick(any_tick)
+	local manager_data = storage.manager
+	if not manager_data then return end
+	if manager_data.release_at then collector.release_due() end
+	local settle = manager_data.settle
+	if settle then
+		manager_data.settle = settle > 1 and settle - 1 or nil
+		manager_data.settle_tick = game.tick
+		if probe then probe("render", settle_renders, manager_data) else settle_renders(manager_data) end
+		return
+	end
+	local started = manager_data.collect_boost
+	if not started or (started == game.tick and not any_tick) then return end
+	if probe then
+		probe("step", function() return collector.boost_tick(any_tick) end, manager_data)
+	else
+		collector.boost_tick(any_tick)
+	end
+	-- A boost that outlasts NOTE_TICKS (a huge base, or GC cycles inside it) shows its progress from then on.
+	if manager_data.collect_boost and not manager_data.collect_quiet and type(started) == "number"
+			and game.tick - started >= collector.NOTE_TICKS then
+		boost_note(manager_data)
+	end
 end
 
 --- Escapes that closed an overlay or the action dialog hand player.opened back on a later tick (manager.lua,

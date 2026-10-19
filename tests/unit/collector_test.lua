@@ -627,14 +627,18 @@ test("ensure_fresh: never collected or older than 600 ticks boosts the next pass
 	storage.manager.players[1] = { is_manager_open = true }
 	collector.ensure_fresh()
 	assert_nil(collector.get().tick)
-	assert_true(storage.manager.collect_boost)
+	assert_eq(storage.manager.collect_boost, 1000)
+	assert_nil(storage.manager.collect_quiet)
 	assert_eq(collector.collecting(), 0)
+	-- Not on the open's own tick, which carried its first render.
+	assert_false(collector.boost_tick())
+	assert_nil(storage.manager.snapshot_build)
 	-- The first boosted step lists the stations and summarises the trains, with no stations on top.
-	assert_true(collector.tick())
+	assert_false(collector.boost_tick(true))
 	assert_nil(collector.get().tick)
 	assert_eq(collector.collecting(), 0)
-	-- Six stations fit the next boosted step (4 x the minimum batch).
-	assert_true(collector.tick())
+	-- Six stations fit the next boosted step (2 x the minimum batch).
+	assert_true(collector.boost_tick(true))
 	assert_eq(collector.get().tick, 1000)
 	assert_nil(storage.manager.collect_boost)
 	assert_nil(collector.collecting())
@@ -643,7 +647,10 @@ test("ensure_fresh: never collected or older than 600 ticks boosts the next pass
 	assert_nil(storage.manager.collect_boost)
 	game.tick = 1601
 	collector.ensure_fresh()
-	assert_true(storage.manager.collect_boost)
+	-- A complete snapshot is refreshed quietly: no placeholders, no note.
+	assert_eq(storage.manager.collect_boost, 1601)
+	assert_true(storage.manager.collect_quiet)
+	assert_nil(collector.collecting())
 	assert_eq(collector.get().tick, 1000)
 	-- A pass in progress that started long ago is dropped; a recent one is kept and boosted.
 	storage.manager.snapshot_build = { started_tick = 1000, stale = true }
@@ -667,9 +674,210 @@ test("collecting: progress of the boosted pass", function()
 	assert_eq(collector.collecting(), 0)
 	assert_false(collector.step(nil, 4))
 	assert_eq(collector.collecting(), 100 / 106)
-	assert_true(collector.tick())
+	assert_true(collector.boost_tick(true))
 	assert_eq(collector.get().tick, 1000)
 	assert_nil(collector.collecting())
+end)
+
+-- PLAN5 D5-9: the opening boost steps on every tick from its own handler; the manager update leaves it alone.
+test("boost_tick: a no-op without a boost or a wanted window; one step per call; completion owes renders", function()
+	scenario()
+	assert_false(collector.boost_tick())
+	assert_nil(storage.manager.snapshot_build)
+	storage.manager.collect_boost = 999
+	assert_false(collector.boost_tick())
+	assert_nil(storage.manager.snapshot_build, "no window wants data")
+	storage.manager.players[1] = { is_manager_open = true, paused = true, rendered_snapshot_tick = 5 }
+	assert_false(collector.boost_tick())
+	assert_nil(storage.manager.snapshot_build, "paused with data shown")
+	storage.manager.players[1] = { is_manager_open = true }
+	-- The manager update neither steps nor runs the lint job while the boost runs.
+	assert_false(collector.tick())
+	assert_nil(storage.manager.snapshot_build)
+	storage.manager.collect_boost = 1000
+	assert_false(collector.boost_tick(), "the open's tick")
+	assert_nil(storage.manager.snapshot_build)
+	game.tick = 1001
+	assert_false(collector.boost_tick())
+	local b = storage.manager.snapshot_build
+	assert_not_nil(b)
+	assert_eq(b.i, 0)
+	assert_false(collector.tick())
+	assert_eq(b.i, 0)
+	assert_nil(storage.manager.settle)
+	game.tick = 1002
+	assert_true(collector.boost_tick())
+	assert_eq(collector.get().tick, 1002)
+	assert_true(collector.get().boosted)
+	assert_eq(storage.manager.settle, 4)
+	assert_nil(storage.manager.collect_boost)
+	assert_nil(storage.manager.collect_quiet)
+	-- Nor while the renders after it are owed: they run on those ticks.
+	assert_false(collector.tick())
+	assert_nil(storage.manager.snapshot_build)
+	-- Without a boost the manager update collects at 1x again.
+	storage.manager.settle = nil
+	assert_true(collector.tick())
+	assert_not_nil(storage.manager.snapshot_build)
+end)
+
+test("collecting_note: only once a cold boost has run NOTE_TICKS, never for a quiet one", function()
+	scenario()
+	storage.manager.players[1] = { is_manager_open = true }
+	collector.ensure_fresh()
+	assert_eq(collector.collecting(), 0)
+	assert_nil(collector.collecting_note())
+	game.tick = 1000 + collector.NOTE_TICKS - 1
+	assert_nil(collector.collecting_note())
+	game.tick = 1000 + collector.NOTE_TICKS
+	assert_eq(collector.collecting_note(), 0)
+	-- A boost stored by an older version is `true`: its note shows.
+	storage.manager.collect_boost = true
+	assert_eq(collector.collecting_note(), 0)
+	storage.manager.collect_boost = 1000
+	storage.manager.collect_quiet = true
+	assert_nil(collector.collecting())
+	assert_nil(collector.collecting_note())
+end)
+
+test("on_last_close: keeps the snapshot KEEP_TICKS, release_due frees it at the deadline, a reopen cancels it", function()
+	scenario()
+	assert_eq(collector.KEEP_TICKS, 7200)
+	storage.manager.players[1] = { is_manager_open = true }
+	collector.run_to_completion()
+	local snap = collector.get()
+	snap.boosted = true
+	local log = storage.manager.collect_log
+	local parts = storage.manager.name_parts
+	assert_not_nil(parts)
+	storage.manager.lint = { job = {}, occupancy_since = { 1 }, phantom_since = { 1 } }
+	-- Still open: nothing happens.
+	collector.on_last_close()
+	assert_nil(storage.manager.release_at)
+	storage.manager.players[1].is_manager_open = false
+	storage.manager.snapshot_build = { started_tick = 990 }
+	storage.manager.collect_boost = 990
+	storage.manager.collect_quiet = true
+	storage.manager.settle = 2
+	collector.on_last_close()
+	assert_same(collector.get(), snap)
+	assert_nil(snap.boosted, "a kept snapshot never defers a first build")
+	assert_same(storage.manager.collect_log, log)
+	assert_same(storage.manager.name_parts, parts)
+	assert_nil(storage.manager.snapshot_build)
+	assert_nil(storage.manager.collect_boost)
+	assert_nil(storage.manager.collect_quiet)
+	assert_nil(storage.manager.settle)
+	assert_nil(storage.manager.lint.job)
+	assert_eq(storage.manager.lint.occupancy_since, {})
+	storage.manager.lint = nil
+	assert_eq(storage.manager.release_at, 1000 + 7200)
+	-- Kept but not live: a panel reads the stop itself.
+	assert_nil(collector.live())
+	game.tick = 1000 + 7199
+	collector.release_due()
+	assert_same(collector.get(), snap)
+	game.tick = 1000 + 7200
+	collector.release_due()
+	assert_eq(collector.get(), collector.empty())
+	assert_nil(storage.manager.release_at)
+	assert_nil(storage.manager.name_parts)
+	assert_nil(storage.manager.collect_spare)
+	assert_true(storage.manager.collect_log.epoch > log.epoch)
+	-- Reopened inside the grace period: the deadline goes, the kept rows are refreshed quietly.
+	collector.run_to_completion()
+	snap = collector.get()
+	collector.on_last_close()
+	assert_eq(storage.manager.release_at, 8200 + 7200)
+	game.tick = 8200 + 700
+	storage.manager.players[1].is_manager_open = true
+	collector.ensure_fresh()
+	assert_nil(storage.manager.release_at)
+	assert_true(storage.manager.collect_quiet)
+	assert_same(collector.live(), snap)
+	-- release_due with a window open only forgets a stale deadline.
+	storage.manager.release_at = 1
+	collector.release_due()
+	assert_nil(storage.manager.release_at)
+	assert_same(collector.get(), snap)
+end)
+
+test("on_last_close: a grace period of 0, or nothing collected yet, releases at once", function()
+	scenario()
+	collector.run_to_completion()
+	storage.manager.keep_ticks = 0
+	assert_eq(collector.keep_ticks(), 0)
+	collector.on_last_close()
+	assert_nil(collector.get().tick)
+	assert_nil(storage.manager.release_at)
+	storage.manager.keep_ticks = nil
+	assert_eq(collector.keep_ticks(), collector.KEEP_TICKS)
+	-- A cold pass that never completed: nothing worth keeping.
+	storage.manager.players[1] = { is_manager_open = true }
+	collector.ensure_fresh()
+	collector.boost_tick(true)
+	storage.manager.players[1].is_manager_open = false
+	collector.on_last_close()
+	assert_nil(storage.manager.snapshot_build)
+	assert_nil(storage.manager.collect_boost)
+	assert_nil(storage.manager.release_at)
+	-- A cold open closed on its own tick, before the first step: the boost goes too, so the handler is idle and the
+	-- next open starts its own boost (and note delay).
+	storage.manager.players[1].is_manager_open = true
+	collector.ensure_fresh()
+	assert_eq(storage.manager.collect_boost, game.tick)
+	storage.manager.settle = 1
+	storage.manager.players[1].is_manager_open = false
+	collector.on_last_close()
+	assert_nil(storage.manager.collect_boost)
+	assert_nil(storage.manager.collect_quiet)
+	assert_nil(storage.manager.settle)
+	-- release_due(true) frees a kept snapshot before its deadline (dev.release).
+	collector.run_to_completion()
+	collector.on_last_close()
+	assert_not_nil(storage.manager.release_at)
+	collector.release_due(true)
+	assert_nil(collector.get().tick)
+	assert_nil(storage.manager.release_at)
+end)
+
+test("kept Stations query caches: a closed player's goes when another window reopens, every one on init", function()
+	scenario()
+	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[2] = { is_manager_open = false }
+	collector.run_to_completion()
+	storage.manager.players[1].is_manager_open = false
+	collector.on_last_close()
+	storage.manager.players[1].stations_query = { kept = 1 }
+	storage.manager.players[2].stations_query = { kept = 2 }
+	-- Player 1 reopens inside the grace: its own cache stays, the other closed player's goes.
+	storage.manager.players[1].is_manager_open = true
+	collector.ensure_fresh()
+	assert_eq(storage.manager.players[1].stations_query, { kept = 1 })
+	assert_nil(storage.manager.players[2].stations_query)
+	-- A later open with nothing kept leaves caches alone.
+	storage.manager.players[2].stations_query = { kept = 2 }
+	collector.ensure_fresh()
+	assert_eq(storage.manager.players[2].stations_query, { kept = 2 })
+	storage.manager.settle_tick = 5
+	collector.init()
+	assert_nil(storage.manager.players[1].stations_query)
+	assert_nil(storage.manager.players[2].stations_query)
+	assert_nil(storage.manager.settle_tick)
+end)
+
+test("live: the snapshot only while a window keeps it current", function()
+	scenario()
+	assert_nil(collector.live())
+	collector.run_to_completion()
+	assert_nil(collector.live(), "no window")
+	storage.manager.players[1] = { is_manager_open = true }
+	assert_same(collector.live(), collector.get())
+	storage.manager.players[1] = { is_manager_open = true, paused = true, rendered_snapshot_tick = 1000 }
+	assert_nil(collector.live(), "paused: frozen, not current")
+	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.snapshot = collector.empty()
+	assert_nil(collector.live(), "never collected")
 end)
 
 test("aggregate: provided, active requests and incoming deliveries over the accepted stations", function()
