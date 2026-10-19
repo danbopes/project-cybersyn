@@ -1270,7 +1270,8 @@ local function render_effective(state, body, m)
 							layouts[#layouts + 1] = "…"
 							break
 						end
-						layouts[#layouts + 1] = rtext.layout_text(storage.layouts[layout_id])
+						local layout = storage.layouts[layout_id]
+						layouts[#layouts + 1] = layout and logic.composition(layout) or "?"
 					end
 					local allow
 					if n.accepted == false then

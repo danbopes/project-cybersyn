@@ -127,18 +127,6 @@ function text.count_train(counts, train)
 	end
 end
 
---- "LCCL": one letter per carriage of a layout (0 locomotive, 1 cargo wagon, 2 fluid wagon).
---- @param layout int[]?
---- @return string
-function text.layout_text(layout)
-	if not layout then return "?" end
-	local out = {}
-	for i, v in ipairs(layout) do
-		out[i] = v == 0 and "L" or v == 1 and "C" or v == 2 and "F" or "?"
-	end
-	return table.concat(out)
-end
-
 --- The trains a stop on one network can be sent: mask match (train by train) and a layout the stop accepts, with
 --- the largest capacities among them. The one count the Effective config section shows wherever it says "trains match".
 --- @param c RelativeFleetCount?

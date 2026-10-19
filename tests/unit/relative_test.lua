@@ -124,12 +124,6 @@ test("allow_list: accepted layouts, eligible trains and the layouts no train has
 	assert_eq(missing, { 1 })
 end)
 
-test("layout_text: one letter per carriage", function()
-	local t = rt()
-	assert_eq(t.layout_text({ 0, 1, 1, 2, 0 }), "LCCFL")
-	assert_eq(t.layout_text(nil), "?")
-end)
-
 test("schedule_row: the active record marked, stations, rail waypoints, temporary and interrupt records", function()
 	local t = rt()
 	assert_eq(t.schedule_row(1, { station = "Depot" }, 2), { caption = { "", "    ", "1", ". ", "Depot" }, active = false })
