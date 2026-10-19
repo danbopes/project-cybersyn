@@ -1427,8 +1427,9 @@ end
 local function extras_rows(player, pd, kind, id, row, lead)
 	local rows = { row }
 	if kind == "train" then
-		-- Open in manager and Locate fill the train panel's first row; the tools share the action row. In the Trains
-		-- pane (no Open in manager) Locate leads the action row: one row, not a lone button above it.
+		-- Beside the vanilla window Open in manager keeps the first row to itself, apart from the tools on the action
+		-- row; it has no Locate because the remote view already follows the train. The Trains pane has no Open in
+		-- manager, so Locate leads the action row: one row, not a lone button above it.
 		if lead then rows = {} end
 		rows[#rows + 1] = repair.train_row(player, pd, id, extras.train_tools(pd, id), lead)
 	else
