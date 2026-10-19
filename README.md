@@ -45,11 +45,11 @@ Take a smelter whose stop provides plates to the main network and takes ore from
 
 ## What's in the manager
 
-Open it with **Ctrl+T** or the shortcut bar button "Toggle Cybersyn Manager". The window sizes itself to your screen and shows whole rows. Tabs: **Overview**, **Inventory**, **Stations**, **Trains** and **Log**, plus **Utilization** and **Breakdown** when "Enable analytics" is on.
+Open it with **Ctrl+T** or the shortcut bar button "Toggle Cybersyn Manager". The window sizes itself to your screen and shows whole rows. Tabs: **Overview**, **Inventory**, **Stations**, **Trains**, **Log** and **Utilization**, plus **Breakdown** when "Enable delivery breakdown" is on and factorio-charts is installed.
 
 ### Overview
 
-Four tiles and one table. **Unserved stations** counts stations with a request the dispatcher isn't serving, broken down by reason for the requests waiting longer than your "Manager: unserved after (minutes)" setting. **Fleet headroom** is the fewest trains available on any network over the chosen period, with "Free trains now" and the no-train failures below it. **Stations failing** splits into no power, disabled, throttling (a train limit is holding a request back) and misconfigured. **Throughput** covers deliveries, average trip and dispatch wait for the period (last 10 min, last hour or last 24 h).
+Four tiles and one table. **Unserved stations** counts stations with a request the dispatcher isn't serving, broken down by reason for the requests waiting longer than five minutes. **Fleet headroom** is the fewest trains available on any network over the chosen period, with "Free trains now" and the no-train failures below it. **Stations failing** splits into no power, disabled, throttling (a train limit is holding a request back) and misconfigured. **Throughput** covers deliveries, average trip and dispatch wait for the period (last 10 min, last hour or last 24 h).
 
 Clicking a tile lands on the list behind its number, and that list always shows the same count. The **Unserved requests** table below lists each failing request with its *Why* chip, best provider, stock against what is needed, and wait.
 
@@ -75,7 +75,7 @@ A station that would otherwise be OK but has an open error shows the status **Se
 
 ![The Trains tab with train 8 selected: the detail pane shows a camera, the shipment, the schedule with the active record, last events, Locate and Send home](previews/manager/trains-pane.png)
 
-Rows show the train ID, what it's doing and where (as a link), network, composition, depot, state, time in that state, last refuel, fuel and shipment. Columns that every listed train shares are hidden and named in the header tooltip. Chips filter by Parked, To provider, Loading, To requester, Unloading, Returning and Refuelling, plus **In interrupt**, **Not refuelled > N h**, **In vanilla group**, **In trouble** and **Problems**. "Group by depot" folds the list into one row per depot name with parked, inbound and bypassed counts.
+Rows show the train ID, what it's doing and where (as a link), network, composition, depot, state, time in that state, last refuel, fuel and shipment. Columns that every listed train shares are hidden and named in the header tooltip. Chips filter by Parked, To provider, Loading, To requester, Unloading, Returning and Refuelling, plus **In interrupt**, **Not refuelled > 1 h**, **In vanilla group**, **In trouble** and **Problems**. "Group by depot" folds the list into one row per depot name with parked, inbound and bypassed counts.
 
 Click a row to open the detail pane on the right: a camera following the train, its shipment, provider and requester, schedule with the active record marked, and its last log events.
 
@@ -95,7 +95,7 @@ Click any item anywhere in the manager or the panels to see everyone who touches
 
 The **Log** tab reads the diagnostics log, newest first. It follows new events until the pointer rests on the list or you press **Pause**; **Newest** jumps back. Filter by severity, by kind (Unserved requests, Deliveries, Stations, Trains, Cargo, Setup, Actions), by train ID and by time window (Last 10 min, Last hour, Everything kept). Hovering a row's message explains the cause and what to do about it. **Summary** swaps the rows for the stations and items with the most events. The print button on a row puts it in chat with clickable train, stop and map tags, and the export button writes a CSV (see [Reporting bugs](#reporting-bugs)). The tab badge counts errors since you last looked.
 
-Diagnostics come in three levels set by the map setting "Diagnostics". **Basic**, the default, keeps why each unserved request is waiting plus failures, alerts and station changes in a 4,096-row log. **Full** adds every dispatch, arrival, departure and train state change in a second log. **Off** records nothing and hides the Log tab.
+Diagnostics come in three levels set by the map setting "Diagnostics". **Basic**, the default, keeps why each unserved request is waiting plus failures, alerts and station changes in a 4,096-row log. **Full** adds every dispatch, arrival, departure and train state change in a second 16,384-row log. **Off** records nothing and hides the Log tab.
 
 ### Stop and train panels
 
@@ -177,7 +177,7 @@ If the game offers to "sync mods with save", say no: that would put back the sto
 
 Because the name is unchanged, Factorio treats the fork as a newer version of the same mod. Everything in the save carries over: stations, depots, refuelers, trains, deliveries in flight, combinator settings and mod settings. On the first tick a one-time conversion in `scripts/fork-migrations.lua` reshapes the stored data. It's written for saves from stock 2.0.53 (the last portal release) and 2.0.54.
 
-What you'll notice: the dispatcher's cycle restarts and every station warms up again, so for the length of "Station warmup time (sec)" no new deliveries start. Trains already on a delivery finish it. Two stock settings are gone: "Track request wait times" (wait tracking is always on now; its cost was too small to measure) and "Max entities displayed on GUI pages" (replaced by per-player paging).
+What you'll notice: the dispatcher's cycle restarts and every station warms up again, so for the length of "Station warmup time (sec)" no new deliveries start. Trains already on a delivery finish it. Two stock settings are gone: "Track request wait times" (wait tracking is always on now; its cost was too small to measure) and "Max entities displayed on GUI pages" (the window pages by what fits on screen).
 
 Going back to stock Cybersyn with the same save isn't supported. Keep the backup.
 
@@ -193,18 +193,15 @@ Mods that depend on Cybersyn keep working: cybersyn-combinator, Cybersyn-Content
 
 Map settings:
 
-- **Diagnostics**: Off, Basic (default) or Full. See [Log](#log).
-- **Diagnostics full log size (rows)**: rows kept by the full log, default 16,384. The basic log is fixed at 4,096.
-- **Diagnostics fluid cargo tolerance (%)**: how much of a fluid manifest may be missing before the log records a short load or residual cargo, default 2.
+- **Diagnostics**: Off, Basic (default) or Full. Basic keeps a 4,096-row log, Full adds a second 16,384-row log. See [Log](#log).
 - **Manager actions allowed for**: Admins, Everyone or Nobody.
 - **Alert for unexpected cargo pickup**: off by default.
 
 Per player:
 
-- **Manager rows per page**: 10 to 200, default 200. The window shows as many as fit.
-- **Manager: unserved after (minutes)**: the Overview's Unserved threshold, default 5.
-- **Manager: not refuelled after (hours)**: the Trains tab's "Not refuelled" chip, default 1.
 - **Manager: Unserved line on screen**: the HUD line, off by default.
+
+The stock "Enable analytics" setting is now called "Enable delivery breakdown": it only records per-delivery timings for the Breakdown tab, which needs factorio-charts. Utilization is always available.
 
 Startup: **Manager test interface** registers the remote interface the automated tests drive. Players don't need it.
 

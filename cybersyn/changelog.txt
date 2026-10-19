@@ -19,7 +19,7 @@ Date: 2026-10-19
     - (Manager) Acknowledge an unserved request or a setup finding to grey it out and stop counting it: click for 24 h, shift+click for 1 h, ctrl+click until the reason changes or the finding clears; Show acknowledged lists them again
     - (Manager) Stations tab: a Status column (No power, Disabled, Warming up, Starved, Setup, Saturated, Idle, OK), status chips with counts, Unserved, With stuck train, Failing and Problems chips, Wait and Last delivery columns, and every column sortable from its header
     - (Manager) The Stations Problems chip adds a Problems column with each station's setup findings, worst first, followed by the stops and combinators that do not make a working station
-    - (Manager) Trains tab: status with destination and cargo, composition icons, depot, state, time in state, last refuel and fuel columns, and chips for each train state plus In interrupt, Not refuelled > N h, In vanilla group, In trouble and Problems
+    - (Manager) Trains tab: status with destination and cargo, composition icons, depot, state, time in state, last refuel and fuel columns, and chips for each train state plus In interrupt, Not refuelled > 1 h, In vanilla group, In trouble and Problems
     - (Manager) Trains tab can group trains by depot name, with parked, inbound and train counts per depot and the refuelers as a group of their own
     - (Manager) Clicking a train row opens a detail pane with a camera following the train and the train panel
     - (Manager) Inventory tab: sort by item order, amount, stations, wait time or deficit, dim the items nobody on the network requests, and slot tooltips with the top stations, the amount delivered in the last hour and any shortfall
@@ -44,7 +44,7 @@ Date: 2026-10-19
   Changes:
     - The Secondary Inventory combinator now shows an "I" on its display instead of the vanilla "&"
     - Removed the "Track request wait times" setting: wait tracking is always on
-    - Removed the "Max entities displayed on GUI pages" setting: paging replaces it ("Manager rows per page"), because the limit cut the list before sorting
+    - Removed the "Max entities displayed on GUI pages" setting: the window pages by what fits on screen, because the limit cut the list before sorting
     - New map setting "Manager actions allowed for" (Admins, Everyone, Nobody) gates /cybersyn-fix-priorities, /cybersyn-abolish-same-depot, /cybersyn-recalculate-train-size, /cybersyn-refresh-allow-lists, Send home and Recount deliveries; single player is always allowed, and every action is printed to the force and logged
     - /cybersyn-find-problems lists the train stops and combinators that the setup checks flag
     - /cybersyn-recalculate-train-size also drops the layouts no train has any more, together with their allow-list entries
@@ -55,9 +55,10 @@ Date: 2026-10-19
     - (Manager) Item buttons share one click scheme everywhere: click opens the item drill-down, shift+click lists the stations with that item, right-click clears the item filter
     - (Manager) Inventory items keep the crafting-menu order and update in place, and the layout holds still while the cursor is over a grid
     - (Manager) Station rows and inventory totals include the items of secondary inventory combinators
-    - (Manager) The window sizes itself to the screen and shows as many whole rows as fit, up to "Manager rows per page"; a saved position that is off the screen is moved back onto it
+    - (Manager) The window sizes itself to the screen and shows as many whole rows as fit; a saved position that is off the screen is moved back onto it
     - (Manager) Escape closes the top layer first (search, Explain, item drill-down, train pane) and then the window; Ctrl+F searches station names
     - (Manager) Utilization tab is now a table per train layout (Trains, Busy, Avg trip, Deliveries), and Breakdown names stuck reasons the same way as the Unserved table
+    - (Manager) Utilization tab is always available; the "Enable analytics" map setting is now "Enable delivery breakdown" and only records per-delivery timings for the Breakdown tab
   Bugfixes:
     - Locked slots are reserved per item type in the manifest, so a multi-item delivery no longer runs out of room for its later items
     - A request whose usable trains are all inside interrupts is reported as such instead of as a layout mismatch
