@@ -5,6 +5,7 @@ local stats = require("scripts.stats")
 local lint = require("scripts.lint")
 local diag = require("scripts.diag")
 local rich_name = require("scripts.gui.rich-name")
+local logic = require("scripts.gui.tab-logic")
 
 local util = {}
 
@@ -152,19 +153,9 @@ function util.format_duration(ticks)
 	return string.format("%ds", seconds)
 end
 
---- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h". Every tab uses it,
---- so one duration reads the same everywhere; util.format_duration has the full precision for tooltips.
---- @param ticks number
---- @return string
-function util.short_duration(ticks)
-	local s = math.floor(math.max(ticks or 0, 0) / 60)
-	if s < 60 then return s .. "s" end
-	local m = math.floor(s / 60)
-	if m < 60 then return string.format("%dm %02ds", m, s % 60) end
-	local h = math.floor(m / 60)
-	if h < 24 then return string.format("%dh %02dm", h, m % 60) end
-	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
-end
+--- Two units at most ("42s", "3m 05s", "1h 05m", "2d 03h"), so one duration reads the same in every tab;
+--- util.format_duration has the full precision for tooltips.
+util.short_duration = logic.short_duration
 
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
 local rank_cache = {}

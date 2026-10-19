@@ -933,7 +933,7 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 		chip_sig = chip and (chip.key .. "|" .. chip.style) or "",
 		state = state,
 		in_state = util.short_duration(in_state),
-		refuel = logic.age_caption(now, tr.refuel_tick, util.short_duration),
+		refuel = logic.age_caption(now, tr.refuel_tick),
 		refuel_overdue = has_refueler(tr, ctx.to_refuelers) and logic.not_refuelled(now, tr.refuel_tick, ctx.hours, tr.refuel_from),
 		fuel = fuel,
 		capacity = capacity,

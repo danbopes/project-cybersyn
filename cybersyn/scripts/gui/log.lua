@@ -859,7 +859,7 @@ local function row_write(elem, entry, age, still)
 		write_cells(cells, g, m, now, key, entry.x, entry.child)
 	end
 	if age or moved or not m.a then
-		local caption = model.age_caption(now, g, util.short_duration)
+		local caption = model.age_caption(now, g)
 		if m.a ~= caption then
 			cells[1].caption = caption
 			m.a = caption

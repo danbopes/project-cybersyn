@@ -3,6 +3,7 @@
 -- LocalisedStrings, so the host unit tests cover them without the engine.
 
 local format = require("__flib__.format")
+local logic = require("scripts.gui.tab-logic")
 
 local band = bit32.band
 local bor = bit32.bor
@@ -218,12 +219,11 @@ end
 --- (the reason, the lint check, the planned and actual amounts), nil when the kind needs nothing.
 --- @param ev {tick: uint, kind: int, code: int, a: int, b: int}
 --- @param now uint
---- @param short fun(ticks: number): string util.short_duration
 --- @return LocalisedString
-function text.event_row(ev, now, short)
+function text.event_row(ev, now)
 	local key = DIAG_KIND_KEYS[ev.kind]
 	local kind = key and { "cybersyn-diag.kind-" .. key } or tostring(ev.kind)
-	local caption = { "", short(text.age_step(now - ev.tick)), "  ", kind }
+	local caption = { "", logic.short_duration(text.age_step(now - ev.tick)), "  ", kind }
 	local detail = text.event_detail(ev)
 	if detail then
 		caption[#caption + 1] = " · "

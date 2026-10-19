@@ -1224,7 +1224,7 @@ local function row_entry(row, acked, ctx)
 	-- On the 10 s step, as the stop panel shows the same entry, whichever update last wrote the row.
 	local wait_shown = wait - wait % text.READ_STEP
 	local inherited = e.first_tick < ctx.inherit_before
-	local wait_caption = text.wait_caption(wait_shown, inherited, util.short_duration)
+	local wait_caption = text.wait_caption(wait_shown, inherited)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
 	local requested
 	if r_st then
