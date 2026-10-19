@@ -32,3 +32,17 @@ test("no locale repeats an en value: a key it does not translate is left to the 
 	table.sort(copies)
 	assert_eq(copies, {})
 end)
+
+test("no locale translates a manager key en does not have", function()
+	local en = H.read_cfg("en/manager.cfg")
+	local orphans = {}
+	for _, loc in ipairs(H.LOCALES) do
+		for name, s in pairs(H.read_cfg(loc .. "/manager.cfg")) do
+			for _, k in ipairs(s.order) do
+				if not (en[name] and en[name][k]) then orphans[#orphans + 1] = loc .. " [" .. name .. "] " .. k end
+			end
+		end
+	end
+	table.sort(orphans)
+	assert_eq(orphans, {})
+end)
