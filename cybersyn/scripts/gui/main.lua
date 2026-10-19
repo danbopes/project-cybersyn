@@ -419,25 +419,32 @@ end
 --- Renders an open window, or for a paused one that already shows data only its status line.
 --- @param i uint
 --- @param v PlayerData
-local function refresh_window(i, v)
+--- @param owed boolean? a settle render: a paused window already showing this snapshot renders too, so a first build
+---   the tab deferred over these renders (Stations, Trains) finishes instead of leaving its placeholder until unpause
+local function refresh_window(i, v, owed)
 	local player = game.get_player(i)
 	if not player then return end
-	if v.paused and (v.rendered_snapshot_tick or not collector.get().tick) then
+	local tick = collector.get().tick
+	if v.paused and (v.rendered_snapshot_tick or not tick) and not (owed and v.rendered_snapshot_tick == tick) then
 		manager.update_status(v)
 	else
 		manager.render(player, v)
 	end
 end
 
----@param global cybersyn.global
-function manager_gui.tick(storage)
-	local manager_data = storage.manager
-	if not manager_data then return end
+local probe
+
+--- One manager update. While the opening boost runs, and on the ticks after it, the per-tick handler owns the
+--- collection and the renders (manager_gui.boost_tick): the update then neither steps nor renders, only refreshes
+--- the status lines, so a step and a render never share a tick whichever handler the engine calls first.
+--- @param manager_data Manager
+--- @return boolean ran collected or rendered
+local function update(manager_data)
 	manager_gui.settle()
-	collector.tick()
+	local boosting = manager_data.collect_boost ~= nil and collector.wanted()
+	local held = boosting or manager_data.settle ~= nil or manager_data.settle_tick == game.tick
+	local ran = not held and collector.tick()
 	local surface_count
-	-- The per-tick handler renders every window on the ticks after a boosted pass (manager_gui.boost_tick).
-	local settling = manager_data.settle ~= nil or manager_data.settle_tick == game.tick
 	for i, v in pairs(manager_data.players) do
 		if not v.player_index then
 			v.player_index = i
@@ -453,7 +460,12 @@ function manager_gui.tick(storage)
 				if v.surface_count ~= surface_count then
 					manager.rebuild_surface_dropdown(v)
 				end
-				if not settling then refresh_window(i, v) end
+				if not held then
+					refresh_window(i, v)
+					ran = true
+				elseif boosting then
+					manager.update_status(v)
+				end
 			end
 		end
 	end
@@ -461,11 +473,19 @@ function manager_gui.tick(storage)
 	repair.tick(manager_data)
 	explain.tick(manager_data)
 	relative.tick(manager_data)
+	return ran
+end
+
+---@param global cybersyn.global
+function manager_gui.tick(storage)
+	local manager_data = storage.manager
+	if not manager_data then return end
+	if probe then probe("update", update, manager_data) else update(manager_data) end
 end
 
 local function settle_renders(manager_data)
 	for i, v in pairs(manager_data.players) do
-		if v.is_manager_open then refresh_window(i, v) end
+		if v.is_manager_open then refresh_window(i, v, true) end
 	end
 end
 
@@ -475,10 +495,8 @@ local function boost_note(manager_data)
 	end
 end
 
-local probe
-
 --- dev.boost_samples: `fn(kind, work, manager_data)` runs `work(manager_data)` and records it; nil stops recording.
---- @param fn fun(kind: "step"|"render", work: fun(m: Manager), m: Manager)?
+--- @param fn fun(kind: "step"|"render"|"update", work: fun(m: Manager): boolean?, m: Manager)?
 function manager_gui.set_boost_probe(fn)
 	probe = fn
 end

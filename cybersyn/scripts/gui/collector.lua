@@ -217,6 +217,9 @@ function collector.init()
 	manager.name_parts = nil
 	manager.release_at = nil
 	manager.settle = nil
+	manager.settle_tick = nil
+	-- A Stations query cache indexes records of the snapshot just replaced.
+	for _, player_data in pairs(manager.players or {}) do player_data.stations_query = nil end
 	collector.reset_log()
 end
 
@@ -293,6 +296,7 @@ local function release(manager)
 	manager.name_parts = nil
 	manager.release_at = nil
 	manager.settle = nil
+	manager.settle_tick = nil
 	collector.reset_log()
 end
 
@@ -309,7 +313,12 @@ function collector.release_if_unused()
 	local manager = storage.manager
 	if not manager or any_open(manager) then return end
 	if manager.snapshot and manager.snapshot.tick == nil and not manager.snapshot_build then
+		-- A cold open closed before its first step: the boost would keep the per-tick handler busy, and a later
+		-- open would inherit its start tick and show the note at once.
 		manager.release_at = nil
+		manager.collect_boost = nil
+		manager.collect_quiet = nil
+		manager.settle = nil
 		return
 	end
 	release(manager)
@@ -1468,7 +1477,14 @@ end
 function collector.ensure_fresh()
 	local manager = storage.manager
 	local snapshot = collector.get()
-	manager.release_at = nil
+	if manager.release_at then
+		manager.release_at = nil
+		-- The closed windows' Stations caches stayed for their own reopen inside the grace; the log they would fold
+		-- in is trimmed by the passes this window runs, so they could only pin old records until the next release.
+		for _, player_data in pairs(manager.players) do
+			if not player_data.is_manager_open then player_data.stations_query = nil end
+		end
+	end
 	if not snapshot.tick or game.tick - snapshot.tick > STALE_ON_OPEN_TICKS then
 		local b = manager.snapshot_build
 		if b and game.tick - b.started_tick > STALE_ON_OPEN_TICKS then
@@ -1531,13 +1547,13 @@ function collector.boost_tick(any_tick)
 	return true
 end
 
---- One manager update's worth of collection; no-op unless collector.wanted(), and while the opening boost runs
---- (collector.boost_tick steps it then, and the lint job waits for its result).
+--- One manager update's worth of collection; no-op unless collector.wanted(), while the opening boost runs
+--- (collector.boost_tick steps it then, and the lint job waits for its result) and while its renders are owed.
 --- @return boolean ran
 function collector.tick()
 	local manager = storage.manager
 	if not manager then return false end
-	if manager.collect_boost or not collector.wanted() then return false end
+	if manager.collect_boost or manager.settle or not collector.wanted() then return false end
 	collector.step()
 	lint.tick()
 	return true

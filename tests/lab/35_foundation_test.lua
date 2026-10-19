@@ -167,6 +167,45 @@ lab.suite("35_foundation", {
 		lab.dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
 	end,
 
+	-- With a manager update on every tick, the updates inside the boost and its owed renders neither collect nor
+	-- render: the per-tick handler alone does, so no tick carries a step or a settle render plus an update's work.
+	function(ctx)
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", 60)
+		remote.call(D, "close", pi)
+		lab.dev("release")
+		remote.call(D, "select_tab", pi, "stations")
+		remote.call(D, "boost_samples", "start", pi)
+		remote.call(D, "open", pi, true)
+		ctx.open_tick = game.tick
+		lab.wait(8)
+	end,
+	function(ctx)
+		remote.call(D, "boost_samples", "stop")
+		local raw, done, renders = boost_log()
+		local busy, held, clash = {}, 0, {}
+		for _, e in ipairs(raw) do
+			if e.kind == "step" or e.kind == "render" then busy[e.tick] = e.kind end
+		end
+		for _, e in ipairs(raw) do
+			if e.kind == "update" then
+				if busy[e.tick] then
+					if e.ran then clash[#clash + 1] = e.tick .. ":" .. busy[e.tick] else held = held + 1 end
+				end
+			end
+		end
+		lab.info(string.format("updates every tick: open %d, done %s, %d settle renders, %d held updates",
+			ctx.open_tick, tostring(done), #renders, held))
+		lab.check("updates every tick: the pass completes within 3 ticks, 4 owed renders", done ~= nil
+			and done - ctx.open_tick <= 3 and #renders == 4, { open = ctx.open_tick, done = done, renders = #renders })
+		lab.check("updates every tick: an update on a step's or settle render's tick neither collects nor renders",
+			#clash == 0 and held >= #renders, { clash = clash, held = held })
+		local d = remote.call(D, "dump", pi, "stations")
+		lab.check("updates every tick: every station row shows after the owed renders",
+			d.total == lab.dev("summary").station_count and not d.warning, d.total)
+		lab.dev("set_setting", "cybersyn-manager-updates-per-second", ctx.ups)
+		remote.call(D, "select_tab", pi, "overview")
+	end,
+
 	-- Reopened inside the grace period: the kept rows in the first paint, no note and no placeholders, refreshed by a
 	-- quiet boost on the next ticks.
 	function(ctx)
@@ -290,6 +329,18 @@ lab.suite("35_foundation", {
 		remote.call(D, "tick", 1)
 		local d = remote.call(D, "dump", pi, "stations")
 		lab.check("paused reopen: unpaused, stations rows show", d.total == lab.dev("summary").station_count, d.total)
+		remote.call(D, "set_paused", pi, true)
+		remote.call(D, "close", pi)
+		lab.dev("release")
+		remote.call(D, "open", pi, true)
+		lab.wait(8)
+	end,
+	-- Paused and reopened cold on Stations: the renders owed after the pass finish the first build it deferred.
+	function(ctx)
+		local d = remote.call(D, "dump", pi, "stations")
+		lab.check("paused cold reopen on Stations: every row after the owed renders, no placeholder",
+			d.total == lab.dev("summary").station_count and d.total > 0 and not d.warning, { total = d.total, warning = d.warning })
+		remote.call(D, "set_paused", pi, false)
 	end,
 
 	-- B2: Saturated has one meaning (deliveries at a finite limit). A station at its limit is saturated; one with a

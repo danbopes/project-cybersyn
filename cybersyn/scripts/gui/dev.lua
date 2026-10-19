@@ -600,10 +600,12 @@ end
 
 local boost_log
 
---- Samples of the per-tick handler's work: "start" records from now on (clearing earlier samples), "stop" ends it,
---- "raw" returns them as plain tables without the profilers, "dump" returns the samples, one LocalisedString each: tick, kind (step / render), the profiler, the heap change
---- in KB inside it (a drop means a GC cycle finished there), and after a render the player's rows, whether the
---- subheader note shows and whether the rows are from a complete pass.
+--- Samples of the per-tick handler's work and of the manager updates: "start" records from now on (clearing earlier
+--- samples), "stop" ends it, "raw" returns them as plain tables without the profilers, "dump" returns the samples, one
+--- LocalisedString each: tick, kind (step / render / update), the profiler, the heap change in KB inside it (a drop
+--- means a GC cycle finished there), for an update whether it collected or rendered (ran) or left both to the
+--- handler (held), and after a render the player's rows, whether the subheader note shows and whether the rows are
+--- from a complete pass.
 --- @param cmd "start"|"stop"|"raw"|"dump"
 --- @param pi uint? the player whose rows a render sample records
 function interface.boost_samples(cmd, pi)
@@ -616,7 +618,8 @@ function interface.boost_samples(cmd, pi)
 			prof.stop()
 			local delta = collectgarbage("count") - heap
 			local entry = { tick = game.tick, kind = kind, prof = prof, heap = delta,
-				done = kind == "step" and done == true or nil, progress = collector.collecting() }
+				done = kind == "step" and done == true or nil, ran = kind == "update" and done == true or nil,
+				progress = collector.collecting() }
 			local pd = pi and m.players[pi]
 			if kind == "render" and pd then
 				local fn = ROW_COUNTERS[canonical(pd.selected_tab or "overview")]
@@ -633,15 +636,15 @@ function interface.boost_samples(cmd, pi)
 	elseif cmd == "raw" then
 		local out = {}
 		for i, e in ipairs(boost_log or {}) do
-			out[i] = { tick = e.tick, kind = e.kind, done = e.done, rows = e.rows, note = e.note, data = e.data,
-				progress = e.progress }
+			out[i] = { tick = e.tick, kind = e.kind, done = e.done, ran = e.ran, rows = e.rows, note = e.note,
+				data = e.data, progress = e.progress }
 		end
 		return out
 	end
 	local out = {}
 	for i, e in ipairs(boost_log or {}) do
 		out[i] = { "", e.tick, " ", e.kind, " ", e.prof, string.format(" heap %+.0f KB", e.heap),
-			e.done and " done" or "", e.progress and string.format(" progress %.3f", e.progress) or "",
+			e.done and " done" or "", e.kind == "update" and (e.ran and " ran" or " held") or "", e.progress and string.format(" progress %.3f", e.progress) or "",
 			e.rows and (" rows " .. e.rows) or "", e.note ~= nil and (" note " .. tostring(e.note)) or "",
 			e.data ~= nil and (" data " .. tostring(e.data)) or "" }
 	end

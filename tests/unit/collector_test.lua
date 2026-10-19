@@ -712,7 +712,11 @@ test("boost_tick: a no-op without a boost or a wanted window; one step per call;
 	assert_eq(storage.manager.settle, 4)
 	assert_nil(storage.manager.collect_boost)
 	assert_nil(storage.manager.collect_quiet)
+	-- Nor while the renders after it are owed: they run on those ticks.
+	assert_false(collector.tick())
+	assert_nil(storage.manager.snapshot_build)
 	-- Without a boost the manager update collects at 1x again.
+	storage.manager.settle = nil
 	assert_true(collector.tick())
 	assert_not_nil(storage.manager.snapshot_build)
 end)
@@ -817,6 +821,17 @@ test("on_last_close: a grace period of 0, or nothing collected yet, releases at 
 	assert_nil(storage.manager.snapshot_build)
 	assert_nil(storage.manager.collect_boost)
 	assert_nil(storage.manager.release_at)
+	-- A cold open closed on its own tick, before the first step: the boost goes too, so the handler is idle and the
+	-- next open starts its own boost (and note delay).
+	storage.manager.players[1].is_manager_open = true
+	collector.ensure_fresh()
+	assert_eq(storage.manager.collect_boost, game.tick)
+	storage.manager.settle = 1
+	storage.manager.players[1].is_manager_open = false
+	collector.on_last_close()
+	assert_nil(storage.manager.collect_boost)
+	assert_nil(storage.manager.collect_quiet)
+	assert_nil(storage.manager.settle)
 	-- release_due(true) frees a kept snapshot before its deadline (dev.release).
 	collector.run_to_completion()
 	collector.on_last_close()
@@ -824,6 +839,31 @@ test("on_last_close: a grace period of 0, or nothing collected yet, releases at 
 	collector.release_due(true)
 	assert_nil(collector.get().tick)
 	assert_nil(storage.manager.release_at)
+end)
+
+test("kept Stations query caches: a closed player's goes when another window reopens, every one on init", function()
+	scenario()
+	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[2] = { is_manager_open = false }
+	collector.run_to_completion()
+	storage.manager.players[1].is_manager_open = false
+	collector.on_last_close()
+	storage.manager.players[1].stations_query = { kept = 1 }
+	storage.manager.players[2].stations_query = { kept = 2 }
+	-- Player 1 reopens inside the grace: its own cache stays, the other closed player's goes.
+	storage.manager.players[1].is_manager_open = true
+	collector.ensure_fresh()
+	assert_eq(storage.manager.players[1].stations_query, { kept = 1 })
+	assert_nil(storage.manager.players[2].stations_query)
+	-- A later open with nothing kept leaves caches alone.
+	storage.manager.players[2].stations_query = { kept = 2 }
+	collector.ensure_fresh()
+	assert_eq(storage.manager.players[2].stations_query, { kept = 2 })
+	storage.manager.settle_tick = 5
+	collector.init()
+	assert_nil(storage.manager.players[1].stations_query)
+	assert_nil(storage.manager.players[2].stations_query)
+	assert_nil(storage.manager.settle_tick)
 end)
 
 test("live: the snapshot only while a window keeps it current", function()
