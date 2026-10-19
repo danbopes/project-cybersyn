@@ -1241,11 +1241,6 @@ function util.slot_table_build_from_control_signals(st)
 	return children
 end
 
-local MAX_INT = 2147483648 -- math.pow(2, 31)
-function util.signed_int32(val)
-	return (val >= MAX_INT and val - (2 * MAX_INT)) or val
-end
-
 --- Opens an entity's GUI from a manager link. Taking player.opened closes an unpinned manager, so the link records
 --- what it opened; the manager stays on screen (manager.handle.manager_closed_by_game) and takes player.opened back
 --- on a manager tick after that GUI, and any GUI that replaced it, has closed (manager.restore_opened).

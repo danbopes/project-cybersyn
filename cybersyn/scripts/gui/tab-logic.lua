@@ -190,21 +190,6 @@ function logic.train_widths(content_width, hidden, pane)
 	return w
 end
 
---- The px the shown Trains columns take with their gaps and the row padding (logic.train_widths).
---- @param w table
---- @return int
-function logic.train_columns_total(w)
-	local total, shown = 0, 0
-	for _, c in ipairs(logic.TRAIN_WIDTHS) do
-		local v = w[c[1]]
-		if v then
-			total = total + v
-			shown = shown + 1
-		end
-	end
-	return total + math.max(shown - 1, 0) * COLUMN_GAP + ROW_PADDING
-end
-
 --- How many slots of a one-line slot strip show items when `n` items share `capacity` slots: when they do not all
 --- fit, the last slot becomes the "+n" overflow count, so a row never wraps.
 --- @param n int

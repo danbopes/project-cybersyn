@@ -113,13 +113,6 @@ function model.station_rank(id, bits, is_acked)
 	return ACKED_RANK + model.mask_rank(bits)
 end
 
---- Whether a station_rank is that of an open error (DIAG_SEV_ERROR's band).
---- @param rank int?
---- @return boolean
-function model.is_open_error_rank(rank)
-	return rank ~= nil and rank < (DIAG_SEV_ERROR + 1) * RANK_STEP
-end
-
 --- The status a view shows for a station (PLAN4 D15-5): "setup" in place of "ok" while an error-severity finding
 --- nobody acknowledged blocks it, so a station the Overview's Misconfigured line counts never reads "OK". Every other
 --- status already says why nothing moves and stays.
