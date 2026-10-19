@@ -11,7 +11,7 @@ local utext = require("scripts.gui.unserved-text")
 local diag = require("scripts.diag")
 local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
-local problems_tab = require("scripts.gui.lint-text")
+local lint_text = require("scripts.gui.lint-text")
 local extras = require("scripts.gui.extras")
 local dev = require("scripts.gui.dev")
 
@@ -122,7 +122,7 @@ local function body_defs(r_id, hash, e)
 	end
 	for _, f in ipairs(findings) do
 		out[#out + 1] = label({ "", "• ", { "cybersyn-diag.lint-" .. LINT_KEYS[f.check] } })
-		out[#out + 1] = label(pm.detail(f, problems_tab.ENV), true)
+		out[#out + 1] = label(pm.detail(f, lint_text.ENV), true)
 		out[#out + 1] = label(pm.fix(f.check, f), true)
 	end
 
