@@ -33,18 +33,21 @@ test("get: creates the table with since_tick = game.tick", function()
 	assert_same(stats.get(), s)
 end)
 
-test("get: repairs a partial table and drops the old sample ring", function()
+test("init: repairs a partial table and drops the old sample ring", function()
 	at(900)
 	storage.stats = { cycle = { samples = { 1, 2 }, next = 3, ema_seconds = 4 } }
+	stats.init()
 	local s = stats.get()
 	assert_eq(s.minute, {})
 	assert_eq(s.hour, {})
 	assert_eq(s.totals, { deliveries = 0, dispatches = 0, items = 0, since_tick = 900 })
 	assert_eq(s.cycle, { ema_seconds = 4, ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0,
 		calls_run = 0 })
-	storage.stats = { minute = { x = 1 }, totals = { deliveries = 7 } }
+	local kept = { start_tick = 0, deliveries = 0, dispatches = 0, items = {} }
+	storage.stats = { minute = { kept }, totals = { deliveries = 7 } }
+	stats.init()
 	s = stats.get()
-	assert_eq(s.minute, { x = 1 })
+	assert_eq(s.minute, { kept })
 	assert_eq(s.totals, { deliveries = 7 })
 	assert_eq(s.cycle, { ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 })
 	assert_eq(s.available_count, {})
@@ -315,6 +318,7 @@ end)
 test("aggregate: since_tick missing counts as 0", function()
 	at(100)
 	storage.stats = { minute = {}, hour = {}, totals = { deliveries = 0, dispatches = 0, items = 0 }, cycle = {} }
+	stats.init()
 	local out = stats.aggregate(10)
 	assert_true(out.partial)
 	assert_eq(out.span_ticks, 101)
@@ -580,6 +584,7 @@ test("layout usage: on a save from before busy tracking, the span starts at the 
 	at(0)
 	storage.stats = { totals = { deliveries = 9, dispatches = 9, items = 9, since_tick = 0 } }
 	at(100 * MIN)
+	stats.init()
 	assert_eq(stats.get().busy_since, 100 * MIN)
 	-- A delivery dispatched before the upgrade counts busy time only from it.
 	at(102 * MIN)

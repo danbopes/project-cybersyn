@@ -69,15 +69,20 @@ local function new_stats()
 	}
 end
 
---- Repairs a missing or partial table so saves from older versions keep working.
+--- The hooks run from the dispatcher, so they skip the save repairs (stats.init runs those on load). A missing table
+--- only exists before init, on a save from before stats were recorded: a hook raised by a migration starts it fresh.
 --- @return Stats
 local function get()
 	local s = storage.stats
-	if not s then
-		s = new_stats()
-		storage.stats = s
-		return s
-	end
+	if s then return s end
+	s = new_stats()
+	storage.stats = s
+	return s
+end
+
+--- Fills what older versions of the table lack.
+--- @param s Stats
+local function repair(s)
 	s.minute = s.minute or {}
 	s.hour = s.hour or {}
 	s.totals = s.totals or { deliveries = 0, dispatches = 0, items = 0, since_tick = game.tick }
@@ -93,7 +98,6 @@ local function get()
 	s.available_count = s.available_count or {}
 	s.refuel_since = s.refuel_since or game.tick
 	s.busy_since = s.busy_since or game.tick
-	return s
 end
 
 --- @param hash string
@@ -135,6 +139,7 @@ end
 
 function stats.init()
 	local s = get()
+	repair(s)
 	purge_invalid_hashes(s)
 	recount_available(s)
 end
