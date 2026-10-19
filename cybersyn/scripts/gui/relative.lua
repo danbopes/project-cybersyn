@@ -392,19 +392,8 @@ local function update_starved(state, st)
 		state.starved = starved
 		return true
 	end
-	if storage.tick_state ~= STATE_DISPATCH then return false end
-	local economy = storage.economy
-	if not economy then return false end
-	local r_stops, p_stops = economy.all_r_stops, economy.all_p_stops
-	local starved = {}
-	for _, net in ipairs(networks_of(st.network_name, st.network_mask)) do
-		for hash, req in pairs(st.requested) do
-			if req.active then
-				local key = net.name .. ":" .. hash
-				if r_stops[key] and not p_stops[key] then starved[key] = true end
-			end
-		end
-	end
+	local starved = collector.economy_starved(st, networks_of(st.network_name, st.network_mask))
+	if not starved then return false end
 	state.starved = starved
 	return true
 end

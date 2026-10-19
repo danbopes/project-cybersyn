@@ -451,6 +451,7 @@ test("full pass: trains, fleet, depots and alerts", function()
 		manifest_hashes = { ["iron-ore"] = 250, ["iron-ore|rare"] = 5 },
 		surface_index = 1,
 		is_available = false,
+		disable_bypass = false,
 		-- PLAN3 §4.2 (phase 2); the stub entity has no state, signal or path, so only the cached flag shows.
 		in_interrupt = false,
 		in_group = false,
@@ -1476,4 +1477,17 @@ test("secondary combinator on one network: its own mask for what it provides and
 	assert_eq(snap.provider_masks["signal-B:coal"], 2)
 	assert_eq(snap.provider_masks["signal-B:iron-plate"], 1)
 	assert_eq(snap.stations[6].requested["copper-plate"].mask, 2)
+end)
+
+test("economy_starved: this stop's active requests nobody provides, only while dispatching", function()
+	local collector = H.load("scripts.gui.collector")
+	local st = { requested = { a = { active = true }, b = { active = true }, c = { active = false } } }
+	local nets = { { name = "signal-A" } }
+	storage.economy = { all_r_stops = { ["signal-A:a"] = {}, ["signal-A:b"] = {}, ["signal-A:c"] = {} },
+		all_p_stops = { ["signal-A:b"] = {} } }
+	storage.tick_state = STATE_INIT
+	assert_nil(collector.economy_starved(st, nets))
+	storage.tick_state = STATE_DISPATCH
+	assert_eq(collector.economy_starved(st, nets), { ["signal-A:a"] = true })
+	storage.economy, storage.tick_state = nil, nil
 end)

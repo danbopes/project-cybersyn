@@ -1294,7 +1294,6 @@ end
 --- @return {[string]: {parked: int, inbound: int, bound: int, bypass: int, layouts: {[uint]: int}, states: {[string]: int}}}
 local function group_stats(all)
 	local out = {}
-	local trains = storage.trains
 	for _, tr in ipairs(all) do
 		local key = group_key(tr)
 		local g = out[key]
@@ -1309,9 +1308,7 @@ local function group_stats(all)
 		elseif s == STATUS_TO_D or s == STATUS_TO_D_BYPASS then
 			g.inbound = g.inbound + 1
 		end
-		-- Cybersyn's train.disable_bypass false = the train may skip its depot.
-		local train = trains[tr.id]
-		if train and not train.disable_bypass then g.bypass = g.bypass + 1 end
+		if not tr.disable_bypass then g.bypass = g.bypass + 1 end
 		local layout = tr.layout_id
 		if layout then g.layouts[layout] = (g.layouts[layout] or 0) + 1 end
 		local bucket = logic.state_bucket(tr.state and STATE_NAME[tr.state])
