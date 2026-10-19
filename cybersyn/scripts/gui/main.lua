@@ -70,7 +70,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field chip_sig string? item filter the chips show
 --- @field collecting_shown int? progress the subheaders show, -1 = none
 --- @field trains_badge int? alert count on the Trains tab
---- @field unserved_minutes int? cached cybersyn-manager-unserved-minutes
+--- @field unserved_minutes int? Overview tile threshold in place of its 5 min, set only by the lab
 --- @field relative_open {kind: "stop"|"train", id: uint, mount: string?, narrow: true?, tick: uint?, pane_narrow: boolean?, groups: int?}? the Cybersyn panel beside an open vanilla window: `narrow` = stop panel hidden on a narrow screen; `tick`, `pane_narrow`, `groups` = the docked train pane it was placed beside, see relative.lua place_train
 --- @field remote_entered_tick uint? last tick the controller changed from the character to remote view (the train pane's width depends on it)
 --- @field relative RelativeState? that panel's render state, see scripts/gui/relative.lua
@@ -280,9 +280,6 @@ function manager_gui.on_runtime_mod_setting_changed(e)
 		local player_data = e.player_index and storage.manager.players[e.player_index]
 		local player = e.player_index and game.get_player(e.player_index)
 		if player and player_data then extras.hud_setting_changed(player, player_data) end
-	elseif e.setting == "cybersyn-manager-unserved-minutes" then
-		local player_data = e.player_index and storage.manager.players[e.player_index]
-		if player_data then player_data.unserved_minutes = nil end
 	elseif e.setting == "cybersyn-enable-planner" then
 		-- Who paused the dispatcher, for the banner; nil player_index = the server or a script.
 		local manager_data = storage.manager

@@ -344,8 +344,6 @@ function interface.set_player_setting(pi, name, value)
 		error("not a runtime-per-user setting of " .. script.mod_name .. ": " .. tostring(name))
 	end
 	settings.get_player_settings(pi)[name] = { value = value }
-	local _, pd = context(pi)
-	pd.unserved_minutes = nil
 	return settings.get_player_settings(pi)[name].value
 end
 

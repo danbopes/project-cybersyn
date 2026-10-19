@@ -137,15 +137,6 @@ data:extend({
 		maximum_value = 60,
 	},
 	{
-		type = "int-setting",
-		name = "cybersyn-manager-unserved-minutes",
-		order = "ac",
-		setting_type = "runtime-per-user",
-		default_value = 5,
-		minimum_value = 1,
-		maximum_value = 60,
-	},
-	{
 		type = "string-setting",
 		name = "cybersyn-diagnostics",
 		order = "da",

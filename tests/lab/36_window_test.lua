@@ -104,7 +104,7 @@ lab.suite("36_window", {
 
 	-- The table counts every unserved entry that is not acknowledged; tile 1 those older than N minutes.
 	function(ctx)
-		lab.dev("set_player_setting", pi, "cybersyn-manager-unserved-minutes", 1)
+		remote.call("cybersyn", "write_global", 1, "manager", "players", pi, "unserved_minutes")
 		local d = overview()
 		local counts = lab.dev("diag_counts")
 		local total = 0
@@ -121,7 +121,7 @@ lab.suite("36_window", {
 		lab.check("Unserved tile's Waiting > 1 min line == entries older than a minute", d.tiles.unserved.old == old,
 			{ tile = d.tiles.unserved.old, rows = old })
 		local rt = d.rendered_tiles.unserved
-		lab.check("Unserved tile: the headline is its station count, the first line names the setting",
+		lab.check("Unserved tile: the headline is its station count, the first line names the threshold",
 			key_of(rt.caption) == "cybersyn-gui.overview-tile-unserved" and d.tiles.unserved.headline == d.tiles.unserved.stations
 			and rt.headline == tostring(d.tiles.unserved.stations)
 			and key_of(rt.lines[1][1]) == "cybersyn-gui.overview-unserved-old" and rt.lines[1][1][2] == "1", rt)
@@ -1122,6 +1122,6 @@ lab.suite("36_window", {
 		lab.check("reset drops the emulated screen", lab.read("manager").players[pi].layout_override == nil)
 		lab.big_screen(pi)
 		lab.dev("set_setting", "cybersyn-enable-planner", ctx.planner)
-		lab.dev("set_player_setting", pi, "cybersyn-manager-unserved-minutes", 5)
+		remote.call("cybersyn", "write_global", nil, "manager", "players", pi, "unserved_minutes")
 	end,
 })
