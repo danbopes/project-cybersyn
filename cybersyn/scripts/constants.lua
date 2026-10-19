@@ -246,7 +246,8 @@ DIAG_DISPATCH_SEVERITY = { DIAG_SEV_ERROR, DIAG_SEV_ERROR, DIAG_SEV_ERROR, DIAG_
 DIAG_FAIL_TRAIN_REMOVED = 1
 DIAG_FAIL_EARLY_TO_DEPOT = 2
 DIAG_FAIL_REMOTE = 3
-DIAG_FAIL_NAMES = { "train_removed", "early_to_depot", "remote_interface" }
+DIAG_FAIL_MANUAL = 4
+DIAG_FAIL_NAMES = { "train_removed", "early_to_depot", "remote_interface", "manual" }
 
 -- `code` of acknowledged/unacknowledged events: what was acknowledged; `b` of unacknowledged: why it ended.
 DIAG_ACK_REQUEST = 1

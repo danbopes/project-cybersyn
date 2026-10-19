@@ -204,21 +204,7 @@ end
 function interface.update_train_layout(train_id)
 	local train = storage.trains[train_id]
 	assert(train)
-	local old_layout_id = train.layout_id
-	local count = storage.layout_train_count[old_layout_id]
-	if count <= 1 then
-		storage.layout_train_count[old_layout_id] = nil
-		storage.layouts[old_layout_id] = nil
-		for _, stop in pairs(storage.stations) do
-			stop.accepted_layouts[old_layout_id] = nil
-		end
-		for _, stop in pairs(storage.refuelers) do
-			stop.accepted_layouts[old_layout_id] = nil
-		end
-	else
-		storage.layout_train_count[old_layout_id] = count - 1
-	end
-	set_train_layout(storage, train)
+	update_train_layout(storage, train)
 end
 ---@param layout_pattern (0|1|2|3)[]
 ---@param layout (0|1|2)[]

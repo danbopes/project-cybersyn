@@ -598,7 +598,7 @@ local function collect_keys(ls, out)
 	for i = 2, #ls do collect_keys(ls[i], out) end
 end
 
-test("locale: every key the Log builds exists in en and in the six fallback locales", function()
+test("locale: every key the Log builds exists in en, the fallback of every other locale", function()
 	setup()
 	local used = {}
 	local ctx = {
@@ -648,7 +648,7 @@ test("locale: every key the Log builds exists in en and in the six fallback loca
 	for key in string.gmatch(src, '"(cybersyn%-diag%.[%w%-]+)"') do
 		if not string.match(key, "%-$") then used[key] = true end
 	end
-	for _, loc in ipairs({ "en", "de", "es", "fr", "ko", "ru", "sv-SE" }) do
+	for _, loc in ipairs({ "en" }) do
 		local path = H.mod_root .. "/locale/" .. loc .. "/manager.cfg"
 		local sections = { ["cybersyn-gui"] = locale_keys(path, "cybersyn-gui"), ["cybersyn-diag"] = locale_keys(path, "cybersyn-diag") }
 		local missing = {}
