@@ -1711,14 +1711,7 @@ dev.register_stats(stats.summary)
 
 overview_tab.handle = {}
 
---- @param e {player_index: uint}
-function overview_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
-	handler(player, player_data, player_data.refs, e)
-end
+overview_tab.wrapper = util.wrapper
 
 --- @param e EventData.on_gui_selection_state_changed
 function overview_tab.handle.overview_period_changed(player, player_data, refs, e)

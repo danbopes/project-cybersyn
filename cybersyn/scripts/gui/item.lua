@@ -1113,13 +1113,7 @@ end
 
 item.handle = {}
 
---- @param e {player_index: uint}
-function item.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+item.wrapper = util.wrapper
 
 function item.handle.item_back(player, player_data, refs, e)
 	item.close(player, player_data, true)

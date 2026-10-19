@@ -2187,13 +2187,7 @@ dev.add("stations_lint_view", lint_view)
 
 stations_tab.handle = {}
 
---- @param e {player_index: uint}
-function stations_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+stations_tab.wrapper = util.wrapper
 
 --- @param e EventData.on_gui_click
 function stations_tab.handle.on_status_chip_click(player, player_data, refs, e)

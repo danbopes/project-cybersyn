@@ -256,12 +256,7 @@ function explain.handle.explain_close(player, pd)
 	explain.close(player, pd)
 end
 
-function explain.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	local pd = storage.manager and storage.manager.players[e.player_index]
-	if not (player and pd) then return end
-	handler(player, pd, e)
-end
+explain.wrapper = util.wrapper_pd
 
 gui.add_handlers(explain.handle, explain.wrapper, "cybersyn_explain")
 

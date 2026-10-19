@@ -1641,14 +1641,7 @@ end
 
 log_tab.handle = {}
 
---- @param e {player_index: uint}
-function log_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
-	handler(player, player_data, player_data.refs, e)
-end
+log_tab.wrapper = util.wrapper
 
 local function changed(player, player_data)
 	util.rerender(player, player_data)

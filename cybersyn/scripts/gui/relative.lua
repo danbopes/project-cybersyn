@@ -2435,13 +2435,7 @@ end
 
 -- ---------------------------------------------------------------- handlers
 
-function relative.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	local manager_data = storage.manager
-	local pd = manager_data and manager_data.players[e.player_index]
-	if not (player and pd) then return end
-	handler(player, pd, e)
-end
+relative.wrapper = util.wrapper_pd
 
 --- The state of the panel a click came from: the one mounted in the manager (relative.mount) or the one beside the
 --- vanilla window.

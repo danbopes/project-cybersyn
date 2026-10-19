@@ -459,6 +459,16 @@ function util.wrapper(e, handler)
 	handler(player, player_data, player_data.refs, e)
 end
 
+--- The three-argument form for panels that live outside the manager window, so they can fire before
+--- `storage.manager` exists.
+--- @param e {player_index: uint}
+function util.wrapper_pd(e, handler)
+	local player = game.get_player(e.player_index)
+	local pd = storage.manager and storage.manager.players[e.player_index]
+	if not (player and pd) then return end
+	handler(player, pd, e)
+end
+
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_hover
 function util.handle.hover_enter(player, player_data, refs, e)

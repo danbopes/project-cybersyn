@@ -2415,13 +2415,7 @@ dev.register_rows(TAB, measured_rows)
 
 trains_tab.handle = {}
 
---- @param e {player_index: uint}
-function trains_tab.wrapper(e, handler)
-	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	handler(player, player_data, player_data.refs, e)
-end
+trains_tab.wrapper = util.wrapper
 
 --- The pane's × button.
 function trains_tab.handle.on_pane_close(player, player_data)
