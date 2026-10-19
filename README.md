@@ -1,141 +1,308 @@
 # Project Cybersyn
 
-Behold one of the most feature-rich and performant train logistics network mods Factorio has to offer. Named for [Project Cybersyn](https://en.wikipedia.org//wiki/Project_Cybersyn) of Allende's Chile, with just this mod you can coordinate the economic inputs and outputs of your entire megabase. Similar in functionality to the famous Logistics Train Network mod, but with a much broader scope.
+danbopes's fork of Mami's [Project Cybersyn](https://github.com/mamoniot/project-cybersyn) for Factorio 2.0: a drop-in replacement for the stock mod with a rebuilt manager and dispatcher diagnostics. MIT licensed, like the original.
 
-[Join our discord!](https://discord.gg/zmgUBu95HX) This is the preferred place for players to report bugs, make suggestions, or keep up with development.
+![The manager's Overview on a Pyanodons save with 2,030 stations: four tiles and the Unserved requests table, each row with the reason the dispatcher recorded](previews/manager/overview.png)
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/outpost-resupply-station.png)
+*The Overview on a Pyanodons save with 2,030 stations and 553 trains. Each unserved request names its reason, the best provider and how long it has waited.*
 
+Cybersyn is a train logistics mod. A cybernetic combinator next to a train stop turns it into a provider, a requester or a depot, and a central planner sends trains between them. If you haven't used it before, read [Cybersyn basics](#cybersyn-basics) at the end of this page first. Everything that section describes works the same in this fork.
 
-## [Project Cybersyn Official Example Blueprints](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/cybersyn_blueprints.txt)
-Copy the contents of https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/cybersyn_blueprints.txt and paste them into the import string text box to see examples of how to create a functional network. I highly recommend taking a look at these; the blueprint book showcases both the basics of the mod and highly advanced designs you can create.
+## Why this fork
 
-## Quick Start Guide
+The stock manager window is fine on a small base and falls behind on a large one. Reading its code against a 2,030-station Pyanodons save turned up the same root causes again and again:
 
-Within Project Cybersyn, you can think of requester stations as requester chests, provider stations as passive provider chests, depots as roboports and trains as the logistics bots. There is a direct correspondence between the Cybersyn train network and Factorio's robot logistics network.
+- Every tab cleared itself and rebuilt every element once a second, and the Inventory tab called `get_signals` on every station each time. Items jumped around because the grids iterated hash tables, so scroll position and hover reset every second.
+- The "Max entities displayed on GUI pages" limit cut the list before sorting it, so a limited list was an arbitrary subset.
+- Search was case-sensitive on one tab and not on another, and the item filter compared plain names against keys that carry the quality, so quality items never matched.
+- Items behind a secondary inventory combinator never showed up, and the first tab you saw on opening was empty.
 
-A bare minimum Cybersyn train network consists of 2 components: depots and stations. Both are created by placing a cybernetic combinator adjacent to a train stop. Select the "Mode" of the combinator to "Station" to create a station, and to "Depot" to create a depot. Create a basic train and order it to park at the depot you just created, it is now controlled by the Cybersyn network. Depots and stations can have any train stop name, names do not impact their function. The circuit network input of a station's cybernetic combinator determines what cargo, as in items or fluids, that station will request or provide to the Cybersyn network. A positive cargo signal is interpreted as that station providing that cargo to the network; A negative cargo signal is interpreted as that station requesting that cargo from the network.
+Fixing those one at a time wasn't enough. This fork rebuilds the manager around a snapshot that a collector fills a few stations at a time, and only while someone has the window open. Tabs read the snapshot, sort it deterministically and update rows in place. On that save, with 2,030 stations and 553 trains, every tab's median render stays inside its budget: 5 ms per update, less for the Overview and the Log.
 
-To make a basic provider station, create a cargo buffer of chests or tanks adjacent to the station's tracks, and connect that buffer by wire to the input of the cybernetic combinator. To make a basic requester station, repeat the same, except reverse the direction of the inserters or pumps so they are *unloading* instead of loading; then connect a constant combinator to the same circuit network, set it to output the number of cargo you want this requester station to keep loaded in its cargo buffer, and flip the sign of each so the signal strength is negative. Then add the signal called "Request threshold" to the constant combinator. Set its signal strength to be at most the cargo capacity of the trains in your system. Once the provider station contains the cargo being requested, a train will automatically be sent to deliver that cargo from the provider station to the requester station. The requester station's buffer will automatically be topped up on the cargo being requested. Be sure that the requester station has the space to at minimum unload 2 fully loaded trains.
+The second half of the work answers a question the stock window doesn't: *why is this request still waiting?* The dispatcher now records a reason every time it fails to serve a request (no provider, provider low, network mask, no free train, train too small, layout, and so on), and setup checks predict which reason a misconfigured stop will produce before you go looking.
 
-Follow the above directions and you have set up a bare minimum Cybersyn network! You may continue adding onto it with more stations and depots and Cybersyn will automatically manage all of them for you. There is one issue with this kind of network though; trains won't always deliver full loads of cargo, meaning trains will make deliveries more frequently than is necessary. To fix this issue you will need to start using "request thresholds". To get a full picture of how request thresholds work, either import the official example blueprints from above, or read the **Request thresholds** section below.
+None of this is a criticism of upstream. Cybersyn's planner is fast and its design is sound; the manager just wasn't built for this scale. The dispatcher here stays close to Mami's, and the [dispatcher changes](#dispatcher-changes) are listed one by one.
 
-## Features
+## What's in the manager
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/gui-modes.png)
+Open it with **Ctrl+T** or the shortcut bar button "Toggle Cybersyn Manager". The window sizes itself to your screen and shows whole rows. Tabs: **Overview**, **Inventory**, **Stations**, **Trains** and **Log**, plus **Utilization** and **Breakdown** when "Enable analytics" is on.
 
-**Minimalistic and intuitively designed**, without sacrificing features. Configure your stations using just 3 virtual signals, a couple of combinator settings and the train stop's own train limit.
+### Overview
 
-### A whole suite of new and optional circuit network inputs and outputs to control your stations precisely
-* Natively read out all deliveries currently in progress for a station, not just the loading or unloading orders of the parked train.
-* Set request thresholds per cargo instead of just for the entire station.
-* Read out cargo loading or unloading orders per train wagon, instead of just for the entire train.
-* Set item filters per cargo wagon, making multi-item deliveries very easy.
+Four tiles and one table. **Unserved stations** counts stations with a request the dispatcher isn't serving, broken down by reason for the requests waiting longer than your "Manager: unserved after (minutes)" setting. **Fleet headroom** is the fewest trains available on any network over the chosen period, with "Free trains now" and the no-train failures below it. **Stations failing** splits into no power, disabled, throttling (a train limit is holding a request back) and misconfigured. **Throughput** covers deliveries, average trip and dispatch wait for the period (last 10 min, last hour or last 24 h).
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/universal-station.png)
+Clicking a tile lands on the list behind its number, and that list always shows the same count. The **Unserved requests** table below lists each failing request with its *Why* chip, best provider, stock against what is needed, and wait.
 
-These all combine to make it possible to **create "universal" stations**; stations that provide any arbitrary number of different items for a train of any arbitrary length! Build stations that supply you all items from your mall, stations that grab selected items from your disorganized storage chests, or stations that transfer any item between two otherwise completely distinct networks!
+![The Explain frame next to the Overview: the recorded reason, its fix line and the setup finding behind it](previews/manager/explain.png)
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/gui-allow-list.png)
+Click a Why chip and an **Explain** frame opens beside the window with what the dispatcher recorded, the fix line, the recent reason changes and any setup finding that blocks the request. The tick button at the end of a row acknowledges it: click for 24 h, Shift for 1 h, Ctrl until the reason changes. Acknowledged requests stop counting and leave the table; tick "Show acknowledged" to see them greyed out.
 
-Stations can **automatically build allow-lists for trains** they can load or unload. Inserters or pumps adjacent to the station's tracks are auto-detected. No more deadlocks caused by trains mistakenly attempting to fulfill a delivery to a station that cannot unload it. This feature is compatible with miniloaders.
+### Stations
 
-Trains can automatically visit **centralized refuelers**. It is not required that every single depot loads trains with fuel.
+![The Stations tab on the 2,030-station save, with status chips, item slots, deliveries, wait and last dispatch](previews/manager/stations.png)
 
-Trains can **bypass visiting the depot** if they have enough fuel. Trains spend far more time productively making deliveries rather than travelling to and from their depot. Fewer reserve trains are needed as a result.
+One row per station: name with its item icons, status, network, provided and requested items (secondary inventory combinators included), deliveries against the train limit, the oldest request's wait and the time since the last dispatch. Every column sorts from its header. The chips along the top filter by status (No power, Disabled, Warming up, Starved, Setup, Saturated, Idle, OK) and add **Unserved**, **With stuck train**, **Problems** and **Failing**.
 
-**Easy and versatile ways to define separate train networks.** Bitwise network masks are now optional! Networks are identified by signal id first, then by signal strength.
+### Problems: setup checks
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/fault-alert.png)
+![The Stations tab with the Problems chip on: each station's finding, its numbers and an acknowledge button](previews/manager/stations-problems.png)
 
-**Improved fault handling.** Mistakes and misconfigured stations are unlikely to result in cargo being delivered to places they shouldn't, and the player will be alerted immediately about the fault.
+While a manager window is open, a lint pass walks every station and train in small batches and flags configurations that keep a request from ever being served: a threshold no train can carry ("Threshold too high"), an allow list no train fits, a stop with no network bit, a train mask that matches nothing, a depot with a train limit problem, phantom deliveries, trains never refuelled, and more. Turn on the **Problems** chip on the Stations tab to list them worst first, each with its fix. A stop or combinator that doesn't make a working station at all (wrong side, ghost, doubled, derelict) is tracked from build and removal events and listed after the stations. `/cybersyn-find-problems` prints the same list to chat.
 
-Runs a custom, **highly optimized central planning algorithm**, resulting in exceptionally good performance, see https://forums.factorio.com/viewtopic.php?p=580024#p580024. This allows the station update rate to be twice that of LTN by default, resulting in more responsive dispatching, especially on larger bases.
+A station that would otherwise be OK but has an open error shows the status **Setup** in yellow.
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/se-compat.png)
+### Trains
 
-**Native space exploration compatibility!** Without any trouble this mod will automatically detect any space elevator on the planet and add it to the orders of trains which want to travel between surfaces. Unless there is a space elevator connecting the surfaces, each surface must be set to its own network.
+![The Trains tab with train 8 selected: the detail pane shows a camera, the shipment, the schedule with the active record, last events, Locate and Send home](previews/manager/trains-pane.png)
 
-Built from the ground up to be **free and open source forever**. *¡Viva la Revolución!*
+Rows show the train ID, what it's doing and where (as a link), network, composition, depot, state, time in that state, last refuel, fuel and shipment. Columns that every listed train shares are hidden and named in the header tooltip. Chips filter by Parked, To provider, Loading, To requester, Unloading, Returning and Refuelling, plus **In interrupt**, **Not refuelled > N h**, **In vanilla group**, **In trouble** and **Problems**. "Group by depot" folds the list into one row per depot name with parked, inbound and bypassed counts.
 
-Custom art and models to come in future updates!
+Click a row to open the detail pane on the right: a camera following the train, its shipment, provider and requester, schedule with the active record marked, and its last log events.
 
-I'm accepting submissions for localizations/translations. If you can speak a non-English language, feel free to submit a pull request on my github for a new locale file. If you don't know how to do that, message me however you would like, such as a discussion thread on the mod portal, and I will walk you through how to create a translation for this mod.
+### Inventory
 
-If you like my work, consider supporting me on [ko-fi](https://ko-fi.com/lesbianmami).
+Three grids, **Provided**, **In transit** and **Requested**, in the crafting menu's order by default and sortable by amount, stations, wait or deficit. They update in place, and the layout holds still while the pointer is over a grid. "Dim unrequested" greys out items nobody on the same network asks for.
 
-## Mod Details
+### Item drill-down
 
-This mod adds a single new entity to the game, the cybernetic combinator. This combinator can be in one of 5 different possible modes. While each mode has a purpose, the only modes you are required to use are station mode and depot mode.
+![The drill-down for Ash on the Pyanodons save: 53 providers, 29 requesters in dispatcher order with priority, threshold and why, and 4 trains carrying it](previews/manager/item-drilldown.png)
 
-### Station mode
+Click any item anywhere in the manager or the panels to see everyone who touches it: **Providers** with stock and outgoing deliveries, **Requesters · dispatcher order (approximate)** with priority, threshold, wait and why each one isn't being served, and **Trains carrying it**. Each list scrolls on its own. Shift+click filters the Stations tab by the item instead; right-click clears the item filter.
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/multi-item.png)
+### Log
 
-When placed adjacent to a vanilla train stop, a Cybersyn station is created. This station can provide or request cargo to your train network. Connect the input of the combinator to a circuit network; When a positive cargo signal is received, this station will provide that cargo to the network, when a negative signal is received, this station will request that cargo from the network. When a station is providing a type of cargo that another station is requesting, a train order will automatically be generated to transfer that cargo from the providing station to the requesting station. When a train arrives to fulfill this order, the output of the combinator will give the full list of cargo expected to be loaded (negative) or unloaded (positive) from the train.
+![The Log filtered to dispatch failures on the Pyanodons save, with the tooltip explaining one row's cause and fix](previews/manager/log.png)
 
-Stations can automatically build allow-lists. When this option is enabled, only trains that can be loaded or unloaded by this station will be allowed to make deliveries to it. Stations determine this based on what inserters or pumps are present at this station along its tracks. When disabled, all trains within the network are allowed.
+The **Log** tab reads the diagnostics log, newest first. It follows new events until the pointer rests on the list or you press **Pause**; **Newest** jumps back. Filter by severity, by kind (Unserved requests, Deliveries, Stations, Trains, Cargo, Setup, Actions), by train ID and by time window (Last 10 min, Last hour, Everything kept). Hovering a row's message explains the cause and what to do about it. **Summary** swaps the rows for the stations and items with the most events. The print button on a row puts it in chat with clickable train, stop and map tags, and the export button writes a CSV (see [Reporting bugs](#reporting-bugs)). The tab badge counts errors since you last looked.
 
-Stations can be set to provide only or request only. By default stations can both provide and request, but when one of these options is chosen either requesting is disabled or providing is disabled.
+Diagnostics come in three levels set by the map setting "Diagnostics". **Basic**, the default, keeps why each unserved request is waiting plus failures, alerts and station changes in a 4,096-row log. **Full** adds every dispatch, arrival, departure and train state change in a second log. **Off** records nothing and hides the Log tab.
 
-### Depot mode
+### Stop and train panels
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/big-depot.png)
+<p>
+<img src="previews/manager/stop-panel.png" alt="The Cybersyn panel docked beside the vanilla train stop window: role, network, status, items, unserved requests with why and fix, deliveries in flight" width="335" align="right">
+</p>
 
-When placed adjacent to a vanilla train stop, a Cybersyn depot is created. Any train which parks at this depot will automatically be added to the train network. Whenever a train order is generated, if this train has the cargo capacity to fulfill it, and is allow-listed by both stations, then it will automatically be dispatched to fulfill the order. When the order is completed, the train will return to any train stop with the same name as the depot it first parked in. This almost always means it returns to a Cybersyn depot where it will again await to fulfill a new order. To save on UPS the input of a depot combinator is only read when a train parks at the depot; this is only relevant for networks which make extensive use of network masks on depots.
+Open a train stop and a **Cybersyn** panel docks to the right of the vanilla window. It shows the stop's role, network and mask, status, deliveries against the train limit, items, unserved requests with their why and fix lines, deliveries in flight, setup findings and the stop's last log events. **Effective config** expands into the numbers the dispatcher really uses: the threshold and where it came from, the stacks it fills, the largest eligible train and the allow list. When no manager window is open, the panel reads the stop live.
 
-### Refueler mode
+A locomotive gets the same treatment: a panel flush with the vanilla train pane that shows what the train is doing, its shipment, depot, schedule and last events. It also carries **Send home**, a path trace that draws the rest of the train's route for 10 s, and a map pin.
 
-When placed adjacent to a vanilla train stop, a Cybersyn refueler is created. Whenever a train completes a delivery, if it is running low on fuel (configurable in mod settings), it will attempt to visit a refueler before returning to the depot. The train will search for a refueler within its network that has not exceeded its train limit and that it is allow-listed for. If one is found it will schedule a detour to it to stock back up on fuel.
+<br clear="right">
 
-Refuelers can automatically build allow-lists. When this option is enabled, trains will be prevented from parking at this station if one of their cargo wagons would be filled with fuel.
+![The Cybersyn panel beside a locomotive's window in remote view: fetching from a provider, shipment, schedule, last events, Open in manager and Send home](previews/manager/train-panel.png)
 
-### Station control mode
+### Show on map, links, filters
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/science.png)
+Station, train and item names in every table are buttons. Click to open, Shift to show on the map, Ctrl for the station's combinator, Alt for its control combinator, Ctrl+Shift to drop a map pin. Show on map lands where a map pin would and keeps the manager pinned open with a **Back** button.
 
-When placed adjacent to the train stop of an already existing Cybersyn station, this combinator will provide a second set of inputs and outputs that can be used to more precisely control this station. The combinator input allows for request thresholds to be set per-cargo. Any non-zero cargo signal given on the input circuit network will override the station's request thresholds for just that cargo. When this is used on a provider station, if the station has more cargo than the input threshold, it will force the creation of a delivery for that cargo to the next available requester station. This effectively overrides the requester station's request threshold. This is useful for purging unwanted cargo from provider stations.
+The title bar holds search (Ctrl+F; space-separated words, case-insensitive), the filter row (item, network, network ID and surface; closing the row clears them), **Pause** and the pin. A pinned window stays open while you interact with the world, and Escape closes overlays one at a time. Lists page by whole rows, up to "Manager rows per page".
 
-If a station control combinator receives a "priority" signal as input, it will apply that priority to each cargo signal it is receiving as input. This allows you to specify up to 2 different priorities per-cargo on a single station.
+### HUD line
 
-The output of the combinator gives the sum total of all cargo loading or unloading orders in progress for the station. The very tick a train is dispatched for a new order to the station, that order is added to the output of this combinator, and it is removed as soon as the train leaves the station. The primary use case for this is to prevent duplicate orders from being generated for stations that provide the same pool of cargo. Only one train can be dispatched per-tick per-cargo specifically to accommodate this.
+Turn on "Manager: Unserved line on screen" in your per-player settings for a small draggable box that reads "Unserved now" and "Free trains now" plus the most common reason, refreshed every 5 seconds. Clicking it opens the manager.
 
-### Wagon control mode
+### Actions and commands
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/filtered-slots.png)
+State-changing actions sit where they apply: **Send home** on the train panel and the Trains pane, **Recount deliveries** on a stop whose delivery counter a failed delivery left too high. The console commands `/cybersyn-fix-priorities`, `/cybersyn-abolish-same-depot`, `/cybersyn-recalculate-train-size` and `/cybersyn-refresh-allow-lists` go through the same gate: the map setting "Manager actions allowed for" (Admins by default, or Everyone, or Nobody). Single player is always allowed. Every action is printed to the force and written to the log.
 
-When placed adjacent to the tracks of an already existing Cybersyn station, this combinator will connect to any wagon that parks adjacent to it. The output of this combinator gives the list of cargo expected to be loaded or unloaded to just this specific wagon. In addition, if this wagon is a cargo wagon, its slots will automatically be filtered so items can only enter it in sorted order. These combined make it straightforward to precisely load a cargo wagon to the exact specification desired by the requesting station. Connect the output to a filter inserter, keep a count of how many items have been loaded into the wagon with a memory cell, and use an unloading inserter to remove any items that exceed the requested load amount. If done correctly you have built a universal item loader for this cargo wagon. Build one of these units for each cargo wagon along the station and you have created what I call a universal station. The input of a wagon control combinator has no function currently.
+Read-only commands are open to everyone: `/cybersyn-find-problems` and `/cybersyn-reset-gui` (centres the manager and sizes it for your screen again).
+
+## Dispatcher changes
+
+These predate the manager work and are the only changes to how trains get dispatched:
+
+- **Secondary inventory combinator.** A new combinator mode ("Secondary Inventory") lets a station publish part of its inventory under its own network, priority and thresholds. A station can have any number of them.
+- **Locked slots scale with the manifest.** A provider's locked slots are reserved per item type, so multi-item deliveries no longer run out of room for the later items.
+- **Polling order.** The planner rotates its queue and retires the chosen provider before creating the delivery, whether or not the delivery is then created.
+- **Warm-up.** Stations warm up on their own schedule instead of queueing behind the oldest one, and a stop with no connected rail stays in warm-up.
+- **Fewer entity writes.** The combinator display is written only when it changes, and item stack sizes are cached at load.
+- **Unexpected cargo alert.** Optional, off by default ("Alert for unexpected cargo pickup"): a train that leaves a provider with an item type outside its manifest raises an alert.
+- **Quieter alerts and saner recalculation.** The no-train alerts are merged to one per item and network, and `/cybersyn-recalculate-train-size` keeps the layout counts right instead of inflating them on every run.
+
+A golden trace of 176 dispatch events on a fixed test save came out identical after every merge of the manager work, so it hasn't altered dispatching.
+
+## Performance
+
+Three rules shaped the design:
+
+1. **Nothing runs while no window is open**, except bounded counters: the throughput buckets and, unless you turn it off, the diagnostics state.
+2. **The collector is incremental.** It reads a slice of stations per update into a snapshot, and only while at least one player has the window open and unpaused. It keeps the snapshot for 2 minutes after the last close so a quick reopen is instant.
+3. **Every tab has a per-update budget** on the 2,030-station save: 3 ms for the Overview, 1 ms for the Log, 5 ms for the rest.
+
+Measured on that save (Pyanodons, 2,030 stations, 521 depots, 553 trains), Factorio 2.0.77 headless:
+
+| What | Result |
+|---|---|
+| Whole game tick, manager closed (`--benchmark`, 1800 ticks, 3 interleaved runs each) | each development round against the one before: -0.056, +0.027, +0.030 ms, inside the 0.1 ms gate; about 6.5 to 6.7 ms per tick overall |
+| Manager tick with every window closed | 0.0003 ms per game tick at 1 update/s |
+| Basic diagnostics | 0.0087 ms per game tick |
+| Render median per manager update, window open | Overview 1.54, Stations 0.78, Trains 0.50, Inventory 0.11, Log 0.34 ms |
+| Cold open to first data on the Overview | 12 ticks (the round before: about 606) |
+| Item drill-down open on Ash (53 / 29 / 4 rows), steady | median 0.37 ms |
+| 3 game-hours with the window open | heap +0.41 %/h (basic), -0.53 %/h (full) |
+
+## Installing
+
+The fork keeps the mod name `cybersyn` and ships as a zip on [GitHub Releases](https://github.com/danbopes/project-cybersyn/releases). It isn't on the mod portal (see [Releases and versioning](#releases-and-versioning)). It needs Factorio 2.0 (base 2.0.60 or newer) and flib 0.15.0 or newer.
+
+1. Back up your save.
+2. Open your mods folder: `%APPDATA%\Factorio\mods` on Windows, `~/.factorio/mods` on Linux, `~/Library/Application Support/factorio/mods` on macOS.
+3. Remove the stock `cybersyn_2.0.x.zip` from that folder.
+4. Put `cybersyn_3.0.0.zip` in the folder. Don't unzip it.
+5. Start the game and load your save.
+
+If the game offers to "sync mods with save", say no: that would put back the stock version the save last ran with.
+
+### Upgrading from stock Cybersyn
+
+Because the name is unchanged, Factorio treats the fork as a newer version of the same mod. Everything in the save carries over: stations, depots, refuelers, trains, deliveries in flight, combinator settings and mod settings. On the first tick a one-time conversion in `scripts/fork-migrations.lua` reshapes the stored data. It's written for saves from stock 2.0.53 (the last portal release) and 2.0.54.
+
+What you'll notice: the dispatcher's cycle restarts and every station warms up again, so for the length of "Station warmup time (sec)" no new deliveries start. Trains already on a delivery finish it. Two stock settings are gone: "Track request wait times" (wait tracking is always on now; its cost was too small to measure) and "Max entities displayed on GUI pages" (replaced by per-player paging).
+
+Going back to stock Cybersyn with the same save isn't supported. Keep the backup.
+
+### Multiplayer
+
+The server and every player need the same `cybersyn_3.0.0.zip`. Each player's window, filters and settings are their own; the actions gate checks the acting player's admin flag on every peer. Client joins on both test saves were run at every checkpoint without a desync.
+
+### Compatibility
+
+Mods that depend on Cybersyn keep working: cybersyn-combinator, Cybersyn-Content-Reader, the Pyanodons compatibility and anything else that uses the `cybersyn` name, its prototypes, its signals, its setting names or the `cybersyn` remote interface. None of those changed. Space Exploration elevator support is the same as upstream's. The Breakdown tab still needs [factorio-charts](https://mods.factorio.com/mod/factorio-charts).
+
+## Settings this fork adds
+
+Map settings:
+
+- **Diagnostics**: Off, Basic (default) or Full. See [Log](#log).
+- **Diagnostics full log size (rows)**: rows kept by the full log, default 16,384. The basic log is fixed at 4,096.
+- **Diagnostics fluid cargo tolerance (%)**: how much of a fluid manifest may be missing before the log records a short load or residual cargo, default 2.
+- **Manager actions allowed for**: Admins, Everyone or Nobody.
+- **Alert for unexpected cargo pickup**: off by default.
+
+Per player:
+
+- **Manager rows per page**: 10 to 200, default 200. The window shows as many as fit.
+- **Manager: unserved after (minutes)**: the Overview's Unserved threshold, default 5.
+- **Manager: not refuelled after (hours)**: the Trains tab's "Not refuelled" chip, default 1.
+- **Manager: Unserved line on screen**: the HUD line, off by default.
+
+Startup: **Manager test interface** registers the remote interface the automated tests drive. Players don't need it.
+
+## Reporting bugs
+
+Open an issue at [github.com/danbopes/project-cybersyn/issues](https://github.com/danbopes/project-cybersyn/issues). Please don't take fork bugs to upstream's Discord, since most of the code involved only exists here.
+
+Useful attachments, roughly in order:
+
+1. The save, or a smaller one that shows the problem.
+2. `factorio-current.log` from the folder above your mods folder (crashes and Lua errors land there).
+3. A Log export. On the Log tab, set the filters and window to cover the problem and press the export button at the top right. The file lands in `script-output/cybersyn/diag-<tick>.csv` in your Factorio user data folder; in multiplayer it's written on your machine, or on the server if you leave mid-export.
+4. A screenshot of the manager or the stop panel, and the diagnostics level you run.
+
+## Releases and versioning
+
+Releases are zips on [GitHub Releases](https://github.com/danbopes/project-cybersyn/releases). The first one is **3.0.0**. A major version above upstream's 2.0.x makes Factorio see the fork as an upgrade from any stock 2.0 save and keeps the two version lines from ever colliding. Upstream's 2.0.53 is its last portal release; its 2.0.54 only exists in git.
+
+The fork stays off the mod portal for Factorio 2.0 because it can't share the name `cybersyn` there. With Factorio 2.1 it moves to the portal under its own name and uses 2.1's `migrates_from` field in info.json to take over stock Cybersyn saves directly.
+
+Maintainers: the release steps are in [RELEASING.md](RELEASING.md).
+
+## Credits and license
+
+Project Cybersyn is Mami's work: [github.com/mamoniot/project-cybersyn](https://github.com/mamoniot/project-cybersyn), [mod portal page](https://mods.factorio.com/mod/cybersyn). If you like the mod, consider supporting her on [ko-fi](https://ko-fi.com/lesbianmami). The fork includes upstream's later contributions up to 2.0.54, such as the analytics tabs.
+
+The manager's GUI code started from raiguard's LTN Manager; its license is in [cybersyn/scripts/gui/LICENSE](cybersyn/scripts/gui/LICENSE).
+
+MIT license, see [LICENSE](LICENSE).
+
+## Cybersyn basics
+
+This section condenses upstream's quick start and mode reference. Nothing here differs in the fork.
+
+### The example blueprints
+
+[cybersyn_blueprints.txt](cybersyn_blueprints.txt) is a blueprint book string with working examples, from a minimal network to universal stations. Paste its contents into the game's import box.
+
+![An outpost resupply station built with Cybersyn](previews/outpost-resupply-station.png)
+
+### Quick start
+
+Think of the network the way you think of robots: requester stations are requester chests, provider stations are passive provider chests, depots are roboports and trains are the bots.
+
+A minimal network needs depots and stations. Both come from a cybernetic combinator placed next to a train stop: set its mode to **Station** or **Depot**. Send a train to the depot and Cybersyn takes it over. Stop names don't matter to Cybersyn.
+
+A station reads its combinator's input circuit. A positive cargo signal means the station provides that cargo; a negative one means it requests it. For a provider, wire a chest or tank buffer beside the tracks to the combinator. For a requester, do the same with the inserters or pumps reversed, then add a constant combinator that outputs the amount to keep in stock as a negative number, plus a **Request threshold** signal no larger than your trains' capacity. Once a provider has what a requester asks for, a train goes. Leave the requester room to unload at least two full trains.
+
+Without thresholds trains will often run part-loaded. The [Request threshold](#request-threshold) section below explains how to fix that.
+
+![The combinator modes](previews/gui-modes.png)
+
+The combinator has six modes. Station and Depot are the only ones a network needs.
+
+### Station
+
+![A multi-item station](previews/multi-item.png)
+
+Provides or requests cargo as described above. When a train arrives, the combinator outputs what it should load (negative) or unload (positive). A station can build an **allow-list** from the inserters and pumps along its tracks so only trains it can actually load or unload get sent; this works with miniloaders. It can also be set to provide only or request only.
+
+![The automatic allow-list](previews/gui-allow-list.png)
+
+### Depot
+
+![A large depot](previews/big-depot.png)
+
+Any train that parks at a depot joins the network. When an order needs a train with enough capacity that both stations' allow-lists accept, Cybersyn dispatches one. After the delivery the train returns to any stop with its depot's name. A depot's input is only read when a train parks there. With **Depot bypass** a train that has fuel can take its next order without going home first.
+
+### Refueler
+
+After a delivery, a train below the "Fuel threshold" setting looks for a refueler on its network that is under its train limit and accepts it, and detours there before going home. Refuelers can build allow-lists too, which keep out trains that would fill a cargo wagon with fuel.
+
+### Station control
+
+![Science delivered through station control combinators](previews/science.png)
+
+A second combinator at an existing station. Any non-zero cargo signal on its input overrides the station's request threshold for that cargo. On a provider, holding more than that threshold forces a delivery to the next available requester, which is useful for purging unwanted cargo. A **priority** signal on it applies to every cargo it lists, so one station can use two priorities. Its output is the sum of all loading and unloading orders in progress for the station; an order appears the tick its train is dispatched and leaves when the train departs.
+
+### Wagon control
+
+![Filtered wagon slots](previews/filtered-slots.png)
+
+Placed along a station's tracks, it outputs what the parked wagon next to it should load or unload and filters that cargo wagon's slots into sorted order. With a filter inserter, a memory cell and an unloading inserter per wagon you get a loader for any item, and a row of them makes a universal station.
+
+![A universal station](previews/universal-station.png)
+
+### Secondary inventory
+
+The fork's extra mode. See [Dispatcher changes](#dispatcher-changes).
 
 ### Networks
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/gui-network.png)
+![The network setting](previews/gui-network.png)
 
-Stations, depots and refuelers can be set to belong to a particular network by setting that network on their combinator. By default all combinators belong to the "signal-A" network. By setting a different signal Id, the combinator will belong to that different network. Networks identified with different signal Ids do not share any trains or cargo; Orders will never be generated to transfer cargo between separate networks.
+Every combinator belongs to a network, `signal-A` by default. Networks with different signals share no trains and no cargo. If the combinator's input carries its own network signal, the value is a bitmask of 32 sub-networks, and two stops trade only if their masks share a bit (`mask1 & mask2 > 0`). A cargo signal used as a network ID is read only as the mask. The **each** signal joins a stop to every network whose virtual signal is on its input, using that signal's value as the mask.
 
-In addition, if the combinator receives as input a signal of the same Id as its network signal Id, then the value of this signal will be interpreted as a bitmask to give 32 "sub-networks" to choose from. Each station can belong to any set of sub-networks based on its mask. A delivery will only be made between two stations if any two bits match between the two masks, i.e. if `mask1 & mask2 > 0`. When a network Id is a type of cargo, that cargo will be ignored by stations, its signal will only ever be interpreted as the network mask.
+![Space Exploration support](previews/se-compat.png)
 
-A network can be set to the "each" virtual signal. When in this mode, each virtual signal given to them as input is interpretted as a network mask for that network Id. The stop is thus made a part of that network with the specified network mask. This allows you to union together as many different networks as you would like.
+With Space Exploration, Cybersyn finds space elevators and routes trains through them between surfaces. Surfaces without an elevator between them need separate networks.
 
 ### Request threshold
 
-![Image](https://raw.githubusercontent.com/mamoniot/project-cybersyn/main/previews/virtual-signals.png)
+![Cybersyn's virtual signals](previews/virtual-signals.png)
 
-If a station combinator receives a request threshold signal as input, a request order for the station will only be generated if the station is requesting a number of cargo exceeding the request threshold. In addition, there must be a station in the network which is providing at least as much cargo as the request threshold, and there must be a train in the network that has cargo capacity exceeding the request threshold. Therefore all generated orders must be for a number of cargo greater than or equal to the request threshold. By setting high thresholds, the traffic on your network can be greatly reduced, at the cost of needing to maintain larger cargo buffers at each station. The request threshold signal sets the request threshold "per-station" whereas the station control combinator can set or override the threshold per-cargo as well.
-
-On station combinators there is a setting called "Stack thresholds". When set, any request threshold for this station will be multiplied by the stack size of any item it is being compared to. This applies to station control thresholds as well. Thus the request threshold can be specified based on total stack count rather than total item count. Fluids are unaffected by the "Stack thresholds" setting, they are always specified by total fluid count.
-
-There is no "provide threshold" in this mod because by design there is no need for one. Because the request threshold is enforced on the provider station as well as the requester, it pulls double duty as both the request and provide threshold.
+A request goes out only when the station asks for more than its threshold, some provider on the network holds at least that much, and some train can carry it. High thresholds mean fewer, fuller trains and bigger buffers. The **Request threshold** signal sets it per station; a station control combinator sets it per cargo. With **Stack thresholds** ticked, thresholds count stacks instead of items (fluids are unaffected). There's no provide threshold because the request threshold is enforced at the provider too.
 
 ### Locked slots per cargo wagon
 
-After an order has been generated, enough cargo will be subtracted from that order to ensure at least X number of slots in each cargo wagon can be left empty, where X is the "Locked slots per cargo wagon" signal being received by the station combinator. It is necessary for multi-item stations to function.
+The **Locked slots per cargo wagon** signal leaves that many slots empty in each cargo wagon of an order. Multi-item providers need it.
 
 ### Priority
 
-Orders will be generated first for stations, depots and refuelers which are receiving a higher priority signal than the others. If multiple depots or refuelers have the same priority, the closest one will be prioritized. Depots calculate distance based on the location of their train. If multiple stations have the same priority, the least recently used requester station will be prioritized, and the provider station closest to the requester station will be prioritized. So in times of cargo shortage (front-pressure), round robin distribution will be used, and in times of cargo surplus (back-pressure), minimum travel distance distribution will be used. Provider stations will be prevented from providing cargo to lower priority requester stations until the highest priority requester station is satisfied.
-
-If a combinator set to station control mode receives a priority signal, for each cargo signal input to the combinator, cargo of that type will have its priority overridden in addition to its request threshold. This effectively allows you to choose one of two possible priorities for each cargo that a station processes.
+Higher **Station priority** wins first, for stations, depots and refuelers. Between equal depots or refuelers the closest wins. Between equal requesters the one served least recently wins, and between equal providers the one closest to the requester; so shortages get round-robin and surpluses get shortest-distance. A provider won't serve a lower-priority requester while a higher one is still waiting.
 
 ### Train limits
 
-Works based off of the train limit set on the train stop in the same way it does in vanilla Factorio. Only a number of trains up to the train limit will be allowed to dispatch to the station by the central planner. Useful to reduce the need for train stackers and to prevent deadlocks.
+Cybersyn honours the train stop's own train limit and dispatches no more trains to a stop than it allows, which cuts down on stackers and deadlocks.
+
+![The fault alert](previews/fault-alert.png)
+
+When something is misconfigured, Cybersyn raises an alert rather than delivering cargo somewhere it shouldn't go.
