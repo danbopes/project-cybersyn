@@ -2319,7 +2319,6 @@ dev.register_dump(TAB, function(player_data)
 	for _, cell in ipairs(header.children) do
 		if not cell.visible then hidden[#hidden + 1] = cell.tags.column end
 	end
-	local chips = {}
 	local flow = player_data.refs[CHIPS]
 	if flow and flow.valid then
 		for i, chip in ipairs(flow.children) do chips_shown[i] = { chip.tags.trains_chip, chip.toggled, chip.enabled } end
