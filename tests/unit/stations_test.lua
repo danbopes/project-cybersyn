@@ -91,9 +91,9 @@ test("query: Setup replaces OK while an error finding is open", function()
 	assert_eq(ctx.status[9], "ok", "a warning does not block")
 	assert_eq(counts.setup, 1)
 	assert_eq(counts.ok, 2)
-	pd.stations_status_filter = "setup"
+	pd.stations_chip = "setup"
 	assert_eq(ids((stations_tab.query(pd))), { 8 })
-	pd.stations_status_filter = nil
+	pd.stations_chip = nil
 	storage.acks = { request = {}, station = {}, lint = { [8] = { [LINT_CAPACITY] = { player_index = 1 } } }, lint_version = 1 }
 	_, counts, ctx = stations_tab.query(pd)
 	assert_eq(ctx.status[8], "ok")
@@ -142,15 +142,15 @@ test("query: status and wait sort keys", function()
 	assert_eq(column, "name")
 end)
 
-test("query: status filter applies after counting; unknown filters are cleared", function()
+test("query: status filter applies after counting; an unknown chip reads as All without a write", function()
 	local stations_tab = setup()
-	local pd = { stations_status_filter = "ok" }
+	local pd = { stations_chip = "ok" }
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(ids(rows), { 6, 8, 9 })
 	assert_eq(counts.all, 9)
-	pd.stations_status_filter = "gone"
+	pd.stations_chip = "gone"
 	rows = stations_tab.query(pd)
-	assert_nil(pd.stations_status_filter)
+	assert_eq(pd.stations_chip, "gone")
 	assert_eq(#rows, 9)
 end)
 
@@ -286,7 +286,7 @@ test("chips: unserved, problems, stuck and failing count what they show", functi
 	-- The Problems view sorts worst first (PLAN4 D7): capacity (8) before the check behind bit 8 (6).
 	local want = { unserved = { 5, 8 }, problems = { 8, 6 }, stuck = { 4, 9 }, failing = { 1, 2, 6, 7, 8 } }
 	for chip, list in pairs(want) do
-		pd.stations_status_filter, pd.stations_chip = nil, nil
+		pd.stations_chip = nil
 		stations_tab.set_chip(pd, chip)
 		local rows, c = stations_tab.query(pd)
 		assert_eq(ids(rows), list, chip)
@@ -300,7 +300,7 @@ test("chips: unserved, problems, stuck and failing count what they show", functi
 	assert_nil(pd.stations_chip)
 	stations_tab.set_chip(pd, "problems")
 	stations_tab.set_chip(pd, "ok")
-	assert_eq({ pd.stations_status_filter, pd.stations_chip }, { "ok", nil })
+	assert_eq(pd.stations_chip, "ok")
 	-- The surface filter narrows every chip count.
 	snap.stations[8].surface_index = 2
 	local _, narrowed = stations_tab.query({ search_surface_idx = 1 })
@@ -362,7 +362,7 @@ test("query: natural name order (stn-1 < stn-2 < stn-10), both directions", func
 end)
 
 -- PLAN4 D7: the Problems chip (round 3's Setup) opens its view sorted worst first; leaving it drops that sort.
-test("problems chip: worst severity then check order; the sort comes and goes with the chip; 'setup' maps over", function()
+test("problems chip: worst severity then check order; the sort comes and goes with the chip", function()
 	local stations_tab, _, snap = setup()
 	snap.stations[2].lint = LINT_BIT[LINT_NEVER_REFUELLED]
 	snap.stations[4].lint = LINT_BIT[LINT_LIMIT_ZERO]
@@ -378,11 +378,6 @@ test("problems chip: worst severity then check order; the sort comes and goes wi
 	stations_tab.set_chip(pd, "problems")
 	local _, _, _, column2 = stations_tab.query(pd)
 	assert_eq(column2, "name")
-	-- A stored round-3 chip is the Problems chip.
-	pd = { stations_chip = "setup" }
-	rows = stations_tab.query(pd)
-	assert_eq(pd.stations_chip, "problems")
-	assert_eq(#rows, 4)
 	-- Provided / requested stands in for Problems outside the view, and the other way round.
 	pd = { sort = { stations_tab = { column = "provided_requested", ascending = true } }, stations_chip = "problems",
 		stations_problems_view = true }

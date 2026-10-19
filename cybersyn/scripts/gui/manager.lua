@@ -232,7 +232,6 @@ local function clear_row_filters(player_data)
 	player_data.search_network_name = nil
 	player_data.search_network_mask = -1
 	player_data.search_surface_idx = nil
-	player_data.stations_status_filter = nil
 	player_data.stations_chip = nil
 	player_data.stations_problems_scope = nil
 	player_data.trains_chip = nil
@@ -278,7 +277,6 @@ function manager.focus(player, player_data, tab, focus)
 	item.close(player, player_data)
 	explain.close(player, player_data)
 	if focus.keep_row then
-		player_data.stations_status_filter = nil
 		player_data.stations_chip = nil
 		player_data.stations_problems_scope = nil
 		player_data.trains_chip = nil

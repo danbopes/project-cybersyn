@@ -23,8 +23,7 @@ local lint_text = require("scripts.gui.lint-text")
 local stations_tab = {}
 
 --- @class PlayerData
---- @field stations_status_filter string? the status chip that is toggled (one of STATUSES)
---- @field stations_chip "unserved"|"problems"|"stuck"|"failing"? the other chip that is toggled; never both
+--- @field stations_chip string? the toggled chip: one of STATUSES, or "unserved"|"problems"|"stuck"|"failing"
 --- @field stations_problems_view boolean? the Problems chip was on at the last query (its sort is set on the way in)
 
 local TAB = "stations_tab"
@@ -327,26 +326,21 @@ local sort_keys = {
 	problems = function(st) return pm.station_rank(st.id, st.lint, diag.is_acked) end,
 }
 
---- The toggled chip: a status, one of the flag chips, or nil (All). A stale value from an older version is dropped.
+--- The toggled chip: a status, one of the flag chips, or nil (All). A value no chip has any more reads as All.
 --- @param player_data PlayerData
 --- @return string?
 local function active_chip(player_data)
-	local s = player_data.stations_status_filter
-	if s then
-		if STATUS_RANK[s] then return s end
-		player_data.stations_status_filter = nil
-	end
 	local c = player_data.stations_chip
-	if c then
-		-- The Setup chip of round 3 is the Problems chip.
-		if c == "setup" then
-			c = "problems"
-			player_data.stations_chip = c
-		end
-		if FLAG_CHIPS[c] or c == "stuck" then return c end
-		player_data.stations_chip = nil
-	end
+	if c and (STATUS_RANK[c] or FLAG_CHIPS[c] or c == "stuck") then return c end
 	return nil
+end
+
+--- The toggled chip when it is a status chip.
+--- @param player_data PlayerData
+--- @return string?
+local function status_filter(player_data)
+	local c = active_chip(player_data)
+	return c and STATUS_RANK[c] and c or nil
 end
 
 --- The sort column for the view: the Problems column sorts only while it shows, and stands in for Provided /
@@ -2089,7 +2083,7 @@ dev.register_dump(TAB, function(player_data)
 		counts = status_counts,
 		chip_counts = chip_counts,
 		chip = active_chip(player_data),
-		status_filter = player_data.stations_status_filter,
+		status_filter = status_filter(player_data),
 		visible = list.visible,
 		warning = player_data.refs.manager_stations_warning_flow.visible,
 		warning_caption = player_data.refs.manager_stations_warning_label.caption,
@@ -2224,14 +2218,9 @@ end
 --- @param chip string?
 function stations_tab.set_chip(player_data, chip)
 	if chip == "all" or chip == active_chip(player_data) then chip = nil end
-	player_data.stations_status_filter = nil
-	player_data.stations_chip = nil
 	player_data.stations_problems_scope = nil
-	if chip and STATUS_RANK[chip] then
-		player_data.stations_status_filter = chip
-	elseif chip and (FLAG_CHIPS[chip] or chip == "stuck") then
-		player_data.stations_chip = chip
-	end
+	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
+	player_data.stations_chip = chip
 	util.reset_page(player_data, TAB)
 end
 
@@ -2268,17 +2257,15 @@ if dev.enabled() and not remote.interfaces["cybersyn-manager-dev-stations"] then
 		set_status_filter = function(pi, status)
 			local player = game.get_player(pi)
 			local player_data = storage.manager.players[pi]
-			player_data.stations_status_filter = nil
 			player_data.stations_chip = nil
 			stations_tab.set_chip(player_data, status or nil)
 			util.rerender(player, player_data)
-			return player_data.stations_status_filter or "all"
+			return status_filter(player_data) or "all"
 		end,
 		--- Toggles any chip as a click would ("all" clears); returns the active chip or "all".
 		set_chip = function(pi, chip)
 			local player = game.get_player(pi)
 			local player_data = storage.manager.players[pi]
-			player_data.stations_status_filter = nil
 			player_data.stations_chip = nil
 			stations_tab.set_chip(player_data, chip or nil)
 			util.rerender(player, player_data)
