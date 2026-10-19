@@ -9,7 +9,6 @@
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
-local constants = require("constants")
 local util = require("scripts.gui.util")
 local templates = require("scripts.gui.templates")
 local collector = require("scripts.gui.collector")
@@ -264,11 +263,22 @@ local function target_of(tr)
 	return nil, nil
 end
 
+local status_translations = {
+	delivering_to = { "cybersyn-gui.delivering-to" },
+	fetching_from = { "cybersyn-gui.fetching-from" },
+	loading_at = { "cybersyn-gui.loading-at" },
+	not_available = { "cybersyn-gui.not-available" },
+	parked_at_depot_with_residue = { "cybersyn-gui.parked-at-depot-with-residue" },
+	parked_at_depot = { "cybersyn-gui.parked-at-depot" },
+	returning_to_depot = { "cybersyn-gui.returning-to-depot" },
+	unloading_at = { "cybersyn-gui.unloading-at" },
+}
+
 --- @param tr SnapshotTrain
 --- @return LocalisedString
 local function status_caption(tr)
 	local s = tr.status
-	local t = constants.gui_translations
+	local t = status_translations
 	if s == STATUS_D then
 		if next(tr.manifest_hashes) then return t.parked_at_depot_with_residue end
 		return t.parked_at_depot

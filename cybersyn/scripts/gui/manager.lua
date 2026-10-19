@@ -1,6 +1,5 @@
 local gui = require("__flib__.gui")
 
-local constants = require("scripts.gui.constants")
 
 local templates = require("scripts.gui.templates")
 
@@ -58,7 +57,6 @@ end
 
 --- @param player LuaPlayer
 function manager.create(player)
-	local widths = constants.gui["en"]
 	---@type table<string, LuaGuiElement>
 	local refs = {}
 	local header = {
@@ -70,8 +68,8 @@ function manager.create(player)
 	local tabs = {
 		add_header(overview_tab.create(), "overview_tab", header, overview_tab.subheader_right()),
 		add_header(inventory_tab.create(), "inventory_tab", header),
-		add_header(stations_tab.create(widths), "stations_tab", header),
-		add_header(trains_tab.create(widths), "trains_tab", header),
+		add_header(stations_tab.create(), "stations_tab", header),
+		add_header(trains_tab.create(), "trains_tab", header),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
 	}
 	if analytics.setting_enabled() then

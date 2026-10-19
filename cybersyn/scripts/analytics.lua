@@ -21,60 +21,6 @@ local function debug_log(msg)
 	end
 end
 
----Format a layout into a human-readable description
----@param layout table? The layout array (0=loco, 1=cargo, 2=fluid)
----@param layout_id number? Optional layout_id for fallback display
----@return string
-function analytics.format_layout_name(layout, layout_id)
-	if not layout then
-		if layout_id then
-			return "Layout #" .. layout_id
-		end
-		return "Unknown"
-	end
-
-	local locos = 0
-	local cargo = 0
-	local fluid = 0
-	for i = 1, #layout do
-		if layout[i] == 0 then
-			locos = locos + 1
-		elseif layout[i] == 1 then
-			cargo = cargo + 1
-		elseif layout[i] == 2 then
-			fluid = fluid + 1
-		end
-	end
-
-	local parts = {}
-	if locos > 0 then
-		parts[#parts + 1] = locos .. "L"
-	end
-	if cargo > 0 then
-		parts[#parts + 1] = cargo .. "C"
-	end
-	if fluid > 0 then
-		parts[#parts + 1] = fluid .. "F"
-	end
-
-	if #parts == 0 then
-		return "No wagons"
-	end
-	return table.concat(parts, "-")
-end
-
--- Interval definitions for time series data
-local interval_defs = {
-	{name = "5s",    ticks = 1,      steps = 6,   length = 300},
-	{name = "1m",    ticks = 6,      steps = 10,  length = 600},
-	{name = "10m",   ticks = 60,     steps = 6,   length = 600},
-	{name = "1h",    ticks = 360,    steps = 10,  length = 600},
-	{name = "10h",   ticks = 3600,   steps = 5,   length = 600},
-	{name = "50h",   ticks = 18000,  steps = 5,   length = 600},
-	{name = "250h",  ticks = 90000,  steps = 4,   length = 600},
-	{name = "1000h", ticks = 360000, steps = nil, length = 600},
-}
-
 --- The Breakdown tab's range buttons: each covers exactly the span its caption names (key = number + m or h).
 analytics.BREAKDOWN_RANGES = {
 	{ key = "1m", ticks = 3600 },
@@ -476,12 +422,6 @@ function analytics.get_active_failures(map_data, oldest_tick)
 	end
 
 	return results
-end
-
----Get interval definitions
----@return table[]
-function analytics.get_interval_defs()
-	return interval_defs
 end
 
 ---Get interval by name
