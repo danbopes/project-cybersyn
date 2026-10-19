@@ -1,6 +1,7 @@
 -- Delivery throughput counters for the manager's Overview tab. Unlike the collector this is always on, because
--- throughput can only be measured as it happens; every hook is O(1) plus O(manifest) and every structure is a
--- fixed-size ring, so neither UPS nor the save grows with time.
+-- throughput can only be measured as it happens; every hook is O(1) plus O(manifest), except that a completed
+-- delivery spreads its busy time over the buckets it spanned (at most the 60 minute plus 24 hour slots), and every
+-- structure is a fixed-size ring, so neither UPS nor the save grows with time.
 
 local stats = {}
 
