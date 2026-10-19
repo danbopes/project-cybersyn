@@ -184,7 +184,7 @@ local more = {
 		dev("open", pi)
 		dev("clear_filters", pi)
 		dev("select_tab", pi, "log")
-		dev("log_set_filter", pi, { sev = false, train = false, subject = false, window = false, follow = true,
+		dev("log_set_filter", pi, { sev = false, train = false, window = false, follow = true,
 			summary = false })
 		dev("log_set_filter", pi, { kind = "slow_delivery" })
 		local d

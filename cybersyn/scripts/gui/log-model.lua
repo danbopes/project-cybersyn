@@ -87,7 +87,7 @@ end
 --- @field group int? index into model.GROUPS
 --- @field kind int? DIAG_KIND_*
 --- @field train uint? from the train-id field
---- @field subject {kind: string, id: uint}? the "this train/stop" chip
+--- @field subject {kind: string, id: uint}? one train or stop; no GUI sets it since round 5 dropped the right-click chip, kept for a per-stop Log entry (PLAN5 §7)
 --- @field window int index into model.WINDOWS
 --- @field follow boolean
 --- @field summary boolean
