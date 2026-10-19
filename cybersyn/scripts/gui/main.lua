@@ -441,7 +441,6 @@ local probe
 --- @param manager_data Manager
 --- @return boolean ran collected or rendered
 local function update(manager_data)
-	manager_gui.settle()
 	local boosting = manager_data.collect_boost ~= nil and collector.wanted()
 	local held = boosting or manager_data.settle ~= nil or manager_data.settle_tick == game.tick
 	local ran = not held and collector.tick()
@@ -502,13 +501,14 @@ function manager_gui.set_boost_probe(fn)
 	probe = fn
 end
 
---- Every tick, whatever the settings (scripts/main.lua): frees a kept snapshot when its time is up, steps the opening
---- boost, and renders on the ticks after the boost completed, never on a step's own tick. Reads only storage; idle it
---- reads four fields.
+--- Every tick, whatever the settings (scripts/main.lua): hands player.opened back after an Escape, frees a kept
+--- snapshot when its time is up, steps the opening boost, and renders on the ticks after the boost completed, never on
+--- a step's own tick. Reads only storage; idle it reads six fields.
 --- @param any_tick boolean? dev ticks: step on the open's tick too (collector.boost_tick)
 function manager_gui.boost_tick(any_tick)
 	local manager_data = storage.manager
 	if not manager_data then return end
+	manager_gui.settle()
 	if manager_data.release_at then collector.release_due() end
 	local settle = manager_data.settle
 	if settle then
@@ -534,8 +534,7 @@ function manager_gui.boost_tick(any_tick)
 end
 
 --- Escapes that closed an overlay or the action dialog hand player.opened back on a later tick (manager.lua,
---- repair.lua). Called from the planner's own tick too (scripts/main.lua), so the hand-back is a tick or two away
---- and a second Escape reaches the window instead of the game menu.
+--- repair.lua). Runs from the per-tick handler, so a second Escape reaches the window instead of the game menu.
 function manager_gui.settle()
 	local manager_data = storage.manager
 	if not (manager_data and (manager_data.pane_escapes or manager_data.dialog_escapes)) then return end
@@ -552,7 +551,6 @@ manager_gui.job_tick = repair.job_tick
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
-	manager_gui.settle()
 	manager.log_tab.export_tick()
 	if storage.manager then repair.expire(storage.manager) end
 end
