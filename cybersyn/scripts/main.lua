@@ -586,7 +586,8 @@ function combinator_update(map_data, comb, reset_display)
 		if type == nil then
 			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
 		end
-		if type == 1 or type == 2 then
+		-- 5 = a secondary inventory combinator, whose id is its station's
+		if type == 1 or type == 2 or type == 5 then
 			--NOTE: these updates have to be queued to occur at tick init since central planning is expecting them not to change between ticks
 			queue_station_for_combinator_update(map_data, id)
 		elseif type == 3 then
@@ -604,16 +605,6 @@ function combinator_update(map_data, comb, reset_display)
 			end
 		elseif type == 4 then
 			set_refueler_from_comb(map_data, mod_settings, id, entity --[[@as Refueler]])
-		else
-			-- Check if it's a secondary inventory combinator
-			local stop = map_data.to_stop[unit_number]
-			if stop and stop.valid then
-				local station_id = stop.unit_number --[[@as uint]]
-				local station = map_data.stations[station_id]
-				if station then
-					queue_station_for_combinator_update(map_data, station_id)
-				end
-			end
 		end
 	end
 
@@ -624,7 +615,7 @@ function combinator_update(map_data, comb, reset_display)
 			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
 		end
 		--depots do not cache any combinator values so we don't have to update them here
-		if type == 1 or type == 2 then
+		if type == 1 or type == 2 or type == 5 then
 			--NOTE: these updates have to be queued to occur at tick init since central planning is expecting them not to change between ticks
 			queue_station_for_combinator_update(map_data, id)
 		elseif type == 4 then
@@ -633,16 +624,6 @@ function combinator_update(map_data, comb, reset_display)
 			set_refueler_from_comb(map_data, mod_settings, id, refueler)
 			if refueler.allows_all_trains ~= pre then
 				update_stop_if_auto(map_data, refueler, false)
-			end
-		else
-			-- Check if it's a secondary inventory combinator
-			local stop = map_data.to_stop[unit_number]
-			if stop and stop.valid then
-				local station_id = stop.unit_number --[[@as uint]]
-				local station = map_data.stations[station_id]
-				if station then
-					queue_station_for_combinator_update(map_data, station_id)
-				end
 			end
 		end
 	end
