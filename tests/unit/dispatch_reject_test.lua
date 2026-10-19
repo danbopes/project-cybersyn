@@ -55,6 +55,41 @@ test("is_path_available: not found without the probe = one request", function()
 	assert_eq({ found, #calls }, { false, 0 }, "no goal: no request")
 end)
 
+--- Runs set_manifest_schedule for a train heading to its depot (STATUS_TO_D_BYPASS) with the order builders and the
+--- schedule writers replaced by stand-ins, so only its path checks and its return values are exercised.
+--- @param answers boolean[] request_train_path answers in call order
+--- @param diag_on boolean
+--- @param has_path boolean? the train's has_path after the orders are written
+local function dispatch(answers, diag_on, has_path)
+	local calls = stub_paths(answers)
+	local saved = { ScheduleBuilder.add_loading_order, ScheduleBuilder.add_unloading_order, clean_temporary_records,
+		add_records_after_interrupt }
+	ScheduleBuilder.add_loading_order = function(self, stop) self:add({ station = stop.name }, stop) end
+	ScheduleBuilder.add_unloading_order = ScheduleBuilder.add_loading_order
+	clean_temporary_records = function() end
+	add_records_after_interrupt = function() return 1, 2 end
+	local schedule = { current = 1, get_record_count = function() return 2 end, go_to_station = function() end }
+	local train = { status = STATUS_TO_D_BYPASS, entity = { has_path = has_path,
+		front_stock = { surface_index = 1 }, get_schedule = function() return schedule end } }
+	local stop = function(name) return { name = name, valid = true, connected_rail = {}, surface_index = 1 } end
+	game.tick = 100
+	local ok, dispatched, why = pcall(set_manifest_schedule, { diag = diag_on and {} or nil }, train, stop("depot"),
+		false, stop("provider"), {}, stop("requester"), {}, {}, nil, false)
+	ScheduleBuilder.add_loading_order, ScheduleBuilder.add_unloading_order, clean_temporary_records,
+		add_records_after_interrupt = saved[1], saved[2], saved[3], saved[4]
+	assert_true(ok, tostring(dispatched))
+	return dispatched, why, #calls, train.skip_path_checks_until
+end
+
+test("set_manifest_schedule: the second request runs only with diagnostics on; each cause is returned", function()
+	assert_eq({ dispatch({ false, true }, false) }, { false, DIAG_DISPATCH_NO_PATH, 1, 100 + NO_PATH_SKIP_TIME },
+		"diagnostics off: no probe, the cause reads as no path")
+	assert_eq({ dispatch({ false, true }, true) }, { false, DIAG_DISPATCH_PATH_BLOCKED, 2, 100 + NO_PATH_SKIP_TIME })
+	assert_eq({ dispatch({ false, false }, true) }, { false, DIAG_DISPATCH_NO_PATH, 2, 100 + NO_PATH_SKIP_TIME })
+	assert_eq({ dispatch({ true }, true, false) }, { false, DIAG_DISPATCH_NO_PATH_AFTER_WRITE, 1, nil })
+	assert_eq({ dispatch({ true }, true, true) }, { true, nil, 1, nil })
+end)
+
 test("dispatch_failed: severity by cause, the first item interned, a = state + 1", function()
 	settings.global["cybersyn-diagnostics"] = { value = "basic" }
 	settings.global["cybersyn-diagnostics-ring"] = { value = 16384 }
