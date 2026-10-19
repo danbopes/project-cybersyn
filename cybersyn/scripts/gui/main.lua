@@ -483,7 +483,10 @@ end
 function manager_gui.on_controller_changed(e)
 	local player_data = storage.manager and storage.manager.players[e.player_index]
 	local player = game.get_player(e.player_index)
-	if player and player_data then manager.on_controller_changed(player, player_data) end
+	if player and player_data then
+		manager.on_controller_changed(player, player_data)
+		relative.on_controller_changed(player, player_data, e)
+	end
 end
 
 --- The cybersyn-manager-search custom input (linked to the game's focus-search).

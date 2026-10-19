@@ -356,8 +356,8 @@ local STEPS = {
 			for _, c in ipairs(node.content or {}) do walk(c) end
 		end
 		walk(footer)
-		lab.check("train panel footer: Open in manager, Locate, Send home, Path trace, Pin; no Recalculate, no Refresh",
-			names.open_manager and names.locate and names.fail_delivery and names.path_trace and names.pin
+		lab.check("train panel footer: Open in manager, Send home, Path trace, Pin; no Locate (PLAN5 D5-7), no Recalculate, no Refresh",
+			names.open_manager and not names.locate and names.fail_delivery and names.path_trace and names.pin
 			and not names.recalc and not names.allow_lists, names)
 		dev("relative_close", PI)
 
