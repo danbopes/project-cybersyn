@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.2
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.2
+      - name: Host unit tests
+        run: tests/unit/run.sh
+
+  package-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate changelog
+        run: python3 -I tools/changelog.py check
+      - name: Build zip
+        id: build
+        # The dev-interface guard is bypassed here on purpose: this zip only proves the
+        # package still builds. The release workflow runs the guard for real.
+        env:
+          PACKAGE_ALLOW_DEV_INTERFACE: '1'
+        run: echo "zip=$(tools/package.sh)" >> "$GITHUB_OUTPUT"
+      - name: List zip contents
+        run: unzip -l "${{ steps.build.outputs.zip }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cybersyn-dry-run-${{ github.sha }}
+          path: ${{ steps.build.outputs.zip }}
+          retention-days: 14

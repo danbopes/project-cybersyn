@@ -1,9 +1,9 @@
 *.zip
+dist/
 .vscode/launch.json
 .vscode/settings.json
 .vscode/factorio/*
 .idea
-.github/
 
 # Krita autosave files
 *-autosave.kra
