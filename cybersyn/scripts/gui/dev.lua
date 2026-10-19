@@ -248,7 +248,8 @@ function interface.header(pi)
 end
 
 --- Clicks child `index` of the element refs[ref] (or the element itself when index is nil; a list of indices walks
---- down that many levels) through flib, with optional modifiers {shift, control, alt, right}.
+--- down that many levels) through flib, with optional modifiers {shift, control, alt, right}; `cursor = true` first
+--- touches the hover hold the way scripts/main.lua's on_gui_click does, so the click lands as a player's would.
 function interface.click(pi, ref, index, mods)
 	local _, pd, refs = context(pi)
 	local elem = refs[ref]
@@ -258,7 +259,7 @@ function interface.click(pi, ref, index, mods)
 		if not elem then return "no child " .. serpent.line(index) end
 	end
 	mods = mods or {}
-	return flib_gui.dispatch({
+	local e = {
 		name = defines.events.on_gui_click,
 		element = elem,
 		player_index = pi,
@@ -267,7 +268,9 @@ function interface.click(pi, ref, index, mods)
 		shift = mods.shift == true,
 		control = mods.control == true,
 		alt = mods.alt == true,
-	})
+	}
+	if mods.cursor then util.touch_hover(e) end
+	return flib_gui.dispatch(e)
 end
 
 --- Escape as an unpinned player presses it (on_gui_closed of the window); the pin is restored afterwards.

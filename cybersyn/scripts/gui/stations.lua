@@ -2237,7 +2237,7 @@ function stations_tab.handle.on_lint_ack_click(player, player_data, refs, e)
 		for _, t in ipairs(targets) do diag.unack("lint", t[1], t[2], player.index) end
 	end
 	-- The click is the change the player asked for: the row updates now, not once the cursor leaves.
-	player_data.hover = nil
+	util.release_hold(player_data)
 	util.rerender(player, player_data)
 end
 

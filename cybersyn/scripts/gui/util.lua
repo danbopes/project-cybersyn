@@ -470,6 +470,8 @@ function util.handle.hover_enter(player, player_data, refs, e)
 		scope = parent and parent.name or nil
 	end
 	player_data.hover = { tick = game.tick, scope = scope, index = elem.index }
+	-- A pointer that arrives after a row-changing click in the same tick holds the rows it now rests on.
+	player_data.hold_released_tick = nil
 end
 
 --- @param player_data PlayerData
@@ -520,6 +522,18 @@ end
 function util.hold_active(player_data, scope)
 	local hover = player_data.hover
 	return hover ~= nil and hover.scope == scope and game.tick - hover.tick < util.HOVER_HOLD_TICKS
+		and player_data.hold_released_tick ~= game.tick
+end
+
+--- @class PlayerData
+--- @field hold_released_tick uint? the tick in which a row-changing click lifted the hover hold (util.release_hold)
+
+--- A click whose purpose is to change the rows (an acknowledgement, a show/hide toggle) renders them in its own event.
+--- The hover stays recorded: the pointer is still on the table, so the hold protects the rows that slid under it from
+--- the next tick on.
+--- @param player_data PlayerData
+function util.release_hold(player_data)
+	player_data.hold_released_tick = game.tick
 end
 
 --- A click proves the cursor is still on a hoverable element, so it restarts the hold timeout; repeated

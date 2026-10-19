@@ -508,3 +508,16 @@ test("train_widths: the group row's stats run beside a name of at most GROUP_NAM
 		assert_true(used <= cw, "group row fits at " .. cw .. ": " .. used)
 	end
 end)
+
+test("unserved_split: Show acknowledged takes up to half a full page at the bottom (D5-5)", function()
+	local l = logic()
+	assert_eq({ l.unserved_split(19, 33, 5, false) }, { 19, 0 })
+	assert_eq({ l.unserved_split(19, 3, 5, nil) }, { 3, 0 })
+	assert_eq({ l.unserved_split(19, 33, 1, true) }, { 18, 1 })
+	assert_eq({ l.unserved_split(19, 33, 12, true) }, { 10, 9 })
+	assert_eq({ l.unserved_split(19, 33, 0, true) }, { 19, 0 })
+	assert_eq({ l.unserved_split(19, 3, 30, true) }, { 3, 16 })
+	assert_eq({ l.unserved_split(1, 5, 2, true) }, { 0, 1 })
+	assert_eq({ l.unserved_split(0, 5, 2, true) }, { 0, 0 })
+	assert_eq({ l.unserved_split(17, 59, 3, true) }, { 14, 3 })
+end)
