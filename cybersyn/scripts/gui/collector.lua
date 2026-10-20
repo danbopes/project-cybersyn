@@ -1235,15 +1235,25 @@ local function finish_sections(st, fallback)
 	targets_n = 0
 end
 
+-- The pass's union before it is compared into the record.
+local union_scratch = {}
+
+--- Writes only the names whose union changed: like the counts' mark/sweep, an unchanged record is not written to.
 --- @param st SnapshotStation
 local function fill_mask_union(st)
 	local union = st.mask_union
-	for k in pairs(union) do union[k] = nil end
 	local sections = st.sections
 	for i = 1, #sections do
 		local sec = sections[i]
 		local name = sec.network_name
-		if name ~= NETWORK_EACH then union[name] = bor(union[name] or 0, sec.mask) end
+		if name ~= NETWORK_EACH then union_scratch[name] = bor(union_scratch[name] or 0, sec.mask) end
+	end
+	for k in pairs(union) do
+		if union_scratch[k] == nil then union[k] = nil end
+	end
+	for k, v in pairs(union_scratch) do
+		if union[k] ~= v then union[k] = v end
+		union_scratch[k] = nil
 	end
 end
 
@@ -2048,13 +2058,9 @@ end
 function collector.station_has_sections(st)
 	local sections = st.sections
 	if sections and #sections > 1 then return true end
+	-- sources[1] is the station combinator; every later one is an inventory.
 	local sources = st.sources
-	if sources then
-		for i = 1, #sources do
-			if sources[i].kind == "inventory" then return true end
-		end
-	end
-	return false
+	return sources ~= nil and #sources > 1
 end
 
 return collector

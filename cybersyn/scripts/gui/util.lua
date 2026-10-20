@@ -810,6 +810,7 @@ function util.filters_active(f, ignore_item)
 end
 
 local btest = bit32.btest
+local has_sections = collector.station_has_sections
 
 --- @param network_name string?
 --- @param network_mask int|{[string]: int}?
@@ -844,8 +845,13 @@ function util.station_passes(st, f, ignore_item)
 	if f.surface and st.surface_index ~= f.surface then return false end
 	local terms = f.terms
 	if terms and not util.terms_match(st.name_lower, terms) then return false end
-	-- mask_union (round 7): a station passes under every network bit any of its sources advertises on.
-	if not util.network_passes(st.mask_union and NETWORK_EACH or st.network_name, st.mask_union or st.network_mask, f) then return false end
+	-- A station with sections passes under every network bit any of its sources advertises on (mask_union); a plain
+	-- one advertises only on its own network, which skips the union's per-name walk on most stations.
+	if st.mask_union and has_sections(st) then
+		if not util.network_passes(NETWORK_EACH, st.mask_union, f) then return false end
+	elseif not util.network_passes(st.network_name, st.network_mask, f) then
+		return false
+	end
 	local item = f.item
 	if item and not ignore_item then
 		if not (st.provided[item] or st.requested[item] or st.deliveries[item]) then return false end

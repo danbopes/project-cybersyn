@@ -866,7 +866,7 @@ local function get_cache(player_data, hash)
 	local has_sections = collector.station_has_sections
 	-- A station with sections sits on its sections' networks, not only on the station combinator's: it passes by
 	-- surface, and each section by its own network name and ID.
-	local place = { surface = f.surface, mask = -1 }
+	local place = { terms = f.terms, surface = f.surface, mask = -1 }
 	local keep = filtered and {
 		station = function(st)
 			if has_sections and st.sections and has_sections(st) then return util.station_passes(st, place, true) end
