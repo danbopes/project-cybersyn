@@ -57,6 +57,7 @@ local function set_visibility(main_window, selected_index)
 	local depot_settings = bottom_flow.depot --[[@as LuaGuiElement]]
 
 	top_flow.is_pr_switch.visible = is_station
+	vflow.mode_description.caption = selected_index >= 1 and { "cybersyn-gui.mode-description-" .. selected_index } or ""
 	vflow.network_label.visible = uses_network
 	bottom_flow.network.visible = uses_network
 	first_settings.allow_list.visible = uses_allow_list
@@ -555,6 +556,11 @@ function gui_opened(event, player, comb, is_ghost)
 											tags = { id = comb.unit_number },
 										},
 									},
+								},
+								{
+									type = "label",
+									name = "mode_description",
+									style_mods = { single_line = false, maximal_width = 380, top_margin = 4, font_color = { 0.8, 0.8, 0.8 } },
 								},
 								---Settings section for modal settings
 								{
