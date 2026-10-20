@@ -473,15 +473,25 @@ function text.section_starved(section, starved)
 	return out or EMPTY
 end
 
---- Inventory sources the collector could not read (the station combinator is off): in st.sources, in no section.
+--- Inventory sources the planner skips this pass (the station combinator is off, or has no input signals): in
+--- st.sources, in no section. Records without `read` (before it existed) only knew the off case.
 --- @param st SnapshotStation
 --- @return SnapshotSource[]
 function text.paused_inventories(st)
 	local out = {}
 	for _, src in ipairs(st.sources or EMPTY) do
-		if src.kind == "inventory" and not src.ok then out[#out + 1] = src end
+		if src.kind == "inventory" and (src.read == false or (src.read == nil and not src.ok)) then
+			out[#out + 1] = src
+		end
 	end
 	return out
+end
+
+--- The paused line's locale key: why the station combinator holds its inventories back.
+--- @param st SnapshotStation
+--- @return string
+function text.paused_key(st)
+	return st.comb_ok and "cybersyn-gui.section-paused-no-signals" or "cybersyn-gui.section-paused"
 end
 
 --- A signature of everything the section blocks show. Sorted, so two records with the same values sign alike
@@ -495,7 +505,9 @@ function text.sections_content(st, starved)
 	if st.sections then starved = nil end
 	local parts = {}
 	for j, src in ipairs(st.sources or EMPTY) do
-		if not src.ok then parts[#parts + 1] = "x" .. j .. src.kind .. src.index end
+		if not src.ok or src.read == false then
+			parts[#parts + 1] = "x" .. j .. src.kind .. src.index .. (src.read == false and "u" or "")
+		end
 	end
 	for i, s in ipairs(text.sections_of(st)) do
 		local k = i .. s.key
@@ -509,7 +521,7 @@ function text.sections_content(st, starved)
 		for hash in pairs(text.section_starved(s, starved)) do parts[#parts + 1] = k .. "s" .. hash end
 	end
 	table.sort(parts)
-	return (st.is_p and "p" or "") .. (st.is_r and "r" or "") .. "|" .. table.concat(parts, ",")
+	return (st.is_p and "p" or "") .. (st.is_r and "r" or "") .. (st.comb_ok and "o" or "") .. "|" .. table.concat(parts, ",")
 end
 
 return text

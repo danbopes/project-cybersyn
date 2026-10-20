@@ -1048,7 +1048,7 @@ local function slots_defs(st, starved)
 			names[#names + 1] = rtext.source_label(paused[i])
 		end
 		if #paused > 4 then names[#names + 1] = " +" .. (#paused - 4) end
-		out[#out + 1] = line({ "cybersyn-gui.section-paused", names }, nil, { 1, 0.78, 0.45 })
+		out[#out + 1] = line({ rtext.paused_key(st), names }, nil, { 1, 0.78, 0.45 })
 	end
 	local reason = rtext.ignored_reason(st)
 	for i = 1, math.min(#sections, SECTIONS_SHOWN) do

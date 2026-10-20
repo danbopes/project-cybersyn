@@ -58,6 +58,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field unit uint the combinator's unit number
 --- @field ok boolean combinator working or low power
 --- @field priority int effective priority the planner uses for this source
+--- @field read boolean? false for an inventory the planner skips this pass (the station combinator has no input)
 --- @field network_mask int|{[string]: int}? the mask (a table of networks on a NETWORK_EACH station) the planner
 ---   registers this source under; nil for a secondary it does not read (it or the station combinator is off)
 
@@ -1396,20 +1397,22 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	src0.index, src0.unit, src0.ok, src0.priority = 0, comb1.unit_number, st.comb_ok, station_priority
 	if src0.network_mask ~= st.network_mask then src0.network_mask = st.network_mask end
 
-	-- The planner reads secondaries only while the station combinator works.
+	-- The planner reads secondaries only while the station combinator has input signals (a working combinator with
+	-- an empty input reads as nil too): the rest stay in st.sources, in no section.
 	local n_read = 0
 	for i = 1, n_sec do
 		local sec = sec_list[i]
 		local src = source_at(sources, i + 1)
 		src.index, src.unit, src.priority = i, sec.unit_number, station_priority
 		local signals, ok
-		if ok1 then
+		if signals1 then
 			signals, ok = read_signals(sec)
 		else
 			local status = sec.status
 			ok = status == WORKING or status == LOW_POWER
 		end
 		src.ok = ok == true
+		src.read = signals1 ~= nil
 		if signals then
 			n_read = n_read + 1
 			sec_signals[i] = signals

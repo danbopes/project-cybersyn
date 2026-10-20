@@ -494,6 +494,22 @@ test("stop panel: the section blocks are rebuilt only when the record changed", 
 	assert_eq(state.rebuilds, 2, "an unadvertised count moved")
 end)
 
+test("stop panel: a working station combinator without input names its inventories as paused for that reason", function()
+	local r = relative_mod()
+	local t = rt()
+	local n = naphthalene()
+	n.comb_ok = true
+	n.sources[3].read = false
+	table.remove(n.sections, 3)
+	assert_eq(#t.paused_inventories(n), 1)
+	local text = table.concat(captions(r.slots_defs(n)), "\n")
+	assert_true(text:find("cybersyn-gui.section-paused-no-signals", 1, true) ~= nil, text)
+	n.comb_ok = false
+	local off = table.concat(captions(r.slots_defs(n)), "\n")
+	assert_true(off:find("cybersyn-gui.section-paused-no-signals", 1, true) == nil, off)
+	assert_true(t.sections_content(n) ~= t.sections_content(naphthalene()))
+end)
+
 test("stop panel: inventories the collector could not read are named as paused", function()
 	local r = relative_mod()
 	local t = rt()

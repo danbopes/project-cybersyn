@@ -362,7 +362,7 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	assert_eq(sec.provided, {})
 	assert_eq(sec.requested, {})
 	assert_eq(sec.control, {})
-	assert_eq(sec.sources[2], { kind = "inventory", index = 1, ok = true, priority = 0 })
+	assert_eq(sec.sources[2], { kind = "inventory", index = 1, ok = true, priority = 0, read = false })
 	assert_eq(#sec.sections, 1)
 	assert_eq(sec.sections[1].sources, { sec.sources[1] })
 	assert_eq(snap.station_count, 5)
@@ -1639,8 +1639,8 @@ test("sections (b): naphthalene: one section per mask, the Provide only switch i
 	collector.run_to_completion()
 	local st = collector.get().stations[12]
 	local station = { kind = "station", index = 0, unit = 120, ok = true, priority = 1, network_mask = 1 }
-	local inv1 = { kind = "inventory", index = 1, unit = 501, ok = true, priority = 1, network_mask = 3 }
-	local inv2 = { kind = "inventory", index = 2, unit = 502, ok = true, priority = 1, network_mask = 4 }
+	local inv1 = { kind = "inventory", index = 1, unit = 501, ok = true, priority = 1, network_mask = 3, read = true }
+	local inv2 = { kind = "inventory", index = 2, unit = 502, ok = true, priority = 1, network_mask = 4, read = true }
 	assert_eq(st.sources, { station, inv1, inv2 })
 	assert_eq(st.sections, {
 		{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { station },
@@ -1665,7 +1665,7 @@ test("sections (c): a Request only station ignores its secondary's positives; st
 	sections_scenario()
 	collector.run_to_completion()
 	local st = collector.get().stations[13]
-	assert_eq(st.sources[2], { kind = "inventory", index = 1, unit = 601, ok = true, priority = 7, network_mask = 2 })
+	assert_eq(st.sources[2], { kind = "inventory", index = 1, unit = 601, ok = true, priority = 7, network_mask = 2, read = true })
 	assert_eq(#st.sections, 2)
 	local s1, s2 = st.sections[1], st.sections[2]
 	assert_eq({ s1.key, s2.key }, { "signal-A:1", "signal-A:2" })
@@ -1722,7 +1722,7 @@ test("sections (f): an invalid secondary is skipped, the live one keeps index 1"
 	collector.run_to_completion()
 	local st = collector.get().stations[17]
 	assert_eq(#st.sources, 2)
-	assert_eq(st.sources[2], { kind = "inventory", index = 1, unit = 901, ok = true, priority = 0, network_mask = 1 })
+	assert_eq(st.sources[2], { kind = "inventory", index = 1, unit = 901, ok = true, priority = 0, network_mask = 1, read = true })
 	assert_eq(#st.sections, 1)
 	assert_eq(st.sections[1].provided, { brick = 15 })
 	assert_eq(st.secondary_count, 1)
@@ -1741,6 +1741,27 @@ test("sections: a NETWORK_EACH station naming no network keeps one section, an u
 	assert_nil(st.sources[2].network_mask)
 	assert_eq(st.mask_union, {})
 	assert_true(collector.station_has_sections(st))
+end)
+
+test("sections: a working station combinator without input leaves its inventories unread, in no section", function()
+	sections_scenario()
+	-- get_signals returns nil for a combinator with nothing on its input wires.
+	storage.stations[12].entity_comb1.signals = nil
+	collector.run_to_completion()
+	local st = collector.get().stations[12]
+	assert_true(st.comb_ok)
+	assert_eq(#st.sources, 3)
+	for i = 2, 3 do
+		assert_true(st.sources[i].ok)
+		assert_false(st.sources[i].read)
+		assert_nil(st.sources[i].network_mask)
+	end
+	assert_eq(#st.sections, 1)
+	assert_eq(st.sections[1].sources, { st.sources[1] })
+	assert_eq(st.provided, {})
+	assert_eq(st.requested, {})
+	assert_false(st.secondary)
+	assert_eq(st.mask_union, { ["signal-A"] = 1 })
 end)
 
 test("sections: refills keep every table; a secondary appearing or going switches the shared tables", function()
