@@ -86,10 +86,11 @@ local function model_checks(label, hash)
 		t.provided_stations == (o.provided and o.provided.stations or 0) and
 		t.requested == (o.requested and -o.requested.count or 0) and
 		t.in_transit == (o.in_transit and o.in_transit.count or 0), { t, o.provided, o.requested, o.in_transit })
-	lab.check(label .. ": provider rows == stations providing it", lab.same_list(sorted(ids_of(d.model.providers)), o.providers),
-		{ ids_of(d.model.providers), o.providers })
-	lab.check(label .. ": requester rows == stations requesting it",
-		lab.same_list(sorted(ids_of(d.model.requesters)), o.requesters), { ids_of(d.model.requesters), o.requesters })
+	-- A station with sections has one row per (station, section) that advertises the item (D3).
+	lab.check(label .. ": provider rows == (station, section) pairs providing it",
+		lab.same_list(sorted(d.row_keys.providers), o.provider_rows), { d.row_keys.providers, o.provider_rows })
+	lab.check(label .. ": requester rows == (station, section) pairs requesting it",
+		lab.same_list(sorted(d.row_keys.requesters), o.requester_rows), { d.row_keys.requesters, o.requester_rows })
 	lab.check(label .. ": train rows == trains carrying it", lab.same_list(sorted(ids_of(d.model.trains)), o.trains),
 		{ ids_of(d.model.trains), o.trains })
 
@@ -386,8 +387,8 @@ lab.suite("39_item", {
 		dev("update", PI, 12)
 		d = dev("item_dump", PI)
 		lab.check("filters cleared: every provider and requester is back", d.open and
-			lab.same_list(sorted(ids_of(d.model.providers)), others.providers) and
-			lab.same_list(sorted(ids_of(d.model.requesters)), others.requesters), { ids_of(d.model.providers), others.providers })
+			lab.same_list(sorted(d.row_keys.providers), others.provider_rows) and
+			lab.same_list(sorted(d.row_keys.requesters), others.requester_rows), { d.row_keys.providers, others.provider_rows })
 		lab.check("filters cleared: totals are inventory_all again", d.filtered == false and
 			d.totals.provided == (others.provided and others.provided.count or 0) and
 			d.totals.provided_stations == (others.provided and others.provided.stations or 0), { d.totals, others.provided })
