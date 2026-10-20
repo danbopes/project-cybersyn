@@ -222,7 +222,7 @@ local function search_for_station_combinators(map_data, stop, comb_operation, co
 				if not all then
 					return entity
 				end
-				table.insert(found, entity)
+				found[entity.unit_number] = entity
 			end
 		end
 	end
