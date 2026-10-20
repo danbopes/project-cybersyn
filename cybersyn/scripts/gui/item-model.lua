@@ -102,18 +102,51 @@ function model.dispatch_before(a, b)
 	if a.group ~= b.group then return a.group < b.group end
 	if a.priority ~= b.priority then return a.priority > b.priority end
 	if a.last_served ~= b.last_served then return a.last_served < b.last_served end
-	return a.id < b.id
+	if a.id ~= b.id then return a.id < b.id end
+	return (a.key or "") < (b.key or "")
 end
 
 local function by_amount(key)
 	return function(a, b)
 		if a[key] ~= b[key] then return a[key] > b[key] end
-		return a.id < b.id
+		if a.id ~= b.id then return a.id < b.id end
+		return (a.key or "") < (b.key or "")
 	end
+end
+
+--- The priority the dispatcher compares for an item of one section: a section fed by the station combinator uses the
+--- station's (with the item's control-combinator override); one fed only by inventories, its highest source priority.
+--- @param st table
+--- @param sec SnapshotSection
+--- @param hash string
+--- @param priority_signal string
+--- @return int
+function model.section_priority(st, sec, hash, priority_signal)
+	local best
+	for _, src in ipairs(sec.sources or {}) do
+		if src.kind == "station" then return model.effective_priority(st, hash, priority_signal) end
+		if src.priority and (not best or src.priority > best) then best = src.priority end
+	end
+	return best or model.effective_priority(st, hash, priority_signal)
+end
+
+--- Sections built from the same sources (a station on the each-network yields one per network) advertise the same
+--- stock; totals count it once.
+--- @param sec SnapshotSection
+--- @return string
+function model.sources_sig(sec)
+	local sources = sec.sources
+	if not sources or #sources == 0 then return "" end
+	if #sources == 1 then return tostring(sources[1].unit) end
+	local units = {}
+	for i, src in ipairs(sources) do units[i] = tostring(src.unit) end
+	return table.concat(units, ",")
 end
 
 --- @class ItemProviderRow
 --- @field id uint
+--- @field key string? the section's key; with `section`, only for a station that has sections (the sectioned layout)
+--- @field section SnapshotSection?
 --- @field stock int
 --- @field threshold int? the item's own threshold on the control combinator; nil = the requester's applies
 --- @field out int amount on its way out of this station
@@ -121,6 +154,8 @@ end
 
 --- @class ItemRequesterRow
 --- @field id uint
+--- @field key string?
+--- @field section SnapshotSection?
 --- @field requested int positive
 --- @field threshold int
 --- @field wait_start uint? request start tick, if one was recorded
@@ -156,12 +191,15 @@ end
 --- @param hash string
 --- @param priority_signal string
 --- @param changed uint[]? stations whose records changed since the index was built (the collector's change log)
---- @param keep {station: fun(st: table): boolean, train: fun(tr: table): boolean}? the manager's place filters; with
---- them the totals are summed from the stations kept, since the snapshot's totals count every network and surface
+--- @param keep {station: fun(st: table): boolean, train: fun(tr: table): boolean, section: (fun(st: table, sec: SnapshotSection): boolean)?}?
+--- the manager's place filters; with them the totals are summed from the stations kept, since the snapshot's totals
+--- count every network and surface. `section` keeps the sections of a station that has them (its `station` then
+--- decides by surface only, as a section, not the station combinator, is what sits on a network)
+--- @param has_sections (fun(st: table): boolean)? collector.station_has_sections; without it every station is plain
 --- @return ItemModel
-function model.build(snapshot, hash, priority_signal, changed, keep)
+function model.build(snapshot, hash, priority_signal, changed, keep, has_sections)
 	local providers, requesters, trains = {}, {}, {}
-	local keep_station, keep_train = keep and keep.station, keep and keep.train
+	local keep_station, keep_train, keep_section = keep and keep.station, keep and keep.train, keep and keep.section
 	local sums = keep and { provided = 0, provided_stations = 0, requested = 0, requested_stations = 0, in_transit = 0,
 		in_transit_stations = 0 }
 	local stations = snapshot.stations
@@ -181,6 +219,78 @@ function model.build(snapshot, hash, priority_signal, changed, keep)
 		end
 		ids = merged
 	end
+	-- A station with sections gets one row per section that advertises the item, in section order. Deliveries are
+	-- kept per station, not per section, so its outgoing / incoming amount goes on its first row of that side (or on a
+	-- row of its first kept section when no section advertises the item), never on two.
+	local function add_sections(st, id)
+		local d = st.deliveries and st.deliveries[hash] or 0
+		local first_kept, p_rows, r_rows = nil, 0, 0
+		local p_seen, r_seen = sums and {}, sums and {}
+		for _, sec in ipairs(st.sections) do
+			if not keep_section or keep_section(st, sec) then
+				first_kept = first_kept or sec
+				local stock = sec.provided and sec.provided[hash]
+				local req = sec.requested and sec.requested[hash]
+				if stock then
+					providers[#providers + 1] = {
+						id = id,
+						key = sec.key,
+						section = sec,
+						stock = stock,
+						threshold = st.thresholds and st.thresholds[hash] or nil,
+						out = p_rows == 0 and d < 0 and -d or 0,
+						status = st.status,
+					}
+					p_rows = p_rows + 1
+				end
+				if req then
+					requesters[#requesters + 1] = {
+						id = id,
+						key = sec.key,
+						section = sec,
+						requested = -req.count,
+						threshold = req.threshold or 0,
+						wait_start = st.wait and st.wait[hash] or nil,
+						incoming = r_rows == 0 and d > 0 and d or 0,
+						priority = model.section_priority(st, sec, hash, priority_signal),
+						last_served = st.last_delivery_tick or 0,
+						group = model.requester_group(st, req, hash),
+						network = sec.network_name,
+					}
+					r_rows = r_rows + 1
+				end
+				if sums then
+					local src = model.sources_sig(sec)
+					if stock and not p_seen[src] then
+						p_seen[src] = true
+						sums.provided = sums.provided + stock
+					end
+					if req and req.active and not r_seen[src] then
+						r_seen[src] = true
+						sums.requested = sums.requested - req.count
+					end
+				end
+			end
+		end
+		if not first_kept then return end
+		if sums then
+			if next(p_seen) then sums.provided_stations = sums.provided_stations + 1 end
+			if next(r_seen) then sums.requested_stations = sums.requested_stations + 1 end
+			if d > 0 then
+				sums.in_transit = sums.in_transit + d
+				sums.in_transit_stations = sums.in_transit_stations + 1
+			end
+		end
+		if p_rows == 0 and d < 0 then
+			providers[#providers + 1] = { id = id, key = first_kept.key, section = first_kept, stock = 0,
+				threshold = st.thresholds and st.thresholds[hash] or nil, out = -d, status = st.status }
+		end
+		if r_rows == 0 and d > 0 then
+			requesters[#requesters + 1] = { id = id, key = first_kept.key, section = first_kept, requested = 0, threshold = 0,
+				incoming = d, priority = model.section_priority(st, first_kept, hash, priority_signal),
+				last_served = st.last_delivery_tick or 0, group = model.NOT_REQUESTING, network = first_kept.network_name }
+		end
+	end
 	local list
 	if not ids then
 		list = {}
@@ -189,47 +299,50 @@ function model.build(snapshot, hash, priority_signal, changed, keep)
 	for _, id in ipairs(ids or list) do
 		local st = stations[id]
 		if st and keep_station and not keep_station(st) then st = nil end
-		local stock = st and st.provided and st.provided[hash]
-		local d = st and st.deliveries and st.deliveries[hash] or 0
-		local req = st and st.requested and st.requested[hash]
-		if sums and st then
-			-- The same figures the collector's inventory_all counts: stock, active requests, incoming deliveries.
-			local own = st.provided and st.provided[hash]
-			if own then
-				sums.provided = sums.provided + own
-				sums.provided_stations = sums.provided_stations + 1
+		if st and has_sections and st.sections and has_sections(st) then
+			add_sections(st, id)
+		elseif st then
+			local stock = st.provided and st.provided[hash]
+			local d = st.deliveries and st.deliveries[hash] or 0
+			local req = st.requested and st.requested[hash]
+			if sums then
+				-- The same figures the collector's inventory_all counts: stock, active requests, incoming deliveries.
+				if stock then
+					sums.provided = sums.provided + stock
+					sums.provided_stations = sums.provided_stations + 1
+				end
+				if req and req.active then
+					sums.requested = sums.requested - req.count
+					sums.requested_stations = sums.requested_stations + 1
+				end
+				if d > 0 then
+					sums.in_transit = sums.in_transit + d
+					sums.in_transit_stations = sums.in_transit_stations + 1
+				end
 			end
-			if req and req.active then
-				sums.requested = sums.requested - req.count
-				sums.requested_stations = sums.requested_stations + 1
+			if not stock and d < 0 then stock = 0 end
+			if stock then
+				providers[#providers + 1] = {
+					id = id,
+					stock = stock,
+					threshold = st.thresholds and st.thresholds[hash] or nil,
+					out = d < 0 and -d or 0,
+					status = st.status,
+				}
 			end
-			if d > 0 then
-				sums.in_transit = sums.in_transit + d
-				sums.in_transit_stations = sums.in_transit_stations + 1
+			if req or d > 0 then
+				requesters[#requesters + 1] = {
+					id = id,
+					requested = req and -req.count or 0,
+					threshold = req and req.threshold or 0,
+					wait_start = req and st.wait and st.wait[hash] or nil,
+					incoming = d > 0 and d or 0,
+					priority = model.effective_priority(st, hash, priority_signal),
+					last_served = st.last_delivery_tick or 0,
+					group = req and model.requester_group(st, req, hash) or model.NOT_REQUESTING,
+					network = st.network_name,
+				}
 			end
-		end
-		if st and not stock and d < 0 then stock = 0 end
-		if stock then
-			providers[#providers + 1] = {
-				id = id,
-				stock = stock,
-				threshold = st.thresholds and st.thresholds[hash] or nil,
-				out = d < 0 and -d or 0,
-				status = st.status,
-			}
-		end
-		if req or (st and d > 0) then
-			requesters[#requesters + 1] = {
-				id = id,
-				requested = req and -req.count or 0,
-				threshold = req and req.threshold or 0,
-				wait_start = req and st.wait and st.wait[hash] or nil,
-				incoming = d > 0 and d or 0,
-				priority = model.effective_priority(st, hash, priority_signal),
-				last_served = st.last_delivery_tick or 0,
-				group = req and model.requester_group(st, req, hash) or model.NOT_REQUESTING,
-				network = st.network_name,
-			}
 		end
 	end
 	for id, tr in pairs(snapshot.trains) do

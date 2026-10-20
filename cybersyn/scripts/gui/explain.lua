@@ -13,6 +13,7 @@ local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
 local lint_text = require("scripts.gui.lint-text")
 local dev = require("scripts.gui.dev")
+local collector = require("scripts.gui.collector")
 
 --- @class PlayerData
 --- @field explain {r_id: uint, hash: string, sig: string?}? the open Explain frame's key
@@ -41,6 +42,28 @@ local function stop_name(id)
 	return stop and stop.backer_name or tostring(id)
 end
 
+local SECTION_FNS = utext.section_fns(collector, util.network_text)
+
+--- The section of the requester that asks for the item, from the collector's snapshot; nil for a plain station.
+--- @return SnapshotSection?
+local function request_section(r_id, hash)
+	local snapshot = collector.get()
+	local st = snapshot and snapshot.stations and snapshot.stations[r_id]
+	return utext.section_of(st, hash, "requested", collector.station_has_sections)
+end
+
+--- The requester's network as the why / fix lines name it: the section that requests the item when the station has
+--- sections (a secondary on A2 is not served on the station combinator's A1), else the station's network.
+--- @param r_id uint
+--- @param hash string
+--- @param station table? storage.stations[r_id]
+--- @return LocalisedString
+function explain.network_of(r_id, hash, station)
+	local sec = request_section(r_id, hash)
+	if sec then return utext.section_network(sec, SECTION_FNS) end
+	return util.network_text(station and station.network_name)
+end
+
 local GREY = { 0.65, 0.65, 0.65 }
 
 local function label(caption, grey)
@@ -60,7 +83,9 @@ local function sig_of(r_id, hash, e)
 	local now = game.tick
 	local lint_s = storage.manager.lint
 	if not e then return table.concat({ "gone", lint_s and lint_s.pass or 0 }, "|") end
-	return table.concat({ e.reason, e.a, e.b, e.n, #e.changes, e.changes[#e.changes] or 0, tostring(e.lost_to), e.lost_n,
+	local sec = request_section(r_id, hash)
+	local sec_sig = sec and sec.key .. "\1" .. #sec.sources or ""
+	return table.concat({ sec_sig, e.reason, e.a, e.b, e.n, #e.changes, e.changes[#e.changes] or 0, tostring(e.lost_to), e.lost_n,
 		math.floor((now - e.first_tick) / utext.READ_STEP), lint_s and lint_s.pass or 0,
 		storage.acks and storage.acks.lint_version or 0 }, "|")
 end
@@ -77,7 +102,7 @@ local function body_defs(r_id, hash, e)
 		local wait = now - e.first_tick
 		local inherited = e.first_tick < diag.inherit_threshold(d)
 		local station = storage.stations[r_id]
-		local network = util.network_text(station and station.network_name)
+		local network = explain.network_of(r_id, hash, station)
 		out[#out + 1] = heading({ "cybersyn-gui.explain-recorded" })
 		out[#out + 1] = {
 			type = "flow",

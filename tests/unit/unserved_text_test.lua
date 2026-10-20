@@ -119,3 +119,66 @@ test("locale: every reason's chip, why and fix line gets every __n__ it names, i
 	assert_eq(t.fix(REASON_NO_TRAINS_ON_NETWORK, "N"), { "cybersyn-diag.fix-no-trains-on-network", "N" })
 	assert_eq(t.fix(REASON_NO_PROVIDER, nil), { "cybersyn-diag.fix-no-provider", "?" })
 end)
+
+-- Round 7 (BRIEF-SECONDARY S4): texts name the section that requests or provides the item.
+
+local SF = require("section_fixtures")
+local FNS = { network_text = function(n) return "[" .. tostring(n) .. "]" end, mask_label = SF.mask_label,
+	mask_bits_label = SF.mask_bits_label, source_label = SF.source_label }
+
+test("section_of: the section advertising the item, nil for a plain station", function()
+	local t = text()
+	local coal = SF.coal_both(200)
+	assert_eq(t.section_of(coal, SF.COAL, "requested", SF.has_sections).key, "signal-A:2")
+	assert_eq(t.section_of(coal, SF.COAL, "provided", SF.has_sections).key, "signal-A:1")
+	assert_nil(t.section_of(coal, "iron-plate", "requested", SF.has_sections))
+	assert_nil(t.section_of(coal, SF.COAL, "requested", nil))
+	assert_nil(t.section_of(SF.plain(7, "Plain", 1, {}, { [SF.COAL] = { count = -1, active = true } }), SF.COAL,
+		"requested", SF.has_sections))
+	-- An active request wins over an earlier inactive one.
+	local st = SF.coal_both(201)
+	st.sections[1].requested = { [SF.COAL] = { count = -1, threshold = 10, active = false } }
+	assert_eq(t.section_of(st, SF.COAL, "requested", SF.has_sections).key, "signal-A:2")
+	st.sections[2].requested[SF.COAL].active = false
+	assert_eq(t.section_of(st, SF.COAL, "requested", SF.has_sections).key, "signal-A:1")
+end)
+
+test("section_network: mask, its bits, and the inventory that feeds it", function()
+	local t = text()
+	local n = SF.naphtha(100)
+	assert_eq(t.section_network(n.sections[1], FNS), { "cybersyn-gui.section-network", "[signal-A]", "1" })
+	assert_eq(t.section_network(n.sections[2], FNS), { "cybersyn-gui.section-network-source",
+		{ "cybersyn-gui.section-network-bits", "[signal-A]", "3", "bits 1+2" }, { "cybersyn-gui.source-inventory", "1" } })
+	assert_eq(t.section_network(n.sections[2], FNS, true), { "cybersyn-gui.section-network-source",
+		{ "cybersyn-gui.section-network", "[signal-A]", "3" }, { "cybersyn-gui.source-inventory", "1" } })
+	-- Station combinator and an inventory merged on one mask: both named.
+	local mixed = { network_name = "signal-A", mask = 1, sources = { n.sources[1], n.sources[3] } }
+	assert_eq(t.section_sources(mixed, SF.source_label), { "", { "cybersyn-gui.source-station" }, ", ",
+		{ "cybersyn-gui.source-inventory", "2" } })
+	assert_nil(t.section_sources(n.sections[1], SF.source_label))
+end)
+
+test("section texts: locale keys exist in en", function()
+	local en = H.locale("en", "base.cfg")["cybersyn-gui"]
+	for _, k in ipairs({ "section-network", "section-network-bits", "section-network-source" }) do
+		assert_not_nil(en[k], k)
+	end
+end)
+
+test("explain.network_of: the requesting section for a station with sections, the station's network otherwise", function()
+	local collector = require("scripts.gui.collector")
+	SF.stub_collector(collector)
+	local explain = H.load("scripts.gui.explain")
+	local get = collector.get
+	local coal, plain = SF.coal_both(200), SF.plain(7, "Plain", 1, {}, { [SF.COAL] = { count = -1, active = true } })
+	collector.get = function() return { stations = { [200] = coal, [7] = plain } } end
+	local ok, err = pcall(function()
+		local net = explain.network_of(200, SF.COAL, coal)
+		assert_eq(net[1], "cybersyn-gui.section-network-source")
+		assert_eq(net[2][1], "cybersyn-gui.section-network")
+		assert_eq(net[2][3], "2")
+		assert_eq(explain.network_of(7, SF.COAL, plain), H.load("scripts.gui.util").network_text("signal-A"))
+	end)
+	collector.get = get
+	if not ok then error(err, 0) end
+end)

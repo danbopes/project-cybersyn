@@ -373,3 +373,108 @@ test("locale: every key the drill-down uses, in every locale with the en fallbac
 		assert_true(text:find("\nitem%-requesters=[^\n]*approximate") ~= nil, loc .. ": the Requesters caption says approximate")
 	end
 end)
+
+-- Round 7 (BRIEF-SECONDARY S4): one row per (station, section) for stations with secondary inventory combinators.
+
+local SF = require("section_fixtures")
+
+local function sections_snapshot(list)
+	local stations = {}
+	for _, st in ipairs(list) do stations[st.id] = st end
+	return { tick = 1, stations = stations, trains = {}, inventory_all = { provided = {}, requested = {}, in_transit = {} } }
+end
+
+local function rows_of(rows)
+	local out = {}
+	for i, r in ipairs(rows) do out[i] = r.id .. "@" .. tostring(r.key) end
+	return out
+end
+
+test("build sections: the naphthalene plant's liquid fuel row is its Inventory 1 section on A3", function()
+	local m = model()
+	local snapshot = sections_snapshot({ SF.naphtha(100) })
+	local r = m.build(snapshot, SF.LIQUID_FUEL, PRIORITY, nil, nil, SF.has_sections)
+	assert_eq(rows_of(r.providers), { "100@signal-A:3" })
+	assert_eq(r.providers[1].stock, 99134)
+	assert_eq(r.providers[1].section.sources[1].kind, "inventory")
+	assert_eq(r.providers[1].section.sources[1].index, 1)
+	-- Inventory 2's -866 is not advertised on a Provide only station: no requester row, no row on A4.
+	assert_eq(#r.requesters, 0)
+	local oil = m.build(snapshot, SF.NAPHTHA_OIL, PRIORITY, nil, nil, SF.has_sections)
+	assert_eq(rows_of(oil.providers), { "100@signal-A:1" })
+	assert_eq(oil.providers[1].stock, 199134)
+	assert_eq(oil.providers[1].section.sources[1].kind, "station")
+end)
+
+test("build sections: provided on one mask and requested on another, the station is in both tables", function()
+	local m = model()
+	local st = SF.coal_both(200)
+	st.deliveries = { [SF.COAL] = 700 }
+	local r = m.build(sections_snapshot({ st }), SF.COAL, PRIORITY, nil, nil, SF.has_sections)
+	assert_eq(rows_of(r.providers), { "200@signal-A:1" })
+	assert_eq(rows_of(r.requesters), { "200@signal-A:2" })
+	local req = r.requesters[1]
+	assert_eq(req.requested, 2000)
+	assert_eq(req.threshold, 1000)
+	assert_eq(req.incoming, 700)
+	-- Inventory 1's own priority: the section is fed by no station combinator.
+	assert_eq(req.priority, 3)
+	assert_eq(req.group, m.QUEUED)
+	assert_eq(req.position, 1)
+	assert_eq(r.providers[1].out, 0)
+end)
+
+test("build sections: two sections providing one item give two rows; a delivery goes on the first only", function()
+	local m = model()
+	local st = SF.naphtha(100)
+	-- Inventory 2 on A4 now advertises liquid fuel too.
+	st.sections[3].provided = { [SF.LIQUID_FUEL] = 5000 }
+	st.deliveries = { [SF.LIQUID_FUEL] = -1200 }
+	local r = m.build(sections_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY, nil, nil, SF.has_sections)
+	assert_eq(rows_of(r.providers), { "100@signal-A:3", "100@signal-A:4" })
+	assert_eq(r.providers[1].out, 1200)
+	assert_eq(r.providers[2].out, 0)
+end)
+
+test("build sections: a plain station keeps today's single row without a section, with or without the helper", function()
+	local m = model()
+	local plain = SF.plain(7, "Plain", 1, { [SF.COAL] = 40 })
+	for _, has in ipairs({ SF.has_sections, false }) do
+		local r = m.build(sections_snapshot({ plain }), SF.COAL, PRIORITY, nil, nil, has or nil)
+		assert_eq(rows_of(r.providers), { "7@nil" })
+		assert_nil(r.providers[1].section)
+	end
+end)
+
+test("build sections with place filters: a network ID keeps the sections on it, totals count those", function()
+	local m, u = model(), H.load("scripts.gui.util")
+	local st = SF.coal_both(200)
+	local f = { mask = 2 }
+	local fp = { mask = -1 }
+	local keep = {
+		station = function(s) return u.station_passes(s, SF.has_sections(s) and fp or f, true) end,
+		train = function() return true end,
+		section = function(_, sec) return u.network_passes(sec.network_name, sec.mask, f) end,
+	}
+	-- The station combinator is on A1, so the old station-wide filter would have dropped the whole station.
+	local r = m.build(sections_snapshot({ st }), SF.COAL, PRIORITY, nil, keep, SF.has_sections)
+	assert_eq(rows_of(r.providers), {})
+	assert_eq(rows_of(r.requesters), { "200@signal-A:2" })
+	assert_eq(r.totals.provided, 0)
+	assert_eq(r.totals.requested, 2000)
+	assert_eq(r.totals.requested_stations, 1)
+	f.mask = 1
+	r = m.build(sections_snapshot({ st }), SF.COAL, PRIORITY, nil, keep, SF.has_sections)
+	assert_eq(rows_of(r.providers), { "200@signal-A:1" })
+	assert_eq(rows_of(r.requesters), {})
+	assert_eq(r.totals.provided, 5000)
+	assert_eq(r.totals.provided_stations, 1)
+end)
+
+test("build sections: rows of one station sort by section after the station id", function()
+	local m = model()
+	local st = SF.naphtha(100)
+	st.sections[3].provided = { [SF.LIQUID_FUEL] = 99134 }
+	local r = m.build(sections_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY, nil, nil, SF.has_sections)
+	assert_eq(rows_of(r.providers), { "100@signal-A:3", "100@signal-A:4" })
+end)

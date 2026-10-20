@@ -103,6 +103,9 @@ end
 local STATUS_COLOR, status_key = logic.STATUS_COLOR, logic.status_key
 
 -- Logical px; the station / destination column of each table takes what is left of the content width.
+-- A row of a station with sections names its section after the station's name ("[A] 3 · Inventory 1"), at most
+-- this wide; a plain station's row has no tag and keeps the whole column for its name.
+local TAG_W = 120
 local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train = 72, train_status = 150 }
 local FRAME_BORDER = 4
 local TABLE_PADDING = 4 + 10
@@ -395,6 +398,41 @@ end
 local station_tooltip = name_cell.station_tooltip
 
 local network_text = util.network_text
+local SECTION_FNS = text.section_fns(collector, network_text)
+local TAG = "item_net_tag"
+
+local function tag_def(v, scope)
+	return util.hoverable({
+		type = "label",
+		name = TAG,
+		style = "cybersyn_subheader_note",
+		style_mods = { maximal_width = TAG_W },
+		caption = v.tag,
+		tooltip = v.tooltip,
+	}, scope)
+end
+
+--- What the row's network texts depend on: the station's network, or for a station with sections the row's section
+--- and its sources. Cheap: rows are signed every update, their texts built only when this changes.
+--- @param r ItemProviderRow|ItemRequesterRow
+--- @param st SnapshotStation?
+--- @return string
+local function network_sig(r, st)
+	local sec = r.section
+	if not sec then return tostring(st and st.network_name) end
+	return sec.key .. "\1" .. item_model.sources_sig(sec)
+end
+
+--- The network a row names: its section's for a station with sections, else the station's (as before sections).
+--- @param r ItemProviderRow|ItemRequesterRow
+--- @param st SnapshotStation?
+--- @return LocalisedString network for tooltips
+--- @return LocalisedString? tag the row's short tag, nil for a plain station
+local function row_network(r, st)
+	local sec = r.section
+	if not sec then return network_text(st and st.network_name), nil end
+	return text.section_network(sec, SECTION_FNS), text.section_network(sec, SECTION_FNS, true)
+end
 
 --- One cell definition from its column and value.
 --- @param col ItemColumn
@@ -406,8 +444,13 @@ local function cell_def(col, v, width, scope)
 	if kind == "station" then
 		local st = v.st
 		local name = st and st.name or NO_VALUE
-		return name_cell.def(st and st.name_parts, name, { kind = st and "station" or nil, id = st and v.id or nil },
-			width, v.tooltip or "", scope)
+		local def = name_cell.def(st and st.name_parts, name, { kind = st and "station" or nil, id = st and v.id or nil },
+			v.tag and width - TAG_W or width, v.tooltip or "", scope)
+		if v.tag then
+			def.style_mods.width = width
+			def[#def + 1] = tag_def(v, scope)
+		end
+		return def
 	elseif kind == "train" then
 		return util.hoverable({
 			type = "button",
@@ -459,8 +502,28 @@ local function cell_update(col, cell, v, width, scope)
 	if kind == "station" then
 		local st = v.st
 		local name = st and st.name or NO_VALUE
-		name_cell.update(cell, st and st.name_parts, name, { kind = st and "station" or nil, id = st and v.id or nil },
-			width, v.tooltip or "", scope)
+		local parts = st and st.name_parts
+		local inner = v.tag and width - TAG_W or width
+		local had = cell[TAG] ~= nil
+		name_cell.update(cell, parts, name, { kind = st and "station" or nil, id = st and v.id or nil }, inner,
+			v.tooltip or "", scope)
+		local tag = cell[TAG]
+		if v.tag then
+			if tag then
+				tag.caption = v.tag
+				tag.tooltip = v.tooltip
+			else
+				gui.add(cell, tag_def(v, scope))
+			end
+		elseif tag then
+			tag.destroy()
+		end
+		-- A row that gains or loses its tag in place (position-keyed rows show another station after a re-sort) moves
+		-- the name's width; a rebuilt name cell was already given it.
+		if had ~= (v.tag ~= nil) then
+			name_cell.resize(cell, parts, inner)
+			cell.style.width = width
+		end
 	elseif kind == "train" then
 		cell.caption = v.caption
 		cell.tooltip = v.tooltip
@@ -544,10 +607,13 @@ local function provider_entry(r, ctx, i)
 	local name = st and st.name or ""
 	local status = pm.shown_status(r.status, r.id, st and st.lint, diag.is_acked)
 	local sig = table.concat({ name, r.stock, tostring(r.threshold), r.out, status }, "|")
-	return row_entry("providers", i, r.id .. "#" .. sig, function()
+	local net_sig = network_sig(r, st)
+	-- A station with sections has one row per section, so the section is part of the row's identity.
+	return row_entry("providers", i, r.id .. "@" .. net_sig .. "#" .. sig, function()
+		local network, tag = row_network(r, st)
 		return {
-			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network_text(st and st.network_name) }),
-				sig = name .. "\1" .. r.id .. "\1" .. tostring(st and st.network_name) },
+			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network }), tag = tag,
+				sig = name .. "\1" .. r.id .. "\1" .. net_sig },
 			{ caption = count(r.stock), tooltip = format.number(r.stock), sig = tostring(r.stock) },
 			r.threshold and { caption = count(r.threshold), tooltip = format.number(r.threshold), sig = tostring(r.threshold) }
 				or { caption = NO_VALUE, tooltip = { "cybersyn-gui.item-threshold-none-tooltip" }, sig = "-" },
@@ -572,7 +638,7 @@ local function requester_entry(r, ctx, i)
 	local acked = e and diag.is_acked("request", r.id, ctx.hash) ~= nil or false
 	local wait = r.wait_start and now - r.wait_start or nil
 	local age = st and collector.delivery_age(st) or nil
-	local network = tostring(st and st.network_name)
+	local network = network_sig(r, st)
 	local inherited = e and e.first_tick < ctx.inherit_before or false
 	local lost = e and e.lost_n > 0 and e.lost_to and station_view(ctx.snapshot, e.lost_to) or nil
 	-- The wait caption has its own clock (wait_clock); the tooltips' ages move in steps, so a steady row is not
@@ -588,7 +654,8 @@ local function requester_entry(r, ctx, i)
 	local station_sig = table.concat({ name, r.id, tostring(r.position), r.priority, r.group, age_step, network }, "\1")
 	-- The chip's tooltip names the requester and its network, so they are part of its sig: rows are keyed by position.
 	local chip_sig = table.concat({ r.id, name, network, r.group, r.requested, e_sig, e and e.n or "" }, "\1")
-	return row_entry("requesters", i, r.id .. "#" .. sig, function()
+	return row_entry("requesters", i, r.id .. "@" .. network .. "#" .. sig, function()
+		local network_tip, tag = row_network(r, st)
 		local last = age and { "cybersyn-gui.time-ago", util.short_duration(age - age % AGE_STEP) }
 			or { "cybersyn-gui.item-last-served-never" }
 		local queue
@@ -612,7 +679,7 @@ local function requester_entry(r, ctx, i)
 					reason = reason,
 					a = e.a,
 					b = e.b,
-					network = network_text(st and st.network_name),
+					network = network_tip,
 					rej = e.rej,
 					wait = now - e.first_tick,
 					inherited = inherited,
@@ -634,7 +701,7 @@ local function requester_entry(r, ctx, i)
 		end
 		return {
 			{ st = st, id = r.id, tooltip = station_tooltip(st, { "", queue, "\n",
-				{ "cybersyn-gui.item-network", network_text(st and st.network_name) } }), sig = station_sig },
+				{ "cybersyn-gui.item-network", network_tip } }), tag = tag, sig = station_sig },
 			{ caption = tostring(r.priority), tooltip = { "cybersyn-gui.item-priority-tooltip" }, sig = tostring(r.priority) },
 			{ caption = count(r.requested), tooltip = format.number(r.requested), sig = tostring(r.requested) },
 			{ caption = count(r.threshold), tooltip = format.number(r.threshold), sig = tostring(r.threshold) },
@@ -796,14 +863,22 @@ local function get_cache(player_data, hash)
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. util.filter_signature(f)
 	local cache = player_data.item_cache
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
+	local has_sections = collector.station_has_sections
+	-- A station with sections sits on its sections' networks, not only on the station combinator's: it passes by
+	-- surface, and each section by its own network name and ID.
+	local place = { surface = f.surface, mask = -1 }
 	local keep = filtered and {
-		station = function(st) return util.station_passes(st, f, true) end,
+		station = function(st)
+			if has_sections and st.sections and has_sections(st) then return util.station_passes(st, place, true) end
+			return util.station_passes(st, f, true)
+		end,
 		train = function(tr) return util.train_passes(tr, f, true) end,
+		section = function(_, sec) return util.network_passes(sec.network_name, sec.mask, f) end,
 	} or nil
 	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
 	-- does not (the Stations tab, filtered to the item, reads those records too).
 	local log = storage.manager.collect_log
-	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep)
+	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep, has_sections)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
 		return cache, true
@@ -1162,6 +1237,8 @@ local function dump(player_data)
 						local b = name_cell.button(cell)
 						row.cells[c] = b and b.caption
 						row.id = row.id or (b and b.tags.id)
+						local tag = cell[TAG]
+						if tag then row.tag = tag.caption end
 						if t == "trains" then row.to = b and b.tags.id end
 					elseif kind == "train" then
 						row.cells[c] = cell.caption

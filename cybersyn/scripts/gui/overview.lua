@@ -1115,7 +1115,6 @@ local function setup_tooltip(f)
 		"\n", { "cybersyn-gui.unserved-setup-hint" } }
 end
 
-local network_text = util.network_text
 local surface_name = util.surface_name
 
 --- One table row's data and its cells.
@@ -1180,7 +1179,7 @@ local function row_entry(row, acked, ctx)
 			reason = reason,
 			a = e.a,
 			b = e.b,
-			network = network_text(r_st and r_st.network_name),
+			network = explain.network_of(r_id, hash, r_st),
 			rej = e.rej,
 			wait = wait_shown,
 			inherited = inherited,
