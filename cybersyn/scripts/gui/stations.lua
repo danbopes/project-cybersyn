@@ -316,9 +316,10 @@ local sort_keys = {
 		end
 		return string.format("%s\0%010.0f", name, type(mask) == "number" and mask + OFFSET or 0)
 	end,
-	-- Distinct items per network section: an item offered on two masks counts twice, as the strip shows it twice.
+	-- With inventories, distinct items per network section: an item offered on two masks counts twice, as the strip
+	-- shows it twice. A NETWORK_EACH station without inventories keeps counting its items once.
 	provided_requested = function(st)
-		if not rtext.has_sections(st) then return count_keys(st.provided) + count_keys(st.requested) end
+		if rtext.inventory_count(st) == 0 then return count_keys(st.provided) + count_keys(st.requested) end
 		local n = 0
 		for _, sec in ipairs(rtext.sections_of(st)) do n = n + count_keys(sec.provided) + count_keys(sec.requested) end
 		return n
