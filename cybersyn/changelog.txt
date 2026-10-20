@@ -35,6 +35,8 @@ Date: 2026-10-19
     - Optional alert when a train leaves a provider carrying an item type its manifest did not name (map setting "Alert for unexpected cargo pickup", off by default)
     - New command /cybersyn-refresh-allow-lists re-reads the layout of every train, 50 per manager update, so every station's allow list knows them
     - New command /cybersyn-reset-gui centres the manager window and sizes it for your screen again
+    - (Manager) Stations with secondary inventory combinators show what they advertise per network: the stop panel has one block per network and mask with its sources, Provided and Requested lists and a "Not advertised" line for signals the Provide only / Request only switch ignores; the Stations tab shows every mask with a +N inventories badge and groups the item strip by network; the item drill-down lists one row per station and network; the Inventory network filter and Explain use the network the item is actually on
+    - Each combinator mode has a short description under the Mode drop-down
   Optimizations:
     - Item stack sizes are cached at load instead of looked up inside the dispatch loop
     - The combinator display is written only when it changed
@@ -59,6 +61,7 @@ Date: 2026-10-19
     - (Manager) Escape closes the top layer first (search, Explain, item drill-down, train pane) and then the window; Ctrl+F searches station names
     - (Manager) Utilization tab is now a table per train layout (Trains, Busy, Avg trip, Deliveries), and Breakdown names stuck reasons the same way as the Unserved table
     - (Manager) Utilization tab is always available; the "Enable analytics" map setting is now "Enable delivery breakdown" and only records per-delivery timings for the Breakdown tab
+    - Secondary Inventory mode no longer shows a network picker it never used: an inventory always joins the station's network and takes its mask from the network signal on its input
   Bugfixes:
     - Locked slots are reserved per item type in the manifest, so a multi-item delivery no longer runs out of room for its later items
     - A request whose usable trains are all inside interrupts is reported as such instead of as a layout mismatch
@@ -70,6 +73,8 @@ Date: 2026-10-19
     - (Manager) Text search is case-insensitive plain text with space-separated terms, and applies to trains through their depot and station names
     - (Manager) Item filter matches quality items
     - (Manager) Sorting no longer flips direction on the first click of a new column, and sorts the whole list instead of a truncated subset
+    - Secondary inventory combinators found when the station was built were stored under the wrong key, so removing one or changing its mode left it registered (a Station control combinator could keep being read as an inventory); existing saves are repaired on load
+    - Requests from secondary inventory combinators now record how long they have waited
   Modding:
     - New read-only remote interface cybersyn-query (query_unserved, query_counts, query_station, query_train) that returns plain tables for HUD and overlay mods
   Debug:
