@@ -169,6 +169,29 @@ local function networks_of(network_name, network_mask)
 	return out
 end
 
+--- A network's icon alone, as rich text.
+local function network_icon(name)
+	if prototypes.virtual_signal[name] then return "[virtual-signal=" .. name .. "]" end
+	if prototypes.item[name] then return "[item=" .. name .. "]" end
+	if prototypes.fluid[name] then return "[fluid=" .. name .. "]" end
+	return name .. " "
+end
+
+local HEAD_SECTIONS = 12
+
+--- "[A]1 · [A]3 · [A]4": every section's network and mask, for the head.
+local function sections_caption(st)
+	local sections = rtext.sections_of(st)
+	local parts = {}
+	for i = 1, math.min(#sections, HEAD_SECTIONS) do
+		local sec = sections[i]
+		parts[i] = network_icon(sec.network_name) .. rtext.mask_label(sec.mask)
+	end
+	local caption = table.concat(parts, " · ")
+	if #sections > HEAD_SECTIONS then caption = caption .. " +" .. (#sections - HEAD_SECTIONS) end
+	return caption
+end
+
 local function stop_name(kind, id)
 	local record
 	if kind == "station" then
@@ -221,13 +244,14 @@ local function slot(hash, count, color, tooltip)
 end
 
 --- A slot table of at most SLOT_ROWS rows, with "+n more" below when it overflows.
-local function slot_table(slots, total)
+local function slot_table(slots, total, columns)
+	columns = columns or SLOT_COLUMNS
 	local tbl = {
 		type = "frame",
 		style = "ltnm_small_slot_table_frame_light",
-		{ type = "table", style = "slot_table", column_count = SLOT_COLUMNS },
+		{ type = "table", style = "slot_table", column_count = columns },
 	}
-	local cap = SLOT_COLUMNS * SLOT_ROWS
+	local cap = columns * SLOT_ROWS
 	for i = 1, math.min(#slots, cap) do tbl[1][#tbl[1] + 1] = slots[i] end
 	local out = { tbl }
 	if total > cap then out[2] = note({ "cybersyn-gui.relative-more", tostring(total - cap) }) end
@@ -366,25 +390,27 @@ end
 
 -- ---------------------------------------------------------------- stop model
 
---- This station's active request keys nobody on its networks provides. With diagnostics on, from the reason the
---- dispatcher recorded (NO_PROVIDER), which holds between cycles; else from the planner's economy, which is complete
---- only while it dispatches (between those ticks the last answer stands).
+--- This station's active request keys nobody on its networks provides, each section's requests on that section's own
+--- network. With diagnostics on, from the reason the dispatcher recorded (NO_PROVIDER), which holds between cycles;
+--- else from the planner's economy, which is complete only while it dispatches (between those ticks the last answer
+--- stands).
 --- @return boolean updated
 local function update_starved(state, st)
 	if not st then return false end
+	local sections = rtext.sections_of(st)
 	local d = storage.diag
 	if d then
 		local starved = {}
 		local by_item = d.unserved[st.id]
 		if by_item then
-			local nets
 			for ix, e in pairs(by_item) do
 				if e.reason == REASON_NO_PROVIDER then
 					local hash = d.item_hash[ix]
-					local req = hash and st.requested[hash]
-					if req and req.active then
-						nets = nets or networks_of(st.network_name, st.network_mask)
-						for _, net in ipairs(nets) do starved[net.name .. ":" .. hash] = true end
+					if hash then
+						for _, s in ipairs(sections) do
+							local req = s.requested[hash]
+							if req and req.active then starved[s.network_name .. ":" .. hash] = true end
+						end
 					end
 				end
 			end
@@ -392,9 +418,17 @@ local function update_starved(state, st)
 		state.starved = starved
 		return true
 	end
-	local starved = collector.economy_starved(st, networks_of(st.network_name, st.network_mask))
-	if not starved then return false end
-	state.starved = starved
+	local starved
+	for _, s in ipairs(sections) do
+		local one = collector.economy_starved(s, { { name = s.network_name } })
+		if not one then return false end
+		if starved then
+			for key in pairs(one) do starved[key] = true end
+		else
+			starved = one
+		end
+	end
+	state.starved = starved or {}
 	return true
 end
 
@@ -433,7 +467,8 @@ local function same_record(a, b)
 	end
 	return same_values(a.provided, b.provided) and same_requests(a.requested, b.requested) and
 		same_values(a.deliveries, b.deliveries) and same_values(a.control, b.control) and
-		same_values(a.control2, b.control2) and same_values(a.thresholds, b.thresholds)
+		same_values(a.control2, b.control2) and same_values(a.thresholds, b.thresholds) and
+		(a.sections == nil and b.sections == nil or rtext.sections_content(a) == rtext.sections_content(b))
 end
 
 --- Whether this refresh rewrites the unserved rows' ages in place (render_unserved): the live read and a fleet walk
@@ -554,19 +589,6 @@ local function record_sig(state, name, st, fn, arg)
 	local sig = fn(st, arg)
 	cache[name] = { tick = key, id = st.id, sig = sig, arg = arg }
 	return sig
-end
-
-local function slots_content(st)
-	local n, a, b, c = 0, 0, 0, 0
-	for hash, count in pairs(st.provided) do
-		local r = util.item_rank(hash)
-		n, a, b = n + 1, a + r, b + count * r
-	end
-	for hash, req in pairs(st.requested) do
-		local r = util.item_rank(hash)
-		n, a, b, c = n + 1, a - r, b + req.count * r, c + req.threshold * r + (req.active and r or 0)
-	end
-	return content_sig(n, a, b, c)
 end
 
 local function deliveries_content(st, total)
@@ -759,6 +781,13 @@ local function effective_model(state, st, station, nets, nets_key)
 	return m
 end
 
+--- The head's "Networks" line: each section's network and mask.
+local function section_keys(st)
+	local parts = {}
+	for i, s in ipairs(rtext.sections_of(st)) do parts[i] = s.key end
+	return table.concat(parts, ",")
+end
+
 --- Everything the stop panel shows, as plain values.
 --- @return table?
 local function stop_model(pd, state)
@@ -790,16 +819,27 @@ local function stop_model(pd, state)
 		m.network_name = st.network_name
 		local nc = state.nets
 		local mask = st.network_mask
-		if not (nc and nc.id == st.id and nc.name == st.network_name and type(mask) == "number" and nc.mask == mask) then
-			local nets = networks_of(st.network_name, st.network_mask)
+		-- With inventories a network's mask is what any section advertises on: the trains the Effective config counts
+		-- and the head's networks follow the union, not the station combinator's mask alone.
+		local union = st.mask_union
+		if not (nc and nc.id == st.id and nc.name == st.network_name and (union and nc.union and same_values(nc.union, union)
+				or not union and not nc.union and type(mask) == "number" and nc.mask == mask)) then
+			local nets = union and networks_of(NETWORK_EACH, union) or networks_of(st.network_name, st.network_mask)
 			local parts = {}
 			for i, n in ipairs(nets) do parts[i] = n.name .. "=" .. n.mask end
-			nc = { id = st.id, name = st.network_name, mask = type(mask) == "number" and mask or nil, nets = nets,
+			local copy
+			if union then
+				copy = {}
+				for k, v in pairs(union) do copy[k] = v end
+			end
+			nc = { id = st.id, name = st.network_name, mask = type(mask) == "number" and mask or nil, union = copy, nets = nets,
 				key = table.concat(parts, ",") }
 			state.nets = nc
 		end
 		m.nets = nc.nets
 		m.nets_key = nc.key
+		m.has_sections = rtext.has_sections(st)
+		m.sections_key = m.has_sections and record_sig(state, "section_keys", st, section_keys) or nil
 		m.status = pm.shown_status(st.status, id, m.lint_bits, diag.is_acked)
 		if m.status == "setup" then m.setup_checks, m.setup_mask = pm.open_error_checks(id, m.lint_bits, diag.is_acked) end
 		m.deliveries = st.deliveries_total
@@ -862,7 +902,7 @@ end
 
 local function render_stop_head(state, body, m)
 	local sig = table.concat({ m.sub, tostring(m.is_p), tostring(m.is_r), tostring(m.is_stack), tostring(m.status),
-		m.nets_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
+		m.nets_key or "", m.sections_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
 		tostring(m.parked), m.setup_mask or 0 }, "|")
 	if state.sigs["head"] ~= sig then
 		section(state, body, "head", sig, function()
@@ -872,7 +912,9 @@ local function render_stop_head(state, body, m)
 			else
 				out[#out + 1] = field("cybersyn-gui.relative-role", { "cybersyn-gui.relative-role-" .. m.sub })
 			end
-			if m.nets then
+			if m.sections_key then
+				out[#out + 1] = field("cybersyn-gui.relative-networks", sections_caption(m.st))
+			elseif m.nets then
 				if #m.nets == 0 then
 					out[#out + 1] = field("cybersyn-gui.relative-network", { "cybersyn-gui.station-no-network" })
 				end
@@ -909,38 +951,129 @@ local function render_stop_head(state, body, m)
 	end
 end
 
+local MUTED = { 0.65, 0.65, 0.65 }
+-- A section's Provided / Requested lists sit beside their FIELD_LABEL caption: five slots fit what is left of INNER.
+local LIST_COLUMNS = 5
+local SECTIONS_SHOWN = 8
+local NOT_ADVERTISED_SHOWN = 8
+
+--- One "Provided" / "Requested" row of a section: its caption, then the slots or "Nothing".
+local function list_row(key, slots)
+	local row = {
+		type = "flow",
+		direction = "horizontal",
+		style_mods = { horizontal_spacing = 8 },
+		{ type = "label", caption = { key }, style_mods = { width = FIELD_LABEL, font_color = MUTED } },
+	}
+	if #slots == 0 then
+		row[#row + 1] = label({ "cybersyn-gui.section-none" }, { style_mods = { font_color = MUTED } })
+		return row
+	end
+	local cell = { type = "flow", direction = "vertical", style_mods = { vertical_spacing = 2 } }
+	for _, def in ipairs(slot_table(slots, #slots, LIST_COLUMNS)) do cell[#cell + 1] = def end
+	row[#row + 1] = cell
+	return row
+end
+
+--- "Not advertised: [icon]-866 [icon]52 (station is Provide only)".
+local function not_advertised(ignored, reason)
+	local hashes = util.hashes_in_item_order(ignored)
+	if #hashes == 0 then return nil end
+	local parts = {}
+	for i = 1, math.min(#hashes, NOT_ADVERTISED_SHOWN) do
+		local hash = hashes[i]
+		parts[i] = util.rich_text_from_signal(util.signalid_from_hash(hash)) .. format_signal_count(ignored[hash])
+	end
+	local icons = table.concat(parts, " ")
+	if #hashes > NOT_ADVERTISED_SHOWN then icons = icons .. " +" .. (#hashes - NOT_ADVERTISED_SHOWN) end
+	return note({ "", { "cybersyn-gui.section-not-advertised" }, " ", icons, " (", reason, ")" })
+end
+
+--- One section's block: its network and mask with the sources behind it, what it provides and requests, and the
+--- signals the station's switch keeps it from advertising.
+local function section_block(out, st, sec, starved, reason)
+	local head = {
+		type = "flow",
+		direction = "horizontal",
+		style_mods = { horizontal_spacing = 6, vertical_align = "center" },
+		label(network_icon(sec.network_name) .. rtext.mask_label(sec.mask), { style = "bold_label" }),
+	}
+	local bits = rtext.mask_bits_label(sec.mask)
+	if bits then head[#head + 1] = label(bits, { style_mods = { font = "default-small", font_color = MUTED } }) end
+	head[#head + 1] = {
+		type = "label",
+		caption = rtext.sources_caption(sec.sources),
+		style_mods = { font = "default-small", font_color = MUTED, single_line = false, maximal_width = INNER - 64 },
+	}
+	out[#out + 1] = head
+
+	local provided = {}
+	for _, hash in ipairs(util.hashes_in_item_order(sec.provided)) do
+		local count = sec.provided[hash]
+		provided[#provided + 1] = slot(hash, count, "green",
+			{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(count) } })
+	end
+	out[#out + 1] = list_row("cybersyn-gui.section-provided", provided)
+
+	local requested, below = {}, false
+	for _, hash in ipairs(util.hashes_in_item_order(sec.requested)) do
+		local req = sec.requested[hash]
+		if not req.active then below = true end
+		local tip = {
+			"", " ", req.active and { "cybersyn-gui.requested" } or { "cybersyn-gui.requested-below-threshold" },
+			"\n", { "cybersyn-gui.amount", format.number(req.count) },
+			"\n", { "cybersyn-gui.request-threshold", format.number(req.threshold) },
+		}
+		if starved[hash] then
+			tip[#tip + 1] = "\n[color=1,0.45,0.4]"
+			tip[#tip + 1] = { "cybersyn-gui.section-starved" }
+			tip[#tip + 1] = "[/color]"
+		end
+		requested[#requested + 1] = slot(hash, req.count, req.active and "red" or "orange", tip)
+	end
+	out[#out + 1] = list_row("cybersyn-gui.section-requested", requested)
+	if below then out[#out + 1] = note({ "cybersyn-gui.section-below-threshold" }) end
+	out[#out + 1] = not_advertised(sec.ignored or {}, reason)
+end
+
+--- The section blocks' element defs.
+--- @param st SnapshotStation
+--- @param starved {[string]: true}? station-level "network:hash" keys, for sections without their own set
+--- @return flib.GuiElemDef[]
+local function slots_defs(st, starved)
+	local sections = rtext.sections_of(st)
+	if #sections == 0 then return { note({ "cybersyn-gui.relative-no-items" }) } end
+	local out = { heading({ "cybersyn-gui.section-advertised" }) }
+	local reason = rtext.ignored_reason(st)
+	for i = 1, math.min(#sections, SECTIONS_SHOWN) do
+		if i > 1 then out[#out + 1] = { type = "line", direction = "horizontal" } end
+		local sec = sections[i]
+		section_block(out, st, sec, rtext.section_starved(sec, starved), reason)
+	end
+	if #sections > SECTIONS_SHOWN then
+		out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(#sections - SECTIONS_SHOWN) })
+	end
+	return out
+end
+-- Exposed for the unit tests, which build the blocks from fixture records.
+relative.slots_defs = slots_defs
+
+--- What the station advertises, one block per network section (D3): a station without inventories on one network
+--- is a single block.
 local function render_slots(state, body, m)
 	local st = m.st
 	if not st then
 		if state.sigs["slots"] ~= "" then section(state, body, "slots", "", hidden) end
 		return
 	end
-	local sig = record_sig(state, "slots", st, slots_content)
+	local snap = collector.live()
+	local starved = m.source == "live" and state.starved or (snap and snap.starved) or nil
+	local sig = record_sig(state, "slots", st, rtext.sections_content, starved)
 	if state.sigs["slots"] ~= sig then
-		section(state, body, "slots", sig, function()
-			local slots = {}
-			local total = 0
-			for _, hash in ipairs(util.hashes_in_item_order(st.provided)) do
-				total = total + 1
-				slots[#slots + 1] = slot(hash, st.provided[hash], "green",
-					{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(st.provided[hash]) } })
-			end
-			for _, hash in ipairs(util.hashes_in_item_order(st.requested)) do
-				local req = st.requested[hash]
-				total = total + 1
-				slots[#slots + 1] = slot(hash, req.count, req.active and "red" or "orange", {
-					"", " ", req.active and { "cybersyn-gui.requested" } or { "cybersyn-gui.requested-below-threshold" },
-					"\n", { "cybersyn-gui.amount", format.number(req.count) },
-					"\n", { "cybersyn-gui.request-threshold", format.number(req.threshold) },
-				})
-			end
-			if total == 0 then return { note({ "cybersyn-gui.relative-no-items" }) } end
-			local out = { heading({ "cybersyn-gui.provided-requested" }) }
-			for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
-			return out
-		end)
+		section(state, body, "slots", sig, function() return slots_defs(st, starved) end)
 	end
 end
+relative.render_slots = render_slots
 
 --- The texts of an unserved row that move between reason changes: the four-line why (payload, evaluations, losses,
 --- wait), the stock and the wait, all on the 10 s age step.

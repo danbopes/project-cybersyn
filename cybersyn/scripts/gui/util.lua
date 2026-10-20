@@ -844,7 +844,8 @@ function util.station_passes(st, f, ignore_item)
 	if f.surface and st.surface_index ~= f.surface then return false end
 	local terms = f.terms
 	if terms and not util.terms_match(st.name_lower, terms) then return false end
-	if not util.network_passes(st.network_name, st.network_mask, f) then return false end
+	-- mask_union (round 7): a station passes under every network bit any of its sources advertises on.
+	if not util.network_passes(st.mask_union and NETWORK_EACH or st.network_name, st.mask_union or st.network_mask, f) then return false end
 	local item = f.item
 	if item and not ignore_item then
 		if not (st.provided[item] or st.requested[item] or st.deliveries[item]) then return false end

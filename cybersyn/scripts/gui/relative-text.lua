@@ -280,4 +280,219 @@ function text.mask_text(mask)
 	return tostring(mask) .. " (" .. table.concat(out) .. ")"
 end
 
+-- ---------------------------------------------------------------- network sections (round 7)
+
+-- Required here rather than at the top: the collector loads the engine-facing modules, and the functions above stay
+-- usable without it.
+local collector = require("scripts.gui.collector")
+
+local EMPTY = {}
+
+-- The collector words masks and sources (round 7 S1). Records from before sections existed, or a collector without
+-- the helpers, get the same wording from these stand-ins, so the views never branch on it.
+
+--- "3" for a mask.
+--- @param mask int
+--- @return string
+function text.mask_label(mask)
+	local f = collector.mask_label
+	if f then return f(mask) end
+	return tostring(mask or 0)
+end
+
+--- "bits 1+2" for a mask of several bits, nil for one bit or none.
+--- @param mask int
+--- @return string?
+function text.mask_bits_label(mask)
+	local f = collector.mask_bits_label
+	if f then return f(mask) end
+	local bits = {}
+	for i = 1, 32 do
+		if band(mask or 0, 2 ^ (i - 1)) ~= 0 then bits[#bits + 1] = tostring(i) end
+	end
+	if #bits < 2 then return nil end
+	return "bits " .. table.concat(bits, "+")
+end
+
+--- "Station combinator" / "Inventory 2".
+--- @param source SnapshotSource
+--- @return LocalisedString
+function text.source_label(source)
+	local f = collector.source_label
+	if f then return f(source) end
+	if source.kind == "inventory" then return { "cybersyn-gui.source-inventory", tostring(source.index) } end
+	return { "cybersyn-gui.source-station" }
+end
+
+--- Whether a view shows the station by section: several sections, or any inventory source.
+--- @param st SnapshotStation
+--- @return boolean
+function text.has_sections(st)
+	local f = collector.station_has_sections
+	if f then return f(st) == true end
+	local sections = st.sections
+	if not sections then return false end
+	if #sections > 1 then return true end
+	for _, src in ipairs(st.sources or EMPTY) do
+		if src.kind == "inventory" then return true end
+	end
+	return false
+end
+
+--- The station's sections; a record collected without them reads as one section per network of the station
+--- combinator, which is what such a station advertises.
+--- @param st SnapshotStation
+--- @return SnapshotSection[]
+function text.sections_of(st)
+	local sections = st.sections
+	if sections then return sections end
+	local out = {}
+	local name, mask = st.network_name, st.network_mask
+	if not name then return out end
+	local source = { kind = "station", index = 0, unit = 0, ok = st.comb_ok, priority = st.priority or 0 }
+	local nets = {}
+	if name == NETWORK_EACH then
+		if type(mask) == "table" then
+			for n, m in pairs(mask) do nets[#nets + 1] = { n, m } end
+			table.sort(nets, function(a, b) return a[1] < b[1] end)
+		end
+	else
+		nets[1] = { name, type(mask) == "number" and mask or 0 }
+	end
+	for i, n in ipairs(nets) do
+		out[i] = { key = n[1] .. ":" .. n[2], network_name = n[1], mask = n[2], sources = { source },
+			provided = st.provided, requested = st.requested, ignored = EMPTY }
+	end
+	return out
+end
+
+--- Inventory sources (secondary inventory combinators) of the station.
+--- @param st SnapshotStation
+--- @return int
+function text.inventory_count(st)
+	local n = 0
+	for _, src in ipairs(st.sources or EMPTY) do
+		if src.kind == "inventory" then n = n + 1 end
+	end
+	return n
+end
+
+--- The one network name every section is on (nil when there are several) and their masks: "1 · 3 · 4".
+--- @param sections SnapshotSection[]
+--- @return string? name
+--- @return string masks
+function text.masks_caption(sections)
+	local name, parts, seen = nil, {}, {}
+	for _, s in ipairs(sections) do
+		if name == nil then
+			name = s.network_name
+		elseif name ~= s.network_name then
+			return nil, ""
+		end
+		local l = text.mask_label(s.mask)
+		if not seen[l] then
+			seen[l] = true
+			parts[#parts + 1] = l
+		end
+	end
+	return name, table.concat(parts, " · ")
+end
+
+local SOURCES_SHOWN = 4
+
+--- "Station combinator · priority 0", "Inventory 1, Inventory 3 · priority 2", or each source with its own priority
+--- when they differ: "Station combinator (priority 0), Inventory 1 (priority 5)".
+--- @param sources SnapshotSource[]
+--- @return LocalisedString
+function text.sources_caption(sources)
+	local out = { "" }
+	local first = sources[1]
+	if not first then return out end
+	local same = true
+	for i = 2, #sources do
+		if sources[i].priority ~= first.priority then same = false end
+	end
+	for i = 1, math.min(#sources, SOURCES_SHOWN) do
+		if i > 1 then out[#out + 1] = ", " end
+		out[#out + 1] = text.source_label(sources[i])
+		if not same then
+			out[#out + 1] = " "
+			out[#out + 1] = { "cybersyn-gui.section-source-priority", tostring(sources[i].priority) }
+		end
+	end
+	if #sources > SOURCES_SHOWN then out[#out + 1] = " +" .. (#sources - SOURCES_SHOWN) end
+	if same then
+		out[#out + 1] = " · "
+		out[#out + 1] = { "cybersyn-gui.section-priority", tostring(first.priority) }
+	end
+	return out
+end
+
+local function count_keys(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
+end
+
+--- "provides 1 item", "requests 3 items", both, or "nothing advertised".
+--- @param section SnapshotSection
+--- @return LocalisedString
+function text.section_summary(section)
+	local p, r = count_keys(section.provided), count_keys(section.requested)
+	if p > 0 and r > 0 then return { "cybersyn-gui.section-provides-requests", tostring(p), tostring(r) } end
+	if p > 0 then return { "cybersyn-gui.section-provides", tostring(p) } end
+	if r > 0 then return { "cybersyn-gui.section-requests", tostring(r) } end
+	return { "cybersyn-gui.section-nothing" }
+end
+
+--- Why the station's sections leave signals unadvertised: its Provide only / Request only switch.
+--- @param st SnapshotStation
+--- @return LocalisedString
+function text.ignored_reason(st)
+	if st.is_p and not st.is_r then return { "cybersyn-gui.section-provide-only" } end
+	if st.is_r and not st.is_p then return { "cybersyn-gui.section-request-only" } end
+	return { "cybersyn-gui.section-switch" }
+end
+
+--- Active requests of a section nobody provides on its network: the collector's section.starved, else the
+--- station-level set (keys "network:hash", which carry no mask) narrowed to this section's network.
+--- @param section SnapshotSection
+--- @param starved {[string]: true}?
+--- @return {[string]: true}
+function text.section_starved(section, starved)
+	if section.starved then return section.starved end
+	if not (starved and next(starved)) then return EMPTY end
+	local out
+	local prefix = section.network_name .. ":"
+	for hash, req in pairs(section.requested) do
+		if req.active and starved[prefix .. hash] then
+			out = out or {}
+			out[hash] = true
+		end
+	end
+	return out or EMPTY
+end
+
+--- A signature of everything the section blocks show. Sorted, so two records with the same values sign alike
+--- whatever order their tables were filled in.
+--- @param st SnapshotStation
+--- @param starved {[string]: true}?
+--- @return string
+function text.sections_content(st, starved)
+	local parts = {}
+	for i, s in ipairs(text.sections_of(st)) do
+		local k = i .. s.key
+		parts[#parts + 1] = k
+		for j, src in ipairs(s.sources) do parts[#parts + 1] = k .. "/" .. j .. src.kind .. src.index .. "=" .. src.priority end
+		for hash, count in pairs(s.provided) do parts[#parts + 1] = k .. "p" .. hash .. "=" .. count end
+		for hash, req in pairs(s.requested) do
+			parts[#parts + 1] = k .. "r" .. hash .. "=" .. req.count .. "/" .. req.threshold .. (req.active and "a" or "")
+		end
+		for hash, count in pairs(s.ignored or EMPTY) do parts[#parts + 1] = k .. "i" .. hash .. "=" .. count end
+		for hash in pairs(text.section_starved(s, starved)) do parts[#parts + 1] = k .. "s" .. hash end
+	end
+	table.sort(parts)
+	return (st.is_p and "p" or "") .. (st.is_r and "r" or "") .. "|" .. table.concat(parts, ",")
+end
+
 return text

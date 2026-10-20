@@ -19,6 +19,7 @@ local diag = require("scripts.diag")
 local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
 local lint_text = require("scripts.gui.lint-text")
+local rtext = require("scripts.gui.relative-text")
 
 local stations_tab = {}
 
@@ -307,9 +308,21 @@ local sort_keys = {
 		local name = st.network_name
 		if not name then return nil end
 		local mask = st.network_mask
+		-- A station with inventories sorts by every mask it advertises on.
+		local union = st.mask_union
+		if union and rtext.has_sections(st) then
+			local one = rtext.masks_caption(rtext.sections_of(st))
+			if one then name, mask = one, union[one] end
+		end
 		return string.format("%s\0%010.0f", name, type(mask) == "number" and mask + OFFSET or 0)
 	end,
-	provided_requested = function(st) return count_keys(st.provided) + count_keys(st.requested) end,
+	-- Distinct items per network section: an item offered on two masks counts twice, as the strip shows it twice.
+	provided_requested = function(st)
+		if not rtext.has_sections(st) then return count_keys(st.provided) + count_keys(st.requested) end
+		local n = 0
+		for _, sec in ipairs(rtext.sections_of(st)) do n = n + count_keys(sec.provided) + count_keys(sec.requested) end
+		return n
+	end,
 	deliveries = function(st) return st.deliveries_total end,
 	wait = function(st)
 		local start = st.longest_wait_start
@@ -1008,6 +1021,95 @@ local function registry_model(row, ctx)
 	return m
 end
 
+local NET_TIP_SECTIONS = 15
+
+--- A network's icon as rich text (its name when it has none).
+local function network_img(name)
+	local _, img = util.generate_item_references(name)
+	return img ~= "" and img or name
+end
+
+--- The Network cell of a station with inventories or several sections: the masks it advertises on ("1 · 3 · 4"),
+--- a "+N" badge for N inventories and one tooltip line per section.
+--- @param m table row model
+--- @param st SnapshotStation
+local function section_network(m, st)
+	local sections = rtext.sections_of(st)
+	local inventories = rtext.inventory_count(st)
+	local parts = { "S", inventories }
+	for _, sec in ipairs(sections) do
+		parts[#parts + 1] = sec.key .. ":" .. count_keys(sec.provided) .. "/" .. count_keys(sec.requested)
+		for _, src in ipairs(sec.sources) do parts[#parts + 1] = src.kind .. src.index .. "=" .. src.priority end
+	end
+	m.net_sig = table.concat(parts, "|")
+	m.net_small = true
+	m.network = function()
+		local one, masks = rtext.masks_caption(sections)
+		local sprite, caption
+		if one then
+			sprite = util.generate_item_references(one)
+			caption = masks
+		else
+			sprite = "virtual-signal/" .. NETWORK_EACH
+			caption = { "cybersyn-gui.network-each-count", #sections }
+		end
+		local tip = { "", { "cybersyn-gui.stations-net-sections", tostring(#sections) } }
+		for i = 1, math.min(#sections, NET_TIP_SECTIONS) do
+			local sec = sections[i]
+			local bits = rtext.mask_bits_label(sec.mask)
+			tip[#tip + 1] = { "", "\n", network_img(sec.network_name), " ", rtext.mask_label(sec.mask),
+				bits and (" (" .. bits .. ")") or "", " · ", rtext.sources_caption(sec.sources), " · ",
+				rtext.section_summary(sec) }
+		end
+		if #sections > NET_TIP_SECTIONS then
+			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.relative-more", tostring(#sections - NET_TIP_SECTIONS) } }
+		end
+		return sprite or "utility/close_black", caption, tip, inventories > 0 and ("+" .. inventories) or ""
+	end
+end
+
+--- The Network cell: net_sig, and m.network() -> sprite, caption, tooltip, badge (built only when the sig changed).
+--- @param m table row model
+--- @param st SnapshotStation
+local function network_model(m, st)
+	local network_name = st.network_name
+	local mask = st.network_mask
+	if network_name and rtext.has_sections(st) then return section_network(m, st) end
+	if not network_name then
+		m.net_sig = ""
+	elseif network_name == NETWORK_EACH then
+		local names = {}
+		if type(mask) == "table" then
+			for n in pairs(mask) do names[#names + 1] = n end
+		end
+		table.sort(names)
+		local parts = {}
+		for i, n in ipairs(names) do parts[i] = n .. "=" .. mask[n] end
+		m.net_sig = NETWORK_EACH .. "|" .. table.concat(parts, ",")
+		m.net_names = names
+	else
+		m.net_sig = network_name .. "=" .. (type(mask) == "number" and mask or 0)
+	end
+	m.network = function()
+		if not network_name then
+			return "utility/close_black", "", { "cybersyn-gui.station-no-network" }
+		elseif network_name == NETWORK_EACH then
+			local names = m.net_names
+			local lines = { "" }
+			for i, n in ipairs(names) do
+				if i > 20 then break end
+				local _, img = util.generate_item_references(n)
+				lines[#lines + 1] = (i > 1 and "\n" or "") .. (img or n) .. " " .. mask[n]
+			end
+			return "virtual-signal/" .. NETWORK_EACH, { "cybersyn-gui.network-each-count", #names }, lines
+		end
+		local value = type(mask) == "number" and mask or 0
+		local sprite, img = util.generate_item_references(network_name)
+		return sprite or "utility/close_black", tostring(value), { "", img or network_name, " ",
+			{ "cybersyn-gui.station-network-mask", value, string.format("0x%08X", value < 0 and value + 2 * OFFSET or value) } }
+	end
+end
+
 --- Everything a row shows that is not a slot table, as plain values comparable between updates. Tooltips and the
 --- network cell cost API calls, so they are built by functions that run only when their sig changed.
 --- @param st SnapshotStation
@@ -1067,41 +1169,7 @@ local function row_model(st, ctx)
 		return tooltip
 	end
 
-	local network_name = st.network_name
-	local mask = st.network_mask
-	if not network_name then
-		m.net_sig = ""
-	elseif network_name == NETWORK_EACH then
-		local names = {}
-		if type(mask) == "table" then
-			for n in pairs(mask) do names[#names + 1] = n end
-		end
-		table.sort(names)
-		local parts = {}
-		for i, n in ipairs(names) do parts[i] = n .. "=" .. mask[n] end
-		m.net_sig = NETWORK_EACH .. "|" .. table.concat(parts, ",")
-		m.net_names = names
-	else
-		m.net_sig = network_name .. "=" .. (type(mask) == "number" and mask or 0)
-	end
-	m.network = function()
-		if not network_name then
-			return "utility/close_black", "", { "cybersyn-gui.station-no-network" }
-		elseif network_name == NETWORK_EACH then
-			local names = m.net_names
-			local lines = { "" }
-			for i, n in ipairs(names) do
-				if i > 20 then break end
-				local _, img = util.generate_item_references(n)
-				lines[#lines + 1] = (i > 1 and "\n" or "") .. (img or n) .. " " .. mask[n]
-			end
-			return "virtual-signal/" .. NETWORK_EACH, { "cybersyn-gui.network-each-count", #names }, lines
-		end
-		local value = type(mask) == "number" and mask or 0
-		local sprite, img = util.generate_item_references(network_name)
-		return sprite or "utility/close_black", tostring(value), { "", img or network_name, " ",
-			{ "cybersyn-gui.station-network-mask", value, string.format("0x%08X", value < 0 and value + 2 * OFFSET or value) } }
-	end
+	network_model(m, st)
 
 	local limit = finite_limit(st)
 	m.dl_caption = { "", st.deliveries_total, "/", limit or { "cybersyn-gui.no-limit-short" } }
@@ -1193,6 +1261,9 @@ local function fit_slots(defs, capacity)
 end
 
 local function slot_key(def)
+	local tags = def.tags
+	if tags and tags.slot_key then return tags.slot_key end
+	if tags and tags.group then return "g" .. tags.group end
 	if def.type == "label" then return "+" end
 	return def.tags and def.tags.kind == "item" and def.tags.id or def.sprite
 end
@@ -1241,10 +1312,97 @@ local function sync_slots(table_elem, defs, state, hold, minute)
 	return util.sync_children(table_elem, entries, state, hold)
 end
 
+local OVERFLOW_LINES = 24
+
+--- One line of grouped slots: as fit_slots, with the group labels taking a slot each and never ending the line.
+--- @param groups {label: flib.GuiElemDef, defs: flib.GuiElemDef[]}[]
+--- @param capacity int
+--- @return flib.GuiElemDef[]
+local function fit_groups(groups, capacity)
+	local flat = {}
+	for _, g in ipairs(groups) do
+		flat[#flat + 1] = g.label
+		for _, d in ipairs(g.defs) do flat[#flat + 1] = d end
+	end
+	if #flat <= capacity then return flat end
+	local shown = math.max(0, capacity - 1)
+	while shown > 0 and flat[shown].tags.group do shown = shown - 1 end
+	local out, lines, over = {}, {}, 0
+	for i = 1, shown do out[i] = flat[i] end
+	for i = shown + 1, #flat do
+		local d = flat[i]
+		if d.tags.group then
+			if #lines < OVERFLOW_LINES then lines[#lines + 1] = d.caption end
+		else
+			over = over + 1
+			if #lines < OVERFLOW_LINES then lines[#lines + 1] = "[img=" .. d.sprite .. "] " .. tostring(d.children[1].caption) end
+		end
+	end
+	out[#out + 1] = {
+		type = "label",
+		style = "cybersyn_overflow_label",
+		style_mods = { width = SLOT, height = SLOT, vertical_align = "center" },
+		caption = "+" .. over,
+		tooltip = table.concat(lines, "\n"),
+		tags = { overflow = true },
+	}
+	return out
+end
+
+--- The Provided / requested strip of a station with sections: one labelled group per section that advertises
+--- anything, each item's tooltip naming its section, and what other sections hold of it without advertising it.
+--- @param st SnapshotStation
+--- @param item string?
+--- @param capacity int
+--- @return flib.GuiElemDef[]
+local function section_slots(st, item, capacity)
+	local sections = rtext.sections_of(st)
+	local nets = {}
+	for i, sec in ipairs(sections) do nets[i] = network_img(sec.network_name) .. rtext.mask_label(sec.mask) end
+	local reason
+	local groups = {}
+	for i, sec in ipairs(sections) do
+		local defs = util.slot_table_build_from_station({ provided = sec.provided, requested = sec.requested, wait = st.wait })
+		if #defs > 0 then
+			local sources = rtext.sources_caption(sec.sources)
+			for _, d in ipairs(defs) do
+				local hash = d.tags.id
+				local side = string.find(d.style, "green", 1, true) and "p" or "r"
+				local tip = { "", d.tooltip, "\n", { "cybersyn-gui.stations-slot-section", nets[i], sources } }
+				for j, other in ipairs(sections) do
+					local held = other.ignored and other.ignored[hash]
+					if held and #tip < 18 then
+						reason = reason or rtext.ignored_reason(st)
+						tip[#tip + 1] = { "", "\n[color=0.65,0.65,0.65]",
+							{ "cybersyn-gui.stations-slot-ignored", nets[j], format.number(held), reason }, "[/color]" }
+					end
+				end
+				d.tooltip = tip
+				d.tags.slot_key = sec.key .. "|" .. side .. hash
+			end
+			decorate_slots(defs, item)
+			local bits = rtext.mask_bits_label(sec.mask)
+			groups[#groups + 1] = {
+				label = {
+					type = "label",
+					style = "cybersyn_overflow_label",
+					style_mods = { minimal_width = 0, height = SLOT, vertical_align = "center", font = "default-small-semibold" },
+					caption = nets[i],
+					tooltip = { "", nets[i], bits and (" (" .. bits .. ")") or "", "\n", sources, "\n", rtext.section_summary(sec) },
+					tags = { group = sec.key },
+				},
+				defs = defs,
+			}
+		end
+	end
+	return fit_groups(groups, capacity)
+end
+
 -- A registry row (no station) has empty slot tables.
 local SLOT_TABLES = {
 	pr = function(st, item, w)
 		if not st then return {} end
+		if rtext.has_sections(st) then return section_slots(st, item, w.pr_slots) end
 		return fit_slots(decorate_slots(util.slot_table_build_from_station(st), item), w.pr_slots)
 	end,
 	dl = function(st, item, w)
@@ -1268,7 +1426,11 @@ end
 --- @return {pr: string, dl: string}
 local function slot_sigs(st, item, minute)
 	local parts = {}
-	count_parts(parts, "p", st.provided)
+	if rtext.has_sections(st) then
+		parts[1] = rtext.sections_content(st)
+	else
+		count_parts(parts, "p", st.provided)
+	end
 	local waits = false
 	local wait = st.wait
 	for hash, req in pairs(st.requested) do
@@ -1311,6 +1473,7 @@ local function row_refs(row, problems)
 		net = c[3],
 		net_sprite = net[1],
 		net_label = net[2],
+		net_badge = net[3],
 		dl_count = dl[1],
 		dl = dl[2],
 		wait = c[6],
@@ -1375,10 +1538,16 @@ local function update_row(row, st, m, cell, item, hold, minute, sigs, w)
 	end
 
 	if cell.net_sig ~= m.net_sig then
-		local sprite, caption, tooltip = m.network()
+		local sprite, caption, tooltip, badge = m.network()
 		r.net_sprite.sprite = sprite
 		r.net_label.caption = caption
+		local font = m.net_small and "default-small" or "default"
+		if r.net_label.style.font ~= font then r.net_label.style.font = font end
 		r.net.tooltip = tooltip
+		if r.net_badge then
+			r.net_badge.caption = badge or ""
+			r.net_badge.visible = badge ~= nil and badge ~= ""
+		end
 		cell.net_sig = m.net_sig
 	end
 
@@ -1454,7 +1623,7 @@ end
 --- @param w table column widths
 local function row_def(st, m, color, item, w)
 	local defs = { pr = w.problems_view and {} or SLOT_TABLES.pr(st, item, w), dl = SLOT_TABLES.dl(st, item, w) }
-	local net_sprite, net_caption, net_tooltip = m.network()
+	local net_sprite, net_caption, net_tooltip, net_badge = m.network()
 	local fourth
 	if w.problems_view then
 		fourth = problems_cell_def(w)
@@ -1486,7 +1655,12 @@ local function row_def(st, m, color, item, w)
 			style_mods = { width = w.network },
 			tooltip = net_tooltip,
 			{ type = "sprite", sprite = net_sprite, resize_to_sprite = false, style_mods = { size = 24 }, ignored_by_interaction = true },
-			{ type = "label", caption = net_caption, ignored_by_interaction = true },
+			{ type = "label", caption = net_caption, ignored_by_interaction = true,
+				style_mods = m.net_small and { font = "default-small" } or nil },
+			-- Inventories behind the station (secondary inventory combinators).
+			{ type = "label", style = "cybersyn_overflow_label", caption = net_badge or "", visible = (net_badge or "") ~= "",
+				ignored_by_interaction = true,
+				style_mods = { minimal_width = 0, font = "default-small-semibold", font_color = { 1, 0.65, 0.25 } } },
 		},
 		fourth,
 		{
@@ -1978,6 +2152,21 @@ local function problems_cell_view(cell)
 		tooltip = cell.tooltip,
 	}
 end
+
+-- Exposed for the unit tests, which render the Network cell and the strip of fixture records.
+function stations_tab.network_cell(st)
+	local m = {}
+	network_model(m, st)
+	local sprite, caption, tooltip, badge = m.network()
+	return { sig = m.net_sig, sprite = sprite, caption = caption, tooltip = tooltip, badge = badge, small = m.net_small }
+end
+
+function stations_tab.pr_slots(st, item, capacity)
+	return SLOT_TABLES.pr(st, item, { pr_slots = capacity })
+end
+stations_tab.slot_key = slot_key
+stations_tab.slot_sigs = slot_sigs
+stations_tab.sort_keys = sort_keys
 
 dev.register_dump(TAB, function(player_data)
 	local list = player_data.refs[SCROLL]

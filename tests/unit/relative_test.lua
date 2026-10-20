@@ -250,3 +250,241 @@ test("last_for_step: more new rows than the budget start over from the newest", 
 	repeat diag.last_for_step(c, 100) until c.done
 	assert_eq(seqs(c.rows), seqs(diag.last_for("station", 7, 10)))
 end)
+
+-- ---------------------------------------------------------------- network sections (round 7)
+
+-- Records in the collector's section contract (BRIEF-SECONDARY.md), built by hand.
+
+local function fluid(name, order)
+	prototypes.fluid[name] = prototypes.fluid[name]
+		or { name = name, order = order, localised_name = { "fluid-name." .. name }, valid = true }
+end
+
+local function source(kind, index, priority)
+	return { kind = kind, index = index, unit = 100 + index, ok = true, priority = priority or 0 }
+end
+
+--- [naphthalene-oil] Provider on pY 126: Provide only, the station combinator on A1, Inventory 1 on A3 (bits 1+2),
+--- Inventory 2 on A4 whose -866 liquid fuel the switch keeps from being advertised.
+local function naphthalene()
+	fluid("naphthalene-oil", "z[a]")
+	fluid("liquid-fuel", "z[b]")
+	local s0, s1, s2 = source("station", 0), source("inventory", 1), source("inventory", 2)
+	return {
+		id = 7, name = "[fluid=naphthalene-oil] Provider", is_p = true, is_r = false, is_stack = false,
+		network_name = "signal-A", network_mask = 1, comb_ok = true, priority = 0,
+		provided = { ["naphthalene-oil"] = 199134, ["liquid-fuel"] = 99134 }, requested = {}, wait = {}, deliveries = {},
+		sources = { s0, s1, s2 },
+		mask_union = { ["signal-A"] = 7 },
+		sections = {
+			{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { s0 },
+				provided = { ["naphthalene-oil"] = 199134 }, requested = {}, ignored = {} },
+			{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s1 },
+				provided = { ["liquid-fuel"] = 99134 }, requested = {}, ignored = {} },
+			{ key = "signal-A:4", network_name = "signal-A", mask = 4, sources = { s2 },
+				provided = {}, requested = {}, ignored = { ["liquid-fuel"] = -866 } },
+		},
+	}
+end
+
+--- A plain requester: Request only, one section on A3, several requests below threshold, and a provide the switch
+--- drops.
+local function plain()
+	local s0 = source("station", 0, 1)
+	local requested = {
+		["iron-plate"] = { count = -1900, threshold = 2000, active = false },
+		["copper-plate"] = { count = -1600, threshold = 2000, active = false },
+		["coal"] = { count = -2500, threshold = 2000, active = true },
+	}
+	local provided = {}
+	return {
+		id = 9, name = "Circuit Requestor", is_p = false, is_r = true, is_stack = false,
+		network_name = "signal-A", network_mask = 3, comb_ok = true, priority = 1,
+		provided = provided, requested = requested, wait = {}, deliveries = {},
+		sources = { s0 },
+		mask_union = { ["signal-A"] = 3 },
+		sections = {
+			{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s0 },
+				provided = provided, requested = requested, ignored = { stone = 52 } },
+		},
+	}
+end
+
+test("sections: has_sections, masks caption, inventories and bits for the naphthalene provider and a plain stop", function()
+	local t = rt()
+	local n, p = naphthalene(), plain()
+	assert_true(t.has_sections(n))
+	assert_false(t.has_sections(p), "one section, no inventory")
+	assert_eq({ t.masks_caption(t.sections_of(n)) }, { "signal-A", "1 · 3 · 4" })
+	assert_eq({ t.masks_caption(t.sections_of(p)) }, { "signal-A", "3" })
+	assert_eq(t.inventory_count(n), 2)
+	assert_eq(t.inventory_count(p), 0)
+	assert_eq(t.mask_bits_label(3), "bits 1+2")
+	assert_nil(t.mask_bits_label(4))
+	assert_eq(t.mask_label(4), "4")
+	assert_eq(t.section_summary(n.sections[1]), { "cybersyn-gui.section-provides", "1" })
+	assert_eq(t.section_summary(n.sections[3]), { "cybersyn-gui.section-nothing" })
+	assert_eq(t.section_summary(p.sections[1]), { "cybersyn-gui.section-requests", "3" })
+end)
+
+test("sections: the switch's reason for what a section does not advertise", function()
+	local t = rt()
+	assert_eq(t.ignored_reason(naphthalene()), { "cybersyn-gui.section-provide-only" })
+	assert_eq(t.ignored_reason(plain()), { "cybersyn-gui.section-request-only" })
+	assert_eq(t.ignored_reason({ is_p = true, is_r = true }), { "cybersyn-gui.section-switch" })
+end)
+
+test("sections: sources caption with one priority, and with each source's own when they differ", function()
+	local t = rt()
+	local a, b = source("station", 0, 0), source("inventory", 1, 0)
+	assert_eq(t.sources_caption({ a }), { "", t.source_label(a), " · ", { "cybersyn-gui.section-priority", "0" } })
+	assert_eq(t.sources_caption({ a, b }),
+		{ "", t.source_label(a), ", ", t.source_label(b), " · ", { "cybersyn-gui.section-priority", "0" } })
+	b.priority = 5
+	assert_eq(t.sources_caption({ a, b }), { "", t.source_label(a), " ", { "cybersyn-gui.section-source-priority", "0" },
+		", ", t.source_label(b), " ", { "cybersyn-gui.section-source-priority", "5" } })
+end)
+
+test("sections: a record without sections reads as one per network, NETWORK_EACH sorted", function()
+	local t = rt()
+	local st = { network_name = "signal-A", network_mask = 3, provided = { coal = 5 }, requested = {}, priority = 2 }
+	local s = t.sections_of(st)
+	assert_eq(#s, 1)
+	assert_eq({ s[1].key, s[1].mask, s[1].sources[1].priority }, { "signal-A:3", 3, 2 })
+	assert_true(s[1].provided == st.provided, "the station's own table")
+	assert_false(t.has_sections(st))
+	s = t.sections_of({ network_name = NETWORK_EACH, network_mask = { ["signal-B"] = 2, ["signal-A"] = 1 },
+		provided = {}, requested = {} })
+	assert_eq({ s[1].key, s[2].key }, { "signal-A:1", "signal-B:2" })
+	assert_eq(#t.sections_of({ provided = {}, requested = {} }), 0, "no network, nothing advertised")
+end)
+
+test("sections: starved per section, from section.starved or the station's network:hash keys on its own network", function()
+	local t = rt()
+	local p = plain()
+	local sec = p.sections[1]
+	assert_eq(t.section_starved(sec, { ["signal-A:coal"] = true, ["signal-A:iron-plate"] = true }), { coal = true },
+		"below-threshold requests are never starved")
+	assert_eq(t.section_starved(sec, { ["signal-B:coal"] = true }), {}, "another network's key")
+	sec.starved = { ["iron-plate"] = true }
+	assert_eq(t.section_starved(sec, { ["signal-A:coal"] = true }), { ["iron-plate"] = true }, "the collector's own set wins")
+end)
+
+test("sections_content: same values sign alike whatever the fill order; ignored and starved change it", function()
+	local t = rt()
+	local a, b = naphthalene(), naphthalene()
+	b.sections[1].provided = {}
+	b.sections[1].provided["naphthalene-oil"] = 199134
+	assert_eq(t.sections_content(a), t.sections_content(b))
+	b.sections[3].ignored["liquid-fuel"] = -900
+	assert_true(t.sections_content(a) ~= t.sections_content(b), "ignored count")
+	local p = plain()
+	local base = t.sections_content(p)
+	assert_true(base ~= t.sections_content(p, { ["signal-A:coal"] = true }), "starved")
+	p.sections[1].sources[1].priority = 4
+	assert_true(base ~= t.sections_content(p), "priority")
+end)
+
+-- ---------------------------------------------------------------- stop panel blocks
+
+local function relative_mod()
+	commands = commands or { add_command = function() end, remove_command = function() end, commands = {}, game_commands = {} }
+	return H.load("scripts.gui.relative")
+end
+
+--- Captions of a def tree, depth first, LocalisedStrings flattened to their keys and plain parts.
+local function captions(defs)
+	local out = {}
+	local function flat(ls)
+		if type(ls) ~= "table" then return tostring(ls) end
+		local parts = {}
+		for i, v in ipairs(ls) do
+			if not (i == 1 and v == "") then parts[#parts + 1] = flat(v) end
+		end
+		return table.concat(parts, "")
+	end
+	local function walk(d)
+		if d.caption then out[#out + 1] = flat(d.caption) end
+		if d.type == "sprite-button" then out[#out + 1] = "slot:" .. d.tags.id .. ":" .. string.gsub(d.style, "^ltnm_small_slot_button_", "") end
+		for _, c in ipairs(d) do walk(c) end
+		for _, c in ipairs(d.children or {}) do
+			if d.type ~= "sprite-button" then walk(c) end
+		end
+	end
+	for _, d in ipairs(defs) do walk(d) end
+	return out
+end
+
+test("stop panel: the naphthalene provider gets one block per section, Inventory 2 with its unadvertised fuel", function()
+	local r = relative_mod()
+	local c = captions(r.slots_defs(naphthalene()))
+	assert_eq(c[1], "cybersyn-gui.section-advertised")
+	local text = table.concat(c, "\n")
+	-- Section heads in order: A1, A3 with its bits, A4.
+	local i1 = text:find("[virtual-signal=signal-A]1\n", 1, true)
+	local i3 = text:find("[virtual-signal=signal-A]3\nbits 1+2\n", 1, true)
+	local i4 = text:find("[virtual-signal=signal-A]4\n", 1, true)
+	assert_true(i1 and i3 and i4 and i1 < i3 and i3 < i4, text)
+	assert_true(text:find("slot:naphthalene-oil:green", i1, true) < i3, "naphthalene oil provided on A1")
+	assert_true(text:find("slot:liquid-fuel:green", i3, true) < i4, "liquid fuel provided on A3")
+	assert_nil(text:find("slot:liquid-fuel", i4, true), "never a slot on A4")
+	local tail = text:sub(i4)
+	assert_true(tail:find("cybersyn-gui.section-not-advertised [fluid=liquid-fuel", 1, true) and tail:find("]-866 (cybersyn-gui.section-provide-only)", 1, true) ~= nil, tail)
+	local lines = 0
+	for _, d in ipairs(r.slots_defs(naphthalene())) do
+		if d.type == "line" then lines = lines + 1 end
+	end
+	assert_eq(lines, 2, "a separator between three blocks")
+end)
+
+test("stop panel: a plain requester is a single block with Provided, Requested, the threshold note and its dropped provide", function()
+	local r = relative_mod()
+	local c = captions(r.slots_defs(plain()))
+	local text = table.concat(c, "\n")
+	assert_eq(c[1], "cybersyn-gui.section-advertised")
+	assert_true(text:find("[virtual-signal=signal-A]3\nbits 1+2\n", 1, true) ~= nil, text)
+	assert_true(text:find("cybersyn-gui.section-provided\ncybersyn-gui.section-none\ncybersyn-gui.section-requested\n", 1, true) ~= nil, text)
+	assert_true(text:find("slot:coal:red", 1, true) ~= nil)
+	assert_true(text:find("slot:iron-plate:orange", 1, true) ~= nil)
+	assert_true(text:find("slot:copper-plate:orange", 1, true) ~= nil)
+	assert_true(text:find("cybersyn-gui.section-below-threshold", 1, true) ~= nil)
+	assert_true(text:find("cybersyn-gui.section-not-advertised [item=stone", 1, true) and text:find("]52 (cybersyn-gui.section-request-only)", 1, true) ~= nil, text)
+	for _, d in ipairs(r.slots_defs(plain())) do assert_true(d.type ~= "line", "one block, no separator") end
+end)
+
+test("stop panel: a starved request in a section says so in its tooltip", function()
+	local r = relative_mod()
+	local p = plain()
+	p.sections[1].starved = { coal = true }
+	local found = false
+	local function walk(d)
+		if d.type == "sprite-button" and d.tags.id == "coal" then
+			found = serpent.line(d.tooltip):find("cybersyn-gui.section-starved", 1, true) ~= nil
+		end
+		for _, c in ipairs(d) do walk(c) end
+	end
+	for _, d in ipairs(r.slots_defs(p)) do walk(d) end
+	assert_true(found)
+end)
+
+test("stop panel: the section blocks are rebuilt only when the record changed", function()
+	local r = relative_mod()
+	local body = H.element({ name = "body" })
+	body.slots = body.add({ type = "flow", name = "slots" })
+	local state = { sigs = {}, rebuilds = 0 }
+	local st = naphthalene()
+	st.read_tick = 10
+	local m = { st = st, source = "snapshot" }
+	r.render_slots(state, body, m)
+	assert_eq(state.rebuilds, 1)
+	assert_true(#body.slots.children > 0)
+	r.render_slots(state, body, m)
+	assert_eq(state.rebuilds, 1, "same pass, nothing rebuilt")
+	st.read_tick = 20
+	r.render_slots(state, body, m)
+	assert_eq(state.rebuilds, 1, "refilled with the same values")
+	st.sections[3].ignored["liquid-fuel"] = -900
+	st.read_tick = 30
+	r.render_slots(state, body, m)
+	assert_eq(state.rebuilds, 2, "an unadvertised count moved")
+end)

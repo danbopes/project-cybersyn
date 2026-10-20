@@ -425,3 +425,137 @@ test("chip_lines: hide zero counts, wrap onto the second line in order, keep the
 	assert_eq(l1, { "all" })
 	assert_eq(l2, { "no_power", "ok" })
 end)
+
+-- ---------------------------------------------------------------- network sections (round 7)
+
+local function fluid(name, order)
+	prototypes.fluid[name] = prototypes.fluid[name]
+		or { name = name, order = order, localised_name = { "fluid-name." .. name }, valid = true }
+end
+
+local function source(kind, index, priority)
+	return { kind = kind, index = index, unit = 100 + index, ok = true, priority = priority or 0 }
+end
+
+--- [naphthalene-oil] Provider (pY 126) in the collector's section contract: Provide only, the station combinator on
+--- A1, Inventory 1 on A3, Inventory 2 on A4 holding -866 liquid fuel it does not advertise.
+local function naphthalene()
+	fluid("naphthalene-oil", "z[a]")
+	fluid("liquid-fuel", "z[b]")
+	local s0, s1, s2 = source("station", 0), source("inventory", 1), source("inventory", 2)
+	return st(20, "Naphthalene Provider", {
+		is_p = true, is_r = false, network_mask = 1,
+		provided = { ["naphthalene-oil"] = 199134, ["liquid-fuel"] = 99134 },
+		sources = { s0, s1, s2 },
+		mask_union = { ["signal-A"] = 7 },
+		sections = {
+			{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { s0 },
+				provided = { ["naphthalene-oil"] = 199134 }, requested = {}, ignored = {} },
+			{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s1 },
+				provided = { ["liquid-fuel"] = 99134 }, requested = {}, ignored = {} },
+			{ key = "signal-A:4", network_name = "signal-A", mask = 4, sources = { s2 },
+				provided = {}, requested = {}, ignored = { ["liquid-fuel"] = -866 } },
+		},
+	})
+end
+
+--- A plain Request only station on A3 with requests below threshold.
+local function plain()
+	local s0 = source("station", 0, 1)
+	local requested = {
+		["iron-plate"] = { count = -1900, threshold = 2000, active = false },
+		["copper-plate"] = { count = -1600, threshold = 2000, active = false },
+		coal = { count = -2500, threshold = 2000, active = true },
+	}
+	local provided = {}
+	return st(21, "Circuit Requestor", {
+		is_p = false, is_r = true, network_mask = 3, provided = provided, requested = requested,
+		sources = { s0 }, mask_union = { ["signal-A"] = 3 },
+		sections = { { key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s0 },
+			provided = provided, requested = requested, ignored = { stone = 52 } } },
+	})
+end
+
+local function slot_ids(defs)
+	local out = {}
+	for i, d in ipairs(defs) do
+		out[i] = d.tags.group and ("[" .. d.caption .. "]") or d.tags.overflow and d.caption or d.tags.id
+	end
+	return out
+end
+
+test("network cell: the naphthalene provider lists its masks with a +2 badge and one tooltip line per section", function()
+	local stations_tab = setup()
+	local cell = stations_tab.network_cell(naphthalene())
+	assert_eq(cell.sprite, "virtual-signal/signal-A")
+	assert_eq(cell.caption, "1 · 3 · 4")
+	assert_eq(cell.badge, "+2")
+	assert_true(cell.small)
+	local tip = serpent.line(cell.tooltip)
+	assert_true(tip:find('"cybersyn-gui.stations-net-sections", "3"', 1, true) ~= nil, tip)
+	assert_true(tip:find('" (", "bits 1+2", ")"', 1, true) ~= nil or tip:find('" (bits 1+2)"', 1, true) ~= nil, tip)
+	assert_eq(#cell.tooltip, 2 + 3, "title and three section lines")
+	assert_eq(cell.tooltip[5][#cell.tooltip[5]], { "cybersyn-gui.section-nothing" }, "Inventory 2 advertises nothing")
+end)
+
+test("network cell: a plain station looks as it does today", function()
+	local stations_tab = setup()
+	local cell = stations_tab.network_cell(plain())
+	assert_eq(cell.caption, "3")
+	assert_eq(cell.sig, "signal-A=3")
+	assert_nil(cell.badge)
+	assert_nil(cell.small)
+end)
+
+test("strip: grouped by section with a network label each; A4 advertises nothing and gets no group", function()
+	local stations_tab = setup()
+	local defs = stations_tab.pr_slots(naphthalene(), nil, 12)
+	assert_eq(slot_ids(defs), { "[[img=virtual-signal.signal-A]1]", "naphthalene-oil", "[[img=virtual-signal.signal-A]3]", "liquid-fuel" })
+	-- Keys stay unique when one item sits in two sections.
+	local keys = {}
+	for _, d in ipairs(defs) do keys[#keys + 1] = stations_tab.slot_key(d) end
+	assert_eq(keys, { "gsignal-A:1", "signal-A:1|pnaphthalene-oil", "gsignal-A:3", "signal-A:3|pliquid-fuel" })
+	local tip = serpent.line(defs[4].tooltip)
+	assert_true(tip:find('"cybersyn-gui.stations-slot-section", "[img=virtual-signal.signal-A]3"', 1, true) ~= nil, tip)
+	assert_true(tip:find('"cybersyn-gui.stations-slot-ignored", "[img=virtual-signal.signal-A]4", "-866", {"cybersyn-gui.section-provide-only"}', 1, true) ~= nil, tip)
+end)
+
+test("strip: a group label never ends a line that overflows", function()
+	local stations_tab = setup()
+	local defs = stations_tab.pr_slots(naphthalene(), nil, 3)
+	assert_eq(slot_ids(defs), { "[[img=virtual-signal.signal-A]1]", "naphthalene-oil", "+1" })
+	assert_true(defs[3].tooltip:find("[img=virtual-signal.signal-A]3", 1, true) ~= nil)
+end)
+
+test("strip: a plain station keeps today's ungrouped strip and keys", function()
+	local stations_tab = setup()
+	local defs = stations_tab.pr_slots(plain(), nil, 12)
+	assert_eq(slot_ids(defs), { "coal", "copper-plate", "iron-plate" })
+	assert_eq(stations_tab.slot_key(defs[1]), "coal")
+end)
+
+test("sort keys: Provided / requested counts items per section; Network sorts by the mask union", function()
+	local stations_tab = setup()
+	local k = stations_tab.sort_keys
+	assert_eq(k.provided_requested(naphthalene()), 2)
+	assert_eq(k.provided_requested(plain()), 3)
+	assert_eq(k.network(naphthalene()), string.format("%s\0%010.0f", "signal-A", 7 + 2147483648))
+end)
+
+test("network filter: a station shows under every bit any of its sections advertises on", function()
+	local u = H.load("scripts.gui.util")
+	local n = naphthalene()
+	local f = { mask = 4, network = "signal-A" }
+	assert_true(u.station_passes(n, f), "bit 3 comes from Inventory 2")
+	f.mask = 2
+	assert_true(u.station_passes(n, f), "bit 2 from Inventory 1's mask 3")
+	f.mask = 8
+	assert_false(u.station_passes(n, f))
+	f.network = "signal-B"
+	f.mask = -1
+	assert_false(u.station_passes(n, f))
+	assert_true(u.station_passes(n, { mask = 4 }), "mask only")
+	local p = plain()
+	p.mask_union = nil
+	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without a union reads its own mask")
+end)
