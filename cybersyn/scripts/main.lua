@@ -1051,8 +1051,7 @@ local function main()
 		picker_dollies_compat.setup_picker_dollies_compat()
 	end)
 
-	-- flib's handle_events skips events that already have a handler; hover-hold, tab sync and the search field's
-	-- keyboard focus (manager_util.note_input) must not hinge on that.
+	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
 	local flib_gui = require("__flib__.gui")
 	local manager_util = require("scripts.gui.util")
 	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, flib_gui.dispatch)
@@ -1092,7 +1091,6 @@ local function main()
 	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)
-	script.on_event("cybersyn-manager-world-click", manager.on_world_click)
 	script.on_event({
 		defines.events.on_player_display_resolution_changed,
 		defines.events.on_player_display_scale_changed,

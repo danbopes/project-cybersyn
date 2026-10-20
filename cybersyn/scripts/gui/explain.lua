@@ -221,19 +221,15 @@ function explain.open(player, pd, r_id, hash)
 	pd.explain = { r_id = r_id, hash = hash }
 	place(player, pd, f)
 	explain.render(player, pd, true)
-	-- An overlay of the window: Escape closes it first (manager.top_overlay).
-	util.overlay_opened(player, pd)
 end
 
 --- @param player LuaPlayer?
 --- @param pd PlayerData
 function explain.close(player, pd)
-	local was = pd.explain ~= nil
 	pd.explain = nil
 	if not player then return end
 	local frame = player.gui.screen[FRAME]
 	if frame and frame.valid then frame.destroy() end
-	if was then util.overlay_closed(player, pd) end
 end
 
 --- Manager tick: refresh the open frames; close a frame whose window was closed.

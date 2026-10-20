@@ -2398,7 +2398,6 @@ trains_tab.wrapper = util.wrapper
 function trains_tab.handle.on_pane_close(player, player_data)
 	trains_tab.select(player_data, nil)
 	util.rerender(player, player_data)
-	util.overlay_closed(player, player_data)
 end
 
 --- Whether the detail pane shows: a train selected on the Trains tab, no drill-down over it (manager.top_overlay).
@@ -2453,11 +2452,6 @@ function trains_tab.on_row_click(e)
 			trains_tab.select(player_data, player_data.selected_train ~= id and id or nil)
 			local player = game.get_player(e.player_index)
 			util.rerender(player, player_data)
-			if player_data.selected_train then
-				util.overlay_opened(player, player_data)
-			else
-				util.overlay_closed(player, player_data)
-			end
 			return true
 		end
 		elem = parent
@@ -2578,8 +2572,6 @@ local function pane_dump(pi)
 		local f = out.footer
 		out.footer_docked = f.panel == true and f.mount == true and f.pusher == true and f.at == f.scroll + 1 and f.footer == f.at + 1
 	end
-	local pending = storage.manager.pane_escapes
-	out.escape_pending = pending and pending[pi] ~= nil or false
 	local header = refs[HEADER]
 	local cells, total, shown = {}, 0, 0
 	for _, cell in ipairs(header.children) do
@@ -2629,7 +2621,6 @@ dev.add("select_train", function(pi, id)
 	local player = game.get_player(pi)
 	trains_tab.select(pd, id)
 	util.rerender(player, pd)
-	util.overlay_opened(player, pd)
 	return pane_dump(pi)
 end)
 
@@ -2638,7 +2629,6 @@ dev.add("deselect_train", function(pi)
 	local player = game.get_player(pi)
 	trains_tab.select(pd, nil)
 	util.rerender(player, pd)
-	util.overlay_closed(player, pd)
 	return pane_dump(pi)
 end)
 

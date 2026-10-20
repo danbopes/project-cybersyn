@@ -271,7 +271,6 @@ local STEPS = {
 				and ex.title_drag == "cybersyn_explain", { ex.drag, ex.title_drag })
 			lab.check("the X closes Explain", dev("explain_click_close", PI) == true and dev("explain_dump", PI).open == false
 				and read("manager", "players", PI, "explain") == nil, dev("explain_dump", PI))
-			lab.check("closing by the X gives back what the overlay took", read("manager", "players", PI, "overlay_took") == nil)
 		end
 		-- One frame at a time: opening another row replaces the first.
 		dev("explain_open", PI, row.requester, row.item)

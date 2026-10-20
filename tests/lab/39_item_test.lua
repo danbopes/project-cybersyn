@@ -262,12 +262,11 @@ lab.suite("39_item", {
 			top_child(scroll, "manager_stations_content_frame").visible)
 
 		-- Selecting another tab leaves the drill-down.
-		local od0 = dev("open_item", PI, hash)
-		lab.check("on the pinned window the drill-down holds player.opened (Escape reaches it)", od0.took_opened == true, od0)
+		dev("open_item", PI, hash)
 		dev("select_tab", PI, "trains")
 		lab.check("selecting another tab closes the drill-down", not dev("item_dump", PI).open and
 			find_named(window(), "item_view") == nil)
-		lab.check("and the tab selected stays selected (releasing player.opened does not re-select the old tab)",
+		lab.check("and the tab selected stays selected",
 			dev("state", PI).selected_tab == "trains_tab", dev("state", PI).selected_tab)
 		dev("select_tab", PI, "stations")
 		lab.check("and the host tab's content is back", scroll.valid and scroll.visible and
@@ -295,9 +294,10 @@ lab.suite("39_item", {
 
 		-- Ctrl+F and a search set from outside (the stop panel's Open in manager) show the lists again.
 		dev("open_item", PI, hash)
-		local sf = dev("search_input", PI)
-		lab.check("Ctrl+F closes the drill-down and opens the visible search field", not dev("item_dump", PI).open and
-			sf.open and sf.visible, sf)
+		dev("click", PI, "manager_search_button")
+		local sf = dev("header", PI)
+		lab.check("the search button closes the drill-down and opens the visible search field",
+			not dev("item_dump", PI).open and sf.stations_tab.search, sf.stations_tab)
 		dev("cancel_search", PI)
 		dev("open_item", PI, hash)
 		dev("set_filter", PI, { query = "stn-1" })
@@ -313,22 +313,18 @@ lab.suite("39_item", {
 		dev("close_item", PI)
 		dev("select_tab", PI, "stations")
 
-		-- Escape: on a pinned window it closes only the drill-down.
+		-- Escape never reaches a pinned window: the drill-down stays until its own Back.
 		dev("open_item", PI, hash)
 		local e = dev("item_escape", PI)
-		lab.check("Escape on the pinned window waits for a later tick (another GUI may have replaced the window)",
-			e.before and e.open and e.manager_open, e)
-		dev("pane_escapes", PI, true)
-		lab.check("then closes the drill-down, the window stays", not dev("item_dump", PI).open and dev("state", PI).is_open)
-		-- Unpinned: one rule for every overlay since phase 7 (manager.top_overlay): Escape closes the drill-down and
-		-- the window stays, as it does for the Trains pane; the next Escape closes the window. (Phase 8 closed the
-		-- window with the drill-down here.)
+		lab.check("on_gui_closed reaching the pinned window leaves the drill-down", e.before and e.open and e.manager_open, e)
+		dev("close_item", PI)
+		-- Unpinned: one rule for every overlay (manager.top_overlay): Escape closes the drill-down and the window stays,
+		-- as it does for the Trains pane; the next Escape closes the window.
 		dev("click", PI, "manager_pin_button")
 		dev("open_item", PI, hash)
 		e = dev("item_escape", PI)
 		lab.check("Escape on an unpinned window closes the drill-down, the window stays", e.before and not e.open and
 			e.manager_open, e)
-		dev("pane_escapes", PI, true)
 		e = dev("item_escape", PI)
 		lab.check("the next Escape on the unpinned window closes the window", not e.before and not e.manager_open, e)
 		dev("open", PI)

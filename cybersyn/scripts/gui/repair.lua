@@ -328,7 +328,7 @@ end
 local function hand_back(player, pd, ret)
 	if not ret or player.opened_gui_type ~= defines.gui_type.none then return end
 	if ret.entity then
-		if ret.entity.valid then player.opened = ret.entity end
+		if ret.entity.valid then util.switch_opened(player, function() player.opened = ret.entity end) end
 	elseif ret.window then
 		local window = pd.refs and pd.refs.manager_window
 		if pd.is_manager_open and window and window.valid then player.opened = window end
@@ -350,8 +350,8 @@ function repair.close_dialog(player, pd, restore)
 	if restore and pd then hand_back(player, pd, ret) end
 end
 
---- on_gui_closed of the dialog: Escape, or another GUI replacing it. The dialog closes; what it replaced gets
---- player.opened back on a later tick unless another GUI opened meanwhile (repair.settle).
+--- on_gui_closed of the dialog: Escape, or another GUI replacing it. The dialog closes and what it replaced takes
+--- player.opened back; if another GUI was replacing it, the engine drops that again without an event.
 --- @param e EventData.on_gui_closed
 function repair.on_gui_closed(e)
 	local elem = e.element
@@ -360,31 +360,7 @@ function repair.on_gui_closed(e)
 	local pd = manager_data and manager_data.players[e.player_index]
 	local player = game.get_player(e.player_index)
 	if not (pd and player and pd.action_dialog) then return end
-	local ret = pd.dialog_return
-	repair.close_dialog(player, pd, false)
-	if ret then
-		local pending = manager_data.dialog_escapes or {}
-		manager_data.dialog_escapes = pending
-		pending[e.player_index] = { tick = game.tick, ret = ret, controller = player.controller_type }
-	end
-end
-
---- Hands player.opened back after an Escape closed a dialog in an earlier tick (scripts/main.lua: the planner's tick,
---- the manager tick and the export tick).
-function repair.settle()
-	local manager_data = storage.manager
-	local pending = manager_data and manager_data.dialog_escapes
-	if not pending then return end
-	local tick = game.tick
-	for pi, p in pairs(pending) do
-		if p.tick ~= tick then
-			pending[pi] = nil
-			local player = game.get_player(pi)
-			local pd = manager_data.players[pi]
-			if player and pd and player.controller_type == p.controller then hand_back(player, pd, p.ret) end
-		end
-	end
-	if not next(pending) then manager_data.dialog_escapes = nil end
+	repair.close_dialog(player, pd, true)
 end
 
 local function train_count()
@@ -455,7 +431,7 @@ function repair.open_dialog(player, pd, which)
 	frame.force_auto_center()
 	pd.action_dialog = which
 	-- Modal, as the style guide's dialogs are: player.opened, so Escape closes it; what it replaces gets player.opened
-	-- back when it closes. The window's own on_gui_closed ignores this switch (dialog_opening).
+	-- back when it closes.
 	local opened = player.opened
 	local window = pd.refs and pd.refs.manager_window
 	local ret
@@ -465,8 +441,7 @@ function repair.open_dialog(player, pd, which)
 		ret = { entity = opened }
 	end
 	pd.dialog_return = ret
-	pd.dialog_opening = game.tick
-	player.opened = frame
+	util.switch_opened(player, function() player.opened = frame end)
 end
 
 function repair.handle.repair_dialog_back(player, pd)

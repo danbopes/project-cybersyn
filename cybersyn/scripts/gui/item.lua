@@ -301,8 +301,6 @@ end
 local function teardown(player, player_data)
 	local view = player_data.item_view
 	local refs = player_data.refs
-	-- Cleared before player.opened is released: the release re-enters on_gui_closed, which must find no drill-down
-	-- (otherwise it closes it again with back and re-selects the tab it came from).
 	player_data.item_view = nil
 	player_data.item_cache = nil
 	if view and refs then
@@ -329,7 +327,6 @@ local function teardown(player, player_data)
 	if states then
 		for _, t in ipairs(item_model.TABLES) do states[table_name(t)] = nil end
 	end
-	util.overlay_closed(player, player_data)
 end
 
 --- Closes the drill-down; with `back`, the tab it was opened from is selected again.
@@ -385,9 +382,6 @@ function item.open(player, player_data, hash)
 	gui.add(content, view_def(from, layout), refs)
 	view = { hash = hash, from_tab = from, host = host, hidden = hidden }
 	player_data.item_view = view
-	-- A pinned window does not hold player.opened, so Escape would never reach the drill-down: the overlay rule
-	-- (manager.PINNED_OVERLAYS_TAKE_OPENED) lets it take it, not in remote view, where Escape must leave the map.
-	util.overlay_opened(player, player_data)
 end
 
 -- ---------------------------------------------------------------- render
@@ -1124,7 +1118,6 @@ local function dump(player_data)
 		from_tab = view.from_tab,
 		host = view.host,
 		selected_tab = player_data.selected_tab,
-		took_opened = player_data.overlay_took == true,
 		alloc = cache and cache.alloc,
 		total_rows = player_data.layout and player_data.layout.rows_by_tab[TAB],
 		totals = m and m.totals,

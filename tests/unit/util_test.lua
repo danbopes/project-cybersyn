@@ -504,44 +504,16 @@ test("hover_enter/hover_leave/touch_hover keep one hover record per player", fun
 	assert_eq(pd.hover.tick, 90)
 end)
 
-test("dispatch: input on any element but a search field takes the keyboard from the search, then reaches flib", function()
+test("switch_opened: the guard holds only while the move runs, per player", function()
 	local u = util()
-	local flib_gui = require("__flib__.gui")
-	local dispatched = {}
-	local saved = flib_gui.dispatch
-	flib_gui.dispatch = function(e) dispatched[#dispatched + 1] = e.name; return true end
-	local closed = 0
-	u.set_overlay_fns({ opened = function() end, closed = function() closed = closed + 1 end })
-	local pd = { search_focused = true }
-	storage.manager = { players = { [1] = pd } }
-	game.players[1] = { index = 1 }
-	local root = H.element({ name = "manager_window" })
-	local field = root.add({ type = "textfield", name = "stations_tab_search_field" })
-	local mask = root.add({ type = "textfield", name = "manager_network_mask_field" })
-	local tab = root.add({ type = "tab", name = "manager_trains_tab" })
-	local E = defines.events
-	for _, name in ipairs({ E.on_gui_click, E.on_gui_text_changed, E.on_gui_confirmed }) do
-		assert_true(u.dispatch({ name = name, element = field, player_index = 1 }))
-		assert_true(pd.search_focused, "the search field's own input keeps the keyboard there")
-	end
-	assert_eq(closed, 0)
-	for _, case in ipairs({
-		{ E.on_gui_click, tab }, { E.on_gui_selected_tab_changed, tab }, { E.on_gui_text_changed, mask },
-		{ E.on_gui_confirmed, mask }, { E.on_gui_checked_state_changed, tab }, { E.on_gui_selection_state_changed, tab },
-		{ E.on_gui_elem_changed, tab }, { E.on_gui_switch_state_changed, tab }, { E.on_gui_value_changed, tab },
-	}) do
-		pd.search_focused = true
-		closed = 0
-		u.dispatch({ name = case[1], element = case[2], player_index = 1 })
-		assert_nil(pd.search_focused)
-		assert_eq(closed, 1)
-	end
-	assert_eq(#dispatched, 12, "every event still reaches flib")
-	pd.search_focused = nil
-	u.dispatch({ name = E.on_gui_click, element = tab, player_index = 1 })
-	assert_eq(closed, 1, "nothing to give up without a focused search")
-	flib_gui.dispatch = saved
-	game.players[1] = nil
+	local inside, other
+	u.switch_opened({ index = 1 }, function()
+		inside = u.switching(1)
+		other = u.switching(2)
+	end)
+	assert_true(inside)
+	assert_false(other)
+	assert_false(u.switching(1))
 end)
 
 -- ------------------------------------------------------------------ items and signals

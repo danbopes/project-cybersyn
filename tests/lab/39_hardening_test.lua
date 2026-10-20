@@ -1,5 +1,5 @@
 -- Phase 7 hardening (PLAN3 §5 row 7): the one Escape rule for every overlay (Explain, the item drill-down, the Trains
--- pane, a focused search) on pinned and unpinned windows, the modal action dialog and its hand-back, lint transitions
+-- pane, an open search) on unpinned windows and none on pinned ones, the modal action dialog and its hand-back, lint transitions
 -- not logged twice after a dropped half pass, the per-item station index behind the drill-down, the Trains table on
 -- a narrow window, relative.tick's open-panel flag, the growth sampler and the idle per-tick handler.
 -- Escape is emulated as the engine does it: player.opened set to nil raises on_gui_closed for the window.
@@ -30,15 +30,6 @@ end
 --- Escape: the engine clears player.opened first, which raises on_gui_closed of the window.
 local function escape()
 	player().opened = nil
-end
-
---- The deferred hand-back of player.opened after an Escape, as the next planner or export tick runs it.
-local function settle()
-	local pending = read("manager", "pane_escapes")
-	if pending and pending[PI] then
-		remote.call("cybersyn", "write_global", game.tick - 1, "manager", "pane_escapes", PI, "tick")
-	end
-	dev("pane_escapes", PI, true)
 end
 
 --- The Overview's ack button of an Unserved row, and the row's wait caption (the cell before it).
@@ -79,8 +70,8 @@ local function lint_events_for(station, after_seq)
 end
 
 lab.suite("39_hardening", {
-	-- One rule for every overlay, pinned window (dev open pins it): an overlay takes player.opened, Escape peels the top
-	-- one and the window takes player.opened back while another overlay remains, then gives it up.
+	-- A pinned window (dev open pins it) never holds player.opened: its overlays leave player.opened alone, E and
+	-- Escape go past it, and the overlays close by their own controls.
 	function(ctx)
 		-- A window an earlier suite left open unpinned still holds player.opened; this case starts from a fresh one.
 		dev("close", PI)
@@ -92,124 +83,80 @@ lab.suite("39_hardening", {
 		if not lab.check("an unserved row exists", row ~= nil) then return end
 		ctx.row = row
 		dev("open_item", PI, row.item)
-		lab.check("the drill-down on a pinned window takes player.opened", player().opened == window()
-			and pd_field("overlay_took") == true, pd_field("overlay_took"))
 		dev("explain_open", PI, row.requester, row.item)
-		lab.check("Explain opens over it", dev("explain_dump", PI).open == true)
-		escape()
-		lab.check("a pinned window's Escape closes nothing in its own tick (another GUI may be replacing the window)",
-			dev("explain_dump", PI).open == true and dev("item_dump", PI).open)
-		settle()
-		lab.check("Escape closes Explain first; the drill-down and the window stay",
-			dev("explain_dump", PI).open == false and dev("item_dump", PI).open and dev("state", PI).is_open)
-		lab.check("with an overlay left, the pinned window takes player.opened back", player().opened == window()
-			and pd_field("overlay_took") == true)
-		escape()
-		settle()
-		lab.check("the next Escape closes the drill-down", not dev("item_dump", PI).open and dev("state", PI).is_open)
-		lab.check("with none left, the pinned window gives player.opened up", player().opened == nil
-			and pd_field("overlay_took") == nil, { player().opened, pd_field("overlay_took") })
-		escape()
-		lab.check("Escape on a pinned window without overlays does nothing", dev("state", PI).is_open)
-
-		-- The pane counts too, and the × gives player.opened up with the last overlay.
+		lab.check("the drill-down and Explain on a pinned window leave player.opened alone", player().opened == nil
+			and dev("explain_dump", PI).open == true and dev("item_dump", PI).open)
+		dev("item_escape", PI)
+		lab.check("on_gui_closed reaching a pinned window closes nothing", dev("explain_dump", PI).open == true
+			and dev("item_dump", PI).open and dev("state", PI).is_open)
+		dev("explain_close", PI)
+		dev("close_item", PI)
+		lab.check("its overlays close by their own controls", dev("explain_dump", PI).open == false
+			and not dev("item_dump", PI).open and player().opened == nil)
 		dev("select_tab", PI, "trains")
-		local tid = next(read("trains"))
-		dev("select_train", PI, tid)
-		lab.check("the Trains pane on a pinned window takes player.opened", player().opened == window())
+		dev("select_train", PI, next(read("trains")))
+		lab.check("the Trains pane on a pinned window leaves player.opened alone", player().opened == nil)
 		dev("deselect_train", PI)
-		lab.check("closing it by its own control gives player.opened up", player().opened == nil
-			and pd_field("overlay_took") == nil)
-		-- A search field with the keyboard is the top overlay. With no GUI open at all the client makes Ctrl+F the
-		-- map search, so the window leaves it; with an overlay holding player.opened, Ctrl+F is the window's.
+		-- With no GUI open at all the client makes Ctrl+F the map search, so the window leaves it.
 		dev("select_tab", PI, "stations")
 		dev("search_input", PI)
 		lab.check("Ctrl+F on a pinned window with no GUI open is left to the game", player().opened == nil
-			and pd_field("search_focused") == nil)
-		dev("explain_open", PI, row.requester, row.item)
-		dev("search_input", PI)
-		lab.check("Ctrl+F on a pinned window with an overlay: the search has the keyboard", player().opened == window()
-			and pd_field("search_focused") == true)
-		dev("set_filter", PI, { query = "stn-1" })
-		escape()
-		settle()
-		lab.check("Escape clears and closes the search, Explain and the window stay",
-			read("manager", "players", PI, "search_query") == nil and dev("state", PI).is_open
-			and dev("explain_dump", PI).open == true)
-		escape()
-		settle()
-		lab.check("and with Explain closed the pinned window gives player.opened up again", player().opened == nil
-			and dev("explain_dump", PI).open == false)
+			and not dev("header", PI).stations_tab.search)
 	end,
 
-	-- A pinned window stays on screen through other GUIs and remote view (PLAN3 §1), its overlays with it: on_gui_closed
-	-- cannot tell Escape from a GUI replacing the window, so the overlay waits for a later tick.
+	-- A pinned window stays on screen through other GUIs and remote view (PLAN3 §1), its overlays and query with it.
 	function(ctx)
 		dev("select_tab", PI, "trains")
 		local tid = next(read("trains"))
-		ctx.tid = tid
 		dev("select_train", PI, tid)
-		lab.check("pinned + pane: the window holds player.opened", player().opened == window())
-		-- An entity clicked in the world: the engine closes the window, then opens the entity's GUI.
-		escape()
 		local station = next(read("stations"))
 		dev("stop_gui_opened", PI, station)
-		lab.check("a GUI replacing a pinned window keeps the pane and its train", read("manager", "players", PI, "selected_train")
-			== tid and dev("pane_dump", PI).visible and dev("state", PI).is_open, read("manager", "players", PI, "selected_train"))
-		lab.check("nothing waits any more", read("manager", "pane_escapes") == nil)
+		lab.check("a GUI opening over a pinned window keeps the window, the pane and its train",
+			read("manager", "players", PI, "selected_train") == tid and dev("pane_dump", PI).visible
+			and dev("state", PI).is_open, read("manager", "players", PI, "selected_train"))
 		dev("relative_close", PI)
-		lab.check("the window waits to take player.opened back", pd_field("overlay_took") == nil
-			and read("manager", "players", PI, "restore_opened") ~= nil)
-		dev("tick", 1)
-		lab.check("with that GUI closed, the window holds player.opened for the pane again", player().opened == window()
-			and pd_field("overlay_took") == true, { player().opened and player().opened.name, pd_field("overlay_took") })
-		-- Remote view (M, or the pane's Locate) after the close.
-		escape()
 		dev("controller_changed", PI)
 		lab.check("remote view keeps a pinned window's pane", read("manager", "players", PI, "selected_train") == tid
 			and dev("pane_dump", PI).visible, read("manager", "players", PI, "selected_train"))
-		dev("tick", 1)
-		-- A search with the keyboard and a query: remote view takes the keyboard, the query stays.
 		dev("select_tab", PI, "stations")
-		dev("explain_open", PI, ctx.row.requester, ctx.row.item)
-		dev("search_input", PI)
 		dev("set_filter", PI, { query = "stn-2" })
-		lab.check("search focused with a query", pd_field("search_focused") == true)
-		escape()
 		dev("controller_changed", PI)
-		lab.check("remote view after a pinned window's close keeps the query, the field loses the keyboard",
-			read("manager", "players", PI, "search_query") ~= nil and pd_field("search_focused") == nil
-			and dev("explain_dump", PI).open == true, { read("manager", "players", PI, "search_query"), pd_field("search_focused") })
-		dev("explain_close", PI)
+		lab.check("remote view keeps a pinned window's query", read("manager", "players", PI, "search_query") ~= nil)
 		dev("clear_filters", PI)
-		dev("tick", 1)
 		dev("select_tab", PI, "trains")
 		dev("deselect_train", PI)
 		dev("select_tab", PI, "inventory")
-		dev("tick", 1)
-		lab.check("no overlay left: the pinned window gives player.opened up", player().opened == nil, player().opened and
-			player().opened.name)
 	end,
 
-	-- Unpinned: Escape peels the overlays, then closes the window.
+	-- Unpinned: Escape peels the overlays, the window holding player.opened throughout, then closes the window.
 	function(ctx)
 		local row = ctx.row
 		if not row then return end
 		dev("click", PI, "manager_pin_button")
 		lab.check("unpinned: the window holds player.opened", player().opened == window())
+		dev("open_item", PI, row.item)
 		dev("explain_open", PI, row.requester, row.item)
 		escape()
-		lab.check("unpinned: Escape closes Explain, the window stays", dev("explain_dump", PI).open == false
-			and dev("state", PI).is_open)
-		settle()
-		lab.check("unpinned: the window has player.opened back", player().opened == window())
+		lab.check("unpinned: Escape closes Explain; the drill-down, the window and player.opened stay",
+			dev("explain_dump", PI).open == false and dev("item_dump", PI).open and dev("state", PI).is_open
+			and player().opened == window())
+		escape()
+		lab.check("unpinned: the next Escape closes the drill-down", not dev("item_dump", PI).open
+			and dev("state", PI).is_open and player().opened == window())
+		dev("select_tab", PI, "stations")
+		dev("search_input", PI)
+		dev("set_filter", PI, { query = "stn-1" })
+		escape()
+		lab.check("unpinned: Escape clears and closes the search, the window stays",
+			read("manager", "players", PI, "search_query") == nil and dev("state", PI).is_open
+			and player().opened == window())
 		escape()
 		lab.check("unpinned: the next Escape closes the window", not dev("state", PI).is_open)
 		dev("open", PI)
 		lab.big_screen(PI)
 	end,
 
-	-- The action dialog is modal: it takes player.opened, Back and Escape give it back to the window.
+	-- The action dialog is modal: it takes player.opened, Back and Escape give it back to the window at once.
 	function(ctx)
 		ctx.actions = settings.global["cybersyn-manager-actions"].value
 		dev("set_setting", "cybersyn-manager-actions", "everyone")
@@ -220,23 +167,13 @@ lab.suite("39_hardening", {
 			"cybersyn_action_dialog", player().opened and player().opened.name)
 		lab.check("opening the dialog does not close the window", dev("state", PI).is_open)
 		dev("action_dialog_back", PI)
-		-- Escape on the dialog: it closes, and the window gets player.opened on a later tick.
 		dev("action_dialog", PI, "recalc")
 		escape()
-		lab.check("Escape closes the dialog", not dev("action_dialog", PI).open)
-		lab.check("the window stays open", dev("state", PI).is_open)
-		local pending = read("manager", "dialog_escapes")
-		if pending and pending[PI] then
-			remote.call("cybersyn", "write_global", game.tick - 1, "manager", "dialog_escapes", PI, "tick")
-		end
-		dev("pane_escapes", PI, true)
-		dev("tick", 1)
-		lab.check("the window holds player.opened again after the hand-back", player().opened == window(),
-			player().opened and player().opened.name)
-		-- Back hands it back at once.
+		lab.check("Escape closes the dialog; the window stays and holds player.opened", not dev("action_dialog", PI).open
+			and dev("state", PI).is_open and player().opened == window(), player().opened and player().opened.name)
 		dev("action_dialog", PI, "recalc")
 		dev("action_dialog_back", PI)
-		lab.check("Back closes the dialog and the window holds player.opened at once", not dev("action_dialog", PI).open
+		lab.check("Back closes the dialog and the window holds player.opened", not dev("action_dialog", PI).open
 			and player().opened == window(), player().opened and player().opened.name)
 		dev("click", PI, "manager_pin_button")
 		dev("set_setting", "cybersyn-manager-actions", ctx.actions)

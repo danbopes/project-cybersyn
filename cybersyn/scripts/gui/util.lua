@@ -703,28 +703,30 @@ function util.normalize(text)
 	return helpers.multilingual_to_lower(text)
 end
 
---- Any input on a GUI element other than a search field (a click, a tab, a checkbox, a dropdown, a chooser, typing
---- in another field...) means the engine gave the keyboard to something else. search_focused must follow, or the next
---- Escape or E (on_gui_closed) would cancel a search nobody is typing in instead of closing the window
---- (manager.cancel_search). Hover and leave never move the keyboard and do not come here.
---- @param e {element: LuaGuiElement?, player_index: uint}
-function util.note_input(e)
-	local elem = e.element
-	if not (elem and elem.valid) then return end
-	local manager_data = storage.manager
-	local player_data = manager_data and manager_data.players[e.player_index]
-	if not (player_data and player_data.search_focused) then return end
-	if not string.find(elem.name, "_search_field$") then
-		player_data.search_focused = nil
-		util.overlay_closed(game.get_player(e.player_index), player_data)
-	end
-end
-
 --- The one entry of every GUI input event into flib (scripts/main.lua, and the dev interface's emulated clicks).
 --- @return boolean handled
 function util.dispatch(e)
-	util.note_input(e)
 	return gui.dispatch(e)
+end
+
+-- Players whose player.opened the mod itself is moving (util.switch_opened). Not saved: the engine raises the
+-- on_gui_closed and on_gui_opened of such a move inside the assignment, so the flag never outlives one call.
+local switching = {}
+
+--- Runs `move`, which changes what player.opened is (a link opening an entity, the action dialog, show on map), so
+--- that the manager's on_gui_closed and on_gui_opened handlers know the switch is the mod's and not the player's.
+--- @param player LuaPlayer
+--- @param move fun()
+function util.switch_opened(player, move)
+	switching[player.index] = true
+	move()
+	switching[player.index] = nil
+end
+
+--- @param player_index uint
+--- @return boolean
+function util.switching(player_index)
+	return switching[player_index] == true
 end
 
 --- Whitespace-separated terms of a station-name query. Terms are matched as plain substrings (string.find with
@@ -1123,28 +1125,6 @@ function util.rerender(player, player_data)
 	if rerender_fn then rerender_fn(player, player_data) end
 end
 
-local overlay_fns
-
---- Lets manager.lua own the overlay rule (manager.overlay_opened / overlay_closed) without a require cycle.
---- @param fns {opened: fun(player: LuaPlayer, player_data: PlayerData), closed: fun(player: LuaPlayer, player_data: PlayerData)}
-function util.set_overlay_fns(fns)
-	overlay_fns = fns
-end
-
---- An overlay of the manager window opened (the item drill-down, the Trains pane, Explain): manager.overlay_opened.
---- @param player LuaPlayer?
---- @param player_data PlayerData
-function util.overlay_opened(player, player_data)
-	if player and overlay_fns then overlay_fns.opened(player, player_data) end
-end
-
---- An overlay closed by its own button or a tab switch (not by Escape): manager.overlay_closed.
---- @param player LuaPlayer?
---- @param player_data PlayerData
-function util.overlay_closed(player, player_data)
-	if player and overlay_fns then overlay_fns.closed(player, player_data) end
-end
-
 --- Switches the tabbed pane and keeps `player_data.selected_tab` in sync (setting the index raises no event).
 --- @param player_data PlayerData
 --- @param tab string e.g. "stations_tab"
@@ -1357,15 +1337,21 @@ function util.slot_table_build_from_control_signals(st)
 	return children
 end
 
---- Opens an entity's GUI from a manager link. Taking player.opened closes an unpinned manager, so the link records
---- what it opened; the manager stays on screen (manager.handle.manager_closed_by_game) and takes player.opened back
---- on a manager tick after that GUI, and any GUI that replaced it, has closed (manager.restore_opened).
+--- Opens an entity's GUI from a manager link. An unpinned manager stays on screen and takes player.opened back when
+--- that GUI closes (manager.on_linked_gui_closed), so a second Escape closes the manager.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param entity LuaEntity
 function util.open_entity(player, player_data, entity)
-	player_data.return_to = { entity = entity, tick = game.tick, controller = player.controller_type }
-	player.opened = entity
+	util.switch_opened(player, function() player.opened = entity end)
+	if player_data.pinning or not player_data.is_manager_open then return end
+	local window = player_data.refs.manager_window
+	if player.opened_gui_type == defines.gui_type.none then
+		player.opened = window
+	elseif player.opened ~= window then
+		-- What holds player.opened now, not the entity: Cybersyn's combinator replaces the entity's window with its own.
+		player_data.return_to = player.opened
+	end
 end
 
 -- ---------------------------------------------------------------- links (PLAN3 §4.6)
@@ -1441,45 +1427,34 @@ function util.set_refresh_toggles(fn)
 	refresh_toggles_fn = fn
 end
 
---- Remote view closes an unpinned manager (PLAN3 §1), so the window is pinned first and unpinned again when the
---- player leaves remote view (manager.on_controller_changed).
---- @param player LuaPlayer
---- @param player_data PlayerData
-local function pin_for_map(player, player_data)
-	if not player_data.is_manager_open or player_data.pinning then return end
-	player_data.pinning = true
-	player_data.auto_pinned = true
-	-- A player whose own view is the remote one (on a space platform) never leaves remote view: Back returns them to
-	-- where they looked from.
-	if player.controller_type == defines.controllers.remote then
-		player_data.map_from = { position = player.position, surface = player.surface_index }
-	else
-		player_data.map_from = nil
-	end
-	local window = player_data.refs and player_data.refs.manager_window
-	-- Releasing player.opened raises on_gui_closed, which a pinned window ignores.
-	if window and window.valid and player.opened == window then player.opened = nil end
-	if refresh_toggles_fn then refresh_toggles_fn(player_data) end
-end
-
 -- The zoom a click on a vanilla map pin lands on (measured, 2.0.77): show on map lands in the same view.
 local SHOW_ZOOM = 1.5
 
 --- Shift-click on a link: the view a click on the target's map pin gives (remote view following the target at the
---- screen centre, zoom 1.5), a marker pair on it, the manager window pinned so remote view keeps it.
+--- screen centre, zoom 1.5) and a marker pair on it. Entering remote view closes the GUI that holds player.opened, so
+--- an unpinned manager takes it back in the same switch and stays open, with Back to the view it came from.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param target LuaEntity
 --- @param follow LuaEntity? an entity for remote view to follow (a train's front stock)
 function util.show_on_map(player, player_data, target, follow)
-	pin_for_map(player, player_data)
-	-- centered_on switches to remote view and to the target's surface itself; set_controller{type = remote} would reset
-	-- the zoom to 0.6, and a zoom written before the switch does not stick.
-	player.centered_on = follow or target
-	player.zoom = SHOW_ZOOM
+	local window = player_data.refs and player_data.refs.manager_window
+	local hold = player_data.is_manager_open and not player_data.pinning and window and window.valid
+	if hold and not player_data.map_from then
+		-- A player whose own view is the remote one (on a space platform) never leaves remote view: Back returns them
+		-- to where they looked from.
+		player_data.map_from = { controller = player.controller_type, position = player.position,
+			surface = player.surface_index }
+	end
+	util.switch_opened(player, function()
+		-- centered_on switches to remote view and to the target's surface itself; set_controller{type = remote} would
+		-- reset the zoom to 0.6, and a zoom written before the switch does not stick.
+		player.centered_on = follow or target
+		player.zoom = SHOW_ZOOM
+		if hold then player.opened = window end
+	end)
 	util.draw_markers(player, player_data, target)
-	local back = player_data.refs and player_data.refs.manager_back_button
-	if back and back.valid then back.visible = player_data.auto_pinned == true end
+	if refresh_toggles_fn then refresh_toggles_fn(player_data) end
 end
 
 --- @param e EventData.on_gui_click
@@ -1608,11 +1583,7 @@ function util.close_manager_window(player, player_data, refs, force)
 	-- Cleared first: releasing player.opened re-enters the close path through on_gui_closed.
 	player_data.is_manager_open = false
 	player_data.return_to = nil
-	player_data.restore_opened = nil
-	player_data.handed_back_tick = nil
-	-- Closed by the shortcut or another mod while typing, no GUI event says the field lost the keyboard; a stale flag
-	-- would make the first Escape or E after the next open cancel a search instead of closing.
-	player_data.search_focused = nil
+	player_data.map_from = nil
 	player_data.hover = nil
 	player_data.inventory_cache = nil
 	player_data.delivered_items = nil

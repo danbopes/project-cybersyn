@@ -343,15 +343,6 @@ data:extend({
 		linked_game_control = "focus-search",
 		action = "lua",
 	},
-	{
-		-- A click in the world (the game's open-gui button) takes the keyboard from a focused search field without any
-		-- GUI event: the manager forgets the focus, so the next Escape closes instead of clearing the search.
-		type = "custom-input",
-		name = "cybersyn-manager-world-click",
-		key_sequence = "",
-		linked_game_control = "open-gui",
-		action = "lua",
-	},
 })
 
 styles.cybersyn_tab_subheader = {

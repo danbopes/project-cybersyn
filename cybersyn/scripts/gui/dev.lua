@@ -217,10 +217,9 @@ function interface.search_input(pi)
 	return { selected_tab = pd.selected_tab, open = pd.search_open == true, visible = field and field.valid and field.visible or false }
 end
 
---- Escape in the focused search field.
+--- Escape while the search field is open.
 function interface.cancel_search(pi)
 	local player, pd = context(pi)
-	pd.search_focused = true
 	return manager.cancel_search(player, pd)
 end
 
@@ -309,19 +308,6 @@ function interface.controller_changed(pi, old)
 	return state(pi)
 end
 
---- The Escape of the Trains pane that waits for its hand-back (manager.settle_pane_escapes); with `settle`, settles
---- it now as on a later tick and for the unpinned player (the lab player is pinned), and returns what still waits.
-function interface.pane_escapes(pi, settle)
-	local pending = storage.manager.pane_escapes
-	if settle and pending and pending[pi] then
-		pending[pi].tick = game.tick - 1
-		-- The entry carries whether the window was pinned when Escape came (dev escape emulates an unpinned one).
-		manager.settle_pane_escapes()
-	end
-	pending = storage.manager.pane_escapes
-	return pending and pending[pi] or nil
-end
-
 --- /cybersyn-reset-gui for player `pi`.
 function interface.reset_gui(pi)
 	local player = context(pi)
@@ -361,7 +347,7 @@ function interface.link_click(pi, kind, id, mods)
 	return {
 		controller = player.controller_type,
 		pinning = pd.pinning == true,
-		auto_pinned = pd.auto_pinned == true,
+		map_from = pd.map_from ~= nil,
 		markers = pd.markers,
 		opened = player.opened and player.opened.name or nil,
 		item = pd.search_item,

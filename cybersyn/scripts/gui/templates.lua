@@ -62,7 +62,7 @@ end
 --- Element names are `<tab>_banner`, `<tab>_banner_label`, `<tab>_search_field`, `<tab>_chip_flow`,
 --- `<tab>_chip_icon`, `<tab>_chip`, `<tab>_collecting`.
 --- @param tab string canonical tab name, e.g. "stations_tab"
---- @param handlers {search_changed: function, search_click: function, search_confirmed: function, chip_click: function}
+--- @param handlers {search_changed: function, chip_click: function}
 --- @param right flib.GuiElemDef[]? subheader children after the pusher
 --- @param search boolean? false = no search field (a tab the search does not apply to)
 --- @return flib.GuiElemDef banner
@@ -93,8 +93,6 @@ function templates.tab_header(tab, handlers, right, search)
 			tags = { tab = tab },
 			handler = {
 				[defines.events.on_gui_text_changed] = handlers.search_changed,
-				[defines.events.on_gui_click] = handlers.search_click,
-				[defines.events.on_gui_confirmed] = handlers.search_confirmed,
 			},
 		}
 	end

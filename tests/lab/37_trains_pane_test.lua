@@ -184,32 +184,21 @@ lab.suite("37_trains_pane", {
 		local s = remote.call(D, "escape", pi)
 		p = pane()
 		lab.check("Esc closes the pane, the window stays open", s.is_open and p.selected == nil and not p.visible, { s.is_open, p.selected })
-		lab.check("Esc: the window's player.opened waits for a later tick", p.escape_pending == true)
-		local left = remote.call(D, "pane_escapes", pi, true)
-		s = remote.call(D, "state", pi)
-		lab.check("Esc: settled on a later tick with no other GUI, the window stays open", left == nil and s.is_open, { left, s.is_open })
 		s = remote.call(D, "escape", pi)
 		lab.check("a second Esc closes the window", s.is_open == false, s.is_open)
 		remote.call(D, "open", pi)
 		remote.call(D, "select_tab", pi, "trains")
 
-		-- on_gui_closed also comes when another GUI replaces the window: then the window closes, as before the pane.
+		-- on_gui_closed also comes when another GUI replaces the window: the pane closes with the Escape rule, then the
+		-- other GUI's on_gui_opened closes the unpinned window, as the game's own windows close.
 		remote.call(D, "select_train", pi, ctx.id)
+		remote.call("cybersyn", "write_global", false, "manager", "players", pi, "pinning")
 		remote.call(D, "escape", pi)
 		local station = next(lab.read("stations"))
 		s = remote.call(D, "stop_gui_opened", pi, station)
-		lab.check("a stop GUI opened in the same tick closes the window, the train stays selected", s.is_open == false and
-			pane().selected == ctx.id and pane().escape_pending == false, { s.is_open, pane().selected })
+		lab.check("a stop GUI opened in the same tick closes the unpinned window", s.is_open == false, s.is_open)
 		remote.call(D, "relative_close", pi)
-		remote.call(D, "open", pi)
-		remote.call(D, "select_tab", pi, "trains")
-		remote.call(D, "update", pi, 1)
-		p = pane()
-		lab.check("reopened after that: the pane is back", p.selected == ctx.id and p.visible and p.open ~= nil, p.selected)
-		remote.call(D, "escape", pi)
-		s = remote.call(D, "controller_changed", pi)
-		lab.check("a controller change after Esc closes the window too", s.is_open == false and pane().selected == ctx.id,
-			{ s.is_open, pane().selected })
+		remote.call("cybersyn", "write_global", true, "manager", "players", pi, "pinning")
 		remote.call(D, "open", pi)
 		remote.call(D, "select_tab", pi, "trains")
 		remote.call(D, "deselect_train", pi)
