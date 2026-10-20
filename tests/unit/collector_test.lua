@@ -12,8 +12,8 @@ local function sig(name, count, type, quality)
 end
 
 -- `signals` and `status` stay writable, so a test can change a combinator's inputs between two passes.
-local function comb(status, signals)
-	local c = { valid = true, status = status, signals = signals }
+local function comb(status, signals, unit_number)
+	local c = { valid = true, status = status, signals = signals, unit_number = unit_number }
 	function c.get_signals(red, green)
 		assert(red == defines.wire_connector_id.circuit_red and green == defines.wire_connector_id.circuit_green)
 		return c.signals
@@ -261,6 +261,7 @@ test("full pass: provider record", function()
 	scenario()
 	collector.run_to_completion()
 	local snap = collector.get()
+	local source = { kind = "station", index = 0, ok = true, priority = 5, network_mask = 1 }
 	assert_eq(snap.stations[1], {
 		id = 1,
 		name = "Iron Mine",
@@ -294,7 +295,20 @@ test("full pass: provider record", function()
 		lint = 0,
 		-- Phase 4: no unserved request at a train limit names the station.
 		throttling = false,
+		-- Round 7: a Provide only station does not advertise its coal request; one section, one source.
+		ignored = { coal = -100 },
+		sources = { source },
+		sections = { {
+			key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { source },
+			provided = { ["iron-ore"] = 500, water = 2000 }, requested = {}, ignored = { coal = -100 },
+		} },
+		mask_union = { ["signal-A"] = 1 },
 	})
+	local st = snap.stations[1]
+	assert_same(st.sections[1].provided, st.provided)
+	assert_same(st.sections[1].requested, st.requested)
+	assert_same(st.sections[1].ignored, st.ignored)
+	assert_same(st.sections[1].sources[1], st.sources[1])
 	-- Copied, not shared, so the planner's later writes do not leak into the snapshot.
 	assert_true(snap.stations[1].deliveries ~= storage.stations[1].deliveries)
 end)
@@ -340,15 +354,19 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	assert_eq(each.network_mask, { ["signal-A"] = 1, ["signal-B"] = 2 })
 	assert_true(each.network_mask ~= storage.stations[4].network_mask)
 	assert_nil(snap.stations[5])
+	-- The planner reads secondaries only while the station combinator works.
 	local sec = snap.stations[6]
 	assert_false(sec.comb_ok)
-	assert_true(sec.secondary)
-	assert_eq(sec.secondary_count, 1)
-	assert_eq(sec.provided, { ["iron-plate"] = 100 })
-	assert_eq(sec.requested, { ["copper-plate"] = { count = -30, threshold = 20, active = true, mask = 1 } })
+	assert_false(sec.secondary)
+	assert_eq(sec.secondary_count, 0)
+	assert_eq(sec.provided, {})
+	assert_eq(sec.requested, {})
 	assert_eq(sec.control, {})
+	assert_eq(sec.sources[2], { kind = "inventory", index = 1, ok = true, priority = 0 })
+	assert_eq(#sec.sections, 1)
+	assert_eq(sec.sections[1].sources, { sec.sources[1] })
 	assert_eq(snap.station_count, 5)
-	assert_eq(snap.secondary_count, 1)
+	assert_eq(snap.secondary_count, 0)
 	assert_eq(snap.tick, 1000)
 	assert_eq(snap.started_tick, 1000)
 end)
@@ -360,7 +378,6 @@ test("full pass: inventory_all sums active requests and incoming deliveries only
 	assert_eq(inv.provided, {
 		["iron-ore"] = { count = 500, stations = 1 },
 		water = { count = 2000, stations = 1 },
-		["iron-plate"] = { count = 100, stations = 1 },
 	})
 	assert_eq(inv.requested, {
 		["iron-ore"] = { count = -1000, stations = 1, earliest_wait_start = 50 },
@@ -368,7 +385,6 @@ test("full pass: inventory_all sums active requests and incoming deliveries only
 		coal = { count = -1000, stations = 2, earliest_wait_start = 20 },
 		-- Warming-up stations still count here, although they are not keyed for starvation.
 		stone = { count = -5000, stations = 1 },
-		["copper-plate"] = { count = -30, stations = 1 },
 	})
 	assert_eq(inv.in_transit, { ["iron-ore"] = { count = 400, stations = 1 } })
 end)
@@ -381,9 +397,8 @@ test("full pass: starved keys per network, each-network stations on all their ne
 		["signal-A:coal"] = true,
 		["signal-B:coal"] = true,
 		["signal-A:copper-ore"] = true,
-		["signal-B:copper-plate"] = true,
 	})
-	assert_eq(snap.starved_items, { coal = true, ["copper-ore"] = true, ["copper-plate"] = true })
+	assert_eq(snap.starved_items, { coal = true, ["copper-ore"] = true })
 	assert_eq(snap.starved_source, "snapshot")
 	assert_eq(snap.starved_version, 1)
 end)
@@ -522,7 +537,7 @@ test("passes: change log, removed stations, stable starved set", function()
 	storage.stations[2] = nil
 	collector.run_to_completion()
 	snap = collector.get()
-	assert_eq(snap.starved, { ["signal-A:coal"] = true, ["signal-B:coal"] = true, ["signal-B:copper-plate"] = true })
+	assert_eq(snap.starved, { ["signal-A:coal"] = true, ["signal-B:coal"] = true })
 	assert_eq(snap.starved_version, 2)
 end)
 
@@ -1002,6 +1017,14 @@ test("second pass: changed inputs replace every field of the previous record", f
 		lint = 0,
 		-- Phase 4: no unserved request at a train limit names the station.
 		throttling = false,
+		ignored = {},
+		sources = { { kind = "station", index = 0, ok = false, priority = 5, network_mask = 1 } },
+		sections = { {
+			key = "signal-A:1", network_name = "signal-A", mask = 1,
+			sources = { { kind = "station", index = 0, ok = false, priority = 5, network_mask = 1 } },
+			provided = {}, requested = {}, ignored = {},
+		} },
+		mask_union = { ["signal-A"] = 1 },
 	})
 	assert_eq(snap.stations[2], {
 		id = 2,
@@ -1040,6 +1063,23 @@ test("second pass: changed inputs replace every field of the previous record", f
 		lint = 0,
 		-- Phase 4: no unserved request at a train limit names the station.
 		throttling = false,
+		ignored = {},
+		sources = { { kind = "station", index = 0, ok = true, priority = 0, network_mask = 3 } },
+		sections = { {
+			key = "signal-A:3", network_name = "signal-A", mask = 3,
+			sources = { { kind = "station", index = 0, ok = true, priority = 0, network_mask = 3 } },
+			provided = {},
+			requested = {
+				["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
+				["copper-ore"] = { count = -100, threshold = 500, active = false, mask = 3 },
+				stone = { count = -700, threshold = 300, active = true, mask = 3 },
+				water = { count = -50, threshold = 500, active = false, mask = 3 },
+			},
+			ignored = {},
+			-- Nobody provides either on signal-A.
+			starved = { ["iron-ore"] = true, stone = true },
+		} },
+		mask_union = { ["signal-A"] = 3 },
 	})
 	assert_eq(snap.stations[3].warming_up, false)
 	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
@@ -1055,12 +1095,11 @@ test("second pass: changed inputs replace every field of the previous record", f
 	assert_eq(rec.wait.stone, 900)
 
 	assert_eq(snap.inventory_all, {
-		provided = { ["iron-plate"] = { count = 100, stations = 1 } },
+		provided = {},
 		requested = {
 			["iron-ore"] = { count = -1000, stations = 1, earliest_wait_start = 60 },
 			stone = { count = -5700, stations = 2, earliest_wait_start = 900 },
 			coal = { count = -200, stations = 1 },
-			["copper-plate"] = { count = -30, stations = 1 },
 		},
 		in_transit = { stone = { count = 200, stations = 1 } },
 	})
@@ -1069,9 +1108,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		["signal-A:stone"] = true,
 		["signal-A:coal"] = true,
 		["signal-B:coal"] = true,
-		["signal-B:copper-plate"] = true,
 	})
-	assert_eq(snap.starved_items, { ["iron-ore"] = true, stone = true, coal = true, ["copper-plate"] = true })
+	assert_eq(snap.starved_items, { ["iron-ore"] = true, stone = true, coal = true })
 	assert_eq(snap.starved_version, 2)
 	assert_eq(snap.station_count, 5)
 	assert_eq(storage.manager.collect_log, { epoch = 1, base = 5, ids = { 1, 2, 3, 4, 6 } })
@@ -1489,4 +1527,325 @@ test("economy_starved: this stop's active requests nobody provides, only while d
 	storage.tick_state = STATE_DISPATCH
 	assert_eq(collector.economy_starved(st, nets), { ["signal-A:a"] = true })
 	storage.economy, storage.tick_state = nil, nil
+end)
+
+-- Round 7: what each station advertises per network name + mask, on the patterns of a real pY base.
+local function sections_scenario()
+	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30, priority = 0 }
+	manager()
+	storage.stations = {
+		-- (a) one network, no secondaries.
+		[11] = {
+			entity_stop = stop("Plain"),
+			entity_comb1 = comb(WORKING, { sig("iron-plate", 100), sig("coal", -5000), sig("signal-A", 1, "virtual") }, 110),
+			network_name = "signal-A",
+			network_mask = 1,
+			is_p = true,
+			is_r = true,
+			trains_limit = 1,
+		},
+		-- (b) the naphthalene pattern: Provide only, three masks; listed by position, not by unit number (B1).
+		[12] = {
+			entity_stop = stop("Naphthalene"),
+			entity_comb1 = comb(WORKING, { sig("naphthalene-oil", 5000, "fluid"), sig("signal-A", 1, "virtual") }, 120),
+			secondary_inv_combs = {
+				comb(WORKING, { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 4, "virtual") }, 502),
+				comb(WORKING, { sig("liquid-fuel", 2000, "fluid"), sig("signal-A", 3, "virtual") }, 501),
+			},
+			network_name = "signal-A",
+			network_mask = 1,
+			is_p = true,
+			priority = 1,
+		},
+		-- (c) Request only with a secondary carrying positives.
+		[13] = {
+			entity_stop = stop("Requester"),
+			entity_comb1 = comb(WORKING, { sig("stone", -3000) }, 130),
+			secondary_inv_combs = {
+				[601] = comb(WORKING, { sig("iron-plate", 400), sig("copper-plate", -2500), sig("signal-A", 2, "virtual"),
+					sig(SIGNAL_PRIORITY, 7, "virtual") }, 601),
+			},
+			network_name = "signal-A",
+			network_mask = 1,
+			is_r = true,
+		},
+		-- (d) a secondary without a network signal shares the station combinator's mask.
+		[14] = {
+			entity_stop = stop("Merged"),
+			entity_comb1 = comb(WORKING, { sig("iron-ore", 100) }, 140),
+			secondary_inv_combs = { [701] = comb(WORKING, { sig("iron-ore", 50), sig("wood", 10) }, 701) },
+			network_name = "signal-A",
+			network_mask = 1,
+			is_p = true,
+		},
+		-- (e) NETWORK_EACH: the secondary requests on a network the station combinator does not name.
+		[15] = {
+			entity_stop = stop("Each"),
+			entity_comb1 = comb(WORKING, { sig("coke", -3000), sig("signal-A", 1, "virtual") }, 150),
+			secondary_inv_combs = {
+				[801] = comb(WORKING, { sig("sulfur", -3000), sig("signal-B", 2, "virtual"), sig(REQUEST_THRESHOLD, 5, "virtual") }, 801),
+			},
+			network_name = NETWORK_EACH,
+			network_mask = { ["signal-A"] = 1 },
+			is_r = true,
+			trains_limit = 1,
+		},
+		-- Provides sulfur and coke on signal-A only.
+		[16] = {
+			entity_stop = stop("Sulfur"),
+			entity_comb1 = comb(WORKING, { sig("sulfur", 9000), sig("coke", 9000) }, 160),
+			network_name = "signal-A",
+			network_mask = 1,
+			is_p = true,
+		},
+		-- (f) a removed secondary still listed next to a live one.
+		[17] = {
+			entity_stop = stop("Stale"),
+			entity_comb1 = comb(WORKING, { sig("brick", 10) }, 170),
+			secondary_inv_combs = { [1] = { valid = false }, [901] = comb(LOW_POWER, { sig("brick", 5) }, 901) },
+			network_name = "signal-A",
+			network_mask = 1,
+			is_p = true,
+		},
+	}
+	storage.trains, storage.depots = {}, {}
+	storage.tick_state = STATE_POLL_STATIONS
+	game.tick = 1000
+end
+
+test("sections (a): one network, no secondaries: one section on the record's own tables", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local st = collector.get().stations[11]
+	assert_eq(#st.sections, 1)
+	local sec = st.sections[1]
+	assert_eq({ sec.key, sec.network_name, sec.mask }, { "signal-A:1", "signal-A", 1 })
+	assert_same(sec.provided, st.provided)
+	assert_same(sec.requested, st.requested)
+	assert_same(sec.ignored, st.ignored)
+	assert_eq(st.provided, { ["iron-plate"] = 100 })
+	assert_eq(st.ignored, {})
+	assert_eq(st.sources, { { kind = "station", index = 0, unit = 110, ok = true, priority = 0, network_mask = 1 } })
+	assert_same(sec.sources[1], st.sources[1])
+	assert_eq(st.mask_union, { ["signal-A"] = 1 })
+	assert_false(collector.station_has_sections(st))
+	-- Coal is provided nowhere.
+	assert_eq(sec.starved, { coal = true })
+	assert_eq(st.status, "starved")
+end)
+
+test("sections (b): naphthalene: one section per mask, the Provide only switch ignores the request", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local st = collector.get().stations[12]
+	local station = { kind = "station", index = 0, unit = 120, ok = true, priority = 1, network_mask = 1 }
+	local inv1 = { kind = "inventory", index = 1, unit = 501, ok = true, priority = 1, network_mask = 3 }
+	local inv2 = { kind = "inventory", index = 2, unit = 502, ok = true, priority = 1, network_mask = 4 }
+	assert_eq(st.sources, { station, inv1, inv2 })
+	assert_eq(st.sections, {
+		{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { station },
+			provided = { ["naphthalene-oil"] = 5000 }, requested = {}, ignored = {} },
+		{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { inv1 },
+			provided = { ["liquid-fuel"] = 2000 }, requested = {}, ignored = {} },
+		{ key = "signal-A:4", network_name = "signal-A", mask = 4, sources = { inv2 },
+			provided = {}, requested = {}, ignored = { ["liquid-fuel"] = -866 } },
+	})
+	assert_same(st.sections[2].sources[1], st.sources[2])
+	assert_true(st.sections[1].provided ~= st.provided)
+	assert_eq(st.provided, { ["naphthalene-oil"] = 5000, ["liquid-fuel"] = 2000 })
+	assert_eq(st.requested, {})
+	assert_eq(st.ignored, { ["liquid-fuel"] = -866 })
+	assert_eq(st.mask_union, { ["signal-A"] = 7 })
+	assert_eq(st.secondary_count, 2)
+	assert_true(collector.station_has_sections(st))
+	assert_eq(collector.get().provider_masks["signal-A:liquid-fuel"], 3)
+end)
+
+test("sections (c): a Request only station ignores its secondary's positives; starved per section", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local st = collector.get().stations[13]
+	assert_eq(st.sources[2], { kind = "inventory", index = 1, unit = 601, ok = true, priority = 7, network_mask = 2 })
+	assert_eq(#st.sections, 2)
+	local s1, s2 = st.sections[1], st.sections[2]
+	assert_eq({ s1.key, s2.key }, { "signal-A:1", "signal-A:2" })
+	assert_eq(s1.requested, { stone = { count = -3000, threshold = 2000, active = true, mask = 1 } })
+	assert_eq(s2.requested, { ["copper-plate"] = { count = -2500, threshold = 2000, active = true, mask = 2 } })
+	assert_eq(s2.provided, {})
+	assert_eq(s2.ignored, { ["iron-plate"] = 400 })
+	assert_eq(s1.starved, { stone = true })
+	assert_eq(s2.starved, { ["copper-plate"] = true })
+	local hashes = collector.starved_hashes(st, collector.get().starved)
+	table.sort(hashes)
+	assert_eq(hashes, { "copper-plate", "stone" })
+end)
+
+test("sections (d): two sources on one mask merge into one section with both sources", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local st = collector.get().stations[14]
+	assert_eq(#st.sections, 1)
+	local sec = st.sections[1]
+	assert_eq(sec.key, "signal-A:1")
+	assert_eq(#sec.sources, 2)
+	assert_same(sec.sources[1], st.sources[1])
+	assert_same(sec.sources[2], st.sources[2])
+	assert_eq(sec.provided, { ["iron-ore"] = 150, wood = 10 })
+	assert_true(sec.provided ~= st.provided)
+	assert_eq(st.provided, sec.provided)
+	assert_eq(st.mask_union, { ["signal-A"] = 1 })
+	assert_true(collector.station_has_sections(st))
+end)
+
+test("sections (e): NETWORK_EACH: a secondary's own network gets its own section and its own starved check", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local snap = collector.get()
+	local st = snap.stations[15]
+	assert_eq(st.sources[2].network_mask, { ["signal-B"] = 2 })
+	assert_eq(#st.sections, 2)
+	local a, b = st.sections[1], st.sections[2]
+	assert_eq({ a.key, b.key }, { "signal-A:1", "signal-B:2" })
+	assert_eq(a.requested, { coke = { count = -3000, threshold = 2000, active = true, mask = 1 } })
+	assert_eq(b.requested, { sulfur = { count = -3000, threshold = 5, active = true, mask = 2 } })
+	assert_eq(st.mask_union, { ["signal-A"] = 1, ["signal-B"] = 2 })
+	-- Station 16 provides sulfur on signal-A only: the secondary's signal-B request is starved, coke on signal-A is not.
+	assert_true(snap.starved["signal-B:sulfur"])
+	assert_nil(a.starved)
+	assert_eq(b.starved, { sulfur = true })
+	assert_eq(st.status, "starved")
+	assert_eq(collector.starved_hashes(st, snap.starved), { "sulfur" })
+end)
+
+test("sections (f): an invalid secondary is skipped, the live one keeps index 1", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local st = collector.get().stations[17]
+	assert_eq(#st.sources, 2)
+	assert_eq(st.sources[2], { kind = "inventory", index = 1, unit = 901, ok = true, priority = 0, network_mask = 1 })
+	assert_eq(#st.sections, 1)
+	assert_eq(st.sections[1].provided, { brick = 15 })
+	assert_eq(st.secondary_count, 1)
+end)
+
+test("sections: a NETWORK_EACH station naming no network keeps one section, an unread secondary none", function()
+	sections_scenario()
+	storage.stations[15].network_mask = {}
+	storage.stations[15].secondary_inv_combs[801].status = NO_POWER
+	collector.run_to_completion()
+	local st = collector.get().stations[15]
+	assert_eq(#st.sections, 1)
+	assert_eq({ st.sections[1].key, st.sections[1].mask }, { NETWORK_EACH .. ":0", 0 })
+	assert_eq(st.sections[1].sources, { st.sources[1] })
+	assert_false(st.sources[2].ok)
+	assert_nil(st.sources[2].network_mask)
+	assert_eq(st.mask_union, {})
+	assert_true(collector.station_has_sections(st))
+end)
+
+test("sections: refills keep every table; a secondary appearing or going switches the shared tables", function()
+	sections_scenario()
+	collector.run_to_completion()
+	local snap = collector.get()
+	local plain, naph = snap.stations[11], snap.stations[12]
+	local keep = {
+		plain.sections, plain.sections[1], plain.sections[1].sources, plain.sources, plain.sources[1], plain.mask_union,
+		plain.ignored, naph.sections, naph.sources, naph.sources[3], naph.mask_union,
+	}
+	local naph_tables = {}
+	for i, sec in ipairs(naph.sections) do
+		naph_tables[sec.key] = { sec = sec, provided = sec.provided, ignored = sec.ignored, sources = sec.sources, i = i }
+	end
+	game.tick = 1100
+	collector.run_to_completion()
+	snap = collector.get()
+	plain, naph = snap.stations[11], snap.stations[12]
+	local again = {
+		plain.sections, plain.sections[1], plain.sections[1].sources, plain.sources, plain.sources[1], plain.mask_union,
+		plain.ignored, naph.sections, naph.sources, naph.sources[3], naph.mask_union,
+	}
+	for i = 1, #keep do assert_same(again[i], keep[i], "table " .. i) end
+	for i, sec in ipairs(naph.sections) do
+		local t = naph_tables[sec.key]
+		assert_same(sec, t.sec)
+		assert_same(sec.provided, t.provided)
+		assert_same(sec.ignored, t.ignored)
+		assert_same(sec.sources, t.sources)
+		assert_eq(i, t.i)
+	end
+
+	-- A secondary added to the plain station takes the section off the record's tables.
+	local plain_station = storage.stations[11]
+	plain_station.secondary_inv_combs = { [111] = comb(WORKING, { sig("iron-plate", 5) }, 111) }
+	collector.run_to_completion()
+	plain = collector.get().stations[11]
+	assert_eq(#plain.sections, 1)
+	assert_true(plain.sections[1].provided ~= plain.provided)
+	assert_eq(plain.sections[1].provided, { ["iron-plate"] = 105 })
+	assert_eq(#plain.sections[1].sources, 2)
+	-- And removed again, it shares them once more.
+	plain_station.secondary_inv_combs = {}
+	collector.run_to_completion()
+	plain = collector.get().stations[11]
+	assert_same(plain.sections[1].provided, plain.provided)
+	assert_same(plain.sections[1].requested, plain.requested)
+	assert_eq(plain.provided, { ["iron-plate"] = 100 })
+	assert_eq(#plain.sources, 1)
+	assert_eq(#plain.sections[1].sources, 1)
+
+	-- The naphthalene station's mask-4 inventory moves to mask 3: the sections merge.
+	storage.stations[12].secondary_inv_combs[1].signals = { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 3, "virtual") }
+	collector.run_to_completion()
+	naph = collector.get().stations[12]
+	assert_eq(#naph.sections, 2)
+	assert_eq(naph.sections[2].key, "signal-A:3")
+	assert_eq(#naph.sections[2].sources, 2)
+	assert_eq(naph.sections[2].ignored, { ["liquid-fuel"] = -866 })
+	assert_eq(naph.sections[2].provided, { ["liquid-fuel"] = 2000 })
+	assert_eq(naph.mask_union, { ["signal-A"] = 3 })
+end)
+
+test("sections: read_station fills the same shape for a stop read live", function()
+	sections_scenario()
+	local st = collector.read_station(12)
+	assert_eq(#st.sections, 3)
+	assert_eq(st.sections[3].ignored, { ["liquid-fuel"] = -866 })
+	assert_same(collector.read_station(12, st), st)
+	assert_eq(#st.sections, 3)
+end)
+
+test("economy_starved: a section's own network counts, whatever networks the caller names", function()
+	local st = {
+		requested = { coal = { active = true } },
+		sections = {
+			{ network_name = "signal-A", mask = 1, requested = { coal = { active = true } } },
+			{ network_name = "signal-B", mask = 2, requested = { sulfur = { active = true } } },
+		},
+	}
+	storage.economy = { all_r_stops = { ["signal-A:coal"] = {}, ["signal-B:sulfur"] = {} }, all_p_stops = {} }
+	storage.tick_state = STATE_DISPATCH
+	assert_eq(collector.economy_starved(st, { { name = "signal-A" } }), { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true })
+	assert_eq(collector.economy_starved(st), { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true })
+	storage.economy, storage.tick_state = nil, nil
+end)
+
+test("mask labels: the value, and its bits from 1 when there are several", function()
+	assert_eq(collector.mask_label(3), "3")
+	assert_eq(collector.mask_label(0), "0")
+	assert_nil(collector.mask_bits_label(0))
+	assert_nil(collector.mask_bits_label(1))
+	assert_nil(collector.mask_bits_label(4))
+	assert_eq(collector.mask_bits_label(3), "bits 1+2")
+	assert_eq(collector.mask_bits_label(9), "bits 1+4")
+	assert_eq(collector.mask_bits_label(-2147483647), "bits 1+32")
+end)
+
+test("source_label and station_has_sections on hand-built records", function()
+	assert_eq(collector.source_label({ kind = "station", index = 0 }), { "cybersyn-gui.source-station" })
+	assert_eq(collector.source_label({ kind = "inventory", index = 2 }), { "cybersyn-gui.source-inventory", 2 })
+	local station = { kind = "station", index = 0 }
+	assert_false(collector.station_has_sections({ sections = { {} }, sources = { station } }))
+	assert_true(collector.station_has_sections({ sections = { {}, {} }, sources = { station } }))
+	assert_true(collector.station_has_sections({ sections = { {} }, sources = { station, { kind = "inventory", index = 1 } } }))
+	assert_false(collector.station_has_sections({}))
 end)
