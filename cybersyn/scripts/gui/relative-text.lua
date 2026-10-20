@@ -473,13 +473,30 @@ function text.section_starved(section, starved)
 	return out or EMPTY
 end
 
+--- Inventory sources the collector could not read (the station combinator is off): in st.sources, in no section.
+--- @param st SnapshotStation
+--- @return SnapshotSource[]
+function text.paused_inventories(st)
+	local out = {}
+	for _, src in ipairs(st.sources or EMPTY) do
+		if src.kind == "inventory" and not src.ok then out[#out + 1] = src end
+	end
+	return out
+end
+
 --- A signature of everything the section blocks show. Sorted, so two records with the same values sign alike
 --- whatever order their tables were filled in.
 --- @param st SnapshotStation
 --- @param starved {[string]: true}?
 --- @return string
 function text.sections_content(st, starved)
+	-- The collector keeps each section's starved set itself (collector.station_status); the station-level keys only
+	-- stand in for records without sections.
+	if st.sections then starved = nil end
 	local parts = {}
+	for j, src in ipairs(st.sources or EMPTY) do
+		if not src.ok then parts[#parts + 1] = "x" .. j .. src.kind .. src.index end
+	end
 	for i, s in ipairs(text.sections_of(st)) do
 		local k = i .. s.key
 		parts[#parts + 1] = k

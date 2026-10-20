@@ -380,7 +380,12 @@ test("sections_content: same values sign alike whatever the fill order; ignored 
 	assert_true(t.sections_content(a) ~= t.sections_content(b), "ignored count")
 	local p = plain()
 	local base = t.sections_content(p)
-	assert_true(base ~= t.sections_content(p, { ["signal-A:coal"] = true }), "starved")
+	assert_eq(base, t.sections_content(p, { ["signal-A:coal"] = true }), "a record with sections keeps its own starved sets")
+	p.sections[1].starved = { coal = true }
+	assert_true(base ~= t.sections_content(p), "starved")
+	p.sections[1].starved = nil
+	local old = { network_name = "signal-A", network_mask = 1, provided = {}, requested = { coal = { count = -9, threshold = 1, active = true } } }
+	assert_true(t.sections_content(old) ~= t.sections_content(old, { ["signal-A:coal"] = true }), "without sections, the station's keys")
 	p.sections[1].sources[1].priority = 4
 	assert_true(base ~= t.sections_content(p), "priority")
 end)
@@ -487,4 +492,16 @@ test("stop panel: the section blocks are rebuilt only when the record changed", 
 	st.read_tick = 30
 	r.render_slots(state, body, m)
 	assert_eq(state.rebuilds, 2, "an unadvertised count moved")
+end)
+
+test("stop panel: inventories the collector could not read are named as paused", function()
+	local r = relative_mod()
+	local t = rt()
+	local n = naphthalene()
+	n.sources[3].ok = false
+	table.remove(n.sections, 3)
+	assert_eq(#t.paused_inventories(n), 1)
+	local text = table.concat(captions(r.slots_defs(n)), "\n")
+	assert_true(text:find("cybersyn-gui.section-paused", 1, true) ~= nil, text)
+	assert_true(t.sections_content(n) ~= t.sections_content(naphthalene()))
 end)

@@ -409,7 +409,9 @@ local function update_starved(state, st)
 					if hash then
 						for _, s in ipairs(sections) do
 							local req = s.requested[hash]
-							if req and req.active then starved[s.network_name .. ":" .. hash] = true end
+							if req and req.active and s.network_name ~= NETWORK_EACH then
+								starved[s.network_name .. ":" .. hash] = true
+							end
 						end
 					end
 				end
@@ -418,17 +420,10 @@ local function update_starved(state, st)
 		state.starved = starved
 		return true
 	end
-	local starved
-	for _, s in ipairs(sections) do
-		local one = collector.economy_starved(s, { { name = s.network_name } })
-		if not one then return false end
-		if starved then
-			for key in pairs(one) do starved[key] = true end
-		else
-			starved = one
-		end
-	end
-	state.starved = starved or {}
+	-- With sections the collector scans each one on its own network; a record without them names its networks.
+	local starved = collector.economy_starved(st, not st.sections and networks_of(st.network_name, st.network_mask) or nil)
+	if not starved then return false end
+	state.starved = starved
 	return true
 end
 
@@ -1044,6 +1039,17 @@ local function slots_defs(st, starved)
 	local sections = rtext.sections_of(st)
 	if #sections == 0 then return { note({ "cybersyn-gui.relative-no-items" }) } end
 	local out = { heading({ "cybersyn-gui.section-advertised" }) }
+	if st.sections then starved = nil end
+	local paused = rtext.paused_inventories(st)
+	if #paused > 0 then
+		local names = { "" }
+		for i = 1, math.min(#paused, 4) do
+			if i > 1 then names[#names + 1] = ", " end
+			names[#names + 1] = rtext.source_label(paused[i])
+		end
+		if #paused > 4 then names[#names + 1] = " +" .. (#paused - 4) end
+		out[#out + 1] = line({ "cybersyn-gui.section-paused", names }, nil, { 1, 0.78, 0.45 })
+	end
 	local reason = rtext.ignored_reason(st)
 	for i = 1, math.min(#sections, SECTIONS_SHOWN) do
 		if i > 1 then out[#out + 1] = { type = "line", direction = "horizontal" } end
