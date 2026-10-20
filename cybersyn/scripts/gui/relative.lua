@@ -169,14 +169,6 @@ local function networks_of(network_name, network_mask)
 	return out
 end
 
---- A network's icon alone, as rich text.
-local function network_icon(name)
-	if prototypes.virtual_signal[name] then return "[virtual-signal=" .. name .. "]" end
-	if prototypes.item[name] then return "[item=" .. name .. "]" end
-	if prototypes.fluid[name] then return "[fluid=" .. name .. "]" end
-	return name .. " "
-end
-
 local HEAD_SECTIONS = 12
 
 --- "[A]1 · [A]3 · [A]4": every section's network and mask, for the head.
@@ -185,7 +177,7 @@ local function sections_caption(st)
 	local parts = {}
 	for i = 1, math.min(#sections, HEAD_SECTIONS) do
 		local sec = sections[i]
-		parts[i] = network_icon(sec.network_name) .. rtext.mask_label(sec.mask)
+		parts[i] = rtext.section_label(sec)
 	end
 	local caption = table.concat(parts, " · ")
 	if #sections > HEAD_SECTIONS then caption = caption .. " +" .. (#sections - HEAD_SECTIONS) end
@@ -463,7 +455,7 @@ local function same_record(a, b)
 	return same_values(a.provided, b.provided) and same_requests(a.requested, b.requested) and
 		same_values(a.deliveries, b.deliveries) and same_values(a.control, b.control) and
 		same_values(a.control2, b.control2) and same_values(a.thresholds, b.thresholds) and
-		(a.sections == nil and b.sections == nil or rtext.sections_content(a) == rtext.sections_content(b))
+		a.sections_sig == b.sections_sig
 end
 
 --- Whether this refresh rewrites the unserved rows' ages in place (render_unserved): the live read and a fleet walk
@@ -498,6 +490,8 @@ local function station_record(state, id)
 	state.read = true
 	if not st then return nil, "live" end
 	if update_starved(state, st) then st.status = collector.station_status(st, state.starved) end
+	-- Built once per read: same_record compares it, and render_slots reuses it as its signature.
+	st.sections_sig = st.sections and rtext.sections_content(st) or nil
 	if cur and cur.id == id and cur.sig_key and same_record(cur, st) then
 		st.sig_key = cur.sig_key
 	else
@@ -833,7 +827,7 @@ local function stop_model(pd, state)
 		end
 		m.nets = nc.nets
 		m.nets_key = nc.key
-		m.has_sections = rtext.has_sections(st)
+		m.has_sections = collector.station_has_sections(st)
 		m.sections_key = m.has_sections and record_sig(state, "section_keys", st, section_keys) or nil
 		m.status = pm.shown_status(st.status, id, m.lint_bits, diag.is_acked)
 		if m.status == "setup" then m.setup_checks, m.setup_mask = pm.open_error_checks(id, m.lint_bits, diag.is_acked) end
@@ -991,9 +985,9 @@ local function section_block(out, st, sec, starved, reason)
 		type = "flow",
 		direction = "horizontal",
 		style_mods = { horizontal_spacing = 6, vertical_align = "center" },
-		label(network_icon(sec.network_name) .. rtext.mask_label(sec.mask), { style = "bold_label" }),
+		label(rtext.section_label(sec), { style = "bold_label" }),
 	}
-	local bits = rtext.mask_bits_label(sec.mask)
+	local bits = collector.mask_bits_label(sec.mask)
 	if bits then head[#head + 1] = label(bits, { style_mods = { font = "default-small", font_color = MUTED } }) end
 	head[#head + 1] = {
 		type = "label",
@@ -1045,7 +1039,7 @@ local function slots_defs(st, starved)
 		local names = { "" }
 		for i = 1, math.min(#paused, 4) do
 			if i > 1 then names[#names + 1] = ", " end
-			names[#names + 1] = rtext.source_label(paused[i])
+			names[#names + 1] = collector.source_label(paused[i])
 		end
 		if #paused > 4 then names[#names + 1] = " +" .. (#paused - 4) end
 		out[#out + 1] = line({ rtext.paused_key(st), names }, nil, { 1, 0.78, 0.45 })
@@ -1064,6 +1058,10 @@ end
 -- Exposed for the unit tests, which build the blocks from fixture records.
 relative.slots_defs = slots_defs
 
+local function slots_content(st, starved)
+	return st.sections_sig or rtext.sections_content(st, starved)
+end
+
 --- What the station advertises, one block per network section (D3): a station without inventories on one network
 --- is a single block.
 local function render_slots(state, body, m)
@@ -1074,7 +1072,10 @@ local function render_slots(state, body, m)
 	end
 	local snap = collector.live()
 	local starved = m.source == "live" and state.starved or (snap and snap.starved) or nil
-	local sig = record_sig(state, "slots", st, rtext.sections_content, starved)
+	-- A record with sections carries its own starved sets (sections_content ignores the station-level ones), so the
+	-- signature does not depend on them and the cache holds while diagnostics move them.
+	if st.sections then starved = nil end
+	local sig = record_sig(state, "slots", st, slots_content, starved)
 	if state.sigs["slots"] ~= sig then
 		section(state, body, "slots", sig, function() return slots_defs(st, starved) end)
 	end

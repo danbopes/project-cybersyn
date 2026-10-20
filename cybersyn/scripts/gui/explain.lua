@@ -8,6 +8,7 @@ local gui = require("__flib__.gui")
 
 local util = require("scripts.gui.util")
 local utext = require("scripts.gui.unserved-text")
+local rtext = require("scripts.gui.relative-text")
 local diag = require("scripts.diag")
 local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
@@ -42,8 +43,6 @@ local function stop_name(id)
 	return stop and stop.backer_name or tostring(id)
 end
 
-local SECTION_FNS = utext.section_fns(collector, util.network_text)
-
 --- The section of the requester that asks for the item, from the collector's snapshot; nil for a plain station.
 --- @return SnapshotSection?
 local function request_section(r_id, hash)
@@ -60,7 +59,7 @@ end
 --- @return LocalisedString
 function explain.network_of(r_id, hash, station)
 	local sec = request_section(r_id, hash)
-	if sec then return utext.section_network(sec, SECTION_FNS) end
+	if sec then return rtext.section_text(sec) end
 	return util.network_text(station and station.network_name)
 end
 

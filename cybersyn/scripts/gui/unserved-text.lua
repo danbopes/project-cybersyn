@@ -170,26 +170,6 @@ end
 
 -- ---------------------------------------------------------------- sections (secondary inventory combinators)
 
---- @class SectionLabelFns the collector's label helpers, passed in so this module stays free of the collector
---- @field network_text fun(name: string?): LocalisedString util.network_text
---- @field mask_label fun(mask: int): string
---- @field mask_bits_label (fun(mask: int): string?)?
---- @field source_label fun(source: SnapshotSource): LocalisedString
-
---- The label helpers read from `collector` at call time, so a module that captures them at load sees the collector's
---- current functions.
---- @param collector table scripts.gui.collector
---- @param network_text fun(name: string?): LocalisedString util.network_text
---- @return SectionLabelFns
-function text.section_fns(collector, network_text)
-	return {
-		network_text = network_text,
-		mask_label = function(mask) return collector.mask_label(mask) end,
-		mask_bits_label = function(mask) return collector.mask_bits_label and collector.mask_bits_label(mask) or nil end,
-		source_label = function(src) return collector.source_label(src) end,
-	}
-end
-
 --- The section of `st` that advertises `hash` on `side` ("provided" or "requested"), for a station that has sections;
 --- nil for a plain station, whose texts name the station's network as before. Of several, the first with an active
 --- request (the one the dispatcher is trying to serve), else the first.
@@ -209,44 +189,6 @@ function text.section_of(st, hash, side, has_sections)
 		end
 	end
 	return first
-end
-
---- The section's sources when an inventory is among them ("Inventory 1", "Station combinator, Inventory 2"); nil when
---- the station combinator alone feeds it, the case every plain station is.
---- @param sec SnapshotSection
---- @param source_label fun(source: SnapshotSource): LocalisedString
---- @return LocalisedString?
-function text.section_sources(sec, source_label)
-	local sources = sec.sources or {}
-	local inventory = false
-	for _, src in ipairs(sources) do
-		if src.kind == "inventory" then inventory = true break end
-	end
-	if not inventory then return nil end
-	if #sources == 1 then return source_label(sources[1]) end
-	local out = { "" }
-	for i, src in ipairs(sources) do
-		-- A LocalisedString holds at most 20 parameters; ten sources behind one mask is far past any real stop.
-		if i > 10 then break end
-		if i > 1 then out[#out + 1] = ", " end
-		out[#out + 1] = source_label(src)
-	end
-	return out
-end
-
---- A section's network as the texts name it: "[A] 3", with "(bits 1+2)" unless `short`, then " · Inventory 1" when
---- an inventory feeds it.
---- @param sec SnapshotSection
---- @param fns SectionLabelFns
---- @param short boolean? leave out the bits (the drill-down's row tag; its tooltip has them)
---- @return LocalisedString
-function text.section_network(sec, fns, short)
-	local bits = not short and fns.mask_bits_label and fns.mask_bits_label(sec.mask) or nil
-	local net = bits and { "cybersyn-gui.section-network-bits", fns.network_text(sec.network_name), fns.mask_label(sec.mask), bits }
-		or { "cybersyn-gui.section-network", fns.network_text(sec.network_name), fns.mask_label(sec.mask) }
-	local src = text.section_sources(sec, fns.source_label)
-	if src then return { "cybersyn-gui.section-network-source", net, src } end
-	return net
 end
 
 return text

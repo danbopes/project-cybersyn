@@ -310,7 +310,7 @@ local sort_keys = {
 		local mask = st.network_mask
 		-- A station with inventories sorts by every mask it advertises on.
 		local union = st.mask_union
-		if union and rtext.has_sections(st) then
+		if union and collector.station_has_sections(st) then
 			local one = rtext.masks_caption(rtext.sections_of(st))
 			if one then name, mask = one, union[one] end
 		end
@@ -1024,10 +1024,41 @@ end
 
 local NET_TIP_SECTIONS = 15
 
---- A network's icon as rich text (its name when it has none).
-local function network_img(name)
-	local _, img = util.generate_item_references(name)
-	return img ~= "" and img or name
+-- A sectioned record's signatures at its read_tick: they sort and concatenate every section, and the record changes
+-- once per pass while its row is signed every update. Weak keys: the records go with the snapshot. Only ever a
+-- shortcut for recomputing the same string, so peers that never filled it still agree.
+local record_sigs = setmetatable({}, { __mode = "k" })
+
+--- @param st SnapshotStation
+--- @param name string
+--- @param build fun(st: SnapshotStation): string
+--- @return string
+local function record_sig(st, name, build)
+	local tick = st.read_tick
+	if tick == nil then return build(st) end
+	local c = record_sigs[st]
+	if not c then
+		c = {}
+		record_sigs[st] = c
+	end
+	if c.tick ~= tick then
+		c.tick, c.net, c.slots = tick, nil, nil
+	end
+	local v = c[name]
+	if v == nil then
+		v = build(st)
+		c[name] = v
+	end
+	return v
+end
+
+local function network_sig(st)
+	local parts = { "S", rtext.inventory_count(st) }
+	for _, sec in ipairs(rtext.sections_of(st)) do
+		parts[#parts + 1] = sec.key .. ":" .. count_keys(sec.provided) .. "/" .. count_keys(sec.requested)
+		for _, src in ipairs(sec.sources) do parts[#parts + 1] = src.kind .. src.index .. "=" .. src.priority end
+	end
+	return table.concat(parts, "|")
 end
 
 --- The Network cell of a station with inventories or several sections: the masks it advertises on ("1 · 3 · 4"),
@@ -1037,12 +1068,7 @@ end
 local function section_network(m, st)
 	local sections = rtext.sections_of(st)
 	local inventories = rtext.inventory_count(st)
-	local parts = { "S", inventories }
-	for _, sec in ipairs(sections) do
-		parts[#parts + 1] = sec.key .. ":" .. count_keys(sec.provided) .. "/" .. count_keys(sec.requested)
-		for _, src in ipairs(sec.sources) do parts[#parts + 1] = src.kind .. src.index .. "=" .. src.priority end
-	end
-	m.net_sig = table.concat(parts, "|")
+	m.net_sig = record_sig(st, "net", network_sig)
 	m.net_small = true
 	m.network = function()
 		local one, masks = rtext.masks_caption(sections)
@@ -1057,10 +1083,7 @@ local function section_network(m, st)
 		local tip = { "", { "cybersyn-gui.stations-net-sections", tostring(#sections) } }
 		for i = 1, math.min(#sections, NET_TIP_SECTIONS) do
 			local sec = sections[i]
-			local bits = rtext.mask_bits_label(sec.mask)
-			tip[#tip + 1] = { "", "\n", network_img(sec.network_name), " ", rtext.mask_label(sec.mask),
-				bits and (" (" .. bits .. ")") or "", " · ", rtext.sources_caption(sec.sources), " · ",
-				rtext.section_summary(sec) }
+			tip[#tip + 1] = { "", "\n", rtext.section_text(sec), " · ", rtext.section_summary(sec) }
 		end
 		if #sections > NET_TIP_SECTIONS then
 			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.relative-more", tostring(#sections - NET_TIP_SECTIONS) } }
@@ -1075,7 +1098,7 @@ end
 local function network_model(m, st)
 	local network_name = st.network_name
 	local mask = st.network_mask
-	if network_name and rtext.has_sections(st) then return section_network(m, st) end
+	if network_name and collector.station_has_sections(st) then return section_network(m, st) end
 	if not network_name then
 		m.net_sig = ""
 	elseif network_name == NETWORK_EACH then
@@ -1359,17 +1382,17 @@ end
 local function section_slots(st, item, capacity)
 	local sections = rtext.sections_of(st)
 	local nets = {}
-	for i, sec in ipairs(sections) do nets[i] = network_img(sec.network_name) .. rtext.mask_label(sec.mask) end
+	for i, sec in ipairs(sections) do nets[i] = rtext.section_label(sec) end
 	local reason
 	local groups = {}
 	for i, sec in ipairs(sections) do
 		local defs = util.slot_table_build_from_station({ provided = sec.provided, requested = sec.requested, wait = st.wait })
 		if #defs > 0 then
-			local sources = rtext.sources_caption(sec.sources)
+			local head = rtext.section_text(sec)
 			for _, d in ipairs(defs) do
 				local hash = d.tags.id
 				local side = string.find(d.style, "green", 1, true) and "p" or "r"
-				local tip = { "", d.tooltip, "\n", { "cybersyn-gui.stations-slot-section", nets[i], sources } }
+				local tip = { "", d.tooltip, "\n", { "cybersyn-gui.stations-slot-section", head } }
 				for j, other in ipairs(sections) do
 					local held = other.ignored and other.ignored[hash]
 					if held and #tip < 18 then
@@ -1382,14 +1405,13 @@ local function section_slots(st, item, capacity)
 				d.tags.slot_key = sec.key .. "|" .. side .. hash
 			end
 			decorate_slots(defs, item)
-			local bits = rtext.mask_bits_label(sec.mask)
 			groups[#groups + 1] = {
 				label = {
 					type = "label",
 					style = "cybersyn_overflow_label",
 					style_mods = { minimal_width = 0, height = SLOT, vertical_align = "center", font = "default-small-semibold" },
 					caption = nets[i],
-					tooltip = { "", nets[i], bits and (" (" .. bits .. ")") or "", "\n", sources, "\n", rtext.section_summary(sec) },
+					tooltip = { "", head, "\n", rtext.section_summary(sec) },
 					tags = { group = sec.key },
 				},
 				defs = defs,
@@ -1403,7 +1425,7 @@ end
 local SLOT_TABLES = {
 	pr = function(st, item, w)
 		if not st then return {} end
-		if rtext.has_sections(st) then return section_slots(st, item, w.pr_slots) end
+		if collector.station_has_sections(st) then return section_slots(st, item, w.pr_slots) end
 		return fit_slots(decorate_slots(util.slot_table_build_from_station(st), item), w.pr_slots)
 	end,
 	dl = function(st, item, w)
@@ -1427,8 +1449,8 @@ end
 --- @return {pr: string, dl: string}
 local function slot_sigs(st, item, minute)
 	local parts = {}
-	if rtext.has_sections(st) then
-		parts[1] = rtext.sections_content(st)
+	if collector.station_has_sections(st) then
+		parts[1] = record_sig(st, "slots", rtext.sections_content)
 	else
 		count_parts(parts, "p", st.provided)
 	end

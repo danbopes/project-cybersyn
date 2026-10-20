@@ -288,55 +288,38 @@ local collector = require("scripts.gui.collector")
 
 local EMPTY = {}
 
--- The collector words masks and sources (round 7 S1). Records from before sections existed, or a collector without
--- the helpers, get the same wording from these stand-ins, so the views never branch on it.
-
---- "3" for a mask.
---- @param mask int
+--- A network's icon alone, as rich text (its name when no prototype has it): how every view heads a section.
+--- @param name string
 --- @return string
-function text.mask_label(mask)
-	local f = collector.mask_label
-	if f then return f(mask) end
-	return tostring(mask or 0)
+function text.network_icon(name)
+	if prototypes.virtual_signal[name] then return "[virtual-signal=" .. name .. "]" end
+	if prototypes.item[name] then return "[item=" .. name .. "]" end
+	if prototypes.fluid[name] then return "[fluid=" .. name .. "]" end
+	return name .. " "
 end
 
---- "bits 1+2" for a mask of several bits, nil for one bit or none.
---- @param mask int
---- @return string?
-function text.mask_bits_label(mask)
-	local f = collector.mask_bits_label
-	if f then return f(mask) end
-	local bits = {}
-	for i = 1, 32 do
-		if band(mask or 0, 2 ^ (i - 1)) ~= 0 then bits[#bits + 1] = tostring(i) end
-	end
-	if #bits < 2 then return nil end
-	return "bits " .. table.concat(bits, "+")
+--- "[A]3": a section's network and mask, the stop panel's block head and every view's short label.
+--- @param sec SnapshotSection
+--- @return string
+function text.section_label(sec)
+	return text.network_icon(sec.network_name) .. collector.mask_label(sec.mask)
 end
 
---- "Station combinator" / "Inventory 2".
---- @param source SnapshotSource
+--- "[A]3 (bits 1+2) · Inventory 1 · priority 0": the stop panel's section head as one line, for tooltips and texts.
+--- @param sec SnapshotSection
 --- @return LocalisedString
-function text.source_label(source)
-	local f = collector.source_label
-	if f then return f(source) end
-	if source.kind == "inventory" then return { "cybersyn-gui.source-inventory", tostring(source.index) } end
-	return { "cybersyn-gui.source-station" }
+function text.section_text(sec)
+	local bits = collector.mask_bits_label(sec.mask)
+	return { "", text.section_label(sec), bits and (" (" .. bits .. ")") or "", " · ", text.sources_caption(sec.sources) }
 end
 
---- Whether a view shows the station by section: several sections, or any inventory source.
---- @param st SnapshotStation
---- @return boolean
-function text.has_sections(st)
-	local f = collector.station_has_sections
-	if f then return f(st) == true end
-	local sections = st.sections
-	if not sections then return false end
-	if #sections > 1 then return true end
-	for _, src in ipairs(st.sources or EMPTY) do
-		if src.kind == "inventory" then return true end
-	end
-	return false
+--- What section_text shows, as a plain string: views sign rows with it before building the text.
+--- @param sec SnapshotSection
+--- @return string
+function text.section_sig(sec)
+	local parts = { sec.key }
+	for i, src in ipairs(sec.sources) do parts[i + 1] = src.kind .. src.index .. "=" .. src.priority end
+	return table.concat(parts, "/")
 end
 
 --- The station's sections; a record collected without them reads as one section per network of the station
@@ -389,7 +372,7 @@ function text.masks_caption(sections)
 		elseif name ~= s.network_name then
 			return nil, ""
 		end
-		local l = text.mask_label(s.mask)
+		local l = collector.mask_label(s.mask)
 		if not seen[l] then
 			seen[l] = true
 			parts[#parts + 1] = l
@@ -414,7 +397,7 @@ function text.sources_caption(sources)
 	end
 	for i = 1, math.min(#sources, SOURCES_SHOWN) do
 		if i > 1 then out[#out + 1] = ", " end
-		out[#out + 1] = text.source_label(sources[i])
+		out[#out + 1] = collector.source_label(sources[i])
 		if not same then
 			out[#out + 1] = " "
 			out[#out + 1] = { "cybersyn-gui.section-source-priority", tostring(sources[i].priority) }

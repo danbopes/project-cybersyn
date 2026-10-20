@@ -478,3 +478,15 @@ test("build sections: rows of one station sort by section after the station id",
 	local r = m.build(sections_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY, nil, nil, SF.has_sections)
 	assert_eq(rows_of(r.providers), { "100@signal-A:3", "100@signal-A:4" })
 end)
+
+test("section_priority: the best of the section's sources, the station combinator's with its item override", function()
+	local m = model()
+	local st = { priority = 2, thresholds = { coal = 10 }, control2 = { [PRIORITY] = 6 } }
+	local station = { kind = "station", index = 0, priority = 2 }
+	local low, high = { kind = "inventory", index = 1, priority = 1 }, { kind = "inventory", index = 2, priority = 9 }
+	assert_eq(m.section_priority(st, { sources = { station, low } }, "coal", PRIORITY), 6, "the item override beats 1")
+	assert_eq(m.section_priority(st, { sources = { station, high } }, "coal", PRIORITY), 9, "an inventory at 9 beats 6")
+	assert_eq(m.section_priority(st, { sources = { station, low } }, "iron-ore", PRIORITY), 2)
+	assert_eq(m.section_priority(st, { sources = { low, high } }, "coal", PRIORITY), 9)
+	assert_eq(m.section_priority(st, { sources = {} }, "iron-ore", PRIORITY), 2)
+end)

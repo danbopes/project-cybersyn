@@ -7,6 +7,10 @@ local function rt()
 	return H.load("scripts.gui.relative-text")
 end
 
+local function collector()
+	return require("scripts.gui.collector")
+end
+
 
 test("role: provider, requester, both, none; stack mode appended", function()
 	local t = rt()
@@ -313,18 +317,27 @@ end
 test("sections: has_sections, masks caption, inventories and bits for the naphthalene provider and a plain stop", function()
 	local t = rt()
 	local n, p = naphthalene(), plain()
-	assert_true(t.has_sections(n))
-	assert_false(t.has_sections(p), "one section, no inventory")
+	assert_true(collector().station_has_sections(n))
+	assert_false(collector().station_has_sections(p), "one section, no inventory")
 	assert_eq({ t.masks_caption(t.sections_of(n)) }, { "signal-A", "1 · 3 · 4" })
 	assert_eq({ t.masks_caption(t.sections_of(p)) }, { "signal-A", "3" })
 	assert_eq(t.inventory_count(n), 2)
 	assert_eq(t.inventory_count(p), 0)
-	assert_eq(t.mask_bits_label(3), "bits 1+2")
-	assert_nil(t.mask_bits_label(4))
-	assert_eq(t.mask_label(4), "4")
-	assert_eq(t.section_summary(n.sections[1]), { "cybersyn-gui.section-provides", "1" })
+		assert_eq(t.section_summary(n.sections[1]), { "cybersyn-gui.section-provides", "1" })
 	assert_eq(t.section_summary(n.sections[3]), { "cybersyn-gui.section-nothing" })
 	assert_eq(t.section_summary(p.sections[1]), { "cybersyn-gui.section-requests", "3" })
+end)
+
+test("sections: one label and one line of text per section, as the stop panel heads its blocks", function()
+	local t = rt()
+	local n = naphthalene()
+	assert_eq(t.section_label(n.sections[2]), "[virtual-signal=signal-A]3")
+	assert_eq(t.section_text(n.sections[2]),
+		{ "", "[virtual-signal=signal-A]3", " (bits 1+2)", " · ", t.sources_caption(n.sections[2].sources) })
+	assert_eq(t.section_text(n.sections[1])[3], "", "one bit, no bits label")
+	local sig = t.section_sig(n.sections[2])
+	n.sections[2].sources[1].priority = 9
+	assert_true(t.section_sig(n.sections[2]) ~= sig, "a source's priority is in the text, so in the sig")
 end)
 
 test("sections: the switch's reason for what a section does not advertise", function()
@@ -337,12 +350,12 @@ end)
 test("sections: sources caption with one priority, and with each source's own when they differ", function()
 	local t = rt()
 	local a, b = source("station", 0, 0), source("inventory", 1, 0)
-	assert_eq(t.sources_caption({ a }), { "", t.source_label(a), " · ", { "cybersyn-gui.section-priority", "0" } })
+	assert_eq(t.sources_caption({ a }), { "", collector().source_label(a), " · ", { "cybersyn-gui.section-priority", "0" } })
 	assert_eq(t.sources_caption({ a, b }),
-		{ "", t.source_label(a), ", ", t.source_label(b), " · ", { "cybersyn-gui.section-priority", "0" } })
+		{ "", collector().source_label(a), ", ", collector().source_label(b), " · ", { "cybersyn-gui.section-priority", "0" } })
 	b.priority = 5
-	assert_eq(t.sources_caption({ a, b }), { "", t.source_label(a), " ", { "cybersyn-gui.section-source-priority", "0" },
-		", ", t.source_label(b), " ", { "cybersyn-gui.section-source-priority", "5" } })
+	assert_eq(t.sources_caption({ a, b }), { "", collector().source_label(a), " ", { "cybersyn-gui.section-source-priority", "0" },
+		", ", collector().source_label(b), " ", { "cybersyn-gui.section-source-priority", "5" } })
 end)
 
 test("sections: a record without sections reads as one per network, NETWORK_EACH sorted", function()
@@ -352,7 +365,7 @@ test("sections: a record without sections reads as one per network, NETWORK_EACH
 	assert_eq(#s, 1)
 	assert_eq({ s[1].key, s[1].mask, s[1].sources[1].priority }, { "signal-A:3", 3, 2 })
 	assert_true(s[1].provided == st.provided, "the station's own table")
-	assert_false(t.has_sections(st))
+	assert_false(collector().station_has_sections(st))
 	s = t.sections_of({ network_name = NETWORK_EACH, network_mask = { ["signal-B"] = 2, ["signal-A"] = 1 },
 		provided = {}, requested = {} })
 	assert_eq({ s[1].key, s[2].key }, { "signal-A:1", "signal-B:2" })
@@ -492,6 +505,15 @@ test("stop panel: the section blocks are rebuilt only when the record changed", 
 	st.read_tick = 30
 	r.render_slots(state, body, m)
 	assert_eq(state.rebuilds, 2, "an unadvertised count moved")
+	-- A live read with diagnostics on: the station-level starved set moves, the sectioned record's signature cache holds.
+	m.source = "live"
+	st.sig_key = -1
+	state.starved = { ["signal-A:coal"] = true }
+	r.render_slots(state, body, m)
+	local cached = state.rsig.slots
+	state.starved = { ["signal-A:stone"] = true }
+	r.render_slots(state, body, m)
+	assert_true(state.rsig.slots == cached, "the signature was not built again")
 end)
 
 test("stop panel: a working station combinator without input names its inventories as paused for that reason", function()

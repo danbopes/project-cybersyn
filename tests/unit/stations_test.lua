@@ -510,21 +510,21 @@ end)
 test("strip: grouped by section with a network label each; A4 advertises nothing and gets no group", function()
 	local stations_tab = setup()
 	local defs = stations_tab.pr_slots(naphthalene(), nil, 12)
-	assert_eq(slot_ids(defs), { "[[img=virtual-signal.signal-A]1]", "naphthalene-oil", "[[img=virtual-signal.signal-A]3]", "liquid-fuel" })
+	assert_eq(slot_ids(defs), { "[[virtual-signal=signal-A]1]", "naphthalene-oil", "[[virtual-signal=signal-A]3]", "liquid-fuel" })
 	-- Keys stay unique when one item sits in two sections.
 	local keys = {}
 	for _, d in ipairs(defs) do keys[#keys + 1] = stations_tab.slot_key(d) end
 	assert_eq(keys, { "gsignal-A:1", "signal-A:1|pnaphthalene-oil", "gsignal-A:3", "signal-A:3|pliquid-fuel" })
 	local tip = serpent.line(defs[4].tooltip)
-	assert_true(tip:find('"cybersyn-gui.stations-slot-section", "[img=virtual-signal.signal-A]3"', 1, true) ~= nil, tip)
-	assert_true(tip:find('"cybersyn-gui.stations-slot-ignored", "[img=virtual-signal.signal-A]4", "-866", {"cybersyn-gui.section-provide-only"}', 1, true) ~= nil, tip)
+	assert_true(tip:find('"cybersyn-gui.stations-slot-section", {"", "[virtual-signal=signal-A]3", " (bits 1+2)", " · "', 1, true) ~= nil, tip)
+	assert_true(tip:find('"cybersyn-gui.stations-slot-ignored", "[virtual-signal=signal-A]4", "-866", {"cybersyn-gui.section-provide-only"}', 1, true) ~= nil, tip)
 end)
 
 test("strip: a group label never ends a line that overflows", function()
 	local stations_tab = setup()
 	local defs = stations_tab.pr_slots(naphthalene(), nil, 3)
-	assert_eq(slot_ids(defs), { "[[img=virtual-signal.signal-A]1]", "naphthalene-oil", "+1" })
-	assert_true(defs[3].tooltip:find("[img=virtual-signal.signal-A]3", 1, true) ~= nil)
+	assert_eq(slot_ids(defs), { "[[virtual-signal=signal-A]1]", "naphthalene-oil", "+1" })
+	assert_true(defs[3].tooltip:find("[virtual-signal=signal-A]3", 1, true) ~= nil)
 end)
 
 test("strip: a plain station keeps today's ungrouped strip and keys", function()

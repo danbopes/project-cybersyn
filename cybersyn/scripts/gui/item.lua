@@ -13,6 +13,7 @@ local dev = require("scripts.gui.dev")
 local diag = require("scripts.diag")
 local pm = require("scripts.gui.problems-model")
 local text = require("scripts.gui.unserved-text")
+local rtext = require("scripts.gui.relative-text")
 local name_cell = require("scripts.gui.name-cell")
 local logic = require("scripts.gui.tab-logic")
 local item_model = require("scripts.gui.item-model")
@@ -398,7 +399,6 @@ end
 local station_tooltip = name_cell.station_tooltip
 
 local network_text = util.network_text
-local SECTION_FNS = text.section_fns(collector, network_text)
 local TAG = "item_net_tag"
 
 local function tag_def(v, scope)
@@ -420,7 +420,7 @@ end
 local function network_sig(r, st)
 	local sec = r.section
 	if not sec then return tostring(st and st.network_name) end
-	return sec.key .. "\1" .. item_model.sources_sig(sec)
+	return rtext.section_sig(sec)
 end
 
 --- The network a row names: its section's for a station with sections, else the station's (as before sections).
@@ -431,7 +431,7 @@ end
 local function row_network(r, st)
 	local sec = r.section
 	if not sec then return network_text(st and st.network_name), nil end
-	return text.section_network(sec, SECTION_FNS), text.section_network(sec, SECTION_FNS, true)
+	return rtext.section_text(sec), rtext.section_label(sec)
 end
 
 --- One cell definition from its column and value.
@@ -1202,6 +1202,7 @@ local function dump(player_data)
 		filtered = m and m.filtered,
 		deferred = cache and cache.deferred,
 		model = {},
+		row_keys = {},
 		rendered = {},
 		scroll = {},
 		max_rows = storage.manager.item_max_rows or MAX_ROWS,
@@ -1222,6 +1223,10 @@ local function dump(player_data)
 				or r.id
 		end
 		out.model[t] = ids
+		-- One entry per row: "id" for a plain station, "id key" for a section row (item_oracle's *_rows).
+		local keys = {}
+		for i, r in ipairs(m and m[t] or {}) do keys[i] = r.key and (r.id .. " " .. r.key) or tostring(r.id) end
+		out.row_keys[t] = keys
 		local rows = {}
 		local tbl = refs[table_name(t)]
 		local cols = #COLUMNS[t]
@@ -1305,14 +1310,28 @@ dev.add("close_item", function(pi)
 end)
 
 --- The snapshot's own answer for `hash`, walked here without item-model: the stations that provide and request it,
---- the trains carrying it (ids sorted) and its inventory_all entries.
+--- the trains carrying it (ids sorted) and its inventory_all entries. provider_rows / requester_rows are the rows
+--- the drill-down should show (sorted strings): "id" per plain station, "id key" per section of a station with
+--- sections (D3) that advertises the item.
 dev.add("item_oracle", function(hash)
 	local snapshot = collector.get()
 	local providers, requesters, trains = {}, {}, {}
+	local provider_rows, requester_rows = {}, {}
 	for id, st in pairs(snapshot.stations) do
 		if st.provided[hash] then providers[#providers + 1] = id end
 		if st.requested[hash] then requesters[#requesters + 1] = id end
+		if st.sections and collector.station_has_sections(st) then
+			for _, sec in ipairs(st.sections) do
+				if sec.provided[hash] then provider_rows[#provider_rows + 1] = id .. " " .. sec.key end
+				if sec.requested[hash] then requester_rows[#requester_rows + 1] = id .. " " .. sec.key end
+			end
+		else
+			if st.provided[hash] then provider_rows[#provider_rows + 1] = tostring(id) end
+			if st.requested[hash] then requester_rows[#requester_rows + 1] = tostring(id) end
+		end
 	end
+	table.sort(provider_rows)
+	table.sort(requester_rows)
 	for id, tr in pairs(snapshot.trains) do
 		if tr.manifest_hashes[hash] then trains[#trains + 1] = id end
 	end
@@ -1323,6 +1342,8 @@ dev.add("item_oracle", function(hash)
 	return {
 		providers = providers,
 		requesters = requesters,
+		provider_rows = provider_rows,
+		requester_rows = requester_rows,
 		trains = trains,
 		provided = inv.provided[hash],
 		requested = inv.requested[hash],

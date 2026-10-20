@@ -114,8 +114,10 @@ local function by_amount(key)
 	end
 end
 
---- The priority the dispatcher compares for an item of one section: a section fed by the station combinator uses the
---- station's (with the item's control-combinator override); one fed only by inventories, its highest source priority.
+--- The priority the dispatcher compares for an item of one section: the planner registers every source as its own
+--- stop at its own priority (the station combinator's with the item's control-combinator override), so the best
+--- of them wins. A section sums its sources' counts without keeping which source holds the item, so every source
+--- of the section counts.
 --- @param st table
 --- @param sec SnapshotSection
 --- @param hash string
@@ -124,8 +126,8 @@ end
 function model.section_priority(st, sec, hash, priority_signal)
 	local best
 	for _, src in ipairs(sec.sources or {}) do
-		if src.kind == "station" then return model.effective_priority(st, hash, priority_signal) end
-		if src.priority and (not best or src.priority > best) then best = src.priority end
+		local p = src.kind == "station" and model.effective_priority(st, hash, priority_signal) or src.priority
+		if p and (not best or p > best) then best = p end
 	end
 	return best or model.effective_priority(st, hash, priority_signal)
 end
