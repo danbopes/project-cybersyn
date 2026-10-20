@@ -85,9 +85,59 @@ local lint = require("scripts.lint")
 -- 4: storage.manager.fleet_networks dropped; the Overview's Fleet tile reads the HUD's cache (hud_networks).
 -- 5: the Stations tab keeps its toggled chip in stations_chip alone (stations_status_filter folded into it).
 -- 6: drops storage.recent_external_items, whose only reader (the recent-items panel) is gone.
-local SCHEMA = 6
+-- 7: Station.secondary_inv_combs keyed by unit number on every path (see rekey_secondary_inv_combs).
+local SCHEMA = 7
 
 local fork_migrations = {}
+
+--- Stations built from their station combinator once stored their inventory combinators as an array, so removing
+--- one or changing its mode looked it up by unit number, missed it and left it registered: a removed entity, or a
+--- combinator in another mode whose signals were then read as inventory. Rebuilds every table keyed by unit number
+--- from what is really next to the stop. Safe to repeat; the planner rebuilds each station's stops every poll, so
+--- nothing else needs refreshing.
+--- @return {rekeyed: int, invalid: int, wrong_mode: int, added: int}
+function fork_migrations.rekey_secondary_inv_combs()
+	local counts = { rekeyed = 0, invalid = 0, wrong_mode = 0, added = 0 }
+	local to_stop = storage.to_stop or {}
+	for _, station in pairs(storage.stations or {}) do
+		local old = station.secondary_inv_combs or {}
+		local combs = {}
+		for key, comb in pairs(old) do
+			if not (comb and comb.valid) then
+				counts.invalid = counts.invalid + 1
+			elseif comb.get_or_create_control_behavior().parameters.operation ~= MODE_SECONDARY_INVENTORY then
+				counts.wrong_mode = counts.wrong_mode + 1
+			else
+				local unit = comb.unit_number
+				if key ~= unit then counts.rekeyed = counts.rekeyed + 1 end
+				combs[unit] = comb
+			end
+		end
+		-- The same area and ownership test the build paths use, so an inventory combinator a lost lookup left out
+		-- joins its station here.
+		local stop = station.entity_stop
+		if stop and stop.valid then
+			local x, y = stop.position.x, stop.position.y
+			local found = stop.surface.find_entities_filtered({
+				area = { { x - 2, y - 2 }, { x + 2, y + 2 } }, name = COMBINATOR_NAME,
+			})
+			for _, comb in pairs(found) do
+				local unit = comb.unit_number
+				if comb.valid and not combs[unit] and to_stop[unit] == stop
+					and comb.get_or_create_control_behavior().parameters.operation == MODE_SECONDARY_INVENTORY then
+					combs[unit] = comb
+					counts.added = counts.added + 1
+				end
+			end
+		end
+		station.secondary_inv_combs = combs
+	end
+	if counts.rekeyed + counts.invalid + counts.wrong_mode + counts.added > 0 then
+		log(string.format("cybersyn: inventory combinators re-keyed %d, dropped %d invalid and %d in another mode, added %d",
+			counts.rekeyed, counts.invalid, counts.wrong_mode, counts.added))
+	end
+	return counts
+end
 
 --- Creates or refreshes every field of SCHEMA; idempotent, and it never touches the dispatcher's cycle state.
 function fork_migrations.migrate_schema()
@@ -118,6 +168,7 @@ function fork_migrations.migrate_schema()
 		end
 	end
 	storage.recent_external_items = nil
+	fork_migrations.rekey_secondary_inv_combs()
 	storage.fork_schema = SCHEMA
 end
 

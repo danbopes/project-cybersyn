@@ -1216,6 +1216,11 @@ local function tick_poll_station(map_data, mod_settings)
 			end
 		end
 
+		-- Hashes an inventory combinator requests this poll. The station combinator's pass below and the cleanup after it
+		-- must not clear their waits; nil at a station without inventory requests, so those poll exactly as before.
+		---@type {[string]: true}?
+		local inv_requested = nil
+
 		-- Process secondary inventory combinator signals
 		if secondary_inv_signals then
 			for unit_number, signals in pairs(secondary_inv_signals) do
@@ -1295,6 +1300,10 @@ local function tick_poll_station(map_data, mod_settings)
 							if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 								is_not_requesting = false
 								is_requesting_nothing = false
+
+								if not inv_requested then inv_requested = {} end
+								inv_requested[item_hash] = true
+								track_request_start(station, item_hash)
 
 								-- Register this stop in the appropriate networks
 								local f, a
@@ -1401,7 +1410,7 @@ local function tick_poll_station(map_data, mod_settings)
 						end
 						stops[#stops + 1] = stop
 					end
-				else
+				elseif not (inv_requested and inv_requested[item_hash]) then
 					-- Request no longer needed, clear the tracking
 					clear_request_tracking(station, item_hash)
 				end
@@ -1433,7 +1442,7 @@ local function tick_poll_station(map_data, mod_settings)
 
 		-- Clean up request_start_ticks for items no longer being requested
 		if station.request_start_ticks and next(station.request_start_ticks) then
-			local requested_items = {}
+			local requested_items = inv_requested or {}
 			-- Build set of currently requested items
 			for k, v in pairs(comb1_signals) do
 				if v.count < 0 then  -- Negative means requesting

@@ -59,7 +59,9 @@ local function set_visibility(main_window, selected_index)
 	top_flow.is_pr_switch.visible = is_station
 	vflow.mode_description.caption = selected_index >= 1 and { "cybersyn-gui.mode-description-" .. selected_index } or ""
 	vflow.network_label.visible = uses_network
-	bottom_flow.network.visible = uses_network
+	-- The planner always puts an inventory combinator on its station's network, so a picker here would do nothing.
+	vflow.network_inherited.visible = is_secondary_inventory
+	bottom_flow.network.visible = uses_network and not is_secondary_inventory
 	first_settings.allow_list.visible = uses_allow_list
 	first_settings.is_stack.visible = is_station
 	second_settings.enable_inactive.visible = is_station
@@ -606,6 +608,12 @@ function gui_opened(event, player, comb, is_ghost)
 									style = "heading_2_label",
 									caption = { "cybersyn-gui.network" },
 									style_mods = { top_padding = 8 },
+								},
+								{
+									type = "label",
+									name = "network_inherited",
+									caption = { "cybersyn-gui.network-inherited" },
+									style_mods = { single_line = false, maximal_width = 380, font_color = { 0.8, 0.8, 0.8 } },
 								},
 								{
 									type = "flow",
