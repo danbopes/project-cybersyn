@@ -559,3 +559,31 @@ test("network filter: a station shows under every bit any of its sections advert
 	p.mask_union = nil
 	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without a union reads its own mask")
 end)
+
+test("priority cell: one value for a plain station, highest first when inventories differ, * for item priorities", function()
+	local stations_tab = setup()
+	local plain_cell = stations_tab.priority_cell(plain())
+	assert_eq(plain_cell.caption, "1")
+	assert_eq(plain_cell.small, false)
+	assert_eq(#plain_cell.tooltip, 2, "no per-source lines when every source agrees")
+
+	local mixed = naphthalene()
+	mixed.sources[2].priority = 5
+	mixed.sources[3].priority = -2
+	local cell = stations_tab.priority_cell(mixed)
+	assert_eq(cell.caption, "5 · 0 · -2")
+	assert_true(cell.small)
+	assert_eq(#cell.tooltip, 2 + 3, "one line per source")
+	assert_eq(stations_tab.sort_keys.priority(mixed), 5)
+
+	local overridden = plain()
+	overridden.control2 = { [SIGNAL_PRIORITY] = 7 }
+	overridden.thresholds = { coal = 100 }
+	local o = stations_tab.priority_cell(overridden)
+	assert_eq(o.caption, "1*")
+	assert_true(serpent.line(o.tooltip):find('"cybersyn-gui.stations-priority-item", "7", "1"', 1, true) ~= nil)
+	assert_true(o.sig ~= plain_cell.sig)
+
+	local legacy = st(30, "No sources", { priority = 3 })
+	assert_eq(stations_tab.priority_cell(legacy).caption, "3")
+end)

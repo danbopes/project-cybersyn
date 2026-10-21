@@ -97,7 +97,7 @@ local steps = {
 				net[3] and net[3].caption)
 			lab.check("Network tooltip has a line per section", flat(row.children[3].tooltip):find("stations-net-sections", 1, true) ~= nil,
 				row.children[3].tooltip)
-			local strip = row.children[4].children[1].children
+			local strip = row.children[5].children[1].children
 			local groups, items = {}, {}
 			for _, e in ipairs(strip) do
 				if e.type == "label" and e.tags.group then groups[#groups + 1] = e.tags.group end

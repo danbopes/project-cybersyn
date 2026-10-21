@@ -277,9 +277,9 @@ lab.suite("37_tabs", {
 
 		remote.call(DS, "set_chip", pi, "problems")
 		local d = stations_dump()
-		lab.check("Problems chip: count == station rows, the view sorts worst first, column 4 is Problems",
+		lab.check("Problems chip: count == station rows, the view sorts worst first, column 5 is Problems",
 			d.chip == "problems" and d.total == d.chip_counts.problems and #d.ids == d.total and d.total > 0
-			and d.column == "problems" and d.ascending == true and d.header[4] == "problems",
+			and d.column == "problems" and d.ascending == true and d.header[5] == "problems",
 			{ chip = d.chip, total = d.total, count = d.chip_counts.problems, rows = #d.ids, column = d.column, header = d.header })
 		local want = {}
 		for _, row in ipairs(v.stations) do want[row.id] = row end
@@ -291,7 +291,7 @@ lab.suite("37_tabs", {
 		local w = d.widths
 		lab.check("Problems view: the Problems column stretches, Deliveries keeps two slots", w and w.problems_view
 			and w.dl_slots == 2 and w.problems > w.name and w.problems > w.deliveries and w.name >= 160
-			and w.cw - 72 + (w.hide_wait and 8 or 0) - w.name - w.station_status - w.network - w.problems - w.deliveries - w.wait
+			and w.cw - 80 + (w.hide_wait and 8 or 0) - w.name - w.station_status - w.network - w.priority - w.problems - w.deliveries - w.wait
 				- w.last_delivery == 0, w)
 		local caps = d.chip_captions or {}
 		lab.check("the Problems chip leads with the warning triangle, Setup with its yellow dot",
@@ -407,7 +407,7 @@ lab.suite("37_tabs", {
 		-- Acknowledge every finding of the first row from its button, then end it with a second click.
 		d = stations_dump()
 		local first_id = d.ids[1]
-		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 4, 6 })
+		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 5, 6 })
 		local acks = lab.dev("diag_acks")
 		local by = acks and acks.lint and acks.lint[first_id]
 		local acked_all = by ~= nil and lab.count(by) == lab.count((function()
@@ -430,7 +430,7 @@ lab.suite("37_tabs", {
 		lab.check("acknowledge: the station moves behind every open one", open_after == n_open - 1 and acked_after >= 1
 			and pos ~= nil and pos > open_station_after, { pos = pos, last_open = open_station_after, open = open_after,
 			before = n_open })
-		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { pos or 1, 4, 6 })
+		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { pos or 1, 5, 6 })
 		after = stations_dump()
 		lab.check("acknowledge: a second click ends them", after.problems[pos or 1] and after.problems[pos or 1].ack == false,
 			after.problems[pos or 1])
@@ -445,7 +445,7 @@ lab.suite("37_tabs", {
 		-- Leaving the view gives Provided / requested back and drops the Problems sort.
 		remote.call(DS, "set_chip", pi, "all")
 		d = stations_dump()
-		lab.check("Problems chip off: Provided / requested is back, sorted by name", d.header[4] == "provided_requested"
+		lab.check("Problems chip off: Provided / requested is back, sorted by name", d.header[5] == "provided_requested"
 			and d.column == "name" and #d.registry == 0, { header = d.header, column = d.column })
 		-- The Overview's jump sets player_data.stations_chip = "problems" (p1); the tab reads it as the chip.
 		remote.call("cybersyn", "write_global", "problems", "manager", "players", pi, "stations_chip")

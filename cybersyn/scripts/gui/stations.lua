@@ -73,17 +73,17 @@ local CHIP_WIDTH = {
 -- Each further digit of a count, separators included.
 local DIGIT_WIDTH = 8
 
-local COLUMNS = { "name", "station_status", "network", "provided_requested", "deliveries", "wait", "last_delivery" }
--- While the Problems chip is on, the fourth column shows a station's lint findings instead of its slots.
-local PROBLEM_COLUMNS = { "name", "station_status", "network", "problems", "deliveries", "wait", "last_delivery" }
-local PROBLEMS_COLUMN = 4
-local WAIT_COLUMN = 6
-local RIGHT = { wait = true, last_delivery = true }
+local COLUMNS = { "name", "station_status", "network", "priority", "provided_requested", "deliveries", "wait", "last_delivery" }
+-- While the Problems chip is on, the fifth column shows a station's lint findings instead of its slots.
+local PROBLEM_COLUMNS = { "name", "station_status", "network", "priority", "problems", "deliveries", "wait", "last_delivery" }
+local PROBLEMS_COLUMN = 5
+local WAIT_COLUMN = 7
+local RIGHT = { priority = true, wait = true, last_delivery = true }
 -- Column captions and sort tooltips whose locale key is not the column's name.
-local CAPTION_KEY = { last_delivery = "stations-last-dispatch", problems = "stations-problems" }
+local CAPTION_KEY = { last_delivery = "stations-last-dispatch", problems = "stations-problems", priority = "item-col-priority" }
 local SORT_KEY = { last_delivery = "stations-sort-last-dispatch", problems = "stations-sort-problems" }
 -- Fixed widths in logical px; the name and the two slot strips share the rest (column_widths).
-local W = { station_status = 156, network = 80, dl_count = 40, wait = 64, last_delivery = 88 }
+local W = { station_status = 156, network = 80, priority = 64, dl_count = 40, wait = 64, last_delivery = 88 }
 local NAME_MIN = 160
 -- The Problems view: Deliveries keeps its two slots, the name a quarter of what the fixed columns leave (at least
 -- NAME_MIN), and the Problems column stretches over the rest; never under PROBLEMS_MIN while the name keeps NAME_MIN.
@@ -99,14 +99,14 @@ local PROBLEMS_DL_SLOTS = 2
 --- @param hide_wait boolean?
 --- @return table
 local function column_widths(cw, problems, hide_wait)
-	-- Row padding, frame borders and six gaps of 8 between seven columns (one fewer with Wait hidden).
-	local avail = cw - 72
+	-- Row padding, frame borders and seven gaps of 8 between eight columns (one fewer with Wait hidden).
+	local avail = cw - 80
 	local wait = W.wait
 	if hide_wait then
 		wait = 0
 		avail = avail + 8
 	end
-	local fixed = W.station_status + W.network + W.dl_count + 4 + wait + W.last_delivery
+	local fixed = W.station_status + W.network + W.priority + W.dl_count + 4 + wait + W.last_delivery
 	local rest = avail - fixed
 	local pr = math.min(12, math.max(5, math.floor(rest * 0.45 / SLOT)))
 	local dl = math.min(6, math.max(2, math.floor(rest * 0.2 / SLOT)))
@@ -142,6 +142,7 @@ local function column_widths(cw, problems, hide_wait)
 		name = name,
 		station_status = W.station_status,
 		network = W.network,
+		priority = W.priority,
 		pr_slots = pr,
 		provided_requested = pr * SLOT,
 		problems = fourth,
@@ -298,6 +299,37 @@ local function never_dispatched(st)
 end
 stations_tab.never_dispatched = never_dispatched
 
+--- Every distinct priority the station's sources advertise with, highest first (the station combinator's alone for a
+--- plain station).
+--- @param st SnapshotStation
+--- @return int[]
+local function priorities(st)
+	local sources = st.sources
+	if not (sources and sources[1]) then return { st.priority or mod_settings.priority or 0 } end
+	local out, seen = {}, {}
+	for _, src in ipairs(sources) do
+		local p = src.priority
+		if p ~= nil and not seen[p] then
+			seen[p] = true
+			out[#out + 1] = p
+		end
+	end
+	table.sort(out, function(a, b) return a > b end)
+	return out
+end
+
+--- The control combinator's priority when it applies (items with their own threshold there), and how many items.
+--- @param st SnapshotStation
+--- @return int? priority
+--- @return int items
+local function item_priority(st)
+	local control2, thresholds = st.control2, st.thresholds
+	local p = control2 and control2[SIGNAL_PRIORITY]
+	local n = thresholds and count_keys(thresholds) or 0
+	if p == nil or n == 0 then return nil, 0 end
+	return p, n
+end
+
 --- Sort keys; each must return only numbers or only strings (nil sorts last). Keys are cached per station
 --- between collector passes, so they must not depend on the current tick: ages sort by their negated start tick.
 --- @type {[string]: fun(st: SnapshotStation, ctx: table): (number|string|nil)}
@@ -324,6 +356,8 @@ local sort_keys = {
 		for _, sec in ipairs(rtext.sections_of(st)) do n = n + count_keys(sec.provided) + count_keys(sec.requested) end
 		return n
 	end,
+	-- The highest priority any source advertises with: the one the dispatcher serves first.
+	priority = function(st) return priorities(st)[1] end,
 	deliveries = function(st) return st.deliveries_total end,
 	wait = function(st)
 		local start = st.longest_wait_start
@@ -1134,6 +1168,40 @@ local function network_model(m, st)
 	end
 end
 
+local PRIO_CAPTION_MAX = 3
+
+--- The Priority cell: prio_caption, prio_sig and m.prio_tooltip(). A "*" marks a control combinator whose priority
+--- replaces the station's for the items it sets a threshold on.
+--- @param m table row model
+--- @param st SnapshotStation
+local function priority_model(m, st)
+	local list = priorities(st)
+	local item_p, item_n = item_priority(st)
+	local shown = {}
+	for i = 1, math.min(#list, PRIO_CAPTION_MAX) do shown[i] = tostring(list[i]) end
+	local caption = table.concat(shown, " · ") .. (#list > PRIO_CAPTION_MAX and " …" or "") .. (item_p and "*" or "")
+	m.prio_caption = caption
+	m.prio_small = #list > 1
+	local sig = { caption }
+	if #list > 1 or item_p then
+		for _, src in ipairs(st.sources or {}) do sig[#sig + 1] = src.kind .. src.index .. "=" .. src.priority end
+		sig[#sig + 1] = item_p and (item_p .. "/" .. item_n) or ""
+	end
+	m.prio_sig = table.concat(sig, "|")
+	m.prio_tooltip = function()
+		local tip = { "", { "cybersyn-gui.stations-priority-tooltip" } }
+		if #list > 1 then
+			for _, src in ipairs(st.sources) do
+				tip[#tip + 1] = { "", "\n", collector.source_label(src), ": ", tostring(src.priority) }
+			end
+		end
+		if item_p then
+			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.stations-priority-item", tostring(item_p), tostring(item_n) } }
+		end
+		return tip
+	end
+end
+
 --- Everything a row shows that is not a slot table, as plain values comparable between updates. Tooltips and the
 --- network cell cost API calls, so they are built by functions that run only when their sig changed.
 --- @param st SnapshotStation
@@ -1194,6 +1262,7 @@ local function row_model(st, ctx)
 	end
 
 	network_model(m, st)
+	priority_model(m, st)
 
 	local limit = finite_limit(st)
 	m.dl_caption = { "", st.deliveries_total, "/", limit or { "cybersyn-gui.no-limit-short" } }
@@ -1488,7 +1557,7 @@ local function row_refs(row, problems)
 	local c = row.children
 	local status = c[2].children
 	local net = c[3].children
-	local dl = c[5].children
+	local dl = c[6].children
 	local refs = {
 		name = c[1],
 		status_sprite = status[1],
@@ -1497,10 +1566,11 @@ local function row_refs(row, problems)
 		net_sprite = net[1],
 		net_label = net[2],
 		net_badge = net[3],
+		prio = c[4],
 		dl_count = dl[1],
 		dl = dl[2],
-		wait = c[6],
-		last = c[7],
+		wait = c[7],
+		last = c[8],
 	}
 	if problems then
 		local p = c[PROBLEMS_COLUMN]
@@ -1572,6 +1642,14 @@ local function update_row(row, st, m, cell, item, hold, minute, sigs, w)
 			r.net_badge.visible = badge ~= nil and badge ~= ""
 		end
 		cell.net_sig = m.net_sig
+	end
+
+	if cell.prio_sig ~= m.prio_sig then
+		r.prio.caption = m.prio_caption or ""
+		r.prio.tooltip = m.prio_tooltip and m.prio_tooltip() or ""
+		local font = m.prio_small and "default-small" or "default"
+		if r.prio.style.font ~= font then r.prio.style.font = font end
+		cell.prio_sig = m.prio_sig
 	end
 
 	if cell.dl_sig ~= m.dl_sig then
@@ -1685,6 +1763,8 @@ local function row_def(st, m, color, item, w)
 				ignored_by_interaction = true,
 				style_mods = { minimal_width = 0, font = "default-small-semibold", font_color = { 1, 0.65, 0.25 } } },
 		},
+		{ type = "label", style = "cybersyn_cell_value", caption = m.prio_caption or "", tooltip = m.prio_tooltip and m.prio_tooltip() or "",
+			style_mods = { width = w.priority, font = m.prio_small and "default-small" or "default" } },
 		fourth,
 		{
 			type = "flow",
@@ -2184,6 +2264,12 @@ function stations_tab.network_cell(st)
 	return { sig = m.net_sig, sprite = sprite, caption = caption, tooltip = tooltip, badge = badge, small = m.net_small }
 end
 
+function stations_tab.priority_cell(st)
+	local m = {}
+	priority_model(m, st)
+	return { sig = m.prio_sig, caption = m.prio_caption, small = m.prio_small, tooltip = m.prio_tooltip() }
+end
+
 function stations_tab.pr_slots(st, item, capacity)
 	return SLOT_TABLES.pr(st, item, { pr_slots = capacity })
 end
@@ -2215,7 +2301,7 @@ dev.register_dump(TAB, function(player_data)
 			statuses[n] = ctx.status[id]
 			names[n] = button and button.caption
 			problems[n] = prob or false
-			last[n] = cells[7].caption
+			last[n] = cells[8].caption
 			status_children[n] = #cells[2].children
 			if #registry > 0 then registry_last = false end
 		else
