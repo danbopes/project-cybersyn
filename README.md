@@ -2,6 +2,10 @@
 
 danbopes's fork of Mami's [Project Cybersyn](https://github.com/mamoniot/project-cybersyn) for Factorio 2.0: a drop-in replacement for the stock mod that adds the [secondary inventory combinator](#the-secondary-inventory-combinator), a rebuilt manager and dispatcher diagnostics. MIT licensed, like the original.
 
+[![Project Cybersyn Fork 3.0, video on YouTube](https://img.youtube.com/vi/dI113CmI-1w/maxresdefault.jpg)](https://www.youtube.com/watch?v=dI113CmI-1w)
+
+*[Project Cybersyn Fork 3.0](https://www.youtube.com/watch?v=dI113CmI-1w) on YouTube: a video introduction to the fork.*
+
 ![The manager's Overview on a Pyanodons save with 2,030 stations: four tiles and the Unserved requests table, each row with the reason the dispatcher recorded](previews/manager/overview.png)
 
 *The Overview on a Pyanodons save with 2,030 stations and 553 trains. Each unserved request names its reason, the best provider and how long it has waited.*
