@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
 Version: 3.0.0
-Date: 2026-10-19
+Date: 2026-10-21
   Major Features:
     - (Manager) Rebuilt Cybersyn Manager for large bases: Overview, Stations, Trains, Inventory and Log tabs, each list paged to fit the window, with data gathered a few stations per update and only while a window is open
     - (Manager) Overview tab, shown first: four tiles (Unserved stations, Fleet headroom, Stations failing, Throughput) above an Unserved requests table that lists each waiting request with its reason, best provider, stock against what it needs, the requester it lost to and how long it has waited

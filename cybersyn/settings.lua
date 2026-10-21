@@ -164,7 +164,8 @@ data:extend({
 		name = "cybersyn-manager-dev-interface",
 		order = "ab",
 		setting_type = "startup",
-		-- On in this fork: the headless lab pins startup settings from the save, which records none for this key.
-		default_value = true,
+		-- Test-only remote interface for the headless lab, which turns it on through its own mod-settings.dat.
+		default_value = false,
+		hidden = true,
 	},
 })
