@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build the release for, e.g. v3.0.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Tag matches info.json
+        id: meta
+        run: |
+          version=$(python3 -I -c 'import json; print(json.load(open("cybersyn/info.json"))["version"])')
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match cybersyn/info.json version $version (expected v$version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Lua 5.2
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.2
+      - name: Host unit tests
+        run: tests/unit/run.sh
+
+      - name: Validate changelog
+        run: python3 -I tools/changelog.py check --version "${{ steps.meta.outputs.version }}" --top
+
+      - name: Build zip
+        id: build
+        run: echo "zip=$(tools/package.sh)" >> "$GITHUB_OUTPUT"
+      - name: List zip contents
+        run: unzip -l "${{ steps.build.outputs.zip }}"
+
+      - name: Release notes from changelog
+        run: python3 -I tools/changelog.py section --markdown "${{ steps.meta.outputs.version }}" > "$RUNNER_TEMP/notes.md"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Project Cybersyn ${{ steps.meta.outputs.version }}
+          body_path: ${{ runner.temp }}/notes.md
+          files: ${{ steps.build.outputs.zip }}
+          fail_on_unmatched_files: true

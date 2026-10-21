@@ -1,6 +1,14 @@
 --By Mami
 local manager = require("gui.main")
+local manager_dev = require("scripts.gui.dev")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
+local analytics = require("scripts.analytics")
+local diag = require("scripts.diag")
+local fork_migrations = require("scripts.fork-migrations")
+local lint = require("scripts.lint")
+
+-- Ticks between chunks of the Refresh allow-lists job while manager updates are off.
+local REPAIR_JOB_NTH = 10
 
 local ceil = math.ceil
 
@@ -17,6 +25,7 @@ local function on_depot_built(map_data, stop, comb)
 	local depot_id = stop.unit_number --[[@as uint]]
 	map_data.depots[depot_id] = depot
 	interface_raise_depot_created(depot_id)
+	lint.on_depot_changed(stop)
 end
 
 ---@param map_data MapData
@@ -51,6 +60,7 @@ function on_depot_broken(map_data, depot_id, depot)
 	end
 	map_data.depots[depot_id] = nil
 	interface_raise_depot_removed(depot_id, depot)
+	lint.on_depot_changed(depot.entity_stop)
 end
 
 ---@param map_data MapData
@@ -89,7 +99,7 @@ function on_refueler_broken(map_data, refueler_id, refueler)
 					lock_train(train.entity)
 					send_alert_refueler_of_train_broken(map_data, train.entity)
 				else
-					train.se_awaiting_removal = train_id
+					train.se_awaiting_removal = true
 				end
 			end
 		end
@@ -130,6 +140,8 @@ local function on_station_built(map_data, stop, comb1, comb2, secondary_inv_comb
 		--allows_all_trains = set_station_from_comb,
 		deliveries_total = 0,
 		last_delivery_tick = map_data.total_ticks,
+		-- last_delivery_tick still equal to this means no train was dispatched yet (the manager's "never").
+		created_tick = map_data.total_ticks,
 		trains_limit = math.huge,
 		priority = 0,
 		item_priotity = nil,
@@ -144,11 +156,10 @@ local function on_station_built(map_data, stop, comb1, comb2, secondary_inv_comb
 		accepted_layouts = {},
 		layout_pattern = nil,
 		tick_signals = nil,
-		tick_secondary_signals = nil,
 		item_thresholds = nil,
 		display_state = 0,
 		is_warming_up = true,
-		secondary_inv_combs = secondary_inv_combs or {}, -- Store secondary inventory combinators
+		secondary_inv_combs = secondary_inv_combs or {},
 	}
 	local id = stop.unit_number --[[@as uint]]
 
@@ -178,13 +189,15 @@ function on_station_broken(map_data, station_id, station)
 						lock_train(train.entity)
 						send_alert_station_of_train_broken(map_data, train.entity)
 					else
-						train.se_awaiting_removal = train_id
+						train.se_awaiting_removal = true
 					end
 				end
 			end
 		end
 	end
 	clear_all_request_tracking(station)
+	diag.station_removed(station_id)
+	lint.station_removed(station_id)
 	map_data.stations[station_id] = nil
 	interface_raise_station_removed(station_id, station)
 end
@@ -209,7 +222,7 @@ local function search_for_station_combinators(map_data, stop, comb_operation, co
 				if not all then
 					return entity
 				end
-				table.insert(found, entity)
+				found[entity.unit_number] = entity
 			end
 		end
 	end
@@ -232,6 +245,12 @@ function combinator_build_init(map_data, comb, tags)
 		op = MODE_PRIMARY_IO
 		params.operation = op
 		params.first_signal = NETWORK_SIGNAL_DEFAULT
+		
+		-- Apply defaults to freshly placed combinators only
+		-- use centralized constant so defaults are changed in one place
+		if (params.second_constant or 0) == 0 then
+			params.second_constant = COMBINATOR_DEFAULT_SECOND_CONSTANT
+		end
 		control.parameters = params
 	elseif op ~= MODE_PRIMARY_IO and op ~= MODE_SECONDARY_IO and op ~= MODE_SECONDARY_INVENTORY and op ~= MODE_DEPOT and op ~= MODE_REFUELER and op ~= MODE_WAGON then
 		op = MODE_PRIMARY_IO
@@ -253,17 +272,12 @@ function combinator_build_init(map_data, comb, tags)
 	return op
 end
 
----@param map_data MapData
 ---@param comb LuaEntity
----@param tags Tags?
-local function on_combinator_built(map_data, comb, tags)
+---@return LuaEntity? stop the stop the combinator reaches as it faces now
+---@return LuaEntity? rail
+local function combinator_reach(comb)
 	local pos_x = comb.position.x
 	local pos_y = comb.position.y
-
-	if tags and tags.ghost_unit_number then
-		gui_entity_destroyed(tags.ghost_unit_number --[[@as integer]], true)
-	end
-
 	local search_area
 	if comb.direction == defines.direction.north or comb.direction == defines.direction.south then
 		search_area = {
@@ -289,6 +303,18 @@ local function on_combinator_built(map_data, comb, tags)
 			end
 		end
 	end
+	return stop, rail
+end
+
+---@param map_data MapData
+---@param comb LuaEntity
+---@param tags Tags?
+local function on_combinator_built(map_data, comb, tags)
+	if tags and tags.ghost_unit_number then
+		gui_entity_destroyed(tags.ghost_unit_number --[[@as integer]], true)
+	end
+
+	local stop, rail = combinator_reach(comb)
 
 	local out = comb.surface.create_entity({
 		name = COMBINATOR_OUT_NAME,
@@ -337,7 +363,6 @@ local function on_combinator_built(map_data, comb, tags)
 			end
 		elseif op == MODE_SECONDARY_INVENTORY then
 			if station then
-				-- Add the secondary inventory combinator to the station
 				if not station.secondary_inv_combs then
 					station.secondary_inv_combs = {}
 				end
@@ -360,6 +385,9 @@ local function on_combinator_built(map_data, comb, tags)
 			end
 		end
 	end
+	-- The branches above drop a second primary, control, depot or refueler combinator and a combinator with no stop
+	-- in reach without a word; the registry records what they decided.
+	lint.on_combinator_built(comb)
 end
 
 
@@ -368,6 +396,7 @@ end
 local function on_combinator_ghost_built(map_data, comb)
 	combinator_build_init(map_data, comb)
 	comb.tags = { ghost_unit_number = comb.unit_number }
+	lint.on_ghost_changed(comb)
 end
 
 ---@param map_data MapData
@@ -466,6 +495,7 @@ function on_combinator_broken(map_data, comb, skip_gui_events)
 	map_data.to_output[comb_id] = nil
 	map_data.to_stop[comb_id] = nil
 	map_data.to_comb_params[comb_id] = nil
+	lint.on_combinator_removed(comb)
 end
 
 ---@param map_data MapData
@@ -481,6 +511,7 @@ function on_combinator_ghost_broken(map_data, comb, skip_gui_events)
 
 	map_data.to_comb[comb_id] = nil
 	map_data.to_comb_params[comb_id] = nil
+	lint.on_ghost_changed(comb, true)
 end
 
 ---@param map_data MapData
@@ -555,7 +586,8 @@ function combinator_update(map_data, comb, reset_display)
 		if type == nil then
 			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
 		end
-		if type == 1 or type == 2 then
+		-- 5 = a secondary inventory combinator, whose id is its station's
+		if type == 1 or type == 2 or type == 5 then
 			--NOTE: these updates have to be queued to occur at tick init since central planning is expecting them not to change between ticks
 			queue_station_for_combinator_update(map_data, id)
 		elseif type == 3 then
@@ -563,22 +595,16 @@ function combinator_update(map_data, comb, reset_display)
 			local train_id = depot.available_train_id
 			if train_id then
 				local train = map_data.trains[train_id]
-				remove_available_train(map_data, train_id, train)
-				add_available_train_to_depot(map_data, mod_settings, train_id, train, id, depot)
-				interface_raise_train_status_changed(train_id, STATUS_D, STATUS_D)
+				if train then
+					remove_available_train(map_data, train_id, train)
+					add_available_train_to_depot(map_data, mod_settings, train_id, train, id, depot)
+					interface_raise_train_status_changed(train_id, STATUS_D, STATUS_D)
+				else
+					depot.available_train_id = nil
+				end
 			end
 		elseif type == 4 then
 			set_refueler_from_comb(map_data, mod_settings, id, entity --[[@as Refueler]])
-		else
-			-- Check if it's a secondary inventory combinator
-			local stop = map_data.to_stop[unit_number]
-			if stop and stop.valid then
-				local station_id = stop.unit_number --[[@as uint]]
-				local station = map_data.stations[station_id]
-				if station then
-					queue_station_for_combinator_update(map_data, station_id)
-				end
-			end
 		end
 	end
 
@@ -589,7 +615,7 @@ function combinator_update(map_data, comb, reset_display)
 			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
 		end
 		--depots do not cache any combinator values so we don't have to update them here
-		if type == 1 or type == 2 then
+		if type == 1 or type == 2 or type == 5 then
 			--NOTE: these updates have to be queued to occur at tick init since central planning is expecting them not to change between ticks
 			queue_station_for_combinator_update(map_data, id)
 		elseif type == 4 then
@@ -598,16 +624,6 @@ function combinator_update(map_data, comb, reset_display)
 			set_refueler_from_comb(map_data, mod_settings, id, refueler)
 			if refueler.allows_all_trains ~= pre then
 				update_stop_if_auto(map_data, refueler, false)
-			end
-		else
-			-- Check if it's a secondary inventory combinator
-			local stop = map_data.to_stop[unit_number]
-			if stop and stop.valid then
-				local station_id = stop.unit_number --[[@as uint]]
-				local station = map_data.stations[station_id]
-				if station then
-					queue_station_for_combinator_update(map_data, station_id)
-				end
 			end
 		end
 	end
@@ -633,7 +649,7 @@ function on_stop_built_or_updated(map_data, stop, comb_forbidden)
 		{ pos_x + 2, pos_y + 2 },
 	}
 	local comb2 = nil
-	local secondary_inv_combs = {}  -- Store secondary inventory combinators
+	local secondary_inv_combs = {}
 	local comb1 = nil
 	local depot_comb = nil
 	local refueler_comb = nil
@@ -661,7 +677,6 @@ function on_stop_built_or_updated(map_data, stop, comb_forbidden)
 		end
 	end
 	if comb1 then
-		-- Pass the secondary inventory combinators to the station built function
 		on_station_built(map_data, stop, comb1, comb2, secondary_inv_combs)
 	elseif depot_comb then
 		on_depot_built(map_data, stop, depot_comb)
@@ -680,9 +695,11 @@ local function on_stop_broken(map_data, stop)
 		{ pos_x + 2, pos_y + 2 },
 	}
 	local entities = stop.surface.find_entities_filtered({ area = search_area, name = COMBINATOR_NAME })
+	local orphans = {}
 	for _, entity in pairs(entities) do
 		if entity.valid and map_data.to_stop[entity.unit_number] == stop then
 			map_data.to_stop[entity.unit_number] = nil
+			orphans[#orphans + 1] = entity
 		end
 	end
 
@@ -701,6 +718,7 @@ local function on_stop_broken(map_data, stop)
 			end
 		end
 	end
+	lint.on_stop_removed(stop, orphans)
 end
 ---@param map_data MapData
 ---@param stop LuaEntity
@@ -757,6 +775,7 @@ local function on_built(event)
 
 	if entity.name == "train-stop" then
 		on_stop_built_or_updated(storage, entity)
+		lint.on_stop_built(entity)
 	elseif entity.name == COMBINATOR_NAME then
 		on_combinator_built(storage, entity, event.tags)
 	elseif entity.name == "entity-ghost" and entity.ghost_name == COMBINATOR_NAME then
@@ -805,6 +824,16 @@ local function on_rotate(event)
 
 	if entity.type == "inserter" then
 		update_stop_from_inserter(storage, entity)
+	elseif entity.name == COMBINATOR_NAME then
+		-- A rotation decides which stop the combinator reaches, as building it did; rebuild it only when that changed,
+		-- since rebuilding a station's own combinator ends its deliveries in flight.
+		local unit = entity.unit_number --[[@as uint]]
+		local was = storage.to_stop[unit]
+		local now = combinator_reach(entity)
+		if was ~= now or (was and not was.valid) then
+			on_combinator_broken(storage, entity, true)
+			on_combinator_built(storage, entity)
+		end
 	end
 end
 
@@ -818,6 +847,7 @@ local function on_surface_removed(event)
 			end
 		end
 	end
+	lint.on_surface_removed(event.surface_index)
 end
 
 local function on_object_destroyed(event)
@@ -836,6 +866,7 @@ end
 local function on_rename(event)
 	if event.entity.name == "train-stop" then
 		on_stop_rename(storage, event.entity, event.old_name)
+		lint.on_stop_renamed(event.entity, event.old_name)
 	end
 end
 
@@ -852,32 +883,67 @@ local function grab_all_settings()
 	mod_settings.fuel_threshold = settings.global["cybersyn-fuel-threshold"].value --[[@as double]]
 	mod_settings.warmup_time = settings.global["cybersyn-warmup-time"].value --[[@as double]]
 	mod_settings.stuck_train_time = settings.global["cybersyn-stuck-train-time"].value --[[@as double]]
-	mod_settings.track_request_wait_times = settings.global["cybersyn-track-request-wait-times"].value --[[@as boolean]]
 	mod_settings.allow_cargo_in_depot = settings.global["cybersyn-allow-cargo-in-depot"].value --[[@as boolean]]
 	mod_settings.manager_ups = settings.global["cybersyn-manager-updates-per-second"].value --[[@as double]]
-	mod_settings.manager_enabled = settings.startup["cybersyn-manager-enabled"].value --[[@as boolean]]
 	mod_settings.alert_unexpected_cargo = settings.global["cybersyn-alert-unexpected-cargo"].value --[[@as boolean]]
 end
 local function register_tick()
 	script.on_nth_tick(nil)
-	--edge case catch to register both main and manager tick if they're scheduled to run on the same ticks
-	if mod_settings.manager_enabled and mod_settings.manager_ups == mod_settings.tps and mod_settings.tps > DELTA then
-		local nth_tick = ceil(60 / mod_settings.tps) --[[@as uint]]
-		script.on_nth_tick(nth_tick, function()
+	-- One handler per nth: a second on_nth_tick for the same nth replaces the first.
+	local by_nth, order = {}, {}
+	local function add(nth, fn)
+		local list = by_nth[nth]
+		if not list then
+			list = {}
+			by_nth[nth] = list
+			order[#order + 1] = nth
+		end
+		list[#list + 1] = fn
+	end
+	if mod_settings.tps > DELTA then
+		add(ceil(60 / mod_settings.tps) --[[@as uint]], function()
 			tick(storage, mod_settings)
+		end)
+	end
+	local manager_nth
+	if mod_settings.manager_ups > DELTA then
+		manager_nth = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
+		add(manager_nth, function()
 			manager.tick(storage)
 		end)
 	else
-		if mod_settings.tps > DELTA then
-			local nth_tick_main = ceil(60 / mod_settings.tps) --[[@as uint]]
-			script.on_nth_tick(nth_tick_main, function()
-				tick(storage, mod_settings)
+		-- Without manager updates the Refresh allow-lists job still runs in chunks, on a handler of its own.
+		add(REPAIR_JOB_NTH, function()
+			local m = storage.manager
+			if m and m.repair_job then manager.job_tick() end
+		end)
+	end
+	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
+	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
+	-- tick is a manager tick.
+	local skip_nth = manager_nth and manager_nth > 1 and diag.EXPORT_NTH % manager_nth ~= 0 and manager_nth or nil
+	-- The opt-in HUD line refreshes on its own cadence; a no-op loop over the players when nobody has it on.
+	add(manager.HUD_TICKS, manager.hud_tick)
+	add(diag.EXPORT_NTH, function()
+		if skip_nth and game.tick % skip_nth == 0 then return end
+		manager.export_tick()
+	end)
+	-- The manager's opening boost and kept-snapshot release run every tick whatever the settings (PLAN5 D5-9); the
+	-- handler reads only storage, so a joining client registers the same one. Added last: on an nth shared with the
+	-- planner or the manager update it runs after them.
+	add(1, manager.boost_tick)
+	for _, nth in ipairs(order) do
+		local list = by_nth[nth]
+		if #list == 1 then
+			local fn = list[1]
+			script.on_nth_tick(nth, function()
+				fork_migrations.run_once()
+				fn()
 			end)
-		end
-		if mod_settings.manager_enabled and mod_settings.manager_ups > DELTA then
-			local nth_tick_manager = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
-			script.on_nth_tick(nth_tick_manager, function()
-				manager.tick(storage)
+		else
+			script.on_nth_tick(nth, function()
+				fork_migrations.run_once()
+				for _, fn in ipairs(list) do fn() end
 			end)
 		end
 	end
@@ -886,6 +952,8 @@ local function on_settings_changed(event)
 	grab_all_settings()
 	if event.setting == "cybersyn-ticks-per-second" or event.setting == "cybersyn-manager-updates-per-second" then
 		register_tick()
+	elseif event.setting == "cybersyn-diagnostics" then
+		diag.apply()
 	end
 	manager.on_runtime_mod_setting_changed(event)
 	interface_raise_on_mod_settings_changed(event)
@@ -917,7 +985,6 @@ local filter_broken = {
 }
 local function main()
 	grab_all_settings()
-
 
 	mod_settings.missing_train_alert_enabled = true
 	mod_settings.stuck_train_alert_enabled = true
@@ -951,6 +1018,10 @@ local function main()
 
 	script.on_event(defines.events.on_train_created, on_train_built)
 	script.on_event(defines.events.on_train_changed_state, on_train_changed)
+	script.on_event(defines.events.on_train_schedule_changed, function(e)
+		on_train_schedule_changed(e)
+		manager.on_train_schedule_changed(e)
+	end)
 
 	script.on_event(defines.events.on_entity_renamed, on_rename)
 
@@ -958,22 +1029,21 @@ local function main()
 
 	register_gui_actions()
 
-	local MANAGER_ENABLED = mod_settings.manager_enabled
-
 	script.on_init(function()
 		init_global()
+		if analytics.is_enabled() then
+			analytics.init(storage)
+		end
 		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
-		if MANAGER_ENABLED then
-			manager.on_init()
-		end
+		manager.on_init()
+		fork_migrations.migrate_schema()
 	end)
 
 	script.on_configuration_changed(function(e)
 		on_config_changed(e)
-		if MANAGER_ENABLED then
-			manager.on_migration()
-		end
+		manager.on_migration()
+		fork_migrations.migrate_schema()
 	end)
 
 	script.on_load(function()
@@ -981,13 +1051,52 @@ local function main()
 		picker_dollies_compat.setup_picker_dollies_compat()
 	end)
 
-	if MANAGER_ENABLED then
-		script.on_event(defines.events.on_player_removed, manager.on_player_removed)
-		script.on_event(defines.events.on_player_created, manager.on_player_created)
-		script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
-		script.on_event(defines.events.on_gui_closed, manager.on_lua_shortcut)
-		script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
-	end
+	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
+	local flib_gui = require("__flib__.gui")
+	local manager_util = require("scripts.gui.util")
+	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, flib_gui.dispatch)
+	script.on_event({
+		defines.events.on_gui_elem_changed,
+		defines.events.on_gui_selected_tab_changed,
+		defines.events.on_gui_checked_state_changed,
+		defines.events.on_gui_selection_state_changed,
+		defines.events.on_gui_switch_state_changed,
+		defines.events.on_gui_value_changed,
+		defines.events.on_gui_text_changed,
+		defines.events.on_gui_confirmed,
+	}, manager_util.dispatch)
+	script.on_event(defines.events.on_gui_click, function(e)
+		manager_util.touch_hover(e)
+		if not manager_util.dispatch(e) then manager.on_unhandled_click(e) end
+	end)
+
+	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)
+	manager_dev.register(manager, manager.manager)
+
+	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
+	script.on_event(defines.events.on_player_created, manager.on_player_created)
+	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
+	-- The manager's handlers run after the entity GUI handlers register_gui_actions installed: on_event keeps one
+	-- handler per event, so registering the manager's alone would drop those (the elevator panel, the combinator
+	-- window's close).
+	local entity_gui_opened = script.get_event_handler(defines.events.on_gui_opened)
+	script.on_event(defines.events.on_gui_opened, function(e)
+		if entity_gui_opened then entity_gui_opened(e) end
+		manager.on_gui_opened(e)
+	end)
+	local entity_gui_closed = script.get_event_handler(defines.events.on_gui_closed)
+	script.on_event(defines.events.on_gui_closed, function(e)
+		if entity_gui_closed then entity_gui_closed(e) end
+		manager.on_gui_closed(e)
+	end)
+	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
+	script.on_event("cybersyn-manager-search", manager.on_search_input)
+	script.on_event({
+		defines.events.on_player_display_resolution_changed,
+		defines.events.on_player_display_scale_changed,
+	}, manager.on_display_changed)
+	script.on_event(defines.events.on_player_controller_changed, manager.on_controller_changed)
+	script.on_event(defines.events.on_gui_location_changed, flib_gui.dispatch)
 
 	register_tick()
 end

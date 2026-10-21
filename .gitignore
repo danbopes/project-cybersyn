@@ -1,5 +1,8 @@
 *.zip
-.vscode/
+dist/
+.vscode/launch.json
+.vscode/settings.json
+.vscode/factorio/*
 .idea
 
 # Krita autosave files
@@ -7,3 +10,4 @@
 
 # macOS
 .DS_Store
+cybersyn/.vscode/

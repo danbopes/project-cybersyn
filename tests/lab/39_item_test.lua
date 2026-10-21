@@ -1,0 +1,685 @@
+-- Phase 8 per-item drill-down (PLAN3 §4.10): opened by a left-click on an item cell of the Inventory grid and of a
+-- Stations slot (shift keeps the Stations jump, right clears the filter), back returns to the tab it came from, the
+-- totals are the snapshot's inventory_all, the three tables list exactly the stations and trains that provide, request
+-- or carry the item, sorted (providers by stock, requesters in the dispatcher's order, trains by amount), whole rows
+-- on four emulated screens, Escape on a pinned window closes only the drill-down, dump twice identical.
+-- The dispatcher-order case reuses cases.lua's LOST_PRIORITY scenario on row k = 70 with a network of its own: the
+-- requester the dispatcher serves first (the entry's lost_to) is listed before the one that loses.
+
+local DEV = "cybersyn-manager-dev"
+local PI = 1
+local K = 70
+local SPEED = 50
+local NETWORK = "signal-3"
+
+local function dev(fn, ...)
+	return remote.call(DEV, fn, ...)
+end
+
+local function read(...)
+	return (remote.call("cybersyn", "read_global", ...))
+end
+
+local ix = {}
+lab.item = ix
+
+--- Index path from the element named `name` (anywhere under the window) to its first descendant `pred` accepts.
+local function find_named(elem, name)
+	if elem.name == name then return elem end
+	for _, child in ipairs(elem.children) do
+		local hit = find_named(child, name)
+		if hit then return hit end
+	end
+	return nil
+end
+
+local function path_to(elem, pred, path)
+	path = path or {}
+	for i, child in ipairs(elem.children) do
+		path[#path + 1] = i
+		if pred(child) then return path end
+		local hit = path_to(child, pred, path)
+		if hit then return hit end
+		path[#path] = nil
+	end
+	return nil
+end
+
+--- The child of the tab content that holds `elem` (what the drill-down hides and shows again).
+local function top_child(elem, content_name)
+	while elem and elem.parent and elem.parent.name ~= content_name do elem = elem.parent end
+	return elem
+end
+
+local function window()
+	return game.get_player(PI).gui.screen.manager_window
+end
+
+local function ids_of(rows)
+	local out = {}
+	for i, r in ipairs(rows) do out[i] = type(r) == "table" and r.id or r end
+	return out
+end
+
+local COLS = { providers = 5, requesters = 7, trains = 4 }
+
+local function sorted(list)
+	local out = {}
+	for i, v in ipairs(list) do out[i] = v end
+	table.sort(out)
+	return out
+end
+
+--- The checks that hold for any open drill-down: totals, row sets, sort orders, rendered rows, whole rows.
+local function model_checks(label, hash)
+	dev("collect")
+	-- A pass that re-sorts the lists spreads its row rewrites over a few updates, and the rows below the viewports
+	-- follow in chunks.
+	dev("update", PI, 12)
+	local d = dev("item_dump", PI)
+	lab.check(label .. ": no row rewrite left for a later update", d.deferred == 0, d.deferred)
+	local o = dev("item_oracle", hash)
+	lab.check(label .. ": open on " .. hash, d.open and d.hash == hash, { d.open, d.hash })
+	if not d.open then return d end
+	local t = d.totals
+	lab.check(label .. ": totals == inventory_all", t.provided == (o.provided and o.provided.count or 0) and
+		t.provided_stations == (o.provided and o.provided.stations or 0) and
+		t.requested == (o.requested and -o.requested.count or 0) and
+		t.in_transit == (o.in_transit and o.in_transit.count or 0), { t, o.provided, o.requested, o.in_transit })
+	-- A station with sections has one row per (station, section) that advertises the item (D3).
+	lab.check(label .. ": provider rows == (station, section) pairs providing it",
+		lab.same_list(sorted(d.row_keys.providers), o.provider_rows), { d.row_keys.providers, o.provider_rows })
+	lab.check(label .. ": requester rows == (station, section) pairs requesting it",
+		lab.same_list(sorted(d.row_keys.requesters), o.requester_rows), { d.row_keys.requesters, o.requester_rows })
+	lab.check(label .. ": train rows == trains carrying it", lab.same_list(sorted(ids_of(d.model.trains)), o.trains),
+		{ ids_of(d.model.trains), o.trains })
+
+	-- Providers by stock (descending), from Cybersyn's own numbers through the rendered captions' order.
+	local stations = read("stations")
+	local ok_order = true
+	local prev
+	for _, r in ipairs(d.model.requesters) do
+		local st = stations[r.id]
+		if st and r.group == 0 then
+			local prior = st.priority or 0
+			if st.item_thresholds and st.item_thresholds[hash] and st.item_priority then prior = st.item_priority end
+			if prior ~= r.priority or (st.last_delivery_tick or 0) ~= r.last_served then ok_order = false end
+			if prev and (prev.priority < r.priority or (prev.priority == r.priority and prev.last_served > r.last_served)) then
+				ok_order = false
+			end
+			prev = r
+		end
+	end
+	lab.check(label .. ": queued requesters in the dispatcher's order (priority desc, last delivery asc), from Cybersyn's own priority and last_delivery_tick",
+		ok_order, d.model.requesters)
+	local groups_ok = true
+	for i = 2, #d.model.requesters do
+		if d.model.requesters[i].group < d.model.requesters[i - 1].group then groups_ok = false end
+	end
+	lab.check(label .. ": skipped requests after the queue", groups_ok, d.model.requesters)
+
+	-- Rendered rows: every row of each list up to max_rows, scrolling inside its share; the shares add up to the
+	-- layout's rows.
+	local a = d.alloc
+	lab.check(label .. ": the three shares add up to the layout's rows", a and a.providers + a.requesters + a.trains == d.total_rows,
+		{ a, d.total_rows })
+	for _, tname in ipairs({ "providers", "requesters", "trains" }) do
+		local want = math.min(#d.model[tname], d.max_rows)
+		local rendered = d.rendered[tname]
+		local same = #rendered == want
+		for i = 1, want do
+			local id = ids_of(d.model[tname])[i]
+			if not rendered[i] or rendered[i].id ~= id then same = false end
+		end
+		lab.check(label .. ": " .. tname .. " shows its first " .. want .. " rows in model order", same,
+			{ want = want, rendered = #rendered })
+		local cap = d.captions[tname]
+		local capped = #d.model[tname] > d.max_rows
+		lab.check(label .. ": " .. tname .. " caption is the plain total, n of m only when capped", capped and
+			type(cap.count) == "table" and cap.count[2] == tostring(want) and cap.count[3] == tostring(#d.model[tname]) or
+			not capped and cap.count == tostring(#d.model[tname]), cap.count)
+		local sc = d.scroll[tname]
+		lab.check(label .. ": " .. tname .. " rows scroll in a pane of its share's height, header fixed above it",
+			sc and sc.height == a[tname] * 32 and sc.vertical == "auto-and-reserve-space" and sc.horizontal == "never" and
+			sc.hover == true and sc.holds_rows and sc.header_outside and sc.header_cells == COLS[tname], sc)
+		if #rendered > 0 then
+			lab.check(label .. ": " .. tname .. " header and rows share the flexible column's width",
+				sc and sc.header_flex ~= nil and sc.header_flex == sc.row_flex, sc)
+		end
+		lab.check(label .. ": " .. tname .. " empty state exactly when the list is empty", cap.empty == (#d.model[tname] == 0), cap)
+	end
+	local rows = dev("rows", PI, "item")
+	lab.check(label .. ": rows computed == the layout's item rows, rendered <= computed",
+		rows.computed == d.total_rows and rows.rendered <= rows.computed, rows)
+	return d
+end
+
+lab.suite("39_item", {
+	function()
+		dev("close", PI)
+		dev("clear_filters", PI)
+		dev("open", PI)
+		lab.big_screen(PI)
+		dev("select_tab", PI, "inventory")
+		local inv = dev("dump", PI, "inventory")
+		ix.hash = inv.provided.hashes[1]
+		lab.check("an item to drill into", ix.hash ~= nil, inv.provided)
+
+		-- Left-click on an Inventory slot: the drill-down, from the Inventory, no filter set.
+		local res = dev("click", PI, "inventory_provided_table", 1)
+		local d = dev("item_dump", PI)
+		lab.check("Inventory slot click is handled by the shared link handler", res == true, res)
+		lab.check("left-click on an Inventory slot opens the drill-down from the Inventory",
+			d.open and d.hash == ix.hash and d.from_tab == "inventory_tab" and d.selected_tab == "inventory_tab", d)
+		lab.check("the item filter is not set by the drill-down", dev("state", PI).filters.item == nil)
+		lab.check("the drill-down replaces the Inventory's content", (function()
+			local w = window()
+			local grids = find_named(w, "inventory_provided_table")
+			local view = find_named(w, "item_view")
+			return view and view.visible and grids and not top_child(grids, "manager_inventory_content_frame").visible
+		end)())
+		lab.check("the subheader has the back button, icon and name", d.header.back == true and d.header.icon ~= nil and
+			d.header.name ~= nil, d.header)
+		lab.check("the Requesters caption says dispatcher order, approximate, with a tooltip",
+			d.captions.requesters.caption[1] == "cybersyn-gui.item-requesters" and
+			d.captions.requesters.tooltip[1] == "cybersyn-gui.item-requesters-tooltip")
+		model_checks("inventory", ix.hash)
+		ix.first = dev("item_dump", PI)
+
+		-- 'Delivered' in the drill-down is the figure of the Inventory slot's tooltip (one per-minute cache).
+		local function find_key(ls, key)
+			if type(ls) ~= "table" then return nil end
+			if ls[1] == key then return ls end
+			for i = 2, #ls do
+				local hit = find_key(ls[i], key)
+				if hit then return hit end
+			end
+			return nil
+		end
+		local grid = find_named(window(), "inventory_provided_table")
+		local slot = grid and grid.children[1]
+		local line = slot and find_key(slot.tooltip, "cybersyn-gui.inventory-delivered-hour")
+		local shown = line and string.gsub(tostring(line[2]), "%D", "")
+		if ix.first.period == 60 then
+			lab.check("drill-down Delivered == the Inventory slot tooltip's Delivered · last hour",
+				shown ~= nil and shown == tostring(ix.first.delivered), { shown, ix.first.delivered })
+		else
+			lab.skip("drill-down Delivered == Inventory tooltip", "Overview period is not one hour")
+		end
+
+		-- Number cells right-aligned (the value style); the reason / queue cell is plain coloured text since PLAN4 D7
+		-- (no dead chip), in the cybersyn_reason_label styles.
+		local styles_ok = true
+		for _, tname in ipairs({ "providers", "requesters", "trains" }) do
+			for _, row in ipairs(ix.first.rendered[tname]) do
+				for _, s in pairs(row.styles or {}) do
+					if s ~= "cybersyn_unserved_value" and s ~= "cybersyn_unserved_cell" then styles_ok = false end
+				end
+				if row.chip_style and not row.chip_style:find("^cybersyn_reason_label_") then styles_ok = false end
+			end
+		end
+		lab.check("numbers in the right-aligned value style, reasons in the reason label styles", styles_ok)
+
+		-- Back returns to the Inventory and shows its content again.
+		dev("close_item", PI)
+		d = dev("item_dump", PI)
+		lab.check("back closes the drill-down and returns to the Inventory", not d.open and dev("state", PI).selected_tab == "inventory_tab")
+		lab.check("the Inventory's grids are shown again", (function()
+			local grids = find_named(window(), "inventory_provided_table")
+			return grids and top_child(grids, "manager_inventory_content_frame").visible and find_named(window(), "item_view") == nil
+		end)())
+
+		-- Shift keeps the Stations jump; right clears the filter.
+		dev("click", PI, "inventory_provided_table", 1, { shift = true })
+		local st = dev("state", PI)
+		lab.check("shift-click on an Inventory slot jumps to Stations filtered to the item",
+			st.selected_tab == "stations_tab" and st.filters.item == ix.hash and not dev("item_dump", PI).open, st)
+		dev("select_tab", PI, "inventory")
+		dev("click", PI, "inventory_provided_table", 1, { right = true })
+		lab.check("right-click on an Inventory slot clears the item filter", dev("state", PI).filters.item == nil)
+	end,
+
+	function()
+		-- A Stations slot: the same handler and semantics.
+		dev("select_tab", PI, "stations")
+		local scroll = find_named(window(), "manager_stations_tab_scroll_pane")
+		local path = scroll and path_to(scroll, function(e)
+			return e.type == "sprite-button" and e.tags and (e.tags.item_hash or (e.tags.kind == "item" and e.tags.id)) ~= nil
+		end)
+		lab.check("a Stations row has an item slot", path ~= nil)
+		if not path then return end
+		local slot = scroll
+		for _, i in ipairs(path) do slot = slot.children[i] end
+		local hash = slot.tags.item_hash or slot.tags.id
+		dev("click", PI, "manager_stations_tab_scroll_pane", path)
+		local d = dev("item_dump", PI)
+		lab.check("left-click on a Stations slot opens the drill-down from Stations",
+			d.open and d.hash == hash and d.from_tab == "stations_tab" and d.selected_tab == "stations_tab", d)
+		model_checks("stations slot", hash)
+		-- An item cell inside the open drill-down's subheader: shift jumps to Stations filtered.
+		dev("close_item", PI)
+		lab.check("back returns to Stations", dev("state", PI).selected_tab == "stations_tab" and not dev("item_dump", PI).open)
+		lab.check("the Stations rows are shown again", scroll.valid and scroll.visible and
+			top_child(scroll, "manager_stations_content_frame").visible)
+
+		-- Selecting another tab leaves the drill-down.
+		dev("open_item", PI, hash)
+		dev("select_tab", PI, "trains")
+		lab.check("selecting another tab closes the drill-down", not dev("item_dump", PI).open and
+			find_named(window(), "item_view") == nil)
+		lab.check("and the tab selected stays selected",
+			dev("state", PI).selected_tab == "trains_tab", dev("state", PI).selected_tab)
+		dev("select_tab", PI, "stations")
+		lab.check("and the host tab's content is back", scroll.valid and scroll.visible and
+			top_child(scroll, "manager_stations_content_frame").visible)
+
+		-- A Trains shipment slot: the same handler.
+		dev("select_tab", PI, "trains")
+		local trains = find_named(window(), "manager_trains_tab_scroll_pane")
+		local tpath = trains and path_to(trains, function(e)
+			return e.type == "sprite-button" and e.tags and e.tags.kind == "item" and e.tags.id ~= nil
+		end)
+		if tpath then
+			local tslot = trains
+			for _, i in ipairs(tpath) do tslot = tslot.children[i] end
+			dev("click", PI, "manager_trains_tab_scroll_pane", tpath)
+			local td = dev("item_dump", PI)
+			lab.check("left-click on a Trains shipment slot opens the drill-down from Trains", td.open and
+				td.hash == tslot.tags.id and td.from_tab == "trains_tab", td.from_tab)
+			dev("close_item", PI)
+			lab.check("back returns to Trains", dev("state", PI).selected_tab == "trains_tab" and trains.visible)
+		else
+			lab.skip("Trains shipment slot click", "no train carries cargo on this page")
+		end
+		dev("select_tab", PI, "stations")
+
+		-- Ctrl+F and a search set from outside (the stop panel's Open in manager) show the lists again.
+		dev("open_item", PI, hash)
+		dev("click", PI, "manager_search_button")
+		local sf = dev("header", PI)
+		lab.check("the search button closes the drill-down and opens the visible search field",
+			not dev("item_dump", PI).open and sf.stations_tab.search, sf.stations_tab)
+		dev("cancel_search", PI)
+		dev("open_item", PI, hash)
+		dev("set_filter", PI, { query = "stn-1" })
+		lab.check("a station search set from outside closes the drill-down", not dev("item_dump", PI).open)
+		dev("clear_filters", PI)
+
+		-- An item cell outside the window (the stop and train panels): the window opens on the drill-down.
+		dev("close", PI)
+		local outside = dev("link_click", PI, "item", hash)
+		local od = dev("item_dump", PI)
+		lab.check("an item link with the window closed opens the window on the drill-down",
+			dev("state", PI).is_open and od.open and od.hash == hash, { outside, od.open })
+		dev("close_item", PI)
+		dev("select_tab", PI, "stations")
+
+		-- Escape never reaches a pinned window: the drill-down stays until its own Back.
+		dev("open_item", PI, hash)
+		local e = dev("item_escape", PI)
+		lab.check("on_gui_closed reaching the pinned window leaves the drill-down", e.before and e.open and e.manager_open, e)
+		dev("close_item", PI)
+		-- Unpinned: one rule for every overlay (manager.top_overlay): Escape closes the drill-down and the window stays,
+		-- as it does for the Trains pane; the next Escape closes the window.
+		dev("click", PI, "manager_pin_button")
+		dev("open_item", PI, hash)
+		e = dev("item_escape", PI)
+		lab.check("Escape on an unpinned window closes the drill-down, the window stays", e.before and not e.open and
+			e.manager_open, e)
+		e = dev("item_escape", PI)
+		lab.check("the next Escape on the unpinned window closes the window", not e.before and not e.manager_open, e)
+		dev("open", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
+		-- The drill-down honours the place filters (network name, network ID, surface) and leaves out the item filter
+		-- and the station search, as the Overview does: rows and totals of the matching stations only.
+		dev("clear_filters", PI)
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		dev("update", PI, 3)
+		local stations = read("stations")
+		local function net_of(id) return stations[id] and stations[id].network_name end
+		local hash, net, others
+		local hashes = dev("dump", PI, "inventory").provided.hashes
+		for _, h in ipairs(hashes) do
+			local o = dev("item_oracle", h)
+			local nets, first = {}, nil
+			for _, id in ipairs(o.providers) do
+				local n = net_of(id)
+				if n and n ~= "signal-each" then
+					nets[n] = (nets[n] or 0) + 1
+					first = first or n
+				end
+			end
+			if lab.count(nets) >= 2 then
+				hash, net, others = h, first, o
+				break
+			end
+		end
+		if not hash then
+			lab.skip("place filters on the drill-down", "no item provided on two networks")
+			return
+		end
+		ix.filter_hash = hash
+		local other = hashes[1] ~= hash and hashes[1] or hashes[2]
+		dev("set_filter", PI, { network = net, item = other or false })
+		dev("open_item", PI, hash)
+		dev("collect")
+		dev("update", PI, 12)
+		local d = dev("item_dump", PI)
+		local want_p, want_r = {}, {}
+		for _, id in ipairs(others.providers) do if net_of(id) == net then want_p[#want_p + 1] = id end end
+		for _, id in ipairs(others.requesters) do if net_of(id) == net then want_r[#want_r + 1] = id end end
+		lab.check("network filter: the drill-down opens though the item filter names another item",
+			d.open and d.hash == hash, { d.open, d.hash })
+		lab.check("network filter: provider rows are that network's providers only",
+			lab.same_list(sorted(ids_of(d.model.providers)), sorted(want_p)), { ids_of(d.model.providers), want_p })
+		lab.check("network filter: requester rows are that network's requesters only",
+			lab.same_list(sorted(ids_of(d.model.requesters)), sorted(want_r)), { ids_of(d.model.requesters), want_r })
+		local all = others.provided and others.provided.count or 0
+		lab.check("network filter: provided total and station count from the filtered rows, marked filtered",
+			d.filtered == true and d.totals.provided_stations == #want_p and d.totals.provided > 0 and d.totals.provided < all,
+			{ d.totals, #want_p, all })
+		-- A filter change reaches an open drill-down in the next update (the cache key carries the filters).
+		dev("clear_filters", PI)
+		dev("update", PI, 12)
+		d = dev("item_dump", PI)
+		lab.check("filters cleared: every provider and requester is back", d.open and
+			lab.same_list(sorted(d.row_keys.providers), others.provider_rows) and
+			lab.same_list(sorted(d.row_keys.requesters), others.requester_rows), { d.row_keys.providers, others.provider_rows })
+		lab.check("filters cleared: totals are inventory_all again", d.filtered == false and
+			d.totals.provided == (others.provided and others.provided.count or 0) and
+			d.totals.provided_stations == (others.provided and others.provided.stations or 0), { d.totals, others.provided })
+		dev("close_item", PI)
+	end,
+
+	function()
+		-- Daniel 2026-10-19: an item slot of the stop panel with the manager closed opens the manager on the
+		-- drill-down in one click; the open's surface default (D3) applies to it like to any tab.
+		local hash = ix.filter_hash
+		if not hash then
+			lab.skip("stop panel item click with the manager closed", "no item from the filter step")
+			return
+		end
+		local o = dev("item_oracle", hash)
+		dev("clear_filters", PI)
+		dev("close", PI)
+		local sid = o.providers[1]
+		dev("relative_open", PI, "stop", sid)
+		local r = dev("relative_click", PI, { kind = "item", id = hash })
+		dev("update", PI, 12)
+		local s = dev("state", PI)
+		local d = dev("item_dump", PI)
+		lab.check("stop panel item click, manager closed: the manager opens on the drill-down of that item",
+			s.is_open and d.open and d.hash == hash, { r, s.is_open, d.open, d.hash })
+		local surface = s.filters.surface
+		local stations = read("stations")
+		local on_surface = true
+		for _, id in ipairs(d.model and d.model.providers or {}) do
+			local st = stations[id]
+			if surface and st and st.entity_stop.surface_index ~= surface then on_surface = false end
+		end
+		lab.check("and its rows follow the open's surface default", on_surface and d.filtered == (surface ~= nil),
+			{ surface, d.filtered })
+		dev("relative_close", PI)
+		dev("close_item", PI)
+		dev("clear_filters", PI)
+		dev("open", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
+		-- A list longer than its share scrolls: on a 1080p screen every row is built, the viewport's rows first, and a
+		-- table under the cursor still gets the rows below the ones it shows (nothing it shows is rewritten).
+		dev("set_layout", PI, 1920, 1080, 1.25)
+		dev("clear_filters", PI)
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		local best, most = nil, 0
+		for _, h in ipairs(dev("dump", PI, "inventory").provided.hashes) do
+			local o = dev("item_oracle", h)
+			if #o.requesters > most then best, most = h, #o.requesters end
+		end
+		local d = dev("open_item", PI, best)
+		local fills = 0
+		while #d.rendered.requesters == 0 and fills < 3 do
+			dev("update", PI, 1)
+			fills = fills + 1
+			d = dev("item_dump", PI)
+		end
+		lab.check("scroll: the requesters list is longer than its share", d.alloc and #d.model.requesters > d.alloc.requesters,
+			{ d.alloc, #d.model.requesters })
+		local first = d.rendered.requesters
+		lab.check("scroll: the first fill builds the requesters' viewport first, nothing below it yet",
+			#first >= math.min(6, d.alloc.requesters) and #first <= d.alloc.requesters, { #first, d.alloc.requesters })
+		local h = dev("hover", PI, "item_requesters_body", 2)
+		lab.check("scroll: the requesters' pane is hover-aware for the table's hold", type(h) == "table" and h.handled and
+			h.hold == true and h.hover and h.hover.scope == "item_requesters_table", h)
+		local updates = 0
+		repeat
+			dev("update", PI, 1)
+			updates = updates + 1
+			d = dev("item_dump", PI)
+		until d.deferred == 0 or updates >= 10
+		updates = updates + fills
+		lab.check("scroll: a held table still gets the rows below the ones it shows", #d.rendered.requesters == #d.model.requesters,
+			{ #d.rendered.requesters, #d.model.requesters, d.deferred })
+		local kept = true
+		for i, r in ipairs(first) do
+			if serpent.line(r) ~= serpent.line(d.rendered.requesters[i]) then kept = false end
+		end
+		lab.check("scroll: and the rows it showed are left as they were", kept)
+		lab.check("scroll: the whole drill-down is built within a few updates", d.deferred == 0 and updates <= 6,
+			{ updates = updates, deferred = d.deferred })
+		local rows = dev("rows", PI, "item")
+		lab.check("scroll: the rows the viewports show stay within the layout's rows", rows.rendered <= rows.computed, rows)
+
+		-- While held, a new pass that changes a shown row is not written (and nothing is appended under it); once the
+		-- cursor leaves, the row follows the pass.
+		local stations = read("stations")
+		local target = d.rendered.requesters[1].id
+		local stop = stations[target] and stations[target].entity_stop
+		local old_name = stop and stop.backer_name
+		if stop then
+			local before = serpent.line(d.rendered.requesters)
+			stop.backer_name = "zz-held-" .. old_name
+			dev("collect")
+			dev("hover", PI, "item_requesters_body", 2)
+			for _ = 1, 4 do dev("update", PI, 1) end
+			d = dev("item_dump", PI)
+			lab.check("scroll: a held table keeps its rows when the new pass changes one of them",
+				serpent.line(d.rendered.requesters) == before, d.rendered.requesters[1])
+			dev("hover", PI, "item_requesters_body", 2, true)
+			for _ = 1, 4 do dev("update", PI, 1) end
+			d = dev("item_dump", PI)
+			lab.check("scroll: and the changed row follows the pass once the cursor leaves",
+				d.rendered.requesters[1].cells[1] == "zz-held-" .. old_name, d.rendered.requesters[1].cells[1])
+			stop.backer_name = old_name
+			dev("collect")
+		else
+			lab.skip("scroll: held table and a new pass", "no stop for the first requester")
+		end
+		dev("hover", PI, "item_requesters_body", 2, true)
+		dev("close_item", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
+		-- A requester below the viewport whose reason gets acknowledged between passes is rewritten within one turn
+		-- of the CHECK_ROWS window.
+		local CHECK_ROWS = 6
+		dev("set_layout", PI, 1366, 768, 1.5)
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		local found
+		for _, h in ipairs(dev("dump", PI, "inventory").provided.hashes) do
+			dev("open_item", PI, h)
+			for _ = 1, 6 do dev("update", PI, 1) end
+			local d = dev("item_dump", PI)
+			for i, r in ipairs(d.rendered.requesters) do
+				if i > d.alloc.requesters and r.chip_tooltip and r.chip_style ~= "cybersyn_reason_label_acked" then
+					found = { hash = h, row = i, id = r.id, n = #d.rendered.requesters, view = d.alloc.requesters }
+					break
+				end
+			end
+			if found then break end
+			dev("close_item", PI)
+		end
+		if not found then
+			lab.skip("scroll: a below-fold requester follows an ack", "no unserved requester below a viewport")
+			lab.big_screen(PI)
+			return
+		end
+		dev("diag_ack", "request", found.id, found.hash, nil, PI)
+		local limit = math.ceil((found.n - found.view) / CHECK_ROWS) + 1
+		local updates, style = 0, nil
+		repeat
+			dev("update", PI, 1)
+			updates = updates + 1
+			local r = dev("item_dump", PI).rendered.requesters[found.row]
+			style = r and r.chip_style
+		until style == "cybersyn_reason_label_acked" or updates >= limit + 3
+		lab.check("scroll: a requester below the viewport shows its acknowledgement within one window turn",
+			style == "cybersyn_reason_label_acked" and updates <= limit, { updates = updates, limit = limit, found = found })
+		dev("diag_unack", "request", found.id, found.hash, PI)
+		dev("close_item", PI)
+		lab.big_screen(PI)
+	end,
+
+	function()
+		-- A table longer than the cap: "n of m", the first n rows, built within model_checks' updates.
+		dev("select_tab", PI, "inventory")
+		dev("collect")
+		local best, most = nil, 0
+		for _, h in ipairs(dev("dump", PI, "inventory").provided.hashes) do
+			local o = dev("item_oracle", h)
+			if #o.providers > most then best, most = h, #o.providers end
+		end
+		dev("item_max_rows", 3)
+		dev("open_item", PI, best)
+		local d = model_checks("capped at 3", best)
+		lab.check("capped: the providers table stops at the cap", #d.model.providers > 3 and #d.rendered.providers == 3 and
+			type(d.captions.providers.count) == "table" and d.captions.providers.count[1] == "cybersyn-gui.item-count",
+			{ #d.model.providers, #d.rendered.providers, d.captions.providers.count })
+		dev("item_max_rows", nil)
+		dev("close_item", PI)
+	end,
+
+	function()
+		-- Dispatcher order against the dispatcher's own choice: the LOST_PRIORITY scenario on a network of its own.
+		local saved = cases.NETWORKS.LOST_PRIORITY
+		cases.NETWORKS.LOST_PRIORITY = NETWORK
+		local ok, case = pcall(cases.LOST_PRIORITY, { k = K })
+		cases.NETWORKS.LOST_PRIORITY = saved
+		lab.check("LOST_PRIORITY scenario builds", ok, case)
+		if not ok then return end
+		ix.case = case
+		lab.wait_until(function() return cases.trains_ready(case) end, 3600, SPEED)
+	end,
+
+	function()
+		local case = ix.case
+		if not case then return end
+		lab.check("LOST_PRIORITY train parked", cases.trains_ready(case))
+		-- The planner polls one station after the other over several ticks: a request set from RCON between hi's
+		-- poll and lo's would be seen alone for one cycle and served. Lo's request appears only once hi's has been
+		-- polled, so every cycle that sees lo also sees hi.
+		case.stages[1].run(case)
+		ix.lo_signals = case.r.signals
+		cases.set_signals(case.r, {})
+		lab.wait_until(function() return (cases.polled(case.hi.id, case.item) or 0) < 0 end, 4800, SPEED)
+	end,
+
+	function()
+		local case = ix.case
+		if not case then return end
+		lab.check("hi's request is polled before lo's is set", (cases.polled(case.hi.id, case.item) or 0) < 0 and
+			cases.polled(case.r_station, case.item) == nil, { hi = cases.polled(case.hi.id, case.item) })
+		cases.set_signals(case.r, ix.lo_signals)
+		lab.wait_until(function()
+			local e = dev("diag_unserved", case.r_station)[case.item]
+			return e ~= nil and e.lost_n > 0
+		end, 4800, SPEED)
+	end,
+
+	function()
+		local case = ix.case
+		if not case then return end
+		local e = dev("diag_unserved", case.r_station)[case.item]
+		lab.check("the dispatcher served hi first: lo lost to hi", e and e.lost_n > 0 and e.lost_to == case.hi.id, e)
+		dev("clear_filters", PI)
+		dev("select_tab", PI, "inventory")
+		local d = dev("open_item", PI, case.item)
+		d = model_checks("LOST_PRIORITY", case.item)
+		local pos = {}
+		for i, r in ipairs(d.model.requesters) do pos[r.id] = i end
+		lab.check("the winner (lost_to) is listed before the requester that lost to it",
+			pos[case.hi.id] ~= nil and pos[case.r_station] ~= nil and pos[case.hi.id] < pos[case.r_station],
+			{ hi = pos[case.hi.id], lo = pos[case.r_station] })
+		-- hi is first overall unless another requester of the item has a priority of 10 or more.
+		local top = true
+		for _, r in ipairs(d.model.requesters) do
+			if r.id ~= case.hi.id and r.group == 0 and r.priority >= 10 then top = false end
+		end
+		if top then
+			lab.check("the winner heads the Requesters table", d.model.requesters[1].id == case.hi.id and
+				d.rendered.requesters[1] and d.rendered.requesters[1].id == case.hi.id, d.model.requesters[1])
+		end
+		local lo_row
+		for _, r in ipairs(d.rendered.requesters) do if r.id == case.r_station then lo_row = r end end
+		lab.check("the loser's row carries its reason chip with the four-line tooltip", lo_row and lo_row.chip_tooltip and
+			lo_row.chip_tooltip[1] == "" and #lo_row.chip_tooltip >= 8, lo_row)
+		local lost_line = lo_row and lo_row.chip_tooltip and lo_row.chip_tooltip[10]
+		lab.check("the loser's chip names the winner it lost to, with the count",
+			type(lost_line) == "table" and lost_line[1] == "cybersyn-diag.lost-priority" and type(lost_line[2]) == "string" and
+			(tonumber(lost_line[3]) or 0) > 0,
+			lost_line)
+
+		-- Dump twice, two seconds apart: the same rows in the same order.
+		ix.dump1 = d
+		lab.wait(120, 1)
+	end,
+
+	function()
+		local d1 = ix.dump1
+		if not d1 then return end
+		dev("update", PI, 1)
+		local d2 = dev("item_dump", PI)
+		local function keys(d)
+			local out = {}
+			for _, tname in ipairs({ "providers", "requesters", "trains" }) do out[tname] = ids_of(d.rendered[tname]) end
+			return out
+		end
+		lab.check("dump twice 2 s apart: same rows in the same order", serpent.line(keys(d1)) == serpent.line(keys(d2)),
+			{ keys(d1), keys(d2) })
+
+		-- Whole rows on four screens: the shares add up to the rows the layout computed for the drill-down.
+		for _, screen in ipairs({ { 1920, 1080, 1 }, { 2560, 1440, 1.25 }, { 3840, 2160, 1.5 }, { 3840, 2160, 2 },
+			{ 1366, 768, 1.5 }, { 1920, 1080, 2 } }) do
+			local rows = dev("set_layout", PI, screen[1], screen[2], screen[3])
+			dev("update", PI, 1)
+			local d = dev("item_dump", PI)
+			local r = dev("rows", PI, "item")
+			local a = d.alloc
+			local label = screen[1] .. "x" .. screen[2] .. "@" .. screen[3]
+			local widths_ok = true
+			for _, tname in ipairs({ "providers", "requesters", "trains" }) do
+				local sc = d.scroll[tname]
+				if #d.rendered[tname] > 0 and not (sc and sc.header_flex == sc.row_flex) then widths_ok = false end
+			end
+			lab.check(label .. ": header and rows share the flexible width after the resize", widths_ok, d.scroll)
+			lab.check(label .. ": shares add up to the computed rows, rendered within them",
+				a and a.providers + a.requesters + a.trains == r.computed and r.rendered <= r.computed and
+				r.computed >= 3 and 256 + r.computed * 32 <= r.content_height and 256 + (r.computed + 1) * 32 > r.content_height,
+				{ a, r.computed, r.rendered, r.content_height, rows.computed })
+		end
+		lab.big_screen(PI)
+
+		dev("close_item", PI)
+		if ix.case then cases.destroy(ix.case) end
+		ix.case = nil
+		dev("clear_filters", PI)
+	end,
+})

@@ -59,13 +59,21 @@ end
 ---@param train Train
 function remove_train(map_data, train_id, train)
 	if train.manifest then
-		on_failed_delivery(map_data, train_id, train)
+		on_failed_delivery(map_data, train_id, train, DIAG_FAIL_TRAIN_REMOVED)
 	end
 	remove_available_train(map_data, train_id, train)
 
+	-- Clean up refueler counter if train was heading to or at a refueler
+	if train.refueler_id then
+		local refueler = map_data.refuelers[train.refueler_id]
+		if refueler then
+			refueler.trains_total = refueler.trains_total - 1
+		end
+	end
+
 	local layout_id = train.layout_id
 	local count = storage.layout_train_count[layout_id]
-	if count <= 1 then
+	if not count or count <= 1 then
 		storage.layout_train_count[layout_id] = nil
 		storage.layouts[layout_id] = nil
 		for _, stop in pairs(storage.stations) do
@@ -183,6 +191,28 @@ function set_train_layout(map_data, train)
 	train.layout_id = layout_id
 	train.item_slot_capacity = item_slot_capacity
 	train.fluid_capacity = fluid_capacity
+end
+
+--- Re-reads a train's carriage layout, first dropping its count under the old layout (and the layout itself with its
+--- last train) so the per-layout counts and the stops' accepted layouts stay in step.
+---@param map_data MapData
+---@param train Train
+function update_train_layout(map_data, train)
+	local old_layout_id = train.layout_id
+	local count = map_data.layout_train_count[old_layout_id]
+	if count <= 1 then
+		map_data.layout_train_count[old_layout_id] = nil
+		map_data.layouts[old_layout_id] = nil
+		for _, stop in pairs(map_data.stations) do
+			stop.accepted_layouts[old_layout_id] = nil
+		end
+		for _, stop in pairs(map_data.refuelers) do
+			stop.accepted_layouts[old_layout_id] = nil
+		end
+	else
+		map_data.layout_train_count[old_layout_id] = count - 1
+	end
+	set_train_layout(map_data, train)
 end
 
 ---@param stop LuaEntity

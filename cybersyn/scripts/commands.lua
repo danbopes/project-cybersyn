@@ -1,3 +1,6 @@
+local actions = require("scripts.actions")
+local lint = require("scripts.lint")
+
 --- @param entity LuaEntity
 local function gps_text(entity)
 	local pos = entity.position
@@ -37,31 +40,6 @@ local function report_print(entity, message)
 	end
 end
 
-local function report_noop(stop, message)
-end
-
-local NORTH = defines.direction.north
-local SOUTH = defines.direction.south
-
----@param comb LuaEntity
-local function combinator_search_area(comb)
-	local pos = comb.position
-	local dir = comb.direction
-
-	-- see on_combinator_built
-	if dir == NORTH or dir == SOUTH then
-		return {
-			{ pos.x - 1.5, pos.y - 2 },
-			{ pos.x + 1.5, pos.y + 2 },
-		}
-	else
-		return {
-			{ pos.x - 2, pos.y - 1.5 },
-			{ pos.x + 2, pos.y + 1.5 },
-		}
-	end
-end
-
 ---@param station LuaEntity
 local function station_search_area(station)
 	local pos = station.position
@@ -73,118 +51,40 @@ local function station_search_area(station)
 	}
 end
 
---- Find the names of all Cybersyn stations in the game.
---- @param report function(LuaEntity, LocalisedString)
----
---- @return {[integer]: string} station_types maps from train-stop unit_number to cybersyn station type (MODE_PRIMARY_IO | MODE_DEPOT | MODE_REFUELER | nil)
---- @return {[string]: boolean} station_names set of station names (requester/provider)
---- @return {[string]: boolean} depot_names set of depot names
---- @return {[string]: boolean} refueler_names set of refueler names
-local function check_single_stations_and_collect_data(report)
-	local station_names = {}
-	local depot_names = {}
-	local refueler_names = {}
-	local station_types = {}
+local NAMED_MODES = {
+	[MODE_PRIMARY_IO] = true,
+	[MODE_PRIMARY_IO_ACTIVE] = true,
+	[MODE_PRIMARY_IO_FAILED_REQUEST] = true,
+	[MODE_DEPOT] = true,
+	[MODE_REFUELER] = true,
+}
 
+--- The names of every train stop that a station, depot or refueler combinator serves, found from the entities
+--- alone so a repair command does not depend on storage.
+--- @return {[string]: true}
+local function collect_cybersyn_stop_names()
+	local names = {}
 	for _, s in pairs(game.surfaces) do
 		for _, ts in pairs(s.find_entities_filtered { name = "train-stop" }) do
-			local comb_1 = nil
-			local comb_2 = nil
-			local depot = nil
-			local refuel = nil
-
 			for _, c in pairs(s.find_entities_filtered { name = "cybersyn-combinator", area = station_search_area(ts) }) do
 				local op = c.get_control_behavior()
 				op = op and op.parameters.operation
-
-				if op == MODE_PRIMARY_IO or op == MODE_PRIMARY_IO_ACTIVE or op == MODE_PRIMARY_IO_FAILED_REQUEST then
-					if not comb_1 then comb_1 = c else report(ts, { "cybersyn-problems.double-station" }) end
-				elseif op == MODE_SECONDARY_IO then
-					if not comb_2 then comb_2 = c else report(ts, { "cybersyn-problems.double-station-control" }) end
-				elseif op == MODE_DEPOT then
-					if not depot then depot = c else report(ts, { "cybersyn-problems.double-depot" }) end
-				elseif op == MODE_REFUELER then
-					if not refuel then refuel = c else report(ts, { "cybersyn-problems.double-refueler" }) end
-				end
-			end
-
-			if comb_1 and depot then report(ts, { "cybersyn-problems.station-and-depot" }) end
-			if comb_1 and refuel then report(ts, { "cybersyn-problems.station-and-refueler" }) end
-			if depot and refuel then report(ts, { "cybersyn-problems.depot-and-refueler" }) end
-
-			if comb_1 then -- station mode takes precedence
-				station_types[ts.unit_number] = MODE_PRIMARY_IO
-				station_names[ts.backer_name] = true
-			elseif depot then
-				station_types[ts.unit_number] = MODE_DEPOT
-				depot_names[ts.backer_name] = true
-			elseif refuel then
-				station_types[ts.unit_number] = MODE_REFUELER
-				refueler_names[ts.backer_name] = true
-			end
-		end
-	end
-
-	return station_types, station_names, depot_names, refueler_names
-end
-
---- @param report function(LuaEntity, LocalisedString)
-local function find_problems(report)
-	local problem_counter = 0
-
-	local counting_report = function(stop, message)
-		problem_counter = problem_counter + 1
-		report(stop, message)
-	end
-
-	local types, stations, depots, refuelers = check_single_stations_and_collect_data(counting_report)
-
-	-- global checks
-	for _, s in pairs(game.surfaces) do
-		for _, ts in pairs(s.find_entities_filtered { name = "train-stop" }) do
-			-- priority is only problematic when a station is named the same as a Cybersyn requester/provider
-			local name = ts.backer_name
-			if ts.train_stop_priority ~= 50 and (stations[name] or depots[name] or refuelers[name]) then
-				counting_report(ts, { "cybersyn-problems.non-default-priority" })
-			end
-
-			local type = types[ts.unit_number]
-			if type ~= MODE_DEPOT and depots[ts.backer_name] then
-				counting_report(ts, { "cybersyn-problems.name-overlap-with-depot" })
-			end
-
-			-- TODO decide if this is actually a problem
-			-- if type ~= MODE_REFUELER and refuelers[ts.backer_name] then
-			--	report(ts, {"cybersyn-problems.name-overlap-with-refueler"})
-			-- end
-		end
-	end
-
-	for _, s in pairs(game.surfaces) do
-		for _, c in pairs(s.find_entities_filtered { name = "cybersyn-combinator" }) do
-			if not next(s.find_entities_filtered { name = "train-stop", area = combinator_search_area(c), limit = 1 }) then
-				local op = c.get_control_behavior()
-				op = op and op.parameters.operation
-				if op ~= MODE_WAGON then
-					counting_report(c, { "cybersyn-problems.derelict-combinator" })
+				if NAMED_MODES[op] then
+					names[ts.backer_name] = true
+					break
 				end
 			end
 		end
 	end
-
-	if problem_counter == 0 then
-		report(nil, { "cybersyn-problems.no-problems-found" })
-	end
+	return names
 end
 
 local function fix_priorities_command()
-	-- don't depend on any 'storage' data for a repair command
-	local _, stations, depots, refuelers = check_single_stations_and_collect_data(report_noop)
+	local names = collect_cybersyn_stop_names()
 
 	for _, s in pairs(game.surfaces) do
 		for _, ts in pairs(s.find_entities_filtered { name = "train-stop" }) do
-			local name = ts.backer_name
-			if ts.train_stop_priority ~= 50 and (stations[name] or depots[name] or refuelers[name]) then
+			if ts.train_stop_priority ~= 50 and names[ts.backer_name] then
 				ts.train_stop_priority = 50
 				report_print(ts, { "cybersyn-problems.priority-was-reset" })
 			end
@@ -197,10 +97,32 @@ function retrigger_train_calculation(print_message)
 	local map_data = storage
 	log("Recalculating all train capacities")
 	local nbtrains = 0
+	-- set_train_layout counts the train into its layout, so the counts start from 0 and every layout no train
+	-- re-derives is dropped afterwards; otherwise each run would add every train a second time.
+	local counts = map_data.layout_train_count
+	for id in pairs(map_data.layouts) do counts[id] = 0 end
 	for _,train in pairs(map_data.trains) do
 		if train.entity and train.entity.valid then
 			set_train_layout(map_data, train)
 			nbtrains = nbtrains+1
+		elseif counts[train.layout_id] then
+			counts[train.layout_id] = counts[train.layout_id] + 1
+		end
+	end
+	local orphans = {}
+	for id in pairs(map_data.layouts) do
+		if counts[id] == 0 then orphans[#orphans + 1] = id end
+	end
+	if #orphans > 0 then
+		for _, id in ipairs(orphans) do
+			counts[id] = nil
+			map_data.layouts[id] = nil
+		end
+		for _, stop in pairs(map_data.stations) do
+			for _, id in ipairs(orphans) do stop.accepted_layouts[id] = nil end
+		end
+		for _, stop in pairs(map_data.refuelers) do
+			for _, id in ipairs(orphans) do stop.accepted_layouts[id] = nil end
 		end
 	end
 	if print_message then
@@ -282,11 +204,42 @@ local function abolish_same_depot()
 	game.print({ "cybersyn-messages.abolish-same-depot-command-result", num_depots, num_trains })
 end
 
+--- A command that changes game state: refused without the right (PLAN3 §4.14, B7), audited when it ran.
+--- @param action int ACTION_*
+--- @param fn fun()
+--- @return fun(command: CustomCommandData)
+local function gated(action, fn)
+	return function(command)
+		local player = command.player_index and game.get_player(command.player_index) or nil
+		local what = "/" .. command.name
+		if not actions.check(player, what) then return end
+		fn()
+		actions.audit(action, nil, player, what)
+	end
+end
+
+--- Prints the setup registry (combinators and stops that keep a station from registering or misroute trains, kept
+--- up to date by the build handlers, scripts/lint.lua) and the registered stops at a non-default priority. Nothing
+--- is scanned: the command reads what the handlers recorded.
+--- @param command CustomCommandData
+local function find_problems_command(command)
+	local player = command.player_index and game.get_player(command.player_index) or nil
+	lint.report(player)
+end
+
+--- Console command handlers by name; the dev interface dispatches them with a synthetic event.
+cybersyn_command_handlers = {
+	["cybersyn-recalculate-train-size"] = gated(ACTION_RECALCULATE_TRAIN_SIZE, function() retrigger_train_calculation(true) end),
+	["cybersyn-find-problems"] = find_problems_command,
+	["cybersyn-fix-priorities"] = gated(ACTION_FIX_PRIORITIES, fix_priorities_command),
+	["cybersyn-abolish-same-depot"] = gated(ACTION_ABOLISH_SAME_DEPOT, abolish_same_depot),
+}
+
 commands.add_command("cybersyn-recalculate-train-size", { "cybersyn-messages.recalculate-train-size-command-help" },
-	function() retrigger_train_calculation(true) end)
+	cybersyn_command_handlers["cybersyn-recalculate-train-size"])
 commands.add_command("cybersyn-find-problems", { "cybersyn-messages.find-problems-command-help" },
-	function() find_problems(report_print) end)
+	cybersyn_command_handlers["cybersyn-find-problems"])
 commands.add_command("cybersyn-fix-priorities", { "cybersyn-messages.fix-priorities-command-help" },
-	fix_priorities_command)
+	cybersyn_command_handlers["cybersyn-fix-priorities"])
 commands.add_command("cybersyn-abolish-same-depot", { "cybersyn-messages.abolish-same-depot-command-help" },
-	abolish_same_depot)
+	cybersyn_command_handlers["cybersyn-abolish-same-depot"])

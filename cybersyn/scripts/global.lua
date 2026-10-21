@@ -26,6 +26,13 @@
 ---@field public se_elevators {[uint]: Cybersyn.ElevatorData} maps relevant entities on both surfaces to one shared data structure for the whole space elevator; the key can be the unit_number of the elevator's main assembler or its train stop
 ---@field public connected_surfaces {[string]: {[string]: Cybersyn.SurfaceConnection}} maps pairs of surfaces to the pairs of entities connecting them
 ---@field public perf_cache PerfCache -- This gets reset to an empty table on migration change
+---@field public analytics Cybersyn.AnalyticsData? Analytics data for train utilization and delivery times
+---@field public stats Stats? delivery throughput and request-wait aggregates for the manager Overview, see scripts/stats.lua
+---@field public diag DiagState? dispatcher diagnostics, nil while the cybersyn-diagnostics setting is off, see scripts/diag.lua
+---@field public acks {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}}? acknowledgements (PLAN3 §4.13); kept while diagnostics are off
+---@field public diag_verify_interrupt {checks: int, mismatches: int}? lab flag DIAG_VERIFY_INTERRUPT: tick_dispatch compares Train.in_interrupt with the live schedule
+---@field public fork_schema int? last schema step of scripts/fork-migrations.lua this save went through
+---@field public alert_dedupe {cycle: int, sent: int, keys: {[string]: table}}? per-(item, network) no-train alerts of the planner cycle (B6), see central-planning.lua
 
 ---@class PerfCache
 ---@field public se_get_space_elevator_name {}?
@@ -108,6 +115,7 @@
 ---@class Train
 ---@field public entity LuaTrain --should only be invalid if se_is_being_teleported is true
 ---@field public layout_id uint
+---@field public dispatch_tick uint? game tick of the last dispatch, for the Overview cycle time
 ---@field public item_slot_capacity int
 ---@field public fluid_capacity int
 ---@field public status uint
@@ -126,9 +134,17 @@
 ---@field public priority int
 ---@field public refueler_id uint?
 ---@field public se_is_being_teleported true? --se only
----@field public se_awaiting_removal any? --se only
+---@field public se_awaiting_removal boolean? --se only
 ---@field public se_awaiting_rename any? --se only
 ---@field public skip_path_checks_until int?
+---@field public stuck_departure true?
+---@field public in_interrupt boolean? current schedule record was inserted by an interrupt; kept by on_train_schedule_changed, read by tick_dispatch
+---@field public last_state defines.train_state? LuaTrain.state at the last on_train_changed_state
+---@field public state_tick uint? when last_state began (the load tick for trains that predate the field)
+---@field public delivery_id uint? id of the current delivery in the full diagnostics log
+---@field public refuel_tick uint? last arrival at a refueler (nil = never seen refuelling)
+---@field public seen_tick uint? when Cybersyn first registered the train (nil for trains from before the field)
+---@field public edited_tick uint? last schedule edit by a player that the diagnostics log recorded
 
 ---@alias Manifest ManifestEntry[]
 ---@class ManifestEntry
@@ -144,6 +160,35 @@
 ---@field public all_p_stops {[Cybersyn.Economy.ItemNetworkName]: StopInfo[]} Maps item network names to lists of provider station IDs having matching items.
 ---@field public all_names (Cybersyn.Economy.ItemNetworkName|SignalID)[] A flattened list of pairs. Each pair is of the form `[item_network_name, item_signal]` where `item_signal` is the signal for the named item. The dispatch logic iterates over these pairs to brute-force match providers to requesters.
 
+---@class Cybersyn.AnalyticsInterval
+---@field public name string Interval name ("5s", "1m", "10m", etc.)
+---@field public data table[] Circular buffer of {[series_name]: value}
+---@field public index uint Next write position (0-indexed)
+---@field public sum {[string]: number} Running sums by series name
+---@field public counts {[string]: uint} Sample counts by series name
+---@field public ticks uint Game ticks per datapoint
+---@field public steps uint? Datapoints per cascade (nil for last interval)
+---@field public length uint Buffer capacity
+---@field public chunk table? {render_entity, coord} when being viewed
+---@field public viewer_count uint Number of players viewing this graph
+---@field public guis {[uint]: table} Player GUIs viewing this interval
+---@field public last_rendered_tick uint?
+
+---@class Cybersyn.AnalyticsData
+---@field public surface LuaSurface Hidden rendering surface
+---@field public train_utilization Cybersyn.AnalyticsInterval[] 8 intervals for utilization graph
+---@field public fulfillment_times Cybersyn.AnalyticsInterval[] 8 intervals: request → delivery
+---@field public total_delivery_times Cybersyn.AnalyticsInterval[] 8 intervals: dispatch → completion
+---@field public train_status_ticks {[uint]: {[uint]: uint}} layout_id -> {status -> ticks}
+---@field public train_status_totals {[uint]: uint} layout_id -> total ticks
+---@field public delivery_starts {[uint]: {item_hash: string, dispatch_tick: uint}} train_id -> info
+---@field public fulfillment_ema {[string]: number} item_hash -> EMA of fulfillment time in seconds
+---@field public total_time_ema {[string]: number} item_hash -> EMA of total delivery time in seconds
+---@field public chunk_freelist table[] Reusable chunk coordinates
+---@field public next_chunk_x uint
+---@field public next_chunk_y uint
+---@field public enabled boolean
+
 --NOTE: any setting labeled as an "interface setting" can only be changed through the remote-interface, these settings are not save and have to be set at initialization
 --As a modder using the remote-interface, you may override any of these settings, including user settings. They will have to be overriden at initialization and whenever a user tries to change one.
 ---@class CybersynModSettings
@@ -158,17 +203,16 @@
 ---@field public network_mask int
 ---@field public warmup_time double
 ---@field public stuck_train_time double
----@field public track_request_wait_times boolean
 ---@field public fuel_threshold double
 ---@field public allow_cargo_in_depot boolean
----@field public alert_unexpected_cargo boolean --interface setting
+---@field public alert_unexpected_cargo boolean
 ---@field public missing_train_alert_enabled boolean --interface setting
 ---@field public stuck_train_alert_enabled boolean --interface setting
 ---@field public react_to_train_at_incorrect_station boolean --interface setting
 ---@field public react_to_train_early_to_depot boolean --interface setting
 ---@field public enable_manager boolean
 ---@field public manager_ups double
----@field public manager_enabled boolean
+---@field public enable_analytics boolean
 
 --if this is uncommented it means there are migrations to write
 
@@ -204,7 +248,6 @@ function init_global()
 	storage.to_refuelers = {}
 	storage.each_refuelers = {}
 	storage.perf_cache = {}
-	storage.stack_size_cache = {}
 	storage.se_elevators = {}
 	storage.connected_surfaces = {}
 

@@ -10,6 +10,17 @@ local table_remove = table.remove
 local table_insert = table.insert
 local random = math.random
 
+local analytics = require("scripts.analytics")
+local stats = require("scripts.stats")
+local diag = require("scripts.diag")
+local diag_fail = diag.fail
+-- tick_dispatch's per-evaluation rejection counters (diagnostics on only); zeroed before every evaluation.
+local diag_rej = diag.rej
+local REJ_P_LIMIT, REJ_P_REQUESTING, REJ_MASK, REJ_SURFACE, REJ_BELOW = REJ_P_AT_LIMIT, REJ_P_IS_REQUESTING,
+	REJ_MASK_MISMATCH, REJ_NO_SURFACE_ROUTE, REJ_P_BELOW_THRESHOLD
+local REJ_T_MASK, REJ_T_MANUAL, REJ_T_SURFACE = REJ_TRAIN_MASK, REJ_TRAIN_MANUAL, REJ_TRAIN_SURFACE
+local REJ_N = REJ_COUNT
+
 local HASH_STRING = "|"
 
 -- Request tracking functions
@@ -29,9 +40,6 @@ end
 ---@param station Station
 ---@param item_hash string
 local function track_request_start(station, item_hash)
-	if not mod_settings.track_request_wait_times then
-		return
-	end
 	init_request_tracking(station)
 	if not station.request_start_ticks[item_hash] then
 		station.request_start_ticks[item_hash] = game.tick
@@ -225,34 +233,41 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 	if not train.entity.valid then
 		on_train_broken(map_data, train_id, train)
 		interface_raise_train_dispatch_failed(train_id)
+		diag.dispatch_failed(DIAG_DISPATCH_TRAIN_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 	if not depot.entity_stop.valid then
 		on_depot_broken(map_data, train.depot_id, depot)
 		interface_raise_train_dispatch_failed(train_id)
+		diag.dispatch_failed(DIAG_DISPATCH_DEPOT_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 	if not p_station.entity_stop.valid then
 		on_station_broken(map_data, p_station_id, p_station)
 		interface_raise_train_dispatch_failed(train_id)
+		diag.dispatch_failed(DIAG_DISPATCH_PROVIDER_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 	if not r_station.entity_stop.valid then
 		on_station_broken(map_data, r_station_id, r_station)
 		interface_raise_train_dispatch_failed(train_id)
+		diag.dispatch_failed(DIAG_DISPATCH_REQUESTER_INVALID, train_id, r_station_id, p_station_id, manifest)
 		return
 	end
 
 	local is_at_depot = remove_available_train(map_data, train_id, train)
 	--NOTE: we assume that the train is not being teleported at this time
 	--NOTE: set_manifest_schedule is allowed to cancel the delivery at the last second if applying the schedule to the train makes it lost and is_at_depot == false
-	if set_manifest_schedule(map_data, train, depot.entity_stop, not train.use_any_depot, p_station.entity_stop, p_station, r_station.entity_stop, r_station, manifest, surface_connections, is_at_depot) then
+	local dispatched, why = set_manifest_schedule(map_data, train, depot.entity_stop, not train.use_any_depot, p_station.entity_stop, p_station, r_station.entity_stop, r_station, manifest, surface_connections, is_at_depot)
+	if dispatched then
 		local old_status = train.status
 		train.status = STATUS_TO_P
 		train.p_station_id = p_station_id
 		train.r_station_id = r_station_id
 		train.manifest = manifest
 		train.last_manifest_tick = map_data.total_ticks
+		stats.record_dispatch(train)
+		local d = map_data.diag
 
 		r_station.last_delivery_tick = map_data.total_ticks
 		p_station.last_delivery_tick = map_data.total_ticks
@@ -261,9 +276,22 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 		p_station.deliveries_total = p_station.deliveries_total + 1
 
 		-- Reset request tracking times for delivered items
-		for _, item in ipairs(manifest) do
+		-- Also record delivery start for analytics
+		local request_start_ticks = r_station.request_start_ticks
+		for i, item in ipairs(manifest) do
 			local item_hash = hash_item(item.name, item.quality)
+			local start_tick = request_start_ticks and request_start_ticks[item_hash]
+			local fulfillment_time = start_tick and game.tick - start_tick or nil
+			if fulfillment_time then
+				stats.record_fulfilment(fulfillment_time, r_station_id, item_hash)
+			end
+			-- Record delivery start for analytics (only for first item to avoid duplicates)
+			if i == 1 then
+				analytics.record_delivery_start(map_data, train_id, item_hash, fulfillment_time)
+				if d then diag.dispatched(d, train_id, train, r_station_id, p_station_id, manifest, item_hash) end
+			end
 			clear_request_tracking(r_station, item_hash)
+			if d then diag.served(d, r_station_id, item_hash, p_station_id, train_id, train.delivery_id) end
 		end
 
 		local r_is_each = r_station.network_name == NETWORK_EACH
@@ -315,6 +343,8 @@ function create_delivery(map_data, r_station_id, p_station_id, train_id, manifes
 		interface_raise_train_status_changed(train_id, old_status, STATUS_TO_P)
 	else
 		interface_raise_train_dispatch_failed(train_id)
+		diag.dispatch_failed(why or DIAG_DISPATCH_SCHEDULE_REJECTED, train_id, r_station_id, p_station_id, manifest,
+			train.entity.state)
 	end
 end
 ---@param map_data MapData
@@ -388,13 +418,14 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 	local locked_slots = p_station.locked_slots
 	local total_item_slots = train.item_slot_capacity
 	if locked_slots > 0 and total_item_slots > 0 then
-		-- Multiply locked slots by number of unique items
+		--locked_slots is configured per item type, so a manifest carrying several
+		--items has to reserve that many slots for each of them
 		local unique_item_count = 0
 		for _ in pairs(unique_items) do
 			unique_item_count = unique_item_count + 1
 		end
 		locked_slots = locked_slots * unique_item_count
-		
+
 		-- TODO: possible subtle bug here with modded wagons if locked_slots is
 		-- bigger than the number of item slots in one wagon but not another. Might need to look
 		-- at individual wagon capacities here.
@@ -441,6 +472,84 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 	return manifest
 end
 
+local REQUESTER_ALERT_MESSAGE = {
+	[DIAG_ALERT_MISSING_TRAIN] = "cybersyn-messages.missing-train",
+	[DIAG_ALERT_TRAINS_FILTERED] = "cybersyn-messages.trains-filtered",
+	[DIAG_ALERT_NO_TRAIN_HAS_CAPACITY] = "cybersyn-messages.no-train-has-capacity",
+	[DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT] = "cybersyn-messages.no-train-matches-r-layout",
+	[DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT] = "cybersyn-messages.no-train-matches-p-layout",
+}
+
+-- The no-train alerts (NO_TRAINS_ON_NETWORK and TRAIN_FILTERED) are sent once per (item, network) per planner
+-- cycle, on the stop of the requester that has waited longest, instead of once per failing requester evaluation:
+-- a network short of trains fails every requester of an item on every pass, which flooded the alert list and paid
+-- an API call each time. tick_dispatch only notes the evaluation (no API call, no storage.diag read); tick_init
+-- sends what the cycle noted.
+---@param map_data MapData
+---@return {cycle: int, sent: int, keys: {[string]: table}}
+local function alert_dedupe(map_data)
+	local ad = map_data.alert_dedupe
+	if not ad then
+		ad = { cycle = 0, sent = 0, keys = {} }
+		map_data.alert_dedupe = ad
+	end
+	return ad
+end
+
+---@param ad {cycle: int, sent: int, keys: {[string]: table}}
+---@param key string item_network_name
+---@param code int DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
+---@param wait number seconds the requester has waited
+local function note_no_train_alert(ad, key, code, r_station_id, p_station_id, wait)
+	local e = ad.keys[key]
+	if not e then
+		e = {}
+		ad.keys[key] = e
+	end
+	if e.cycle ~= ad.cycle or wait > e.wait then
+		e.cycle, e.code, e.r_id, e.p_id, e.wait = ad.cycle, code, r_station_id, p_station_id, wait
+	end
+end
+
+---Sends the alerts the cycle that just ended noted, removing each key's previous alert first so it moves with the
+---worst requester instead of piling up, and removes the alerts of keys that no longer fail.
+---@param map_data MapData
+---@param d DiagState?
+local function flush_no_train_alerts(map_data, d)
+	local ad = map_data.alert_dedupe
+	if not ad then return end
+	local cycle = ad.cycle
+	local stations = map_data.stations
+	-- Every removal comes before any send: an alert is matched by stop and text, and two keys can show the same
+	-- text on the same stop, so a later removal would take down an alert just sent for another key.
+	for key, e in pairs(ad.keys) do
+		local shown = e.shown and stations[e.shown]
+		local shown_stop = shown and shown.entity_stop
+		if shown_stop and shown_stop.valid then remove_alert_about_missing_train(shown_stop, e.shown_text) end
+		e.shown, e.shown_text = nil, nil
+		if e.cycle ~= cycle then ad.keys[key] = nil end
+	end
+	for _, e in pairs(ad.keys) do
+		local r, p = stations[e.r_id], stations[e.p_id]
+		local r_stop, p_stop = r and r.entity_stop, p and p.entity_stop
+		if r_stop and p_stop and r_stop.valid and p_stop.valid then
+			e.shown_text = send_alert_about_missing_train(r_stop, p_stop, REQUESTER_ALERT_MESSAGE[e.code])
+			e.shown = e.r_id
+			e.sent = (e.sent or 0) + 1
+			ad.sent = ad.sent + 1
+			if d then diag.alert_ids(d, e.code, e.r_id, e.p_id) end
+		end
+	end
+	ad.cycle = cycle + 1
+end
+
+---The other requester alerts stay one per failing evaluation; the planner logs them with the ids it holds.
+---@param d DiagState?
+local function requester_alert(d, code, r_station, p_station, r_station_id, p_station_id)
+	send_alert_about_missing_train(r_station.entity_stop, p_station.entity_stop, REQUESTER_ALERT_MESSAGE[code])
+	if d then diag.alert_ids(d, code, r_station_id, p_station_id) end
+end
+
 ---@param map_data MapData
 ---@param mod_settings CybersynModSettings
 local function tick_dispatch(map_data, mod_settings)
@@ -453,6 +562,11 @@ local function tick_dispatch(map_data, mod_settings)
 	local all_p_stops = map_data.economy.all_p_stops
 	local all_names = map_data.economy.all_names
 	local stations = map_data.stations
+	local d = map_data.diag
+	local verify_interrupt = map_data.diag_verify_interrupt
+	-- The latest provider a requester's evaluation locked in this call (the P_BELOW_THRESHOLD table_remove), its stock
+	-- and override threshold: a later requester that finds no provider left is tested against it (diagnostics on only).
+	local lock_r, lock_p, lock_stop, lock_count, lock_override
 
 	local r_stops
 	local p_stops
@@ -492,11 +606,22 @@ local function tick_dispatch(map_data, mod_settings)
 				break
 			else
 				-- No matching pairs; update combinator display for all requesters to FAILED_REQUEST state.
+				local no_provider_item_hash = hash_signal(signal)
 				for i, stop in ipairs(r_stops) do
-					local station = stations[stop.station_id]
-					if station and band(station.display_state, 2) == 0 then
-						station.display_state = station.display_state + 2
-						update_display(map_data, station)
+					local id = stop.station_id
+					local station = stations[id]
+					if station then
+						if band(station.display_state, 2) == 0 then
+							station.display_state = station.display_state + 2
+							update_display(map_data, station)
+						end
+						-- Record failed dispatch for analytics
+						local wait_so_far = 0
+						if station.request_start_ticks and station.request_start_ticks[no_provider_item_hash] then
+							wait_so_far = (game.tick - station.request_start_ticks[no_provider_item_hash]) / 60
+						end
+						analytics.record_failed_dispatch(map_data, id, no_provider_item_hash, FAILURE_REASON_NO_PROVIDER_STOCK, wait_so_far, nil, REASON_NO_PROVIDER)
+						if d then diag_fail(d, id, no_provider_item_hash, REASON_NO_PROVIDER, 0, 0, nil, nil, nil) end
 					end
 				end
 			end
@@ -551,7 +676,7 @@ local function tick_dispatch(map_data, mod_settings)
 			best_timestamp = station.last_delivery_tick
 			::continue::
 		end
-		
+
 		-- No matching requester found; set all candidate request combinators to FAILED_REQUEST display state.
 		if not r_stop_i then
 			for _, stop in ipairs(r_stops) do
@@ -560,6 +685,8 @@ local function tick_dispatch(map_data, mod_settings)
 					station.display_state = station.display_state + 2
 					update_display(map_data, station)
 				end
+				-- Every requester still listed was skipped by the loop above (evaluated ones were removed).
+				if d and station then diag.skipped(d, stop.station_id, station, item_hash) end
 			end
 			return false
 		end
@@ -575,6 +702,9 @@ local function tick_dispatch(map_data, mod_settings)
 			network_name = r_stop.network_name --[[@as string]]
 		end
 		local trains = map_data.available_trains[network_name]
+		-- The stale-train cleanup below empties a network's table without removing it; empty means none available
+		-- (B3), and the train loop does nothing over either.
+		if trains and next(trains) == nil then trains = nil end
 		local is_fluid = item_type == "fluid"
 		if not is_fluid and r_station.is_stack then
 			r_threshold = r_threshold * get_stack_size(map_data, item_name)
@@ -582,6 +712,13 @@ local function tick_dispatch(map_data, mod_settings)
 		--no train exists with layout accepted by both provide and request stations
 		local correctness = 0
 		local closest_to_correct_p_station = nil
+		-- Diagnostics (on only): the furthest provider site that rejected this requester and its payload, and the
+		-- largest capacity among trains rejected for capacity with the slots they lacked.
+		local rej_site, rej_p, rej_a, rej_b = 0, nil, 0, 0
+		local cap_need, cap_max = 0, -1
+		if d then
+			for k = 1, REJ_N do diag_rej[k] = 0 end
+		end
 
 		local r_surface_id = r_station.entity_stop.surface_index
 
@@ -600,12 +737,24 @@ local function tick_dispatch(map_data, mod_settings)
 			local p_stop = p_stops[j]
 			local p_station = stations[p_stop.station_id]
 			if not p_station or p_station.deliveries_total >= p_station.trains_limit then
+				if d and p_station then
+					diag_rej[REJ_P_LIMIT] = diag_rej[REJ_P_LIMIT] + 1
+					if rej_site <= REJ_P_LIMIT then
+						rej_site, rej_p, rej_a, rej_b = REJ_P_LIMIT, p_stop.station_id, p_station.deliveries_total, p_station.trains_limit
+					end
+				end
 				goto p_continue
 			end
 
 			--don't provide when already requesting
 			item_deliveries = p_station.deliveries[item_hash]
 			if item_deliveries and item_deliveries > 0 then
+				if d then
+					diag_rej[REJ_P_REQUESTING] = diag_rej[REJ_P_REQUESTING] + 1
+					if rej_site <= REJ_P_REQUESTING then
+						rej_site, rej_p, rej_a, rej_b = REJ_P_REQUESTING, p_stop.station_id, item_deliveries, 0
+					end
+				end
 				goto p_continue
 			end
 
@@ -613,6 +762,12 @@ local function tick_dispatch(map_data, mod_settings)
 			r_flag = get_network_mask(r_stop, network_name)
 			netand = band(p_flag, r_flag)
 			if netand == 0 then
+				if d then
+					diag_rej[REJ_MASK] = diag_rej[REJ_MASK] + 1
+					if rej_site <= REJ_MASK then
+						rej_site, rej_p, rej_a, rej_b = REJ_MASK, p_stop.station_id, r_flag, p_flag
+					end
+				end
 				goto p_continue
 			end
 
@@ -627,6 +782,12 @@ local function tick_dispatch(map_data, mod_settings)
 				r_station.entity_stop.surface_index,
 				network_name, netand)
 			if not surface_connections then
+				if d then
+					diag_rej[REJ_SURFACE] = diag_rej[REJ_SURFACE] + 1
+					if rej_site <= REJ_SURFACE then
+						rej_site, rej_p, rej_a, rej_b = REJ_SURFACE, p_stop.station_id, p_surface_id, r_surface_id
+					end
+				end
 				goto p_continue
 			end
 
@@ -648,6 +809,14 @@ local function tick_dispatch(map_data, mod_settings)
 				if band(p_station.display_state, 4) == 0 then
 					p_station.display_state = p_station.display_state + 4
 					update_display(map_data, p_station)
+				end
+				if d then
+					diag_rej[REJ_BELOW] = diag_rej[REJ_BELOW] + 1
+					if rej_site < REJ_BELOW or effective_count > rej_a then
+						rej_site, rej_p, rej_a, rej_b = REJ_BELOW, p_stop.station_id, effective_count, effective_threshold
+					end
+					lock_r, lock_p, lock_stop, lock_count, lock_override =
+						r_station_id, p_stop.station_id, p_stop, effective_count, override_threshold
 				end
 				goto p_continue_remove
 			end
@@ -688,29 +857,42 @@ local function tick_dispatch(map_data, mod_settings)
 			best_capacity = 0
 			best_t_to_p_dist = INF
 			best_t_to_r_is_return_home_surface = false
+			if d then
+				diag_rej[REJ_T_MASK], diag_rej[REJ_T_MANUAL], diag_rej[REJ_T_SURFACE] = 0, 0, 0
+			end
 			if trains then
 				for train_id, _ in pairs(trains) do
 					local train = map_data.trains[train_id]
 					if not train then
 						-- removed train needs cleanup in available_trains
 						trains[train_id] = nil
+						stats.available_changed(network_name, -1)
 						goto train_continue
 					end
 
 					-- Check if train is on same Cybersyn network.
 					local train_flag = get_network_mask(train, network_name)
 					if not btest(netand, train_flag) or train.se_is_being_teleported then
+						if d then
+							if btest(netand, train_flag) then
+								diag_rej[REJ_T_SURFACE] = diag_rej[REJ_T_SURFACE] + 1
+							else
+								diag_rej[REJ_T_MASK] = diag_rej[REJ_T_MASK] + 1
+							end
+						end
 						goto train_continue
 					end
 
 					-- Obtain a reference to the rolling stock of the train.
 					local train_stock = get_any_train_entity(train.entity)
 					if not train_stock or train.entity.manual_mode or not validate_train_base_schedule(map_data, train_id, train) then
+						if d then diag_rej[REJ_T_MANUAL] = diag_rej[REJ_T_MANUAL] + 1 end
 						goto train_continue
 					end
 
 					local t_surface_id = train_stock.surface_index
 					if not is_delivery_allowed_for_train(t_surface_id, p_surface_id, r_surface_id, train.depot_surface_id) then
+						if d then diag_rej[REJ_T_SURFACE] = diag_rej[REJ_T_SURFACE] + 1 end
 						goto train_continue
 					end
 
@@ -723,6 +905,7 @@ local function tick_dispatch(map_data, mod_settings)
 					local capacity = (is_fluid and train.fluid_capacity) or train.item_slot_capacity
 					if capacity < slot_threshold then
 						--no train with high enough capacity is available
+						if d and capacity > cap_max then cap_max, cap_need = capacity, slot_threshold end
 						goto train_continue
 					end
 					if correctness < 3 then
@@ -772,10 +955,18 @@ local function tick_dispatch(map_data, mod_settings)
 						goto train_continue
 					end
 
-					-- don't interrupt interrupts
-					local schedule = train.entity.get_schedule()
-					local current_record = schedule.get_record({ schedule_index = schedule.current })
-					if current_record and current_record.created_by_interrupt then
+					-- don't interrupt interrupts; the flag is kept by on_train_schedule_changed (PLAN3 §4.4)
+					local in_interrupt = train.in_interrupt
+					if verify_interrupt then
+						local schedule = train.entity.get_schedule()
+						local current_record = schedule.get_record({ schedule_index = schedule.current })
+						local live = current_record ~= nil and current_record.created_by_interrupt == true
+						verify_interrupt.checks = verify_interrupt.checks + 1
+						if live ~= (in_interrupt == true) then
+							verify_interrupt.mismatches = verify_interrupt.mismatches + 1
+						end
+					end
+					if in_interrupt then
 						goto train_continue
 					end
 
@@ -809,16 +1000,83 @@ local function tick_dispatch(map_data, mod_settings)
 			create_delivery(map_data, r_station_id, p_station_id, best_train_id, manifest, best_surface_connections)
 			return false
 		else
+			-- Record failed dispatch for analytics
+			local wait_so_far = 0
+			if r_station.request_start_ticks and r_station.request_start_ticks[item_hash] then
+				wait_so_far = (game.tick - r_station.request_start_ticks[item_hash]) / 60
+			end
+			local closest_p_id = closest_to_correct_p_station and closest_to_correct_p_station.entity_stop.unit_number
 			if closest_to_correct_p_station then
+				local closest_id = closest_p_id
 				if correctness == 1 then
-					send_alert_missing_train(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
+					-- B3: "missing train" only when the network has none available; otherwise they were filtered.
+					note_no_train_alert(alert_dedupe(map_data), item_network_name,
+						trains and DIAG_ALERT_TRAINS_FILTERED or DIAG_ALERT_MISSING_TRAIN, r_station_id, closest_id,
+						wait_so_far)
 				elseif correctness == 2 then
-					send_alert_no_train_has_capacity(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
+					requester_alert(d, DIAG_ALERT_NO_TRAIN_HAS_CAPACITY,
+						r_station, closest_to_correct_p_station, r_station_id, closest_id)
 				elseif correctness == 3 then
-					send_alert_no_train_matches_r_layout(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
+					requester_alert(d, DIAG_ALERT_NO_TRAIN_MATCHES_R_LAYOUT,
+						r_station, closest_to_correct_p_station, r_station_id, closest_id)
 				elseif correctness == 4 then
-					send_alert_no_train_matches_p_layout(r_station.entity_stop, closest_to_correct_p_station.entity_stop)
+					requester_alert(d, DIAG_ALERT_NO_TRAIN_MATCHES_P_LAYOUT,
+						r_station, closest_to_correct_p_station, r_station_id, closest_id)
 				end
+			end
+			-- The train-side reason is the furthest train check any train passed; correctness 0 means no provider got as
+			-- far as the train checks, and only the diagnostics' site counters know which provider check stopped it.
+			local failure_reason, reason
+			local a, b, lost_to = 0, 0, nil
+			local p_station_id = closest_p_id
+			if correctness == 0 then
+				failure_reason = FAILURE_REASON_NO_PROVIDER_STOCK
+				if d then
+					if rej_site > 0 then
+						reason, a, b, p_station_id = REJ_REASON[rej_site], rej_a, rej_b, rej_p
+					elseif lock_r then
+						-- Every provider left was locked by an earlier requester of this call. The latest lock is tested
+						-- against this requester's own mask and threshold: only a provider that would have served it was
+						-- lost to the other requester. The surface route is not re-tested.
+						local p_flag = get_network_mask(lock_stop, network_name)
+						local r_flag = get_network_mask(r_stop, network_name)
+						local threshold = (lock_override and lock_override <= r_threshold) and lock_override or r_threshold
+						p_station_id = lock_p
+						if band(p_flag, r_flag) == 0 then
+							reason, a, b = REASON_MASK_MISMATCH, r_flag, p_flag
+						elseif lock_count < threshold then
+							reason, a, b = REASON_P_BELOW_THRESHOLD, lock_count, threshold
+						else
+							reason, a, b, lost_to = REASON_P_RESERVED, lock_count, threshold, lock_r
+						end
+					else
+						reason = REASON_NO_PROVIDER
+					end
+				end
+			elseif not trains then
+				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_NO_TRAINS_ON_NETWORK
+			elseif correctness == 1 then
+				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_TRAIN_FILTERED
+			elseif correctness == 2 then
+				failure_reason, reason = FAILURE_REASON_TRAIN_CAPACITY, REASON_CAPACITY
+			elseif correctness == 3 then
+				failure_reason, reason = FAILURE_REASON_LAYOUT_MISMATCH, REASON_R_LAYOUT
+			elseif correctness == 4 then
+				failure_reason, reason = FAILURE_REASON_LAYOUT_MISMATCH, REASON_P_LAYOUT
+			else
+				-- B3: every usable train is inside an interrupt, which is not a layout mismatch.
+				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_ALL_IN_INTERRUPT
+			end
+			analytics.record_failed_dispatch(map_data, r_station_id, item_hash, failure_reason, wait_so_far, closest_p_id, reason)
+			if d then
+				if reason == REASON_NO_TRAINS_ON_NETWORK then
+					b = diag.fleet_size(d, network_name)
+				elseif reason == REASON_TRAIN_FILTERED then
+					a = diag_rej[REJ_T_MASK] + diag_rej[REJ_T_MANUAL] + diag_rej[REJ_T_SURFACE]
+				elseif reason == REASON_CAPACITY then
+					a, b = cap_need, max(cap_max, 0)
+				end
+				diag_fail(d, r_station_id, item_hash, reason, a, b, p_station_id, diag_rej, lost_to)
 			end
 			if band(r_station.display_state, 2) == 0 then
 				r_station.display_state = r_station.display_state + 2
@@ -833,6 +1091,7 @@ end
 ---@param mod_settings CybersynModSettings
 local function tick_poll_station(map_data, mod_settings)
 	local tick_data = map_data.tick_data
+	local d = map_data.diag
 	local all_r_stops = map_data.economy.all_r_stops
 	local all_p_stops = map_data.economy.all_p_stops
 	local all_names = map_data.economy.all_names
@@ -859,7 +1118,12 @@ local function tick_poll_station(map_data, mod_settings)
 		end
 	end
 	if station.entity_stop.valid and station.entity_comb1.valid and (not station.entity_comb2 or station.entity_comb2.valid) then
+		local old_limit = station.trains_limit
 		station.trains_limit = station.entity_stop.trains_limit
+		-- math.huge is the placeholder a station has until its first poll.
+		if d and old_limit ~= station.trains_limit and old_limit ~= INF then
+			diag.station_limit(d, station_id, old_limit, station.trains_limit)
+		end
 	else
 		on_station_broken(map_data, station_id, station)
 		return false
@@ -880,9 +1144,10 @@ local function tick_poll_station(map_data, mod_settings)
 	else
 		station.network_mask = mod_settings.network_mask
 	end
-	local comb1_signals, comb2_signals, secondary_inv_signals = get_signals(station)
-	-- station.tick_signals = comb1_signals
-	-- station.tick_secondary_signals = secondary_inv_signals
+	local comb1_signals, comb2_signals, secondary_inv_signals, comb1_working = get_signals(station)
+	if d and (d.unpowered[station_id] == true) == comb1_working then
+		diag.station_power(d, station_id, comb1_working)
+	end
 	station.stops = {}
 
 	local is_requesting_nothing = true
@@ -950,7 +1215,12 @@ local function tick_poll_station(map_data, mod_settings)
 				comb1_signals[k] = nil
 			end
 		end
-		
+
+		-- Hashes an inventory combinator requests this poll. The station combinator's pass below and the cleanup after it
+		-- must not clear their waits; nil at a station without inventory requests, so those poll exactly as before.
+		---@type {[string]: true}?
+		local inv_requested = nil
+
 		-- Process secondary inventory combinator signals
 		if secondary_inv_signals then
 			for unit_number, signals in pairs(secondary_inv_signals) do
@@ -974,7 +1244,7 @@ local function tick_poll_station(map_data, mod_settings)
 						local item_name = v.signal.name
 						local item_count = v.count
 						local item_type = v.signal.type or "item"
-						
+
 						if item_name then
 							if item_type == "virtual" then
 								if item_name == SIGNAL_PRIORITY then
@@ -988,16 +1258,16 @@ local function tick_poll_station(map_data, mod_settings)
 								elseif is_each then
 									stop.network_mask[item_name] = item_count
 								end
-								
+
 								-- Remove control signals from processing later
 								signals[k] = nil
 							end
-							
+
 							if item_name == stop.network_name then
 								stop.network_mask = item_count
 								signals[k] = nil
 							end
-							
+
 							-- Filter out non-item, non-fluid signals
 							if item_type ~= "item" and item_type ~= "fluid" then
 								signals[k] = nil
@@ -1006,7 +1276,7 @@ local function tick_poll_station(map_data, mod_settings)
 							signals[k] = nil
 						end
 					end
-					
+
 					-- Process the remaining signals (items/fluids)
 					for k, v in pairs(signals) do
 						local item_name = v.signal.name
@@ -1015,22 +1285,26 @@ local function tick_poll_station(map_data, mod_settings)
 						local item_count = v.count
 						local effective_adjustment = station.enable_manual_inventory and 0 or (station.deliveries[item_hash] or 0)
 						local effective_item_count = item_count + effective_adjustment
-						
+
 						-- Secondary inventory uses parent station's is_r/is_p settings
 						-- For secondary inventory mode, negative signals are requests, positive are provides
 						local is_not_requesting = true
 						if station.is_r and item_count < 0 then
-							local r_threshold = station.item_thresholds and station.item_thresholds[item_hash] or 
+							local r_threshold = station.item_thresholds and station.item_thresholds[item_hash] or
 								item_type == "fluid" and stop.r_fluid_threshold or stop.r_threshold
-								
+
 							if station.is_stack and item_type == "item" then
 								r_threshold = r_threshold * get_stack_size(map_data, item_name)
 							end
-							
+
 							if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 								is_not_requesting = false
 								is_requesting_nothing = false
-								
+
+								if not inv_requested then inv_requested = {} end
+								inv_requested[item_hash] = true
+								track_request_start(station, item_hash)
+
 								-- Register this stop in the appropriate networks
 								local f, a
 								if stop.network_name == NETWORK_EACH then
@@ -1038,7 +1312,7 @@ local function tick_poll_station(map_data, mod_settings)
 								else
 									f, a = once, stop.network_name
 								end
-								
+
 								for network_name, _ in f, a do
 									local item_network_name = create_item_network_name(network_name, item_hash)
 									local stops = all_r_stops[item_network_name]
@@ -1052,7 +1326,7 @@ local function tick_poll_station(map_data, mod_settings)
 								end
 							end
 						end
-						
+
 						if is_not_requesting and station.is_p and item_count > 0 then
 							-- If item count is positive and station is a provider, it provides
 							local f, a
@@ -1061,7 +1335,7 @@ local function tick_poll_station(map_data, mod_settings)
 							else
 								f, a = once, stop.network_name
 							end
-							
+
 							for network_name, _ in f, a do
 								local item_network_name = create_item_network_name(network_name, item_hash)
 								local stops = all_p_stops[item_network_name]
@@ -1077,7 +1351,7 @@ local function tick_poll_station(map_data, mod_settings)
 				end
 			end
 		end
-		
+
 		---@type StopInfo
 		local stop = {
 			station_id = station_id,
@@ -1114,10 +1388,10 @@ local function tick_poll_station(map_data, mod_settings)
 				if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 					is_not_requesting = false
 					is_requesting_nothing = false
-					
+
 					-- Track when this item request started
 					track_request_start(station, item_hash)
-					
+
 					local f, a
 					if station.network_name == NETWORK_EACH then
 						f, a = pairs(station.network_mask --[[@as {[string]: int}]])
@@ -1136,7 +1410,7 @@ local function tick_poll_station(map_data, mod_settings)
 						end
 						stops[#stops + 1] = stop
 					end
-				else
+				elseif not (inv_requested and inv_requested[item_hash]) then
 					-- Request no longer needed, clear the tracking
 					clear_request_tracking(station, item_hash)
 				end
@@ -1165,10 +1439,10 @@ local function tick_poll_station(map_data, mod_settings)
 				end
 			end
 		end
-		
+
 		-- Clean up request_start_ticks for items no longer being requested
-		if mod_settings.track_request_wait_times and station.request_start_ticks and next(station.request_start_ticks) then
-			local requested_items = {}
+		if station.request_start_ticks and next(station.request_start_ticks) then
+			local requested_items = inv_requested or {}
 			-- Build set of currently requested items
 			for k, v in pairs(comb1_signals) do
 				if v.count < 0 then  -- Negative means requesting
@@ -1176,14 +1450,14 @@ local function tick_poll_station(map_data, mod_settings)
 					requested_items[item_hash] = true
 				end
 			end
-			
+
 			-- Remove tracking for items no longer requested
 			for item_hash, _ in pairs(station.request_start_ticks) do
 				if not requested_items[item_hash] then
 					clear_request_tracking(station, item_hash)
 				end
 			end
-			
+
 			-- If no items are being requested, clear all tracking
 			if not next(requested_items) then
 				clear_all_request_tracking(station)
@@ -1276,6 +1550,7 @@ function tick_init(map_data, mod_settings)
 	map_data.economy.all_p_stops = {}
 	map_data.economy.all_r_stops = {}
 	map_data.economy.all_names = {}
+	local d = map_data.diag
 
 	for id, cycles in pairs(map_data.warmup_station_cycles) do
 		local station = map_data.stations[id]
@@ -1290,6 +1565,7 @@ function tick_init(map_data, mod_settings)
 					station.is_warming_up = nil
 					map_data.active_station_ids[#map_data.active_station_ids + 1] = id
 					map_data.warmup_station_cycles[id] = nil
+					if d then diag.station_warmup_done(d, id) end
 					if station.entity_stop.valid and station.entity_comb1.valid then
 						combinator_update(map_data, station.entity_comb1)
 					else
@@ -1326,6 +1602,9 @@ function tick_init(map_data, mod_settings)
 		map_data.queue_station_update = nil
 	end
 
+	flush_no_train_alerts(map_data, d)
+	stats.cycle_start(game.tick)
+	diag.cycle()
 	map_data.tick_state = STATE_POLL_STATIONS
 	interface_raise_tick_init()
 end
@@ -1352,9 +1631,12 @@ function tick(map_data, mod_settings)
 				if tick_poll_station(map_data, mod_settings) then break end
 			end
 		elseif map_data.tick_state == STATE_DISPATCH then
+			local calls = 0
 			for i = 1, mod_settings.update_rate do
+				calls = i
 				if tick_dispatch(map_data, mod_settings) then break end
 			end
+			stats.count_calls(calls)
 		end
 	else
 		map_data.tick_state = STATE_INIT

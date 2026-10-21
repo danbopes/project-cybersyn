@@ -129,14 +129,25 @@ end
 local function se_on_train_teleport_finished(event)
 	---@type MapData
 	local map_data = storage
-	---@type LuaTrain
+	---@type LuaTrain?
 	local train_entity = event.train
-	---@type uint
-	local new_id = train_entity.id
 
 	local old_id = event.old_train_id_1
 	local train = map_data.trains[old_id]
 	if not train then return end
+
+	-- If the train entity is nil (e.g. a modded carriage prototype was removed
+	-- between save and reload, splitting/destroying the train mid-teleport),
+	-- treat it as a total loss: abort any active delivery and clean up.
+	if not train_entity then
+		train.se_is_being_teleported = nil
+		game.print({"cybersyn-messages.train-lost-in-teleport"})
+		remove_train(map_data, old_id, train)
+		return
+	end
+
+	---@type uint
+	local new_id = train_entity.id
 
 	if train.is_available then
 		local f, a
@@ -163,7 +174,10 @@ local function se_on_train_teleport_finished(event)
 	train.entity = train_entity
 
 	if train.se_awaiting_removal then
-		remove_train(map_data, train.se_awaiting_removal, train)
+		train.se_awaiting_removal = nil
+		if map_data.trains[new_id] == train then
+			remove_train(map_data, new_id, train)
+		end
 		lock_train(train.entity)
 		send_alert_station_of_train_broken(map_data, train.entity)
 		return
@@ -238,6 +252,7 @@ local function se_create_closest_elevator_travel(elevators, from)
 		local dist = get_dist(from, stop)
 		if dist < closest then
 			elevator_stop = stop
+			closest = dist
 		end
 	end
 
@@ -312,7 +327,7 @@ function ElevatorTravel.se_set_manifest_schedule(
 	builder:add_loading_order(p_stop, manifest, p_schedule_settings)
 
 	builder:add_elevator_if_necessary(p_surface, r_surface, p_stop)
-	builder:add_unloading_order(r_stop, manifest, r_schedule_settings)
+	builder:add_unloading_order(r_stop, r_schedule_settings)
 
 	builder:add_elevator_if_necessary(r_surface, d_surface, r_stop)
 	-- there must be at least one surface travel, no need to deal with require_same_depot here

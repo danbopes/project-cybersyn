@@ -2,6 +2,7 @@
 local flib_migration = require("__flib__.migration")
 local manager_gui = require("gui.main")
 local debug_revision = require("info")
+local analytics = require("scripts.analytics")
 local check_debug_revision
 
 local migrations_table = {
@@ -370,15 +371,8 @@ local migrations_table = {
 			::next_train::
 		end
 	end,
-	["2.0.28"] = function()
+	["2.0.27"] = function()
 		local map_data = storage --[[@as MapData]]
-
-		-- Reset the economy data
-		storage.economy = {
-			all_r_stops = {},
-			all_p_stops = {},
-			all_names = {},
-		}
 
 		get_or_create(map_data, "se_elevators")
 		get_or_create(map_data, "connected_surfaces")
@@ -400,6 +394,14 @@ local migrations_table = {
 			if not station.request_start_ticks then
 				station.request_start_ticks = {}
 			end
+		end
+	end,
+	["2.0.38"] = function()
+		-- Initialize analytics for existing saves (only if enabled)
+		if analytics.is_enabled() then
+			---@type MapData
+			local map_data = storage
+			analytics.init(map_data)
 		end
 	end
 }
@@ -446,7 +448,16 @@ function sanitize_economy_names(config_change_data)
 	for train_id, train in pairs(map_data.trains) do
 		if train.manifest then
 			for _, entry in pairs(train.manifest) do
-				local new_name = migrations[entry.type][entry.name]
+				local type_migrations = migrations[entry.type]
+				if not type_migrations then
+					local msg = string.format(
+						"[Cybersyn] Economy sanitization: no migration data for prototype type '%s' (name: '%s')",
+						entry.type, entry.name
+					)
+					log(msg)
+					game.print(msg)
+				end
+				local new_name = type_migrations and type_migrations[entry.name]
 				local new_quality = entry.quality and migrations.quality[entry.quality]
 				if new_name == "" or new_quality == "" then
 					local msg = string.format("%s delivery aborted: %s/%s no longer exists", train_richtext(train.entity), entry.name, entry.quality or "normal")
@@ -482,6 +493,18 @@ function on_config_changed(config_change_data)
 
 	if config_change_data.migration_applied then
 		sanitize_economy_names(config_change_data)
+	end
+
+	-- Ensure analytics is initialized if enabled (in case migration didn't run)
+	if analytics.is_enabled() and not storage.analytics then
+		analytics.init(storage)
+	end
+
+	-- Ensure analytics surface is hidden from map view for all forces
+	if storage.analytics and storage.analytics.surface then
+		for _, force in pairs(game.forces) do
+			force.set_surface_hidden(storage.analytics.surface, true)
+		end
 	end
 
 	retrigger_train_calculation(false)
