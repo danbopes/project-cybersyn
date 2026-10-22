@@ -146,6 +146,9 @@ local steps = {
 		lab.check("D8-3: the All chip and the summary count stations (" .. stations .. ")",
 			d.counts.all == stations and d.stations_listed == stations, { all = d.counts.all, listed = d.stations_listed })
 		lab.check("the summary adds the rows", flat(d.summary):find("stations-summary-rows", 1, true) ~= nil, d.summary)
+		-- The plural reads the raw count: a formatted "2,054" left the engine's __plural_for_parameter__ text in the footer.
+		local rows_ls = flat(d.summary):match('"cybersyn%-gui%.stations%-summary%-rows", "[^"]*", "(%d+)"')
+		lab.check("the rows count pluralises on the plain number", rows_ls == tostring(expect), d.summary)
 
 		local at = positions(d, ctx.keys)
 		lab.check("a name sort keeps the station's rows together in index order",

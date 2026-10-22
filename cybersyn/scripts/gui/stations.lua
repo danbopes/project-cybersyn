@@ -2152,13 +2152,13 @@ function stations_tab.build(map_data, player_data)
 			local caption
 			if #registry > 0 then
 				caption = { "cybersyn-gui.stations-summary-registry", format.number(n_stations), format.number(counts.all),
-					format.number(#registry) }
+					format.number(#registry), tostring(#registry) }
 			else
 				caption = { "cybersyn-gui.stations-summary", format.number(n_stations), format.number(counts.all) }
 			end
 			-- D8-3: the counts are stations; a station with inventories lists a row per combinator.
 			if n_rows ~= n_stations then
-				caption = { "", caption, " · ", { "cybersyn-gui.stations-summary-rows", format.number(n_rows) } }
+				caption = { "", caption, " · ", { "cybersyn-gui.stations-summary-rows", format.number(n_rows), tostring(n_rows) } }
 			end
 			-- The Overview's Misconfigured number, under the same filters: the stations this view lists first.
 			if open then
