@@ -1127,7 +1127,8 @@ end
 --- @type {open: fun(player: LuaPlayer, player_data: PlayerData), close: fun(player: LuaPlayer, player_data: PlayerData)}?
 local window_fns
 
---- Lets manager.lua open the window (from a stop panel's click) without a require cycle.
+--- Lets manager.lua open the window (from a stop panel's click) and close it the way its close button does (a
+--- shift-click on a link, D8-9) without a require cycle.
 --- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData), close: fun(player: LuaPlayer, player_data: PlayerData)}
 function util.set_window_fns(fns)
 	window_fns = fns
@@ -1551,7 +1552,37 @@ function util.set_pin(fn)
 	pin_fn = fn
 end
 
---- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
+--- Whether a click came from inside the open manager window, not from a stop or train panel beside a game window.
+--- Synthetic events (the Log rows, the dev interface) carry a plain table for an element and come from the window.
+--- @param player_data PlayerData
+--- @param element LuaGuiElement|table?
+--- @return boolean
+local function in_manager(player_data, element)
+	if not player_data.is_manager_open then return false end
+	if not (element and element.object_name == "LuaGuiElement") then return true end
+	local window = player_data.refs and player_data.refs.manager_window
+	if not (window and window.valid) then return false end
+	local index = window.index
+	while element do
+		if element.index == index then return true end
+		element = element.parent
+	end
+	return false
+end
+
+--- Shift-click on a link inside the window (D8-9): the map view replaces the window, pinned or not, instead of the
+--- window holding over the map with Back. From a panel the window is not involved and stays as it is.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param e EventData.on_gui_click
+--- @param target LuaEntity
+--- @param follow LuaEntity?
+local function show_from_link(player, player_data, e, target, follow)
+	if window_fns and in_manager(player_data, e.element) then window_fns.close(player, player_data) end
+	util.show_on_map(player, player_data, target, follow)
+end
+
+--- Every link cell's click: left = open, shift = show on map (closing the window, D8-9), control = combinator, alt = control combinator,
 --- control + shift = a map pin, right on an item = clear the item filter. Train and stop links take no right-click.
 --- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
 --- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it. The
@@ -1583,7 +1614,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		local locomotive = main_locomotive(entity)
 		if e.shift then
 			local front = entity.front_stock
-			if front then util.show_on_map(player, player_data, front, front) end
+			if front then show_from_link(player, player_data, e, front, front) end
 			return
 		end
 		if not (locomotive and locomotive.valid) then
@@ -1598,7 +1629,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		if not (entity and entity.valid) then
 			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 		elseif e.shift then
-			util.show_on_map(player, player_data, entity)
+			show_from_link(player, player_data, e, entity)
 		else
 			util.open_entity(player, player_data, entity)
 		end
@@ -1618,7 +1649,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		return
 	end
 	if e.shift then
-		util.show_on_map(player, player_data, stop)
+		show_from_link(player, player_data, e, stop)
 	elseif e.control then
 		local comb = kind == "station" and record.entity_comb1 or record.entity_comb
 		if comb and comb.valid then

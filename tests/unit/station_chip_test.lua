@@ -1,5 +1,5 @@
--- PLAN8 D8-7 (the station chip: filter field, predicates, stop panel slot clicks) and D8-8 (the drill-down's
--- empty-text suffix).
+-- PLAN8 D8-7 (the station chip: filter field, predicates, stop panel slot clicks), D8-8 (the drill-down's empty-text
+-- suffix) and D8-9 (a shift-click inside the window closes it; from a panel it does not).
 
 local H = require("harness")
 
@@ -163,6 +163,57 @@ test("a slot without a station leaves the chip alone; right-click clears only th
 	slot_click(u, player, pd, {})
 	assert_eq(pd.search_station, 12)
 	assert_eq(calls, { "drill:iron-plate" })
+end)
+
+-- ---------------------------------------------------------------- D8-9
+
+local function shift_setup(open)
+	local u, pd, calls, player = click_setup(open)
+	-- LuaGuiElement.index is unique per player; the fake's top-level elements have none of their own.
+	local window = H.element({ name = "manager_window", index = 70 })
+	pd.refs.manager_window = window
+	local shown = {}
+	u.show_on_map = function(_, _, target) shown[#shown + 1] = target end
+	storage.stations = { [12] = { entity_stop = { valid = true, name = "train-stop", unit_number = 12 } } }
+	return u, pd, calls, player, window, shown
+end
+
+local function shift_click(u, player, pd, element)
+	element.tags = { kind = "station", id = 12 }
+	u.handle_link_click(player, pd, { element = element, button = defines.mouse_button_type.left, shift = true })
+end
+
+test("shift-click on a link inside the window shows the stop and closes the window", function()
+	local u, pd, calls, player, window, shown = shift_setup(true)
+	local cell = window.add({ type = "flow" }).add({ type = "button" })
+	cell.object_name = "LuaGuiElement"
+	shift_click(u, player, pd, cell)
+	assert_eq(calls, { "close-window" })
+	assert_eq(#shown, 1)
+end)
+
+test("shift-click on a stop panel's link leaves the window alone", function()
+	local u, pd, calls, player, _, shown = shift_setup(true)
+	local panel = H.element({ name = "cybersyn_relative", index = 71 })
+	local cell = panel.add({ type = "button" })
+	cell.object_name = "LuaGuiElement"
+	shift_click(u, player, pd, cell)
+	assert_eq(calls, {})
+	assert_eq(#shown, 1)
+end)
+
+test("a synthetic click (Log row, dev interface) counts as inside the window", function()
+	local u, pd, calls, player, _, shown = shift_setup(true)
+	shift_click(u, player, pd, {})
+	assert_eq(calls, { "close-window" })
+	assert_eq(#shown, 1)
+end)
+
+test("shift-click with the window closed only shows", function()
+	local u, pd, calls, player, _, shown = shift_setup(false)
+	shift_click(u, player, pd, {})
+	assert_eq(calls, {})
+	assert_eq(#shown, 1)
 end)
 
 -- ---------------------------------------------------------------- Log
