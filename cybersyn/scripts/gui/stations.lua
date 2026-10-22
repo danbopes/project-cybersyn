@@ -470,12 +470,16 @@ local NO_KEYS = {}
 --- @param key_fn function
 --- @param ctx table
 --- @return boolean moved a key was added, dropped or got another sort key
+--- @return boolean relisted a key was added or dropped, or a key's row record was replaced
 local function refill_rows(cache, id, st, f, key_fn, ctx)
 	local keys, rec, index, changed, rows_of = cache.keys, cache.rec, cache.index, cache.changed, cache.rows_of
 	local old = rows_of[id] or NO_KEYS
-	local moved = false
+	local moved, relisted = false, false
 	local rows = st and collector.inventories(st) or NO_KEYS
 	local row_passes = util.row_passes
+	-- A station seen for the first time (every station of a rebuild) builds its list in this one walk.
+	local fresh = #old == 0
+	local new
 	-- Most refills list the same keys again: the old list is kept then, so a pass allocates nothing per station.
 	local n, same = 0, true
 	for _, row in ipairs(rows) do
@@ -483,7 +487,12 @@ local function refill_rows(cache, id, st, f, key_fn, ctx)
 			n = n + 1
 			local rk = row.key
 			if old[n] ~= rk then same = false end
+			if fresh then
+				new = new or {}
+				new[n] = rk
+			end
 			local key = key_fn(row, ctx)
+			if rec[rk] ~= row then relisted = true end
 			if rec[rk] ~= row or keys[rk] ~= key or index[rk] ~= row.index then
 				rec[rk], keys[rk], index[rk] = row, key, row.index
 				changed[rk] = true
@@ -491,8 +500,12 @@ local function refill_rows(cache, id, st, f, key_fn, ctx)
 			end
 		end
 	end
-	if same and n == #old then return moved end
-	local new = n > 0 and {} or nil
+	if same and n == #old then return moved, relisted end
+	if fresh then
+		rows_of[id] = new
+		return true, true
+	end
+	new = n > 0 and {} or nil
 	local listed = {}
 	n = 0
 	for _, row in ipairs(rows) do
@@ -509,7 +522,7 @@ local function refill_rows(cache, id, st, f, key_fn, ctx)
 		end
 	end
 	rows_of[id] = new
-	return true
+	return true, true
 end
 
 --- Rescans every snapshot station into a fresh per-player query cache.
@@ -589,11 +602,12 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 		local name_key = new and natural(st.name_lower) or nil
 		local renamed = cache.nat[id] ~= name_key
 		if renamed then cache.nat[id] = name_key end
-		if refill_rows(cache, id, new and st or nil, f, key_fn, ctx) then
-			cache.dirty = true
-			-- The row list follows the keys a station lists, not only its status.
-			cache.version = (cache.version or 0) + 1
-		end
+		local moved, relisted = refill_rows(cache, id, new and st or nil, f, key_fn, ctx)
+		if moved then cache.dirty = true end
+		-- The row list follows the keys a station lists and the records it holds, not only the statuses. A sort key
+		-- that moved waits for the re-sort, so it does not rebuild the list (2,000+ rows on pY) on every render of a
+		-- pass under a count sort.
+		if relisted then cache.version = (cache.version or 0) + 1 end
 		if renamed then
 			cache.dirty = true
 			for _, rk in ipairs(cache.rows_of[id] or NO_KEYS) do cache.changed[rk] = true end
