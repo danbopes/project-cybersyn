@@ -217,8 +217,8 @@ local function search_for_station_combinators(map_data, stop, comb_operation, co
 	local found = {}
 	for _, entity in pairs(entities) do
 		if entity.valid and entity ~= comb_forbidden and map_data.to_stop[entity.unit_number] == stop then
-			local param = get_comb_params(entity)
-			if param.operation == comb_operation then
+			local op = get_comb_params(entity).operation
+			if op == comb_operation or (is_secondary_inventory_op(comb_operation) and is_secondary_inventory_op(op)) then
 				if not all then
 					return entity
 				end
@@ -251,6 +251,11 @@ function combinator_build_init(map_data, comb, tags)
 		if (params.second_constant or 0) == 0 then
 			params.second_constant = COMBINATOR_DEFAULT_SECOND_CONSTANT
 		end
+		control.parameters = params
+	elseif op == MODE_SECONDARY_INVENTORY_FAILED then
+		-- A red I copied by blueprint or clone is a new combinator: it starts cyan, as a copied red S starts as "/".
+		op = MODE_SECONDARY_INVENTORY
+		params.operation = op
 		control.parameters = params
 	elseif op ~= MODE_PRIMARY_IO and op ~= MODE_SECONDARY_IO and op ~= MODE_SECONDARY_INVENTORY and op ~= MODE_DEPOT and op ~= MODE_REFUELER and op ~= MODE_WAGON then
 		op = MODE_PRIMARY_IO
@@ -361,12 +366,13 @@ local function on_combinator_built(map_data, comb, tags)
 				station.entity_comb2 = comb
 				queue_station_for_combinator_update(map_data, id)
 			end
-		elseif op == MODE_SECONDARY_INVENTORY then
+		elseif is_secondary_inventory_op(op) then
 			if station then
 				if not station.secondary_inv_combs then
 					station.secondary_inv_combs = {}
 				end
-				station.secondary_inv_combs[comb.unit_number] = comb
+				station.secondary_inv_combs[unit_number] = comb
+				update_inv_display(map_data, station, unit_number)
 				queue_station_for_combinator_update(map_data, id)
 			end
 		elseif op == MODE_PRIMARY_IO then
@@ -485,6 +491,11 @@ function on_combinator_broken(map_data, comb, skip_gui_events)
 	elseif type == 5 then
 		local station = entity --[[@as Station]]
 		station.secondary_inv_combs[comb_id] = nil
+		local failed = station.inv_failed
+		if failed then
+			failed[comb_id] = nil
+			if not next(failed) then station.inv_failed = nil end
+		end
 		queue_station_for_combinator_update(map_data, id)
 	end
 
@@ -558,6 +569,19 @@ function combinator_update(map_data, comb, reset_display)
 		if set_control_params then
 			control.parameters = params
 		end
+	elseif is_secondary_inventory_op(op) then
+		-- The same for an inventory combinator's I. A red I is also checked outside the poll, so a settings change
+		-- from the combinator's window keeps it lit, and one pasted onto a combinator that has not failed goes out.
+		if reset_display or op == MODE_SECONDARY_INVENTORY_FAILED then
+			type, id, entity = comb_to_internal_entity(map_data, comb, unit_number)
+			local failed = type == 5 and (entity --[[@as Station]]).inv_failed
+			local shown = failed and failed[unit_number] and MODE_SECONDARY_INVENTORY_FAILED or MODE_SECONDARY_INVENTORY
+			if shown ~= op then
+				params.operation = shown
+				control.parameters = params
+			end
+		end
+		params.operation = MODE_SECONDARY_INVENTORY
 	end
 
 	if old_params ~= nil and params.operation ~= old_params.operation then
@@ -666,7 +690,7 @@ function on_stop_built_or_updated(map_data, stop, comb_forbidden)
 					comb1 = entity
 				elseif op == MODE_SECONDARY_IO then
 					comb2 = entity
-				elseif op == MODE_SECONDARY_INVENTORY then
+				elseif is_secondary_inventory_op(op) then
 					secondary_inv_combs[entity.unit_number] = entity
 				elseif op == MODE_DEPOT then
 					depot_comb = entity

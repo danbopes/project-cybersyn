@@ -105,7 +105,7 @@ function fork_migrations.rekey_secondary_inv_combs()
 		for key, comb in pairs(old) do
 			if not (comb and comb.valid) then
 				counts.invalid = counts.invalid + 1
-			elseif comb.get_or_create_control_behavior().parameters.operation ~= MODE_SECONDARY_INVENTORY then
+			elseif not is_secondary_inventory_op(comb.get_or_create_control_behavior().parameters.operation) then
 				counts.wrong_mode = counts.wrong_mode + 1
 			else
 				local unit = comb.unit_number
@@ -124,7 +124,7 @@ function fork_migrations.rekey_secondary_inv_combs()
 			for _, comb in pairs(found) do
 				local unit = comb.unit_number
 				if comb.valid and not combs[unit] and to_stop[unit] == stop
-					and comb.get_or_create_control_behavior().parameters.operation == MODE_SECONDARY_INVENTORY then
+					and is_secondary_inventory_op(comb.get_or_create_control_behavior().parameters.operation) then
 					combs[unit] = comb
 					counts.added = counts.added + 1
 				end
