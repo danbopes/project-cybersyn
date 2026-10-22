@@ -391,11 +391,23 @@ end
 --- A network as rich text: its icon (its name when no prototype has it).
 --- @param name string
 --- @return string
+-- Prototypes do not change while the game runs, and network_sig signs every visible row on every render: each
+-- prototypes.* lookup creates a wrapper object, so a name is looked up once.
+local network_icons = {}
 local function network_icon(name)
-	if prototypes.virtual_signal[name] then return "[virtual-signal=" .. name .. "]" end
-	if prototypes.item[name] then return "[item=" .. name .. "]" end
-	if prototypes.fluid[name] then return "[fluid=" .. name .. "]" end
-	return name .. " "
+	local icon = network_icons[name]
+	if icon then return icon end
+	if prototypes.virtual_signal[name] then
+		icon = "[virtual-signal=" .. name .. "]"
+	elseif prototypes.item[name] then
+		icon = "[item=" .. name .. "]"
+	elseif prototypes.fluid[name] then
+		icon = "[fluid=" .. name .. "]"
+	else
+		icon = name .. " "
+	end
+	network_icons[name] = icon
+	return icon
 end
 
 --- An inventory row's network as the Stations tab's Network cell shows it: icon and mask ("[A]2"), or for an

@@ -494,25 +494,34 @@ function analytics.get_active_failures(map_data, oldest_tick)
 	return results
 end
 
+-- Scratch counts by layout id, empty between calls, and the series name of each layout id: a sample runs every
+-- SAMPLE_TICKS over every train, and only the sample itself is kept (by the chart).
+local sample_working, sample_total, layout_keys = {}, {}, {}
+
 ---One utilization sample: per train layout (keyed by its id as a string, the chart's series name), the share of its
 ---trains on a delivery now, in percent.
 ---@param trains {[uint]: Train}
 ---@return {[string]: number}
 function analytics.utilization_sample(trains)
-	local working, total = {}, {}
+	local working, total = sample_working, sample_total
 	for _, train in pairs(trains) do
 		local layout_id = train.layout_id
 		if layout_id then
-			local key = tostring(layout_id)
-			total[key] = (total[key] or 0) + 1
+			total[layout_id] = (total[layout_id] or 0) + 1
 			if STATUS_ON_DELIVERY[train.status] then
-				working[key] = (working[key] or 0) + 1
+				working[layout_id] = (working[layout_id] or 0) + 1
 			end
 		end
 	end
 	local sample = {}
-	for key, n in pairs(total) do
-		sample[key] = (working[key] or 0) / n * 100
+	for layout_id, n in pairs(total) do
+		local key = layout_keys[layout_id]
+		if not key then
+			key = tostring(layout_id)
+			layout_keys[layout_id] = key
+		end
+		sample[key] = (working[layout_id] or 0) / n * 100
+		total[layout_id], working[layout_id] = nil, nil
 	end
 	return sample
 end

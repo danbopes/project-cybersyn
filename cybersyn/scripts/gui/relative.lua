@@ -349,6 +349,7 @@ end
 --- @field cursor DiagScanCursor?
 --- @field fleet {key: string, ids: uint[], i: int, counts: {[string]: RelativeFleetCount}, done_tick: uint?}?
 --- @field schedule {records: table[], tick: uint}?
+--- @field slots_last {r: string, d: string, sig: string}? the parts of the slots signature last built
 
 local function new_state(kind, id)
 	return { kind = kind, id = id, sigs = {}, ages = {}, rebuilds = 0, refreshes = 0, starved = {} }
@@ -1125,7 +1126,14 @@ local function render_slots(state, body, m)
 	-- read, so it keys the cached signature too.
 	local snap = collector.live()
 	local starved = m.source == "live" and state.starved or (snap and snap.starved) or nil
-	local sig = record_sig(state, "slots", st, slots_content, starved) .. "|" .. display_sig(st, s_colour, inv_failed)
+	local rsig = record_sig(state, "slots", st, slots_content, starved)
+	local dsig = display_sig(st, s_colour, inv_failed)
+	-- The rows part can be several KB on a big requester and is the same cached string between reads: comparing the
+	-- parts skips a concatenation (a fresh long string) on every refresh.
+	local last = state.slots_last
+	if last and last.r == rsig and last.d == dsig and state.sigs["slots"] == last.sig then return end
+	local sig = rsig .. "|" .. dsig
+	state.slots_last = { r = rsig, d = dsig, sig = sig }
 	if state.sigs["slots"] ~= sig then
 		section(state, body, "slots", sig, function() return slots_defs(st, { s = s_colour, inv_failed = inv_failed }) end)
 	end
