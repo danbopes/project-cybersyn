@@ -216,6 +216,54 @@ function analytics.render_graph(map_data, intervals, interval_index, options)
 	return charts.render_time_series(map_data.analytics.surface, intervals, interval_index, options)
 end
 
+---Draws one Utilization interval as a factorio-charts interactive line graph kept on the interval (interval.chart),
+---so the crosshair can find the drawing. `id` must be the same on every peer and across save/load: the hover buttons
+---carry it and the library's registry is rebuilt from storage in on_load.
+---@param map_data MapData
+---@param interval table one interval of map_data.analytics.train_utilization
+---@param id string
+---@param options table line graph options (selected_series, y_range, label_format, x_axis, camera_zoom, viewport_*)
+---@param callbacks table? {format_tooltip, on_cell_hover, on_cell_leave} registered with the state
+---@return table? state
+function analytics.render_chart(map_data, interval, id, options, callbacks)
+	local chunk = interval.chunk
+	if not chunk then return nil end
+	-- Lines drawn by the time_series path of earlier builds are not the state's and would stay until their ttl ran out.
+	if interval.line_ids and interval.line_ids[1] then
+		charts.destroy_render_objects(interval.line_ids)
+		interval.line_ids = {}
+	end
+	local opts = { id = id, data = interval.data, index = interval.index, length = interval.length,
+		counts = interval.counts, sum = interval.sum, ttl = math.max(interval.ticks * 2, 360) }
+	for k, v in pairs(options) do opts[k] = v end
+	if type(opts.x_axis) == "table" and not opts.x_axis.ticks_per_point then
+		local x_axis = { ticks_per_point = interval.ticks }
+		for k, v in pairs(opts.x_axis) do x_axis[k] = v end
+		opts.x_axis = x_axis
+	end
+	local state = interval.chart
+	if state and (state.chunk ~= chunk or state.id ~= id) then
+		charts.interactive.destroy(state)
+		state = nil
+	end
+	if state then
+		charts.interactive.update_line_graph(state, opts)
+	else
+		state = charts.interactive.create_line_graph(map_data.analytics.surface, chunk, opts)
+		interval.chart = state
+	end
+	charts.interactive.register(state, callbacks)
+	return state
+end
+
+---Removes an interval's interactive chart (lines, every crosshair and its registry entry).
+---@param interval table
+function analytics.destroy_chart(interval)
+	local state = interval.chart
+	if state and charts then charts.interactive.destroy(state) end
+	interval.chart = nil
+end
+
 ---Gives every chart chunk the save holds the factorio-charts 1.3.0 background (black, no lights): chunks allocated
 ---by an older library keep their lit lab tiles otherwise. Idempotent, so on_configuration_changed may call it on
 ---every change.

@@ -3,6 +3,7 @@ local manager = require("gui.main")
 local manager_dev = require("scripts.gui.dev")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 local analytics = require("scripts.analytics")
+local utilization_tab = require("scripts.gui.utilization")
 local diag = require("scripts.diag")
 local fork_migrations = require("scripts.fork-migrations")
 local lint = require("scripts.lint")
@@ -1089,12 +1090,15 @@ local function main()
 	script.on_load(function()
 		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
+		utilization_tab.on_load()
 	end)
 
 	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
 	local flib_gui = require("__flib__.gui")
 	local manager_util = require("scripts.gui.util")
-	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, flib_gui.dispatch)
+	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, function(e)
+		if not utilization_tab.forward_hover(e) then flib_gui.dispatch(e) end
+	end)
 	script.on_event({
 		defines.events.on_gui_elem_changed,
 		defines.events.on_gui_selected_tab_changed,
