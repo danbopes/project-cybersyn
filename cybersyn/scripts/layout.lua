@@ -778,13 +778,13 @@ function update_stop_from_rail(map_data, rail, forbidden_entity, force)
 	end
 end
 
----@param map_data MapData
----@param pump LuaEntity
----@param forbidden_entity LuaEntity?
 local function pump_rail_target(pump)
 	return pump.pump_input_rail_targets[1] or pump.pump_output_rail_targets[1]
 end
 
+---@param map_data MapData
+---@param pump LuaEntity
+---@param forbidden_entity LuaEntity?
 function update_stop_from_pump(map_data, pump, forbidden_entity)
 	local rail = pump_rail_target(pump)
 	if rail then

@@ -29,8 +29,8 @@ local LEGEND_WIDTH = 150
 local GRAPH_CHROME = 104
 local GRAPH_MIN_WIDTH, GRAPH_MIN_HEIGHT = 400, 300
 local UNSELECTED_COLOR = { r = 0.5, g = 0.5, b = 0.5 }
--- Time-ago labels under the plot. ticks_per_point is left out: time_series.render takes it from the interval shown,
--- so each range button's labels span exactly its caption.
+-- Time-ago labels under the plot. ticks_per_point is left out: analytics.render_chart fills it from the interval
+-- shown, so each range button's labels span exactly its caption.
 local X_AXIS = { format = "auto", labels = "auto" }
 local OVERLAY_STYLE = "cybersyn_chart_overlay_button"
 
@@ -416,9 +416,11 @@ function utilization_tab.cleanup(map_data, player_data)
 
 	-- The lines are every viewer's: only the last one to leave clears them. last_rendered_tick goes too, or a viewer
 	-- coming back within the same tick would get the library's same-tick cache and no lines.
-	if interval and interval.viewer_count <= 0 and interval.line_ids and charts then
-		charts.destroy_render_objects(interval.line_ids)
-		interval.line_ids = {}
+	if interval and interval.viewer_count <= 0 and charts then
+		if interval.line_ids then
+			charts.destroy_render_objects(interval.line_ids)
+			interval.line_ids = {}
+		end
 		interval.last_rendered_tick = nil
 		analytics.destroy_chart(interval)
 	end
