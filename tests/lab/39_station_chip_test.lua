@@ -119,6 +119,29 @@ lab.suite("39_station_chip", {
 			#want > 0 and serpent.line(got) == serpent.line(want), { got = got, want = want })
 		lab.check("Overview: the same model with the chip as without it", overview_model() == overview_before)
 
+		-- Inventory: the grids hold exactly the chip station's provided and active requested amounts. A station with
+		-- secondaries or sections is placed by a filter of its own, which must carry the chip too.
+		local st = snapshot().stations[s]
+		local oracle = { provided = {}, requested = {} }
+		for hash, count in pairs(st.provided) do oracle.provided[hash] = math.abs(count) end
+		for hash, req in pairs(st.requested) do
+			if req.active then oracle.requested[hash] = math.abs(req.count) end
+		end
+		dev("select_tab", PI, "inventory")
+		local sort = dev("dump", PI, "inventory").provided.column
+		dev("set_sort", PI, "inventory", "amount", true)
+		local d = dev("dump", PI, "inventory")
+		for _, grid in ipairs({ "provided", "requested" }) do
+			local got, ok, n_want = {}, true, lab.count(oracle[grid])
+			for i, hash in ipairs(d[grid].hashes) do
+				got[hash] = d[grid].keys[i]
+				if oracle[grid][hash] ~= d[grid].keys[i] then ok = false end
+			end
+			lab.check("Inventory " .. grid .. ": exactly the chip station's amounts (" .. n_want .. " items)",
+				ok and #d[grid].hashes == n_want, { got = got, want = oracle[grid] })
+		end
+		dev("set_sort", PI, "inventory", sort, true)
+
 		local chips = dev("chips", PI)
 		local caption_ok, tooltip_ok = true, true
 		for tab, c in pairs(chips) do
@@ -242,6 +265,13 @@ lab.suite("39_station_chip", {
 		local st1, item = dev("state", PI), dev("item_dump", PI)
 		lab.check("Requested slot: the window opens on the item's drill-down with the chip on the stop", st1.is_open
 			and st1.filters.station == s and item.open and item.hash == req, { r = r, state = st1.filters, item = item })
+		local only_s = #(item.row_keys and item.row_keys.requesters or {}) > 0
+		for _, t in ipairs({ "providers", "requesters" }) do
+			for _, key in ipairs(item.row_keys and item.row_keys[t] or {}) do
+				if key ~= tostring(s) and key:sub(1, #tostring(s) + 1) ~= s .. " " then only_s = false end
+			end
+		end
+		lab.check("Requested slot: the drill-down's rows are the chip station's only", only_s, item.row_keys)
 		dev("close_item", PI)
 		dev("close", PI)
 		dev("clear_filters", PI)
