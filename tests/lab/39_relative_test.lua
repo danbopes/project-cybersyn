@@ -90,6 +90,18 @@ local function stop_checks(label, id, want_p, want_r)
 		m.is_r == (st.is_r == true), { m.is_p, m.is_r })
 	lab.check(label .. ": network and mask as Cybersyn reads them", m.network_name == st.network_name and m.nets and
 		m.nets[1] and m.nets[1].mask == st.network_mask, { m.nets, st.network_name, st.network_mask })
+	if st.network_name then
+		-- PLAN8 D8-1: one Advertised block per combinator, headed by its letter; a save station has only its own.
+		local slots = serpent.line(d.sections.slots and d.sections.slots.content or {}, { comment = false })
+		local _, n_s = slots:gsub("S%[/color%] ", "")
+		local _, n_i = slots:gsub("I%[/color%] ", "")
+		local secs = 0
+		for _, c in pairs(st.secondary_inv_combs or {}) do
+			if c.valid then secs = secs + 1 end
+		end
+		lab.check(label .. ": one Advertised block per combinator (S once, I per inventory)", n_s == 1 and n_i <= secs
+			and slots:find('{"cybersyn-gui.source-station"}', 1, true) ~= nil, { s = n_s, i = n_i, inventories = secs })
+	end
 	lab.check(label .. ": occupancy pair = deliveries_total / trains_limit and the stop's trains_count",
 		m.deliveries == st.deliveries_total and m.limit == st.entity_stop.trains_limit and
 		m.trains_count == st.entity_stop.trains_count, { m.deliveries, m.limit, m.trains_count })
