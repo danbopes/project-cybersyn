@@ -2010,3 +2010,20 @@ test("source_label and (round-8 compat) station_has_sections on hand-built recor
 	assert_true(collector.station_has_sections({ sections = { {} }, sources = { station, { kind = "inventory", index = 1 } } }))
 	assert_false(collector.station_has_sections({}))
 end)
+
+test("inventory_fixtures: the hand-built rows are what collector.inventories builds from the same sources", function()
+	local IF = require("inventory_fixtures")
+	for _, st in ipairs({ IF.naphtha(1), IF.coal_both(2), IF.plain(3, "Plain", 2, { coal = 5 }, {}) }) do
+		local built = {}
+		for k, v in pairs(st) do
+			if k ~= "rows" then built[k] = v end
+		end
+		local rows = collector.inventories(built)
+		assert_eq(#rows, #st.rows, st.name)
+		for i, row in ipairs(rows) do
+			assert_eq(row_fields(row), row_fields(st.rows[i]), st.name .. " row " .. i)
+			assert_eq(row.label, st.rows[i].label)
+			assert_same(row.provided, st.rows[i].provided)
+		end
+	end
+end)

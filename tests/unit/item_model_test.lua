@@ -376,7 +376,7 @@ end)
 
 -- Round 7 (BRIEF-SECONDARY S4): one row per (station, section) for stations with secondary inventory combinators.
 
-local SF = require("section_fixtures")
+local SF = require("inventory_fixtures")
 
 local function sections_snapshot(list)
 	local stations = {}
