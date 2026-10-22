@@ -471,44 +471,45 @@ local NO_KEYS = {}
 --- @param ctx table
 --- @return boolean moved a key was added, dropped or got another sort key
 local function refill_rows(cache, id, st, f, key_fn, ctx)
-	local keys, rec, changed, rows_of = cache.keys, cache.rec, cache.changed, cache.rows_of
+	local keys, rec, index, changed, rows_of = cache.keys, cache.rec, cache.index, cache.changed, cache.rows_of
 	local old = rows_of[id] or NO_KEYS
 	local moved = false
-	local new
-	if st then
-		local row_passes = util.row_passes
-		for _, row in ipairs(collector.inventories(st)) do
-			if row_passes(row, f) then
-				new = new or {}
-				new[#new + 1] = row.key
-				local key = key_fn(row, ctx)
-				if rec[row.key] ~= row or keys[row.key] ~= key or row.index ~= cache.index[row.key] then
-					rec[row.key] = row
-					keys[row.key] = key
-					cache.index[row.key] = row.index
-					changed[row.key] = true
-					moved = true
-				end
+	local rows = st and collector.inventories(st) or NO_KEYS
+	local row_passes = util.row_passes
+	-- Most refills list the same keys again: the old list is kept then, so a pass allocates nothing per station.
+	local n, same = 0, true
+	for _, row in ipairs(rows) do
+		if row_passes(row, f) then
+			n = n + 1
+			local rk = row.key
+			if old[n] ~= rk then same = false end
+			local key = key_fn(row, ctx)
+			if rec[rk] ~= row or keys[rk] ~= key or index[rk] ~= row.index then
+				rec[rk], keys[rk], index[rk] = row, key, row.index
+				changed[rk] = true
+				moved = true
 			end
+		end
+	end
+	if same and n == #old then return moved end
+	local new = n > 0 and {} or nil
+	local listed = {}
+	n = 0
+	for _, row in ipairs(rows) do
+		if rec[row.key] == row and row_passes(row, f) then
+			n = n + 1
+			new[n] = row.key
+			listed[row.key] = true
 		end
 	end
 	for _, rk in ipairs(old) do
-		local still = false
-		for _, k in ipairs(new or NO_KEYS) do
-			if k == rk then
-				still = true
-				break
-			end
-		end
-		if not still then
-			rec[rk], keys[rk], cache.index[rk] = nil, nil, nil
+		if not listed[rk] then
+			rec[rk], keys[rk], index[rk] = nil, nil, nil
 			changed[rk] = true
-			moved = true
 		end
 	end
-	if not moved and #old ~= #(new or NO_KEYS) then moved = true end
 	rows_of[id] = new
-	return moved
+	return true
 end
 
 --- Rescans every snapshot station into a fresh per-player query cache.
