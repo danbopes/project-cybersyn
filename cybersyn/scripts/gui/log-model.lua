@@ -134,8 +134,8 @@ function model.compile(f, now, item, station)
 		if s.kind == "train" then
 			subject_train = s.id
 		elseif station and station ~= s.id then
-			-- Two different stations match nothing; 0 is no station's unit number.
-			station = 0
+			-- Two different stations match nothing. Not 0: diag stores 0 for "no station", so 0 would match those rows.
+			station = -1
 		else
 			station = s.id
 		end

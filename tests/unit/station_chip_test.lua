@@ -222,8 +222,9 @@ test("log-model compile: the chip's station filters the station column, and ANDs
 	storage.stations = {}
 	local model = H.load("scripts.gui.log-model")
 	local f = model.default_filter()
-	local r = { kind = { DIAG_KIND_STATION_LIMIT, DIAG_KIND_STATION_LIMIT }, station = { 12, 13 }, station2 = { 0, 0 },
-		train = { 0, 0 }, item = { 0, 0 }, code = { 0, 0 } }
+	-- Row 3 has no station: diag stores 0 there (train, alert and dispatcher events).
+	local r = { kind = { DIAG_KIND_STATION_LIMIT, DIAG_KIND_STATION_LIMIT, DIAG_KIND_STATION_LIMIT },
+		station = { 12, 13, 0 }, station2 = { 0, 0, 0 }, train = { 0, 0, 0 }, item = { 0, 0, 0 }, code = { 0, 0, 0 } }
 	local plain = model.compile(f, 100)
 	local chip = model.compile(f, 100, nil, 12)
 	assert_true(chip.any)
@@ -232,7 +233,10 @@ test("log-model compile: the chip's station filters the station column, and ANDs
 	assert_false(model.match(r, 2, chip))
 	assert_true(model.match(r, 2, plain))
 	f.subject = { kind = "station", id = 13 }
-	assert_false(model.match(r, 2, model.compile(f, 100, nil, 12)), "two different stations match nothing")
+	local none = model.compile(f, 100, nil, 12)
+	for i = 1, 3 do assert_false(model.match(r, i, none), "two different stations match nothing, row " .. i) end
+	assert_true(model.export_filter(none).station ~= 0, "the export does not match station-less rows either")
+	assert_false(model.match(r, 3, chip))
 	assert_true(model.match(r, 1, model.compile({ sev = f.sev, window = f.window, subject = { kind = "station", id = 12 } },
 		100, nil, 12)))
 end)
