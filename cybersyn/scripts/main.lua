@@ -268,7 +268,7 @@ function combinator_build_init(map_data, comb, tags)
 		op = MODE_SECONDARY_INVENTORY
 		params.operation = op
 		control.parameters = params
-	elseif op ~= MODE_PRIMARY_IO and op ~= MODE_SECONDARY_IO and op ~= MODE_SECONDARY_INVENTORY and op ~= MODE_DEPOT and op ~= MODE_REFUELER and op ~= MODE_WAGON then
+	elseif op ~= MODE_PRIMARY_IO and op ~= MODE_SECONDARY_IO and not is_secondary_inventory_op(op) and op ~= MODE_DEPOT and op ~= MODE_REFUELER and op ~= MODE_WAGON then
 		op = MODE_PRIMARY_IO
 		params.operation = op
 		control.parameters = params

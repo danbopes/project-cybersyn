@@ -35,6 +35,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field search_network_mask int
 --- @field search_surface_idx uint?
 --- @field search_item string? item hash (name or name|quality)
+--- @field search_station uint? station id of the station chip (PLAN8 D8-7); dropped by util.valid_station_filter once the stop is gone
 --- @field surface_dropdown_ids {[integer]: uint}? drop-down index -> surface index
 --- @field surface_count integer? #game.surfaces when the drop-down was built
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see util.get_sort
