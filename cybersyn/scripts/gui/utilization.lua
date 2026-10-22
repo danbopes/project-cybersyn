@@ -1,6 +1,6 @@
 -- Utilization tab: the factorio-charts line chart of the share of each train layout's trains on a delivery, one line
--- per layout, sampled every dispatcher tick by analytics.tick. Shown only while analytics is enabled and the library
--- is installed (analytics.is_enabled).
+-- per layout, sampled every analytics.SAMPLE_TICKS game ticks by analytics.tick. Shown only while analytics is enabled
+-- and the library is installed (analytics.is_enabled).
 
 local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
@@ -17,7 +17,7 @@ local utilization_tab = {}
 local TAB = "utilization_tab"
 local CACHE_DURATION_TICKS = 300 -- 5 seconds at 60 UPS
 
--- Button i shows the chart's interval i (analytics' interval_defs).
+-- Button i shows analytics.UTILIZATION_INTERVALS[i], which spans exactly the time its caption names (unit-tested).
 local interval_names = { "1m", "10m", "1h", "10h", "50h", "250h", "1000h" }
 utilization_tab.INTERVAL_NAMES = interval_names
 

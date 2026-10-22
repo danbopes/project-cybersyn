@@ -48,10 +48,11 @@ function analytics.format_layout_name(layout, layout_id)
 	return table.concat(parts, "-")
 end
 
--- The Utilization chart's resolutions: each interval keeps `length` samples and every `steps` of them are averaged
--- into one sample of the next. A sample is taken per dispatcher tick (analytics.tick).
+-- The Utilization chart's resolutions, one per range button: each interval keeps `length` samples taken `ticks` game
+-- ticks apart, so it spans exactly the time its name says (ticks x length), and every `steps` of them are averaged
+-- into one sample of the next. analytics.tick runs on its own nth tick (SAMPLE_TICKS = the first interval's `ticks`),
+-- not the planner's, so the spans do not depend on the dispatcher rate.
 local interval_defs = {
-	{name = "5s",    ticks = 1,      steps = 6,   length = 300},
 	{name = "1m",    ticks = 6,      steps = 10,  length = 600},
 	{name = "10m",   ticks = 60,     steps = 6,   length = 600},
 	{name = "1h",    ticks = 360,    steps = 10,  length = 600},
@@ -60,6 +61,8 @@ local interval_defs = {
 	{name = "250h",  ticks = 90000,  steps = 4,   length = 600},
 	{name = "1000h", ticks = 360000, steps = nil, length = 600},
 }
+analytics.UTILIZATION_INTERVALS = interval_defs
+analytics.SAMPLE_TICKS = interval_defs[1].ticks
 
 --- The Breakdown tab's range buttons: each covers exactly the span its caption names (key = number + m or h).
 analytics.BREAKDOWN_RANGES = {
@@ -78,11 +81,6 @@ function analytics.range_ticks(key)
 	if not n then return nil end
 	return tonumber(n) * (unit == "m" and 3600 or 216000)
 end
-
-local interval_map = {
-	["5s"] = 1, ["1m"] = 2, ["10m"] = 3, ["1h"] = 4,
-	["10h"] = 5, ["50h"] = 6, ["250h"] = 7, ["1000h"] = 8,
-}
 
 local SURFACE_NAME = "cybersyn_analytics"
 
@@ -120,8 +118,10 @@ function analytics.init(map_data)
 		if not map_data.analytics.active_failures then
 			map_data.analytics.active_failures = {}
 		end
-		-- 3.0 dropped the chart's samples; two series older builds sampled are drawn by no tab.
-		if not map_data.analytics.train_utilization then
+		-- 3.0 dropped the chart's samples, and builds before it kept a 5 s level first; two series older builds sampled
+		-- are drawn by no tab.
+		local series = map_data.analytics.train_utilization
+		if not (series and #series == #interval_defs and series[1].name == interval_defs[1].name) then
 			map_data.analytics.train_utilization = new_interval_set()
 		end
 		map_data.analytics.failed_dispatches = nil
@@ -509,7 +509,7 @@ function analytics.utilization_sample(trains)
 	return sample
 end
 
----Samples train utilization into the chart's time series; called every dispatcher tick.
+---Samples train utilization into the chart's time series; called every SAMPLE_TICKS game ticks.
 ---@param map_data MapData
 function analytics.tick(map_data)
 	if not analytics.is_enabled() then return end
@@ -521,13 +521,6 @@ function analytics.tick(map_data)
 	if next(sample) then
 		charts.add_datapoint(map_data.analytics.train_utilization, sample)
 	end
-end
-
----Get interval by name
----@param name string
----@return number
-function analytics.get_interval_index(name)
-	return interval_map[name] or 1
 end
 
 ---Render a stacked bar chart for delivery breakdown using the library

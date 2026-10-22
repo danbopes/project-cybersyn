@@ -228,7 +228,7 @@ local more = {
 		ctx.analytics = settings.global["cybersyn-enable-analytics"].value
 		ctx.samples = dev("utilization_samples", pi)
 		dev("set_setting", "cybersyn-enable-analytics", true)
-		-- Samples are taken per dispatcher tick from the moment the setting is on, before any tab opens.
+		-- Samples are taken every analytics.SAMPLE_TICKS from the moment the setting is on, before any tab opens.
 		lab.wait(300)
 	end,
 
@@ -330,12 +330,14 @@ local more = {
 			local s = dev("utilization_samples", pi)
 			local viewers = 0
 			for _, iv in ipairs(s.intervals) do viewers = viewers + iv.viewers end
-			seen[i] = { interval = di.interval, lit = lit, viewers = viewers, mine = s.intervals[i].viewers }
-			if not (di.interval == i and di.buttons[i] and lit == 1 and viewers == 1 and s.intervals[i].viewers == 1) then
+			seen[i] = { interval = di.interval, lit = lit, viewers = viewers, mine = s.intervals[i].viewers,
+				name = s.intervals[i].name, caption = di.captions[i] }
+			if not (di.interval == i and di.buttons[i] and lit == 1 and viewers == 1 and s.intervals[i].viewers == 1
+				and s.intervals[i].name == di.captions[i]) then
 				ok = false
 			end
 		end
-		lab.check("each range button selects its interval, lit alone, the chart registered on it alone", ok
+		lab.check("each range button selects the interval its caption names, lit alone, the chart registered on it alone", ok
 			and #d.captions == 7, seen)
 		dev("click", pi, "utilization_interval_buttons", 1)
 		dev("close", pi)
