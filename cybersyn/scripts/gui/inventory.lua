@@ -347,9 +347,10 @@ end
 --- tooltip's top list always agrees with the totals shown next to it. Every inventory row (PLAN8 D8-1) that passes
 --- the filters counts what it advertises on its own network: a secondary on A2 lands in A2's numbers, not in the
 --- station combinator's A1. A station's kept rows are summed per item and the station counts once per item in the
---- totals and top lists (D8-3); its deliveries count once, incoming ones on its first kept row's network, outgoing ones
---- against the stock on every network its kept rows are on. The deficit per item is the sum over the networks of what
---- each is short (logic.deficit), so stock on one network never offsets a shortage on another.
+--- totals and top lists (D8-3); its deliveries count once, incoming ones on the network of its first kept row that
+--- requests the item (else its first kept row's), outgoing ones against the stock on every network its kept rows are
+--- on. The deficit per item is the sum over the networks of what each is short (logic.deficit), so stock on one
+--- network never offsets a shortage on another.
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
 local function aggregate_with_top(snapshot, f)
@@ -364,7 +365,10 @@ local function aggregate_with_top(snapshot, f)
 		local rows = inventories(st)
 		-- Most stations have one row: its own lists are used as they are, and only a station whose kept rows are several
 		-- gets summed copies.
-		local p, r, first_bucket, first_stock, stock_seen
+		local p, r, first_bucket, first_stock, stock_seen, first_row
+		-- {row, bucket, row, bucket, ...} once a second row is kept: an incoming delivery counts on the network of the
+		-- row that requests the item, so its train offsets that network's request.
+		local kept_rows
 		local kept = 0
 		for i = 1, #rows do
 			local row = rows[i]
@@ -372,8 +376,11 @@ local function aggregate_with_top(snapshot, f)
 				kept = kept + 1
 				local nb, stock = row_buckets(nets, row, f.network)
 				if kept == 1 then
-					first_bucket, first_stock = nb, stock
+					first_bucket, first_stock, first_row = nb, stock, row
 				else
+					if kept == 2 then kept_rows = { first_row, first_bucket } end
+					kept_rows[#kept_rows + 1] = row
+					kept_rows[#kept_rows + 1] = nb
 					-- The networks whose stock an outgoing delivery reduces, once a second row is kept.
 					if not stock_seen then
 						stock_seen = {}
@@ -429,7 +436,16 @@ local function aggregate_with_top(snapshot, f)
 			for hash, count in pairs(st.deliveries) do
 				if count > 0 then
 					accumulate(inv.in_transit, top.in_transit, hash, count, count, st)
-					first_bucket.t[hash] = (first_bucket.t[hash] or 0) + count
+					local tb = first_bucket
+					if kept_rows then
+						for k = 1, #kept_rows, 2 do
+							if kept_rows[k].requested[hash] then
+								tb = kept_rows[k + 1]
+								break
+							end
+						end
+					end
+					tb.t[hash] = (tb.t[hash] or 0) + count
 				elseif stock_seen then
 					for nb in pairs(stock_seen) do nb.s[hash] = (nb.s[hash] or 0) + count end
 				elseif first_stock then

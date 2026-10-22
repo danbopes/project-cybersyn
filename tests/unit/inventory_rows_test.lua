@@ -99,6 +99,17 @@ test("inventory rows: an each-network row counts its stock once, on each of its 
 	assert_eq(count(inv.provided, SF.COAL), 700)
 end)
 
+test("inventory rows: an incoming delivery offsets the request on the requesting row's network", function()
+	local agg = aggregate()
+	local st = SF.coal_both(200)
+	st.rows[2].network_name = "signal-B"
+	st.deliveries = { [SF.COAL] = 1500 }
+	local inv = agg(snapshot({ st }), filters())
+	assert_eq(count(inv.in_transit, SF.COAL), 1500)
+	-- B requests 2000 with 1500 on the way and no stock on B; A's 5000 is on another network.
+	assert_eq(inv.deficit[SF.COAL], 500)
+end)
+
 test("inventory rows: the station chip keeps that station's rows only", function()
 	local agg = aggregate()
 	local a = SF.coal_both(200)
