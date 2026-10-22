@@ -269,7 +269,7 @@ local more = {
 			lab.check("…and not again on the next open", s.notice == ctx.notice, { first = ctx.notice, now = s.notice })
 			dev("close", pi)
 			for _, name in ipairs({ "chart renders", "legend lists the layouts", "a checkbox toggles a series",
-				"each range button selects" }) do
+				"each range button selects", "a chunk per interval" }) do
 				lab.skip("Utilization " .. name, "factorio-charts not loaded in this lab")
 			end
 			return
@@ -339,6 +339,12 @@ local more = {
 		end
 		lab.check("each range button selects the interval its caption names, lit alone, the chart registered on it alone", ok
 			and #d.captions == 7, seen)
+		local chunks, distinct = {}, true
+		for _, iv in ipairs(dev("utilization_samples", pi).intervals) do
+			if not iv.chunk or chunks[iv.chunk] then distinct = false end
+			chunks[iv.chunk or "none"] = iv.name
+		end
+		lab.check("…each interval drawn on a chunk of its own on the analytics surface", distinct, chunks)
 		dev("click", pi, "utilization_interval_buttons", 1)
 		dev("close", pi)
 		local s = dev("utilization_samples", pi)

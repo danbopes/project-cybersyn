@@ -92,13 +92,20 @@ end
 ---Initialize analytics data structure
 ---@param map_data MapData
 function analytics.init(map_data)
-	-- Create the chart surface using the library
-	local surface_data = charts.create_surface(SURFACE_NAME)
-
 	if map_data.analytics then
-		-- Already initialized, update surface reference
+		-- The stored surface_data carries the chunk allocation cursor: a fresh one would place every new chunk at {0,0},
+		-- on top of the charts already there.
+		local surface_data = map_data.analytics.surface_data
+		if not (surface_data and surface_data.surface and surface_data.surface.valid) then
+			surface_data = charts.create_surface(SURFACE_NAME)
+			map_data.analytics.surface_data = surface_data
+		else
+			-- A force created after the surface must not see it in map view either.
+			for _, force in pairs(game.forces) do
+				force.set_surface_hidden(surface_data.surface, true)
+			end
+		end
 		map_data.analytics.surface = surface_data.surface
-		map_data.analytics.surface_data = surface_data
 		-- Ensure fields exist for backwards compatibility
 		if not map_data.analytics.fulfillment_ema then
 			map_data.analytics.fulfillment_ema = {}
@@ -131,6 +138,7 @@ function analytics.init(map_data)
 		return
 	end
 
+	local surface_data = charts.create_surface(SURFACE_NAME)
 	map_data.analytics = {
 		surface = surface_data.surface,
 		surface_data = surface_data,

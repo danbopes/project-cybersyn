@@ -470,7 +470,9 @@ dev.add("utilization_samples", function(pi)
 	if data and data.train_utilization then
 		out.intervals = {}
 		for i, interval in ipairs(data.train_utilization) do
-			out.intervals[i] = { name = interval.name, counts = interval.counts, viewers = interval.viewer_count }
+			local coord = interval.chunk and interval.chunk.coord
+			out.intervals[i] = { name = interval.name, counts = interval.counts, viewers = interval.viewer_count,
+				chunk = coord and (coord.x .. "," .. coord.y) }
 		end
 	end
 	return out
