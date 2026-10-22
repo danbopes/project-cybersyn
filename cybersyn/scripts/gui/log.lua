@@ -183,18 +183,20 @@ end
 local function compiled(player_data, d)
 	local f = get_filter(player_data)
 	local item = item_filter(player_data, d)
+	local station = player_data.search_station
 	local c = player_data.log_cf
 	local sev = f.sev
 	-- Rebuilt only when the filter changed; otherwise only the window's start moves with the clock.
 	if c and c.f_group == f.group and c.f_kind == f.kind and c.f_train == f.train and c.f_window == f.window
-		and c.f_item == item
+		and c.f_item == item and c.f_station == station
 		and c.sevs[1] == (sev[1] == true) and c.sevs[2] == (sev[2] == true) and c.sevs[3] == (sev[3] == true) then
 		local window = model.WINDOWS[f.window or model.DEFAULT_WINDOW]
 		c.min_tick = window and math.max(0, game.tick - window) or nil
 		return c
 	end
-	c = model.compile(f, game.tick, item)
+	c = model.compile(f, game.tick, item, station)
 	c.f_group, c.f_kind, c.f_train, c.f_window, c.f_item = f.group, f.kind, f.train, f.window, item
+	c.f_station = station
 	player_data.log_cf = c
 	return c
 end

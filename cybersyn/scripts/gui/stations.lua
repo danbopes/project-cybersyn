@@ -981,7 +981,7 @@ end
 --- @return {e: ProblemEntry, entity: LuaEntity?, name: string}[]
 local function registry_rows(px, f)
 	local out = {}
-	if #px.registry == 0 or f.network or f.item or (f.mask and f.mask ~= -1) then return out end
+	if #px.registry == 0 or f.network or f.item or f.station or (f.mask and f.mask ~= -1) then return out end
 	for _, e in ipairs(px.registry) do
 		local gone = e.f.entity
 		-- The entity went without an event the registry hears (a script destroy that raised none): no row.

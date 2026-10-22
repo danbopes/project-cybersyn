@@ -859,14 +859,14 @@ local function get_cache(player_data, hash)
 	-- the search terms (a query typed on another tab would hide rows invisibly), and keeps network, ID and surface.
 	local f = util.get_filters(player_data)
 	f.terms, f.item = nil, nil
-	local filtered = util.place_filters_active(f)
+	local filtered = util.place_filters_active(f) or f.station ~= nil
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. util.filter_signature(f)
 	local cache = player_data.item_cache
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
 	local has_sections = collector.station_has_sections
 	-- A station with sections sits on its sections' networks, not only on the station combinator's: it passes by
 	-- surface, and each section by its own network name and ID.
-	local place = { terms = f.terms, surface = f.surface, mask = -1 }
+	local place = { terms = f.terms, surface = f.surface, mask = -1, station = f.station }
 	local keep = filtered and {
 		station = function(st)
 			if has_sections and st.sections and has_sections(st) then return util.station_passes(st, place, true) end

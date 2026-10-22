@@ -403,7 +403,7 @@ local function aggregate_with_top(snapshot, f)
 	local nets = {}
 	local has_sections = collector.station_has_sections
 	-- A station with sections is placed by surface and search here, and on networks by its sections.
-	local place = { terms = f.terms, surface = f.surface, mask = -1 }
+	local place = { terms = f.terms, surface = f.surface, mask = -1, station = f.station }
 	for _, st in pairs(snapshot.stations) do
 		if has_sections and st.sections and has_sections(st) then
 			if not filtered or util.station_passes(st, place, true) then
@@ -460,6 +460,7 @@ inventory_tab._aggregate = aggregate_with_top
 --- @param f ManagerFilters
 local function filter_signature(f)
 	return (f.terms and table.concat(f.terms, " ") or "") .. "|" .. (f.network or "") .. "|" .. f.mask .. "|" .. (f.surface or "")
+		.. "|" .. (f.station or "")
 end
 
 --- The aggregate is recomputed only when a collector pass completes or the filters change, and lives in storage so
