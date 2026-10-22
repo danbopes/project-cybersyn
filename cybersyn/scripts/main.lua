@@ -165,6 +165,10 @@ local function on_station_built(map_data, stop, comb1, comb2, secondary_inv_comb
 
 	map_data.stations[id] = station
 	map_data.warmup_station_cycles[id] = 0
+	-- Inventory combinators adopted from a removed station may still show its red I; the new record has no failures.
+	for unit in pairs(station.secondary_inv_combs) do
+		update_inv_display(map_data, station, unit)
+	end
 
 	queue_station_for_combinator_update(map_data, id)
 	update_stop_if_auto(map_data, station, true)
@@ -196,6 +200,13 @@ function on_station_broken(map_data, station_id, station)
 		end
 	end
 	clear_all_request_tracking(station)
+	-- The inventory combinators outlive the record: put out their red I, since no poll will reach them again.
+	if station.inv_failed then
+		station.inv_failed = nil
+		for unit in pairs(station.secondary_inv_combs or {}) do
+			update_inv_display(map_data, station, unit)
+		end
+	end
 	diag.station_removed(station_id)
 	lint.station_removed(station_id)
 	map_data.stations[station_id] = nil
