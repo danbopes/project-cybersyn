@@ -197,6 +197,54 @@ test("station_passes: surface, plain-text AND terms, network, item", function()
 	assert_true(u.station_passes(st, { mask = -1, item = "copper-ore" }, true))
 end)
 
+test("row_passes / station_passes: each row its own network and items, deliveries on row 0, the station chip", function()
+	local u = util()
+	local collector = H.load("scripts.gui.collector")
+	local st = station({ id = 9, network_mask = 1, requested = {} })
+	st.provided = { ["iron-ore"] = 100 }
+	st.sources = {
+		{ kind = "station", index = 0, unit = 90, ok = true, priority = 0, network_name = "signal-A", mask = 1,
+			provided = { ["iron-ore"] = 60 }, requested = {}, ignored = {} },
+		{ kind = "inventory", index = 1, unit = 91, ok = true, priority = 2, network_name = "signal-A", mask = 4,
+			provided = { ["iron-ore"] = 40 }, requested = { coal = { count = -10, threshold = 1, active = true } }, ignored = {} },
+	}
+	local rows = collector.inventories(st)
+	assert_eq(#rows, 2)
+	local r0, r1 = rows[1], rows[2]
+	assert_true(u.row_passes(r0, { mask = -1 }))
+	assert_true(u.row_passes(r0, { mask = 1, network = "signal-A" }))
+	assert_false(u.row_passes(r1, { mask = 1, network = "signal-A" }))
+	assert_true(u.row_passes(r1, { mask = 4 }))
+	assert_true(u.station_passes(st, { mask = 4 }), "any row")
+	assert_false(u.station_passes(st, { mask = 8 }))
+	-- Items: each row its own lists; the station's deliveries (stone) count on its first row only.
+	assert_false(u.row_passes(r0, { mask = -1, item = "coal" }))
+	assert_true(u.row_passes(r1, { mask = -1, item = "coal" }))
+	assert_true(u.row_passes(r0, { mask = -1, item = "stone" }))
+	assert_false(u.row_passes(r1, { mask = -1, item = "stone" }))
+	assert_true(u.row_passes(r1, { mask = -1, item = "stone" }, true))
+	assert_true(u.station_passes(st, { mask = -1, item = "coal" }))
+	assert_false(u.station_passes(st, { mask = 1, item = "coal" }), "coal is requested on bit 3 only")
+	-- Station-wide fields hold for every row.
+	assert_false(u.row_passes(r1, { mask = -1, surface = 2 }))
+	assert_false(u.row_passes(r1, { mask = -1, terms = { "copper" } }))
+	assert_true(u.row_passes(r1, { mask = -1, station = 9 }))
+	assert_false(u.row_passes(r1, { mask = -1, station = 10 }))
+	assert_false(u.station_passes(st, { mask = -1, station = 10 }))
+	-- An unread inventory (no mask) passes only without a network filter.
+	r1.mask = nil
+	assert_true(u.row_passes(r1, { mask = -1 }))
+	assert_false(u.row_passes(r1, { mask = 4 }))
+end)
+
+test("get_filters / filter_signature: the station chip field", function()
+	local u = util()
+	assert_nil(u.get_filters({}).station)
+	assert_eq(u.get_filters({ search_station = 12 }).station, 12)
+	local a = u.filter_signature({ mask = -1 })
+	assert_true(a ~= u.filter_signature({ mask = -1, station = 12 }))
+end)
+
 local function with_snapshot_stations(stations)
 	local snapshot = require("scripts.gui.collector").empty()
 	snapshot.stations = stations

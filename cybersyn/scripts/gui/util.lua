@@ -784,6 +784,7 @@ end
 --- @field network string? network signal name
 --- @field mask int -1 = any
 --- @field surface uint? surface index
+--- @field station uint? station id (the station chip, PLAN8 D8-7): only that station's rows pass
 
 --- @param player_data PlayerData
 --- @return ManagerFilters
@@ -799,6 +800,7 @@ function util.get_filters(player_data)
 		network = player_data.search_network_name,
 		mask = player_data.search_network_mask or -1,
 		surface = player_data.search_surface_idx,
+		station = player_data.search_station,
 	}
 end
 
@@ -810,7 +812,6 @@ function util.filters_active(f, ignore_item)
 end
 
 local btest = bit32.btest
-local has_sections = collector.station_has_sections
 
 --- @param network_name string?
 --- @param network_mask int|{[string]: int}?
@@ -837,26 +838,61 @@ function util.network_passes(network_name, network_mask, f)
 	return true
 end
 
+--- The row's own part of row_passes: its network and its item.
+--- @param row SnapshotInventory
+--- @param f ManagerFilters
+--- @param ignore_item boolean?
+--- @return boolean
+local function row_own_passes(row, f, ignore_item)
+	if not util.network_passes(row.network_name, row.networks or row.mask, f) then return false end
+	local item = f.item
+	if item and not ignore_item then
+		-- Deliveries belong to the station; they show on its first row.
+		if not (row.provided[item] or row.requested[item] or (row.index == 0 and row.st.deliveries[item])) then
+			return false
+		end
+	end
+	return true
+end
+
+--- Whether one inventory row (collector.inventories) passes the filters: its station's surface, name terms and the
+--- station chip, then the row's own network, mask and item.
+--- @param row SnapshotInventory
+--- @param f ManagerFilters
+--- @param ignore_item boolean?
+--- @return boolean
+function util.row_passes(row, f, ignore_item)
+	local st = row.st
+	if f.station and st.id ~= f.station then return false end
+	if f.surface and st.surface_index ~= f.surface then return false end
+	local terms = f.terms
+	if terms and not util.terms_match(st.name_lower, terms) then return false end
+	return row_own_passes(row, f, ignore_item)
+end
+
+--- A station passes when any of its rows does. A record without rows (hand-built) is one row on its own lists.
 --- @param st SnapshotStation
 --- @param f ManagerFilters
 --- @param ignore_item boolean?
 --- @return boolean
 function util.station_passes(st, f, ignore_item)
+	if f.station and st.id ~= f.station then return false end
 	if f.surface and st.surface_index ~= f.surface then return false end
 	local terms = f.terms
 	if terms and not util.terms_match(st.name_lower, terms) then return false end
-	-- A station with sections passes under every network bit any of its sources advertises on (mask_union); a plain
-	-- one advertises only on its own network, which skips the union's per-name walk on most stations.
-	if st.mask_union and has_sections(st) then
-		if not util.network_passes(NETWORK_EACH, st.mask_union, f) then return false end
-	elseif not util.network_passes(st.network_name, st.network_mask, f) then
-		return false
+	local rows = st.rows
+	if rows == nil then
+		if not util.network_passes(st.network_name, st.network_mask, f) then return false end
+		local item = f.item
+		if item and not ignore_item then
+			if not (st.provided[item] or st.requested[item] or st.deliveries[item]) then return false end
+		end
+		return true
 	end
-	local item = f.item
-	if item and not ignore_item then
-		if not (st.provided[item] or st.requested[item] or st.deliveries[item]) then return false end
+	for i = 1, #rows do
+		if row_own_passes(rows[i], f, ignore_item) then return true end
 	end
-	return true
+	return false
 end
 
 --- The filters the Overview applies (PLAN4 D2): network name, network ID, surface and item. It has no station search,
@@ -876,6 +912,7 @@ end
 function util.filter_signature(f)
 	return table.concat({
 		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
+		f.station or "",
 	}, "\1")
 end
 
