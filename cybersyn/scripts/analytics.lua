@@ -21,6 +21,46 @@ local function debug_log(msg)
 	end
 end
 
+---The Utilization legend's name for a layout: locomotives, cargo and fluid wagons counted ("2L-4C-1F"); "#id"
+---when the layout record is gone.
+---@param layout int[]? the layout array (0 = locomotive, 1 = cargo wagon, 2 = fluid wagon)
+---@param layout_id uint?
+---@return string
+function analytics.format_layout_name(layout, layout_id)
+	if not layout or #layout == 0 then
+		return "#" .. tostring(layout_id or "?")
+	end
+	local locos, cargo, fluid = 0, 0, 0
+	for i = 1, #layout do
+		local c = layout[i]
+		if c == 0 then
+			locos = locos + 1
+		elseif c == 1 then
+			cargo = cargo + 1
+		elseif c == 2 then
+			fluid = fluid + 1
+		end
+	end
+	local parts = {}
+	if locos > 0 then parts[#parts + 1] = locos .. "L" end
+	if cargo > 0 then parts[#parts + 1] = cargo .. "C" end
+	if fluid > 0 then parts[#parts + 1] = fluid .. "F" end
+	return table.concat(parts, "-")
+end
+
+-- The Utilization chart's resolutions: each interval keeps `length` samples and every `steps` of them are averaged
+-- into one sample of the next. A sample is taken per dispatcher tick (analytics.tick).
+local interval_defs = {
+	{name = "5s",    ticks = 1,      steps = 6,   length = 300},
+	{name = "1m",    ticks = 6,      steps = 10,  length = 600},
+	{name = "10m",   ticks = 60,     steps = 6,   length = 600},
+	{name = "1h",    ticks = 360,    steps = 10,  length = 600},
+	{name = "10h",   ticks = 3600,   steps = 5,   length = 600},
+	{name = "50h",   ticks = 18000,  steps = 5,   length = 600},
+	{name = "250h",  ticks = 90000,  steps = 4,   length = 600},
+	{name = "1000h", ticks = 360000, steps = nil, length = 600},
+}
+
 --- The Breakdown tab's range buttons: each covers exactly the span its caption names (key = number + m or h).
 analytics.BREAKDOWN_RANGES = {
 	{ key = "1m", ticks = 3600 },
@@ -45,6 +85,11 @@ local interval_map = {
 }
 
 local SURFACE_NAME = "cybersyn_analytics"
+
+---@return table[] intervals the Utilization chart's interval set, empty
+local function new_interval_set()
+	return charts.create_time_series(interval_defs)
+end
 
 ---Initialize analytics data structure
 ---@param map_data MapData
@@ -75,10 +120,12 @@ function analytics.init(map_data)
 		if not map_data.analytics.active_failures then
 			map_data.analytics.active_failures = {}
 		end
-		-- Clean up old data structures if present: the Utilization chart's samples and two series no tab drew.
+		-- 3.0 dropped the chart's samples; two series older builds sampled are drawn by no tab.
+		if not map_data.analytics.train_utilization then
+			map_data.analytics.train_utilization = new_interval_set()
+		end
 		map_data.analytics.failed_dispatches = nil
 		map_data.analytics.last_failure_tick = nil
-		map_data.analytics.train_utilization = nil
 		map_data.analytics.fulfillment_times = nil
 		map_data.analytics.total_delivery_times = nil
 		return
@@ -87,6 +134,7 @@ function analytics.init(map_data)
 	map_data.analytics = {
 		surface = surface_data.surface,
 		surface_data = surface_data,
+		train_utilization = new_interval_set(),
 		delivery_starts = {},
 		fulfillment_ema = {},
 		total_time_ema = {},
@@ -146,6 +194,27 @@ end
 function analytics.interval_unregister_gui(map_data, interval, player)
 	interval.guis[player.index] = nil
 	interval.viewer_count = interval.viewer_count - 1
+end
+
+---Render one interval of a time series to its chunk
+---@param map_data MapData
+---@param intervals table[]
+---@param interval_index number
+---@param selected_series table? {[series]: false} hides a series
+---@param fixed_range table? {min, max}
+---@param label_format string? "percent" (default) or "time"
+---@param viewport_width number?
+---@param viewport_height number?
+---@return table? ordered_sums the series drawn, by sum
+---@return table? hit_regions
+function analytics.render_graph(map_data, intervals, interval_index, selected_series, fixed_range, label_format, viewport_width, viewport_height)
+	return charts.render_time_series(map_data.analytics.surface, intervals, interval_index, {
+		selected_series = selected_series,
+		y_range = fixed_range,
+		label_format = label_format,
+		viewport_width = viewport_width,
+		viewport_height = viewport_height,
+	})
 end
 
 ---Record delivery start for time tracking
@@ -415,6 +484,43 @@ function analytics.get_active_failures(map_data, oldest_tick)
 	end
 
 	return results
+end
+
+---One utilization sample: per train layout (keyed by its id as a string, the chart's series name), the share of its
+---trains on a delivery now, in percent.
+---@param trains {[uint]: Train}
+---@return {[string]: number}
+function analytics.utilization_sample(trains)
+	local working, total = {}, {}
+	for _, train in pairs(trains) do
+		local layout_id = train.layout_id
+		if layout_id then
+			local key = tostring(layout_id)
+			total[key] = (total[key] or 0) + 1
+			if STATUS_ON_DELIVERY[train.status] then
+				working[key] = (working[key] or 0) + 1
+			end
+		end
+	end
+	local sample = {}
+	for key, n in pairs(total) do
+		sample[key] = (working[key] or 0) / n * 100
+	end
+	return sample
+end
+
+---Samples train utilization into the chart's time series; called every dispatcher tick.
+---@param map_data MapData
+function analytics.tick(map_data)
+	if not analytics.is_enabled() then return end
+	-- Turning the setting on mid-game, or a save from 3.0 (no samples kept), must start the chart without waiting for
+	-- a tab to open.
+	local data = map_data.analytics
+	if not (data and data.train_utilization) then analytics.init(map_data) end
+	local sample = analytics.utilization_sample(map_data.trains)
+	if next(sample) then
+		charts.add_datapoint(map_data.analytics.train_utilization, sample)
+	end
 end
 
 ---Get interval by name

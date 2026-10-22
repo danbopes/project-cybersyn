@@ -903,6 +903,7 @@ local function register_tick()
 	if mod_settings.tps > DELTA then
 		add(ceil(60 / mod_settings.tps) --[[@as uint]], function()
 			tick(storage, mod_settings)
+			analytics.tick(storage)
 		end)
 	end
 	local manager_nth
