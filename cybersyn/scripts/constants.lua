@@ -21,9 +21,18 @@ MODE_PRIMARY_IO_FAILED_REQUEST = "^"
 MODE_PRIMARY_IO_ACTIVE = "<<"
 MODE_SECONDARY_IO = "%"
 MODE_SECONDARY_INVENTORY = "AND"
+-- The display of an inventory combinator whose own request went unserved; stored and blueprinted as AND.
+MODE_SECONDARY_INVENTORY_FAILED = "OR"
 MODE_DEPOT = "+"
 MODE_WAGON = "-"
 MODE_REFUELER = ">>"
+
+--- Both displays of an inventory combinator are one mode.
+---@param op string?
+---@return boolean
+function is_secondary_inventory_op(op)
+	return op == MODE_SECONDARY_INVENTORY or op == MODE_SECONDARY_INVENTORY_FAILED
+end
 
 SETTING_DISABLE_ALLOW_LIST = 2
 SETTING_IS_STACK = 3
