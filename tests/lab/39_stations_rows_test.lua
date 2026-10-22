@@ -169,8 +169,10 @@ local steps = {
 		local m1, m2, m3 = d.markers[i1], d.markers[i2], d.markers[i3]
 		lab.check("D8-2: no marker on the station combinator's row", m1 == false, m1)
 		lab.check("D8-2: an inventory row's marker is an entity link to its combinator", type(m2) == "table"
-			and m2.kind == "entity" and m2.unit == ctx.inv1.unit and m2.sprite == "item/cybersyn-combinator"
+			and m2.kind == "entity" and m2.unit == ctx.inv1.unit
 			and type(m3) == "table" and m3.unit == ctx.inv2.unit, { m2, m3 })
+		lab.check("D8-2: the marker is muted, full colour on hover", type(m2) == "table"
+			and m2.sprite == "cybersyn-combinator-muted" and m2.hovered == "item/cybersyn-combinator", m2)
 		lab.check("D8-2: the marker's tooltip names the inventory, its priority and network",
 			flat(m2 and m2.tooltip):find('"cybersyn-gui.stations-inventory-marker", "1", "5", {"cybersyn-gui.stations-inventory-network", "[virtual-signal=signal-cyan]", "2"}', 1, true) ~= nil,
 			m2 and m2.tooltip)

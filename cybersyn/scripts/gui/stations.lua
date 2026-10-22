@@ -1203,6 +1203,7 @@ end
 
 -- The marker of an inventory row (PLAN8 D8-2): a small combinator icon after the name, and the room it takes.
 local MARKER_SIZE = 16
+local MARKER_SPRITE = "cybersyn-combinator-muted"
 local MARKER_W = MARKER_SIZE + 2
 
 local SILENT_MARKER = {
@@ -1250,7 +1251,8 @@ local function marker_def(marker)
 		type = "sprite-button",
 		style = "cybersyn_name_icon",
 		style_mods = { size = MARKER_SIZE },
-		sprite = "item/" .. COMBINATOR_NAME,
+		sprite = MARKER_SPRITE,
+		hovered_sprite = "item/" .. COMBINATOR_NAME,
 		tooltip = marker.tooltip(),
 		-- The combinator by unit number: util.handle_link_click's "entity" kind opens it.
 		tags = { kind = "entity", id = marker.unit, marker = true },
@@ -2343,7 +2345,7 @@ dev.register_dump(TAB, function(player_data)
 			local marker = false
 			for ci, c in ipairs(cells[1].children) do
 				if c.tags.marker then
-					marker = { unit = c.tags.id, kind = c.tags.kind, tooltip = c.tooltip, sprite = c.sprite, index = ci }
+					marker = { unit = c.tags.id, kind = c.tags.kind, tooltip = c.tooltip, sprite = c.sprite, hovered = c.hovered_sprite, index = ci }
 				end
 			end
 			markers[n] = marker

@@ -675,7 +675,9 @@ test("marker (D8-2): an inventory row names its combinator, links it and says wh
 	assert_eq(m.unit, 1002)
 	assert_eq(m.def.tags.kind, "entity")
 	assert_eq(m.def.tags.id, 1002)
-	assert_eq(m.def.sprite, "item/" .. COMBINATOR_NAME)
+	-- D8-2: muted in the list, full colour on hover.
+	assert_eq(m.def.sprite, "cybersyn-combinator-muted")
+	assert_eq(m.def.hovered_sprite, "item/" .. COMBINATOR_NAME)
 	assert_eq(m.tooltip[2], { "cybersyn-gui.stations-inventory-marker", "1", "0",
 		{ "cybersyn-gui.stations-inventory-network", "[virtual-signal=signal-A]", "3" } })
 	assert_nil(serpent.line(m.tooltip):find("relative-i-red", 1, true))
