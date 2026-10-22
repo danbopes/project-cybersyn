@@ -1,8 +1,9 @@
--- Phase 8 per-item drill-down (PLAN3 §4.10): opened by a left-click on an item cell of the Inventory grid and of a
--- Stations slot (shift keeps the Stations jump, right clears the filter), back returns to the tab it came from, the
--- totals are the snapshot's inventory_all, the three tables list exactly the stations and trains that provide, request
--- or carry the item, sorted (providers by stock, requesters in the dispatcher's order, trains by amount), whole rows
--- on four emulated screens, Escape on a pinned window closes only the drill-down, dump twice identical.
+-- Phase 8 per-item drill-down (PLAN3 §4.10), since PLAN8 D8-6 the Inventory tab under the item filter: a left-click on
+-- an item cell of the Inventory grid or of a Stations slot sets the filter and selects the Inventory (shift keeps the
+-- Stations jump, right clears the filter), Back clears the filter and the grids return, the totals are the snapshot's
+-- inventory_all, the three tables list exactly the inventory rows (id@unit) and trains that provide, request or carry
+-- the item, sorted (providers by stock, requesters in the dispatcher's order, trains by amount), whole rows on four
+-- emulated screens, Escape closes the window over it (it is no overlay), dump twice identical.
 -- The dispatcher-order case reuses cases.lua's LOST_PRIORITY scenario on row k = 70 with a network of its own: the
 -- requester the dispatcher serves first (the entry's lost_to) is listed before the one that loses.
 
@@ -86,11 +87,11 @@ local function model_checks(label, hash)
 		t.provided_stations == (o.provided and o.provided.stations or 0) and
 		t.requested == (o.requested and -o.requested.count or 0) and
 		t.in_transit == (o.in_transit and o.in_transit.count or 0), { t, o.provided, o.requested, o.in_transit })
-	-- A station with sections has one row per (station, section) that advertises the item (D3).
-	lab.check(label .. ": provider rows == (station, section) pairs providing it",
-		lab.same_list(sorted(d.row_keys.providers), o.provider_rows), { d.row_keys.providers, o.provider_rows })
-	lab.check(label .. ": requester rows == (station, section) pairs requesting it",
-		lab.same_list(sorted(d.row_keys.requesters), o.requester_rows), { d.row_keys.requesters, o.requester_rows })
+	-- One row per inventory (combinator) that advertises the item (PLAN8 D8-1), keyed id@unit.
+	lab.check(label .. ": provider rows == inventory rows providing it",
+		lab.same_list(sorted(d.row_keys.providers), o.provider_row_keys), { d.row_keys.providers, o.provider_row_keys })
+	lab.check(label .. ": requester rows == inventory rows requesting it",
+		lab.same_list(sorted(d.row_keys.requesters), o.requester_row_keys), { d.row_keys.requesters, o.requester_row_keys })
 	lab.check(label .. ": train rows == trains carrying it", lab.same_list(sorted(ids_of(d.model.trains)), o.trains),
 		{ ids_of(d.model.trains), o.trains })
 
@@ -165,13 +166,14 @@ lab.suite("39_item", {
 		ix.hash = inv.provided.hashes[1]
 		lab.check("an item to drill into", ix.hash ~= nil, inv.provided)
 
-		-- Left-click on an Inventory slot: the drill-down, from the Inventory, no filter set.
+		-- Left-click on an Inventory slot: the item filter, and the Inventory shows its drill-down (D8-6).
 		local res = dev("click", PI, "inventory_provided_table", 1)
 		local d = dev("item_dump", PI)
 		lab.check("Inventory slot click is handled by the shared link handler", res == true, res)
-		lab.check("left-click on an Inventory slot opens the drill-down from the Inventory",
-			d.open and d.hash == ix.hash and d.from_tab == "inventory_tab" and d.selected_tab == "inventory_tab", d)
-		lab.check("the item filter is not set by the drill-down", dev("state", PI).filters.item == nil)
+		lab.check("left-click on an Inventory slot shows the drill-down on the Inventory",
+			d.open and d.hash == ix.hash and d.selected_tab == "inventory_tab", d)
+		-- PLAN8 D8-6 flips the round-3 rule (the drill-down left the filter alone): it is the Inventory under the filter.
+		lab.check("the click sets the item filter", dev("state", PI).filters.item == ix.hash)
 		lab.check("the drill-down replaces the Inventory's content", (function()
 			local w = window()
 			local grids = find_named(w, "inventory_provided_table")
@@ -220,27 +222,30 @@ lab.suite("39_item", {
 		end
 		lab.check("numbers in the right-aligned value style, reasons in the reason label styles", styles_ok)
 
-		-- Back returns to the Inventory and shows its content again.
+		-- Back clears the item filter: the Inventory shows its grids again.
 		dev("close_item", PI)
 		d = dev("item_dump", PI)
-		lab.check("back closes the drill-down and returns to the Inventory", not d.open and dev("state", PI).selected_tab == "inventory_tab")
+		lab.check("back clears the item filter, the Inventory stays selected", not d.open and
+			dev("state", PI).selected_tab == "inventory_tab" and dev("state", PI).filters.item == nil)
 		lab.check("the Inventory's grids are shown again", (function()
 			local grids = find_named(window(), "inventory_provided_table")
 			return grids and top_child(grids, "manager_inventory_content_frame").visible and find_named(window(), "item_view") == nil
 		end)())
 
-		-- Shift keeps the Stations jump; right clears the filter.
+		-- Shift keeps the Stations jump; right clears the filter (here on the drill-down's own icon).
 		dev("click", PI, "inventory_provided_table", 1, { shift = true })
 		local st = dev("state", PI)
 		lab.check("shift-click on an Inventory slot jumps to Stations filtered to the item",
 			st.selected_tab == "stations_tab" and st.filters.item == ix.hash and not dev("item_dump", PI).open, st)
 		dev("select_tab", PI, "inventory")
-		dev("click", PI, "inventory_provided_table", 1, { right = true })
-		lab.check("right-click on an Inventory slot clears the item filter", dev("state", PI).filters.item == nil)
+		lab.check("the Inventory under that filter shows the drill-down", dev("item_dump", PI).open)
+		dev("click", PI, "item_icon", nil, { right = true })
+		lab.check("right-click on an item cell clears the item filter", dev("state", PI).filters.item == nil
+			and not dev("item_dump", PI).open)
 	end,
 
 	function()
-		-- A Stations slot: the same handler and semantics.
+		-- A Stations slot: the same handler and semantics, landing on the Inventory.
 		dev("select_tab", PI, "stations")
 		local scroll = find_named(window(), "manager_stations_tab_scroll_pane")
 		local path = scroll and path_to(scroll, function(e)
@@ -253,25 +258,24 @@ lab.suite("39_item", {
 		local hash = slot.tags.item_hash or slot.tags.id
 		dev("click", PI, "manager_stations_tab_scroll_pane", path)
 		local d = dev("item_dump", PI)
-		lab.check("left-click on a Stations slot opens the drill-down from Stations",
-			d.open and d.hash == hash and d.from_tab == "stations_tab" and d.selected_tab == "stations_tab", d)
+		lab.check("left-click on a Stations slot shows the drill-down on the Inventory",
+			d.open and d.hash == hash and d.selected_tab == "inventory_tab" and d.filter == hash, d)
 		model_checks("stations slot", hash)
-		-- An item cell inside the open drill-down's subheader: shift jumps to Stations filtered.
 		dev("close_item", PI)
-		lab.check("back returns to Stations", dev("state", PI).selected_tab == "stations_tab" and not dev("item_dump", PI).open)
-		lab.check("the Stations rows are shown again", scroll.valid and scroll.visible and
-			top_child(scroll, "manager_stations_content_frame").visible)
+		lab.check("back clears the filter and stays on the Inventory", dev("state", PI).selected_tab == "inventory_tab"
+			and not dev("item_dump", PI).open and dev("state", PI).filters.item == nil)
 
-		-- Selecting another tab leaves the drill-down.
+		-- Selecting another tab keeps the filter and drops the drill-down's elements; the Inventory shows it again.
 		dev("open_item", PI, hash)
 		dev("select_tab", PI, "trains")
-		lab.check("selecting another tab closes the drill-down", not dev("item_dump", PI).open and
+		lab.check("selecting another tab drops the drill-down's elements", not dev("item_dump", PI).open and
 			find_named(window(), "item_view") == nil)
-		lab.check("and the tab selected stays selected",
-			dev("state", PI).selected_tab == "trains_tab", dev("state", PI).selected_tab)
-		dev("select_tab", PI, "stations")
-		lab.check("and the host tab's content is back", scroll.valid and scroll.visible and
-			top_child(scroll, "manager_stations_content_frame").visible)
+		lab.check("and the tab selected stays selected, filtered to the item",
+			dev("state", PI).selected_tab == "trains_tab" and dev("state", PI).filters.item == hash, dev("state", PI))
+		dev("select_tab", PI, "inventory")
+		lab.check("back on the Inventory, the drill-down shows again", dev("item_dump", PI).open and
+			dev("item_dump", PI).hash == hash)
+		dev("close_item", PI)
 
 		-- A Trains shipment slot: the same handler.
 		dev("select_tab", PI, "trains")
@@ -282,27 +286,30 @@ lab.suite("39_item", {
 		if tpath then
 			local tslot = trains
 			for _, i in ipairs(tpath) do tslot = tslot.children[i] end
+			local tid = tslot.tags.id
 			dev("click", PI, "manager_trains_tab_scroll_pane", tpath)
 			local td = dev("item_dump", PI)
-			lab.check("left-click on a Trains shipment slot opens the drill-down from Trains", td.open and
-				td.hash == tslot.tags.id and td.from_tab == "trains_tab", td.from_tab)
+			lab.check("left-click on a Trains shipment slot shows the drill-down on the Inventory", td.open and
+				td.hash == tid and td.selected_tab == "inventory_tab", td.selected_tab)
 			dev("close_item", PI)
-			lab.check("back returns to Trains", dev("state", PI).selected_tab == "trains_tab" and trains.visible)
 		else
 			lab.skip("Trains shipment slot click", "no train carries cargo on this page")
 		end
 		dev("select_tab", PI, "stations")
 
-		-- Ctrl+F and a search set from outside (the stop panel's Open in manager) show the lists again.
+		-- The search button over the drill-down: the drill-down has no search field, so the search goes to Stations,
+		-- which keeps the item filter.
 		dev("open_item", PI, hash)
 		dev("click", PI, "manager_search_button")
 		local sf = dev("header", PI)
-		lab.check("the search button closes the drill-down and opens the visible search field",
-			not dev("item_dump", PI).open and sf.stations_tab.search, sf.stations_tab)
+		lab.check("the search button on the drill-down opens the Stations search field, the item filter kept",
+			sf.stations_tab.search and dev("state", PI).selected_tab == "stations_tab"
+			and dev("state", PI).filters.item == hash, sf.stations_tab)
 		dev("cancel_search", PI)
 		dev("open_item", PI, hash)
 		dev("set_filter", PI, { query = "stn-1" })
-		lab.check("a station search set from outside closes the drill-down", not dev("item_dump", PI).open)
+		lab.check("a station search set from outside leaves the drill-down (it ignores the search)",
+			dev("item_dump", PI).open and dev("item_dump", PI).hash == hash)
 		dev("clear_filters", PI)
 
 		-- An item cell outside the window (the stop and train panels): the window opens on the drill-down.
@@ -310,26 +317,28 @@ lab.suite("39_item", {
 		local outside = dev("link_click", PI, "item", hash)
 		local od = dev("item_dump", PI)
 		lab.check("an item link with the window closed opens the window on the drill-down",
-			dev("state", PI).is_open and od.open and od.hash == hash, { outside, od.open })
+			dev("state", PI).is_open and od.open and od.hash == hash and od.selected_tab == "inventory_tab",
+			{ outside, od.open })
 		dev("close_item", PI)
 		dev("select_tab", PI, "stations")
 
-		-- Escape never reaches a pinned window: the drill-down stays until its own Back.
+		-- Escape never reaches a pinned window: the drill-down stays.
 		dev("open_item", PI, hash)
 		local e = dev("item_escape", PI)
 		lab.check("on_gui_closed reaching the pinned window leaves the drill-down", e.before and e.open and e.manager_open, e)
 		dev("close_item", PI)
-		-- Unpinned: one rule for every overlay (manager.top_overlay): Escape closes the drill-down and the window stays,
-		-- as it does for the Trains pane; the next Escape closes the window.
+		-- Unpinned: the drill-down is the Inventory under the item filter, no overlay (PLAN8 D8-6 flips the round-7
+		-- rule that peeled it first): one Escape closes the window, and reopening shows the drill-down again.
 		dev("click", PI, "manager_pin_button")
 		dev("open_item", PI, hash)
 		e = dev("item_escape", PI)
-		lab.check("Escape on an unpinned window closes the drill-down, the window stays", e.before and not e.open and
-			e.manager_open, e)
-		e = dev("item_escape", PI)
-		lab.check("the next Escape on the unpinned window closes the window", not e.before and not e.manager_open, e)
+		lab.check("Escape on an unpinned window over the drill-down closes the window in one press", e.before and
+			not e.manager_open, e)
 		dev("open", PI)
 		lab.big_screen(PI)
+		lab.check("reopened: the Inventory shows the drill-down of the filter again", dev("item_dump", PI).open and
+			dev("item_dump", PI).hash == hash and dev("state", PI).selected_tab == "inventory_tab")
+		dev("close_item", PI)
 	end,
 
 	function()
@@ -372,8 +381,8 @@ lab.suite("39_item", {
 		local want_p, want_r = {}, {}
 		for _, id in ipairs(others.providers) do if net_of(id) == net then want_p[#want_p + 1] = id end end
 		for _, id in ipairs(others.requesters) do if net_of(id) == net then want_r[#want_r + 1] = id end end
-		lab.check("network filter: the drill-down opens though the item filter names another item",
-			d.open and d.hash == hash, { d.open, d.hash })
+		lab.check("network filter: the click replaces the other item in the filter and shows its drill-down",
+			d.open and d.hash == hash and d.filter == hash, { d.open, d.hash, d.filter })
 		lab.check("network filter: provider rows are that network's providers only",
 			lab.same_list(sorted(ids_of(d.model.providers)), sorted(want_p)), { ids_of(d.model.providers), want_p })
 		lab.check("network filter: requester rows are that network's requesters only",
@@ -383,12 +392,13 @@ lab.suite("39_item", {
 			d.filtered == true and d.totals.provided_stations == #want_p and d.totals.provided > 0 and d.totals.provided < all,
 			{ d.totals, #want_p, all })
 		-- A filter change reaches an open drill-down in the next update (the cache key carries the filters).
-		dev("clear_filters", PI)
+		dev("set_filter", PI, { network = false })
 		dev("update", PI, 12)
 		d = dev("item_dump", PI)
 		lab.check("filters cleared: every provider and requester is back", d.open and
-			lab.same_list(sorted(d.row_keys.providers), others.provider_rows) and
-			lab.same_list(sorted(d.row_keys.requesters), others.requester_rows), { d.row_keys.providers, others.provider_rows })
+			lab.same_list(sorted(d.row_keys.providers), others.provider_row_keys) and
+			lab.same_list(sorted(d.row_keys.requesters), others.requester_row_keys),
+			{ d.row_keys.providers, others.provider_row_keys })
 		lab.check("filters cleared: totals are inventory_all again", d.filtered == false and
 			d.totals.provided == (others.provided and others.provided.count or 0) and
 			d.totals.provided_stations == (others.provided and others.provided.stations or 0), { d.totals, others.provided })
@@ -412,8 +422,8 @@ lab.suite("39_item", {
 		dev("update", PI, 12)
 		local s = dev("state", PI)
 		local d = dev("item_dump", PI)
-		lab.check("stop panel item click, manager closed: the manager opens on the drill-down of that item",
-			s.is_open and d.open and d.hash == hash, { r, s.is_open, d.open, d.hash })
+		lab.check("stop panel item click, manager closed: the manager opens on the Inventory's drill-down of that item",
+			s.is_open and d.open and d.hash == hash and s.selected_tab == "inventory_tab", { r, s.is_open, d.open, d.hash })
 		local surface = s.filters.surface
 		local stations = read("stations")
 		local on_surface = true
@@ -675,9 +685,10 @@ lab.suite("39_item", {
 				if #d.rendered[tname] > 0 and not (sc and sc.header_flex == sc.row_flex) then widths_ok = false end
 			end
 			lab.check(label .. ": header and rows share the flexible width after the resize", widths_ok, d.scroll)
+			-- The item filter opens the filter row (PLAN4 D4), which costs 1366x768 at 1.5 its third row since D8-6.
 			lab.check(label .. ": shares add up to the computed rows, rendered within them",
 				a and a.providers + a.requesters + a.trains == r.computed and r.rendered <= r.computed and
-				r.computed >= 3 and 256 + r.computed * 32 <= r.content_height and 256 + (r.computed + 1) * 32 > r.content_height,
+				r.computed >= (label == "1366x768@1.5" and 2 or 3) and 256 + r.computed * 32 <= r.content_height and 256 + (r.computed + 1) * 32 > r.content_height,
 				{ a, r.computed, r.rendered, r.content_height, rows.computed })
 		end
 		lab.big_screen(PI)
