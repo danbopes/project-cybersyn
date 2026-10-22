@@ -1,4 +1,9 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.0.1
+Date: 2026-10-21
+  Changes:
+    - (Manager) Stations tab: a Priority column again, after Network. It shows the station's priority, every distinct value when its secondary inventories advertise with different priorities, and "*" when the control combinator sets its own priority for some items; the tooltip lists each source. Sorts by the highest value.
+---------------------------------------------------------------------------------------------------
 Version: 3.0.0
 Date: 2026-10-21
   Major Features:
