@@ -1019,7 +1019,9 @@ local function inventory_block(out, st, row, reason, display)
 		style_mods = { horizontal_spacing = 6, vertical_align = "center" },
 		label({ "", "[color=" .. S_COLOUR[colour] .. "]" .. letter .. "[/color] ", rtext.row_head(row) }, {
 			style = "bold_label",
-			tooltip = { "cybersyn-gui.relative-" .. string.lower(letter) .. "-" .. colour },
+			-- An inventory's priority signal ranks only its provides (see stations.lua priority_model).
+			tooltip = row.index > 0 and { "", { "cybersyn-gui.relative-i-" .. colour }, "\n",
+				{ "cybersyn-gui.inventory-priority-note" } } or { "cybersyn-gui.relative-" .. string.lower(letter) .. "-" .. colour },
 		}),
 	}
 	local net = rtext.row_network(row)

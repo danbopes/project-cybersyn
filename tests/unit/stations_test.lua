@@ -661,7 +661,10 @@ test("priority cell: the row's own priority; * only on the station combinator's 
 	local c0, c1 = stations_tab.priority_cell(rows[1]), stations_tab.priority_cell(rows[2])
 	assert_eq({ c0.caption, c1.caption }, { "0*", "3" })
 	assert_true(serpent.line(c0.tooltip):find('"cybersyn-gui.stations-priority-item", "7", "1"', 1, true) ~= nil)
-	assert_eq(#c1.tooltip, 2)
+	-- An inventory row adds that its priority ranks only its provides (the planner ranks requests at the station's).
+	assert_eq(#c1.tooltip, 3)
+	assert_eq(c1.tooltip[3], { "", "\n", { "cybersyn-gui.inventory-priority-note" } })
+	assert_eq(#c0.tooltip, 3)
 	local legacy = st(30, "No sources", { priority = 3 })
 	assert_eq(stations_tab.priority_cell(collector.inventories(legacy)[1]).caption, "3")
 end)

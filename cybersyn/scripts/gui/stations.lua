@@ -1211,6 +1211,9 @@ local function priority_model(m, row)
 		if item_p then
 			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.stations-priority-item", tostring(item_p), tostring(item_n) } }
 		end
+		-- The planner ranks every request of a station at the station's priority (central-planning.lua tick_dispatch),
+		-- so this number, which the drill-down's requester rows do not show, applies to the inventory's provides only.
+		if row.index > 0 then tip[#tip + 1] = { "", "\n", { "cybersyn-gui.inventory-priority-note" } } end
 		return tip
 	end
 end
