@@ -421,8 +421,13 @@ lab.suite("39_item", {
 			local st = stations[id]
 			if surface and st and st.entity_stop.surface_index ~= surface then on_surface = false end
 		end
-		lab.check("and its rows follow the open's surface default", on_surface and d.filtered == (surface ~= nil),
-			{ surface, d.filtered })
+		-- The slot carries its stop (D8-7), so the drill-down is filtered by the station chip whatever the surface.
+		local only_sid = #(d.model and d.model.providers or {}) > 0
+		for _, id in ipairs(d.model and d.model.providers or {}) do
+			if id ~= sid then only_sid = false end
+		end
+		lab.check("and its rows follow the open's surface default and the stop's station chip", on_surface and only_sid
+			and s.filters.station == sid and d.filtered == true, { surface, s.filters.station, sid, d.filtered, d.model })
 		dev("relative_close", PI)
 		dev("close_item", PI)
 		dev("clear_filters", PI)
