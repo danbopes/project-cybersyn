@@ -1098,16 +1098,16 @@ end
 
 --- The letters' part of the blocks' signature.
 --- @param st SnapshotStation
---- @param display {s: string, inv_failed: {[uint]: true}?}
+--- @param s string the S letter's colour
+--- @param inv {[uint]: true}? station.inv_failed
 --- @return string
-local function display_sig(st, display)
-	local inv = display.inv_failed
-	if not inv then return display.s end
-	local parts = { display.s }
+local function display_sig(st, s, inv)
+	if not inv then return s end
+	-- Runs on every refresh: no table, and a lit I is rare.
 	for _, row in ipairs(collector.inventories(st)) do
-		if inv[row.unit] then parts[#parts + 1] = tostring(row.unit) end
+		if inv[row.unit] then s = s .. "," .. row.unit end
 	end
-	return table.concat(parts, ",")
+	return s
 end
 
 --- What the station advertises, one block per combinator: a station without inventories is a single block.
@@ -1118,14 +1118,14 @@ local function render_slots(state, body, m)
 		return
 	end
 	local station = storage.stations and storage.stations[st.id]
-	local display = { s = rtext.s_colour(m.display_state), inv_failed = station and station.inv_failed or nil }
+	local s_colour, inv_failed = rtext.s_colour(m.display_state), station and station.inv_failed or nil
 	-- Each row carries its starved set (collector.station_status); a new station-level set refills them without a new
 	-- read, so it keys the cached signature too.
 	local snap = collector.live()
 	local starved = m.source == "live" and state.starved or (snap and snap.starved) or nil
-	local sig = record_sig(state, "slots", st, slots_content, starved) .. "|" .. display_sig(st, display)
+	local sig = record_sig(state, "slots", st, slots_content, starved) .. "|" .. display_sig(st, s_colour, inv_failed)
 	if state.sigs["slots"] ~= sig then
-		section(state, body, "slots", sig, function() return slots_defs(st, display) end)
+		section(state, body, "slots", sig, function() return slots_defs(st, { s = s_colour, inv_failed = inv_failed }) end)
 	end
 end
 relative.render_slots = render_slots
@@ -1142,6 +1142,8 @@ local function unserved_texts(m, r, now, inherit_before)
 	local req = st and st.requested[r.hash]
 	local wait = rtext.age_step(now - e.first_tick)
 	local inherited = e.first_tick < inherit_before
+	-- PLAN8 D8-1: on a station with inventories the text names the one that requests the item, as the Overview does.
+	local inv = utext.inventory_of(st, r.hash, "requested", collector.inventories)
 	local tip = utext.chip_tooltip({
 		item = item_tooltip or r.hash,
 		requested = req and -req.count or nil,
@@ -1149,7 +1151,7 @@ local function unserved_texts(m, r, now, inherit_before)
 		reason = e.reason,
 		a = e.a,
 		b = e.b,
-		network = m.network_name and network_rich(m.network_name) or nil,
+		network = inv and rtext.row_text(inv) or m.network_name and network_rich(m.network_name) or nil,
 		rej = e.rej,
 		wait = wait,
 		inherited = inherited,
@@ -1159,6 +1161,7 @@ local function unserved_texts(m, r, now, inherit_before)
 	local stock = utext.stock_caption(e.reason, e.a, e.b)
 	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited)
 end
+relative.unserved_texts = unserved_texts
 
 local function render_unserved(state, body, m, compact)
 	local rows = m.unserved

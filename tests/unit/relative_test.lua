@@ -429,6 +429,23 @@ test("stop panel: the naphthalene provider gets one block per combinator, Invent
 	assert_eq(lines, 2, "a separator between three blocks")
 end)
 
+test("stop panel: an unserved request names the inventory that asks for it (D8-1), a plain station its network", function()
+	local r = relative_mod()
+	local n = naphthalene()
+	local req = { count = -866, threshold = 100, active = true }
+	n.sources[3].requested = { ["liquid-fuel"] = req }
+	n.requested = { ["liquid-fuel"] = req }
+	local e = { first_tick = 0, reason = REASON_NO_PROVIDER, a = 0, b = 0, n = 1 }
+	local tip = r.unserved_texts({ st = n, name = n.name, network_name = "signal-A" }, { hash = "liquid-fuel", e = e }, 60, 0)
+	local why = serpent.line(tip[4], { comment = false })
+	assert_true(why:find('{"cybersyn-gui.source-inventory", 2}', 1, true) ~= nil, why)
+	assert_true(why:find("[virtual-signal=signal-A]4", 1, true) ~= nil, why)
+	local p = plain()
+	tip = r.unserved_texts({ st = p, name = p.name, network_name = "signal-A" }, { hash = "coal", e = e }, 60, 0)
+	why = serpent.line(tip[4], { comment = false })
+	assert_nil(why:find("source-inventory", 1, true), why)
+end)
+
 test("stop panel: two inventories on one mask are two blocks", function()
 	local r = relative_mod()
 	local n = naphthalene()
