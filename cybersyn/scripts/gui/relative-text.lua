@@ -280,7 +280,7 @@ function text.mask_text(mask)
 	return tostring(mask) .. " (" .. table.concat(out) .. ")"
 end
 
--- ---------------------------------------------------------------- network sections (round 7)
+-- ---------------------------------------------------------------- inventory rows (PLAN8 D8-1)
 
 -- Required here rather than at the top: the collector loads the engine-facing modules, and the functions above stay
 -- usable without it.
@@ -288,7 +288,7 @@ local collector = require("scripts.gui.collector")
 
 local EMPTY = {}
 
---- A network's icon alone, as rich text (its name when no prototype has it): how every view heads a section.
+--- A network's icon alone, as rich text (its name when no prototype has it).
 --- @param name string
 --- @return string
 function text.network_icon(name)
@@ -298,14 +298,222 @@ function text.network_icon(name)
 	return name .. " "
 end
 
---- "[A]3": a section's network and mask, the stop panel's block head and every view's short label.
+-- Networks a NETWORK_EACH row lists before "+n".
+local EACH_SHOWN = 4
+
+--- A NETWORK_EACH row's networks sorted by name, as {name, mask} pairs.
+--- @param nets {[string]: int}
+--- @return {name: string, mask: int}[]
+local function sorted_nets(nets)
+	local out = {}
+	for name, mask in pairs(nets) do out[#out + 1] = { name = name, mask = mask } end
+	table.sort(out, function(a, b) return a.name < b.name end)
+	return out
+end
+
+--- "[A]2": the network and mask a row advertises on; a NETWORK_EACH row lists its networks ("[A]1 [B]2", then "+n");
+--- "" for a row on no network (unread, or the station has none).
+--- @param row SnapshotInventory
+--- @return string
+function text.row_network(row)
+	local nets = row.networks
+	if nets then
+		local list = sorted_nets(nets)
+		local parts = {}
+		for i = 1, math.min(#list, EACH_SHOWN) do
+			parts[i] = text.network_icon(list[i].name) .. collector.mask_label(list[i].mask)
+		end
+		if #list > EACH_SHOWN then parts[#parts + 1] = "+" .. (#list - EACH_SHOWN) end
+		return table.concat(parts, " ")
+	end
+	local name, mask = row.network_name, row.mask
+	if not name or name == NETWORK_EACH or mask == nil then return "" end
+	return text.network_icon(name) .. collector.mask_label(mask)
+end
+
+--- "Inventory 2 · priority 5": the stop panel's block head, and the start of every text that names a row.
+--- @param row SnapshotInventory
+--- @return LocalisedString
+function text.row_head(row)
+	return { "", row.label or collector.source_label(row), " · ", { "cybersyn-gui.section-priority", tostring(row.priority) } }
+end
+
+--- "Inventory 2 · priority 5 · [A]2": a row as one line, for tooltips and the unserved texts.
+--- @param row SnapshotInventory
+--- @return LocalisedString
+function text.row_text(row)
+	local net = text.row_network(row)
+	if net == "" then return text.row_head(row) end
+	return { "", text.row_head(row), " · ", net }
+end
+
+--- What row_text shows, as a plain string: views sign rows with it before building the text.
+--- @param row SnapshotInventory
+--- @return string
+function text.row_sig(row)
+	local nets = row.networks
+	local net
+	if nets then
+		local parts = {}
+		for i, n in ipairs(sorted_nets(nets)) do parts[i] = n.name .. "=" .. n.mask end
+		net = table.concat(parts, ",")
+	else
+		net = tostring(row.network_name) .. "=" .. tostring(row.mask)
+	end
+	return row.kind .. row.index .. "/" .. tostring(row.priority) .. "/" .. net
+end
+
+--- Whether the station has inventory combinators: its views lay it out per inventory then.
+--- @param st SnapshotStation
+--- @return boolean
+function text.has_inventories(st)
+	return #collector.inventories(st) > 1
+end
+
+--- The distinct networks the station's rows advertise on, sorted by name then mask: the stop panel's "Networks" line.
+--- @param st SnapshotStation
+--- @return {name: string, mask: int}[]
+function text.row_networks(st)
+	local out, seen = {}, {}
+	local function add(name, mask)
+		local key = name .. "=" .. mask
+		if not seen[key] then
+			seen[key] = true
+			out[#out + 1] = { name = name, mask = mask }
+		end
+	end
+	for _, row in ipairs(collector.inventories(st)) do
+		if row.networks then
+			for name, mask in pairs(row.networks) do add(name, mask) end
+		elseif row.network_name and row.network_name ~= NETWORK_EACH and row.mask ~= nil then
+			add(row.network_name, row.mask)
+		end
+	end
+	table.sort(out, function(a, b)
+		if a.name ~= b.name then return a.name < b.name end
+		return a.mask < b.mask
+	end)
+	return out
+end
+
+--- Network name -> bitwise OR of every mask the station's rows advertise on it: the trains that can serve any of them.
+--- @param st SnapshotStation
+--- @return {[string]: int}
+function text.rows_union(st)
+	local union = {}
+	for _, n in ipairs(text.row_networks(st)) do union[n.name] = bor(union[n.name] or 0, n.mask) end
+	return union
+end
+
+--- Inventory rows the planner skips this pass (the station combinator is off, or has no input signals). Records
+--- without `read` (before it existed) only knew the off case.
+--- @param st SnapshotStation
+--- @return SnapshotInventory[]
+function text.paused_inventories(st)
+	local out = {}
+	for _, row in ipairs(collector.inventories(st)) do
+		local src = row.src or row
+		if row.kind == "inventory" and (src.read == false or (src.read == nil and not src.ok)) then
+			out[#out + 1] = row
+		end
+	end
+	return out
+end
+
+--- The rows the stop panel gives a block: the station combinator, then every inventory the planner reads.
+--- @param st SnapshotStation
+--- @return SnapshotInventory[]
+function text.advertised_rows(st)
+	local out = {}
+	for _, row in ipairs(collector.inventories(st)) do
+		local src = row.src or row
+		if row.kind ~= "inventory" or not (src.read == false or (src.read == nil and not src.ok)) then
+			out[#out + 1] = row
+		end
+	end
+	return out
+end
+
+--- The paused line's locale key: why the station combinator holds its inventories back.
+--- @param st SnapshotStation
+--- @return string
+function text.paused_key(st)
+	return st.comb_ok and "cybersyn-gui.section-paused-no-signals" or "cybersyn-gui.section-paused"
+end
+
+--- Why a station's rows leave signals unadvertised: its Provide only / Request only switch.
+--- @param st SnapshotStation
+--- @return LocalisedString
+function text.ignored_reason(st)
+	if st.is_p and not st.is_r then return { "cybersyn-gui.section-provide-only" } end
+	if st.is_r and not st.is_p then return { "cybersyn-gui.section-request-only" } end
+	return { "cybersyn-gui.section-switch" }
+end
+
+--- A signature of everything the stop panel's inventory blocks show. Sorted, so two records with the same values sign
+--- alike whatever order their tables were filled in.
+--- @param st SnapshotStation
+--- @return string
+function text.rows_content(st)
+	local parts = {}
+	for i, row in ipairs(collector.inventories(st)) do
+		local src = row.src or row
+		local k = i .. row.kind .. row.index .. "#" .. tostring(row.unit)
+		parts[#parts + 1] = k .. "=" .. text.row_sig(row) .. (src.ok and "o" or "") .. (src.read == false and "u" or "")
+			.. (src.read == nil and "n" or "")
+		for hash, count in pairs(row.provided) do parts[#parts + 1] = k .. "p" .. hash .. "=" .. count end
+		for hash, req in pairs(row.requested) do
+			parts[#parts + 1] = k .. "r" .. hash .. "=" .. req.count .. "/" .. req.threshold .. (req.active and "a" or "")
+		end
+		for hash, count in pairs(row.ignored or EMPTY) do parts[#parts + 1] = k .. "i" .. hash .. "=" .. count end
+		for hash in pairs(row.starved or EMPTY) do parts[#parts + 1] = k .. "s" .. hash end
+	end
+	table.sort(parts)
+	return (st.is_p and "p" or "") .. (st.is_r and "r" or "") .. (st.comb_ok and "o" or "")
+		.. (st.network_name and "n" or "") .. "|" .. table.concat(parts, ",")
+end
+
+-- ---------------------------------------------------------------- round-7 section texts
+-- The drill-down (item.lua) still heads its rows with these until it moves to the inventory rows.
+
+--- "[A]3": a section's network and mask.
 --- @param sec SnapshotSection
 --- @return string
 function text.section_label(sec)
 	return text.network_icon(sec.network_name) .. collector.mask_label(sec.mask)
 end
 
---- "[A]3 (bits 1+2) · Inventory 1 · priority 0": the stop panel's section head as one line, for tooltips and texts.
+local SOURCES_SHOWN = 4
+
+--- "Station combinator · priority 0", "Inventory 1, Inventory 3 · priority 2", or each source with its own priority
+--- when they differ: "Station combinator (priority 0), Inventory 1 (priority 5)".
+--- @param sources SnapshotSource[]
+--- @return LocalisedString
+function text.sources_caption(sources)
+	local out = { "" }
+	local first = sources[1]
+	if not first then return out end
+	local same = true
+	for i = 2, #sources do
+		if sources[i].priority ~= first.priority then same = false end
+	end
+	for i = 1, math.min(#sources, SOURCES_SHOWN) do
+		if i > 1 then out[#out + 1] = ", " end
+		out[#out + 1] = collector.source_label(sources[i])
+		if not same then
+			out[#out + 1] = " "
+			out[#out + 1] = { "cybersyn-gui.section-source-priority", tostring(sources[i].priority) }
+		end
+	end
+	if #sources > SOURCES_SHOWN then out[#out + 1] = " +" .. (#sources - SOURCES_SHOWN) end
+	if same then
+		out[#out + 1] = " · "
+		out[#out + 1] = { "cybersyn-gui.section-priority", tostring(first.priority) }
+	end
+	return out
+end
+
+--- "[A]3 (bits 1+2) · Inventory 1 · priority 0".
 --- @param sec SnapshotSection
 --- @return LocalisedString
 function text.section_text(sec)
@@ -313,13 +521,21 @@ function text.section_text(sec)
 	return { "", text.section_label(sec), bits and (" (" .. bits .. ")") or "", " · ", text.sources_caption(sec.sources) }
 end
 
---- What section_text shows, as a plain string: views sign rows with it before building the text.
+--- What section_text shows, as a plain string.
 --- @param sec SnapshotSection
 --- @return string
 function text.section_sig(sec)
 	local parts = { sec.key }
 	for i, src in ipairs(sec.sources) do parts[i + 1] = src.kind .. src.index .. "=" .. src.priority end
 	return table.concat(parts, "/")
+end
+
+-- round-8 compat for the Stations tab until it reads rows (removed with it).
+
+local function count_keys(t)
+	local n = 0
+	for _ in pairs(t) do n = n + 1 end
+	return n
 end
 
 --- The station's sections; a record collected without them reads as one section per network of the station
@@ -381,42 +597,6 @@ function text.masks_caption(sections)
 	return name, table.concat(parts, " · ")
 end
 
-local SOURCES_SHOWN = 4
-
---- "Station combinator · priority 0", "Inventory 1, Inventory 3 · priority 2", or each source with its own priority
---- when they differ: "Station combinator (priority 0), Inventory 1 (priority 5)".
---- @param sources SnapshotSource[]
---- @return LocalisedString
-function text.sources_caption(sources)
-	local out = { "" }
-	local first = sources[1]
-	if not first then return out end
-	local same = true
-	for i = 2, #sources do
-		if sources[i].priority ~= first.priority then same = false end
-	end
-	for i = 1, math.min(#sources, SOURCES_SHOWN) do
-		if i > 1 then out[#out + 1] = ", " end
-		out[#out + 1] = collector.source_label(sources[i])
-		if not same then
-			out[#out + 1] = " "
-			out[#out + 1] = { "cybersyn-gui.section-source-priority", tostring(sources[i].priority) }
-		end
-	end
-	if #sources > SOURCES_SHOWN then out[#out + 1] = " +" .. (#sources - SOURCES_SHOWN) end
-	if same then
-		out[#out + 1] = " · "
-		out[#out + 1] = { "cybersyn-gui.section-priority", tostring(first.priority) }
-	end
-	return out
-end
-
-local function count_keys(t)
-	local n = 0
-	for _ in pairs(t) do n = n + 1 end
-	return n
-end
-
 --- "provides 1 item", "requests 3 items", both, or "nothing advertised".
 --- @param section SnapshotSection
 --- @return LocalisedString
@@ -426,15 +606,6 @@ function text.section_summary(section)
 	if p > 0 then return { "cybersyn-gui.section-provides", tostring(p) } end
 	if r > 0 then return { "cybersyn-gui.section-requests", tostring(r) } end
 	return { "cybersyn-gui.section-nothing" }
-end
-
---- Why the station's sections leave signals unadvertised: its Provide only / Request only switch.
---- @param st SnapshotStation
---- @return LocalisedString
-function text.ignored_reason(st)
-	if st.is_p and not st.is_r then return { "cybersyn-gui.section-provide-only" } end
-	if st.is_r and not st.is_p then return { "cybersyn-gui.section-request-only" } end
-	return { "cybersyn-gui.section-switch" }
 end
 
 --- Active requests of a section nobody provides on its network: the collector's section.starved, else the
@@ -454,27 +625,6 @@ function text.section_starved(section, starved)
 		end
 	end
 	return out or EMPTY
-end
-
---- Inventory sources the planner skips this pass (the station combinator is off, or has no input signals): in
---- st.sources, in no section. Records without `read` (before it existed) only knew the off case.
---- @param st SnapshotStation
---- @return SnapshotSource[]
-function text.paused_inventories(st)
-	local out = {}
-	for _, src in ipairs(st.sources or EMPTY) do
-		if src.kind == "inventory" and (src.read == false or (src.read == nil and not src.ok)) then
-			out[#out + 1] = src
-		end
-	end
-	return out
-end
-
---- The paused line's locale key: why the station combinator holds its inventories back.
---- @param st SnapshotStation
---- @return string
-function text.paused_key(st)
-	return st.comb_ok and "cybersyn-gui.section-paused-no-signals" or "cybersyn-gui.section-paused"
 end
 
 --- A signature of everything the section blocks show. Sorted, so two records with the same values sign alike
@@ -506,5 +656,6 @@ function text.sections_content(st, starved)
 	table.sort(parts)
 	return (st.is_p and "p" or "") .. (st.is_r and "r" or "") .. (st.comb_ok and "o" or "") .. "|" .. table.concat(parts, ",")
 end
+
 
 return text
