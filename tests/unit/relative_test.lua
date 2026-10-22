@@ -480,6 +480,25 @@ test("stop panel: a starved request in a row says so in its tooltip", function()
 	assert_true(found)
 end)
 
+test("stop panel: every Advertised slot's tooltip ends with the click and shift-click hint", function()
+	local r = relative_mod()
+	local p = plain()
+	local slots, hinted = 0, 0
+	local function walk(d)
+		if d.type == "sprite-button" and d.tags and d.tags.kind == "item" then
+			slots = slots + 1
+			assert_eq(d.tags.station, p.id, "a stop panel slot carries its station")
+			local tip = d.tooltip
+			if tip[#tip][1] == "cybersyn-gui.relative-slot-hint" and tip[#tip - 1] == "\n" then hinted = hinted + 1 end
+			assert_true(d.elem_tooltip ~= nil, "the item's own tooltip stays")
+		end
+		for _, c in ipairs(d) do walk(c) end
+	end
+	for _, d in ipairs(r.slots_defs(p)) do walk(d) end
+	assert_true(slots > 0)
+	assert_eq(hinted, slots)
+end)
+
 test("stop panel: red S and red I (D8-4) on the heads, from the combinators' display", function()
 	local r = relative_mod()
 	local n = naphthalene()

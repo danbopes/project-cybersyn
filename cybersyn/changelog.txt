@@ -10,7 +10,7 @@ Date: 2026-10-22
   Features:
     - (Manager) An inventory row in the Stations tab ends in a small grey combinator icon: its tooltip names the inventory, its priority, network and mask (or why it is not read), and clicking it opens that combinator
     - (Manager) Stop panel: each Advertised block starts with the combinator's letter in the colour of its display (S for the station combinator, I for an inventory), its name and priority, and its network and mask; a Networks line lists every network the station advertises on
-    - (Manager) Deliveries in flight in the stop panel open the Trains tab filtered by the item and the station; Advertised and Unserved slots open the item's drill-down for that station
+    - (Manager) Deliveries in flight in the stop panel open the Trains tab filtered by the item and the station; Advertised and Unserved slots open the item's drill-down for that station. Shift+click opens the same view without the station filter, and the slots' tooltips say so
     - (Manager) The Stations footer counts rows as well as stations when a station has inventories ("1,937 of 1,937 stations · 2,069 rows")
   Changes:
     - (Manager) Shift+click on a station, depot, refueler or train link shows it on the map and closes the manager window, also from a link in the Trains detail pane; Locate still keeps the window with a Back button
