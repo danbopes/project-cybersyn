@@ -940,6 +940,11 @@ local function register_tick()
 			tick(storage, mod_settings)
 		end)
 	end
+	-- On a fixed game-tick cadence, so each Utilization range spans what its caption says whatever the dispatcher rate
+	-- (and samples even with the planner at 0 tps); a no-op while analytics is off.
+	add(analytics.SAMPLE_TICKS, function()
+		analytics.tick(storage)
+	end)
 	local manager_nth
 	if mod_settings.manager_ups > DELTA then
 		manager_nth = ceil(60 / mod_settings.manager_ups) --[[@as uint]]

@@ -21,6 +21,49 @@ local function debug_log(msg)
 	end
 end
 
+---The Utilization legend's name for a layout: locomotives, cargo and fluid wagons counted ("2L-4C-1F"); "#id"
+---when the layout record is gone.
+---@param layout int[]? the layout array (0 = locomotive, 1 = cargo wagon, 2 = fluid wagon)
+---@param layout_id uint?
+---@return string
+function analytics.format_layout_name(layout, layout_id)
+	if not layout or #layout == 0 then
+		return "#" .. tostring(layout_id or "?")
+	end
+	local locos, cargo, fluid = 0, 0, 0
+	for i = 1, #layout do
+		local c = layout[i]
+		if c == 0 then
+			locos = locos + 1
+		elseif c == 1 then
+			cargo = cargo + 1
+		elseif c == 2 then
+			fluid = fluid + 1
+		end
+	end
+	local parts = {}
+	if locos > 0 then parts[#parts + 1] = locos .. "L" end
+	if cargo > 0 then parts[#parts + 1] = cargo .. "C" end
+	if fluid > 0 then parts[#parts + 1] = fluid .. "F" end
+	return table.concat(parts, "-")
+end
+
+-- The Utilization chart's resolutions, one per range button: each interval keeps `length` samples taken `ticks` game
+-- ticks apart, so it spans exactly the time its name says (ticks x length), and every `steps` of them are averaged
+-- into one sample of the next. analytics.tick runs on its own nth tick (SAMPLE_TICKS = the first interval's `ticks`),
+-- not the planner's, so the spans do not depend on the dispatcher rate.
+local interval_defs = {
+	{name = "1m",    ticks = 6,      steps = 10,  length = 600},
+	{name = "10m",   ticks = 60,     steps = 6,   length = 600},
+	{name = "1h",    ticks = 360,    steps = 10,  length = 600},
+	{name = "10h",   ticks = 3600,   steps = 5,   length = 600},
+	{name = "50h",   ticks = 18000,  steps = 5,   length = 600},
+	{name = "250h",  ticks = 90000,  steps = 4,   length = 600},
+	{name = "1000h", ticks = 360000, steps = nil, length = 600},
+}
+analytics.UTILIZATION_INTERVALS = interval_defs
+analytics.SAMPLE_TICKS = interval_defs[1].ticks
+
 --- The Breakdown tab's range buttons: each covers exactly the span its caption names (key = number + m or h).
 analytics.BREAKDOWN_RANGES = {
 	{ key = "1m", ticks = 3600 },
@@ -39,23 +82,30 @@ function analytics.range_ticks(key)
 	return tonumber(n) * (unit == "m" and 3600 or 216000)
 end
 
-local interval_map = {
-	["5s"] = 1, ["1m"] = 2, ["10m"] = 3, ["1h"] = 4,
-	["10h"] = 5, ["50h"] = 6, ["250h"] = 7, ["1000h"] = 8,
-}
-
 local SURFACE_NAME = "cybersyn_analytics"
+
+---@return table[] intervals the Utilization chart's interval set, empty
+local function new_interval_set()
+	return charts.create_time_series(interval_defs)
+end
 
 ---Initialize analytics data structure
 ---@param map_data MapData
 function analytics.init(map_data)
-	-- Create the chart surface using the library
-	local surface_data = charts.create_surface(SURFACE_NAME)
-
 	if map_data.analytics then
-		-- Already initialized, update surface reference
+		-- The stored surface_data carries the chunk allocation cursor: a fresh one would place every new chunk at {0,0},
+		-- on top of the charts already there.
+		local surface_data = map_data.analytics.surface_data
+		if not (surface_data and surface_data.surface and surface_data.surface.valid) then
+			surface_data = charts.create_surface(SURFACE_NAME)
+			map_data.analytics.surface_data = surface_data
+		else
+			-- A force created after the surface must not see it in map view either.
+			for _, force in pairs(game.forces) do
+				force.set_surface_hidden(surface_data.surface, true)
+			end
+		end
 		map_data.analytics.surface = surface_data.surface
-		map_data.analytics.surface_data = surface_data
 		-- Ensure fields exist for backwards compatibility
 		if not map_data.analytics.fulfillment_ema then
 			map_data.analytics.fulfillment_ema = {}
@@ -75,18 +125,24 @@ function analytics.init(map_data)
 		if not map_data.analytics.active_failures then
 			map_data.analytics.active_failures = {}
 		end
-		-- Clean up old data structures if present: the Utilization chart's samples and two series no tab drew.
+		-- 3.0 dropped the chart's samples, and builds before it kept a 5 s level first; two series older builds sampled
+		-- are drawn by no tab.
+		local series = map_data.analytics.train_utilization
+		if not (series and #series == #interval_defs and series[1].name == interval_defs[1].name) then
+			map_data.analytics.train_utilization = new_interval_set()
+		end
 		map_data.analytics.failed_dispatches = nil
 		map_data.analytics.last_failure_tick = nil
-		map_data.analytics.train_utilization = nil
 		map_data.analytics.fulfillment_times = nil
 		map_data.analytics.total_delivery_times = nil
 		return
 	end
 
+	local surface_data = charts.create_surface(SURFACE_NAME)
 	map_data.analytics = {
 		surface = surface_data.surface,
 		surface_data = surface_data,
+		train_utilization = new_interval_set(),
 		delivery_starts = {},
 		fulfillment_ema = {},
 		total_time_ema = {},
@@ -146,6 +202,27 @@ end
 function analytics.interval_unregister_gui(map_data, interval, player)
 	interval.guis[player.index] = nil
 	interval.viewer_count = interval.viewer_count - 1
+end
+
+---Render one interval of a time series to its chunk
+---@param map_data MapData
+---@param intervals table[]
+---@param interval_index number
+---@param selected_series table? {[series]: false} hides a series
+---@param fixed_range table? {min, max}
+---@param label_format string? "percent" (default) or "time"
+---@param viewport_width number?
+---@param viewport_height number?
+---@return table? ordered_sums the series drawn, by sum
+---@return table? hit_regions
+function analytics.render_graph(map_data, intervals, interval_index, selected_series, fixed_range, label_format, viewport_width, viewport_height)
+	return charts.render_time_series(map_data.analytics.surface, intervals, interval_index, {
+		selected_series = selected_series,
+		y_range = fixed_range,
+		label_format = label_format,
+		viewport_width = viewport_width,
+		viewport_height = viewport_height,
+	})
 end
 
 ---Record delivery start for time tracking
@@ -417,11 +494,41 @@ function analytics.get_active_failures(map_data, oldest_tick)
 	return results
 end
 
----Get interval by name
----@param name string
----@return number
-function analytics.get_interval_index(name)
-	return interval_map[name] or 1
+---One utilization sample: per train layout (keyed by its id as a string, the chart's series name), the share of its
+---trains on a delivery now, in percent.
+---@param trains {[uint]: Train}
+---@return {[string]: number}
+function analytics.utilization_sample(trains)
+	local working, total = {}, {}
+	for _, train in pairs(trains) do
+		local layout_id = train.layout_id
+		if layout_id then
+			local key = tostring(layout_id)
+			total[key] = (total[key] or 0) + 1
+			if STATUS_ON_DELIVERY[train.status] then
+				working[key] = (working[key] or 0) + 1
+			end
+		end
+	end
+	local sample = {}
+	for key, n in pairs(total) do
+		sample[key] = (working[key] or 0) / n * 100
+	end
+	return sample
+end
+
+---Samples train utilization into the chart's time series; called every SAMPLE_TICKS game ticks.
+---@param map_data MapData
+function analytics.tick(map_data)
+	if not analytics.is_enabled() then return end
+	-- Turning the setting on mid-game, or a save from 3.0 (no samples kept), must start the chart without waiting for
+	-- a tab to open.
+	local data = map_data.analytics
+	if not (data and data.train_utilization) then analytics.init(map_data) end
+	local sample = analytics.utilization_sample(map_data.trains)
+	if next(sample) then
+		charts.add_datapoint(map_data.analytics.train_utilization, sample)
+	end
 end
 
 ---Render a stacked bar chart for delivery breakdown using the library

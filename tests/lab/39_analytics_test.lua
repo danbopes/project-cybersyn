@@ -2,9 +2,10 @@
 --   * slow_delivery: never written while the golden trace ran; written for a delivery whose train was held (its fuel
 --     taken, then given back) after three normal trips of the same item, with a = the trip
 --     and b = the item's average, station = requester, station2 = provider; not for the three normal trips.
---   * Utilization (analytics on, no charts library in the lab): one table row per distinct train layout, trains per
---     row as storage.trains says.
---   * Breakdown (needs factorio-charts, absent here, so through its dev hooks): the bar tooltip names the item by its
+--   * Utilization (PLAN8 D8-5, the chart back): without factorio-charts the tab is hidden and the missing library is
+--     named once; with it (a lab that loads the zip) every layout is sampled, the legend lists them, a checkbox toggles
+--     a series, each range button selects its interval.
+--   * Breakdown (through its dev hooks, with or without factorio-charts): the bar tooltip names the item by its
 --     localised name with its icon, fluids too; every range button covers what its caption says.
 
 local D, pi = lab.D, lab.pi
@@ -31,6 +32,13 @@ local function slow_events(from_seq)
 		if ev.kind == "slow_delivery" then out[#out + 1] = ev end
 	end
 	return out
+end
+
+local function sorted_keys(t)
+	local keys = {}
+	for k in pairs(t) do keys[#keys + 1] = k end
+	table.sort(keys)
+	return keys
 end
 
 local function trips(c)
@@ -214,63 +222,143 @@ local more = {
 		lab.wait(120)
 	end,
 
-	-- Utilization: analytics on, the table, one row per layout (the tab with analytics off is checked last).
+	-- Utilization (PLAN8 D8-5): the factorio-charts line chart, sampled while analytics is on. The suite runs without the
+	-- library by default (the tab is hidden, the notice printed once) and with it through a lab that loads the zip.
 	function(ctx)
 		ctx.analytics = settings.global["cybersyn-enable-analytics"].value
+		ctx.samples = dev("utilization_samples", pi)
 		dev("set_setting", "cybersyn-enable-analytics", true)
+		-- Samples are taken every analytics.SAMPLE_TICKS from the moment the setting is on, before any tab opens.
+		lab.wait(300)
+	end,
+
+	function(ctx)
+		local s = dev("utilization_samples", pi)
+		ctx.library = s.library
+		ctx.layouts = {}
+		for _, t in pairs(read("trains")) do
+			if t.layout_id then ctx.layouts[tostring(t.layout_id)] = t.layout_id end
+		end
+		if not s.library then
+			lab.check("no charts library: nothing is sampled", s.intervals == nil, s)
+			dev("open", pi)
+			local tab = dev("select_tab", pi, "utilization")
+			lab.check("no charts library, analytics on: no Utilization tab", tab ~= "utilization_tab", tab)
+			tab = dev("select_tab", pi, "breakdown")
+			lab.check("…and no Breakdown tab", tab ~= "delivery_breakdown_tab", tab)
+			s = dev("utilization_samples", pi)
+			lab.check("…the missing library is named once on open", type(s.notice) == "number", s.notice)
+			ctx.notice = s.notice
+			dev("close", pi)
+			lab.wait(60)
+			return
+		end
+		local samples = s.intervals and s.intervals[1] and s.intervals[1].counts or {}
+		lab.check("analytics on: every layout with trains is sampled before the tab opens",
+			lab.same_list(sorted_keys(samples), sorted_keys(ctx.layouts)), s)
 		dev("open", pi)
 		local tab = dev("select_tab", pi, "utilization")
-		lab.check("analytics on without the charts library: the Utilization tab is there", tab == "utilization_tab", tab)
+		lab.check("analytics on: the Utilization tab is there", tab == "utilization_tab", tab)
+		lab.wait(2)
+	end,
+
+	function(ctx)
+		if not ctx.library then
+			dev("open", pi)
+			local s = dev("utilization_samples", pi)
+			lab.check("…and not again on the next open", s.notice == ctx.notice, { first = ctx.notice, now = s.notice })
+			dev("close", pi)
+			for _, name in ipairs({ "chart renders", "legend lists the layouts", "a checkbox toggles a series",
+				"each range button selects", "a chunk per interval" }) do
+				lab.skip("Utilization " .. name, "factorio-charts not loaded in this lab")
+			end
+			return
+		end
 		local d = dev("dump", pi, "utilization")
-		local layouts, per = {}, {}
-		for _, t in pairs(read("trains")) do
-			if t.layout_id then
-				layouts[t.layout_id] = true
-				per[t.layout_id] = (per[t.layout_id] or 0) + 1
+		ctx.d = d
+		lab.check("Utilization: the chart shows, no 'no data' line", d.chart == true and d.no_data == false, d)
+		local surface = game.surfaces["cybersyn_analytics"]
+		lab.check("…its camera on the analytics surface, registered on the interval", surface ~= nil
+			and d.camera_surface == surface.index and d.registered, d)
+		local names = {}
+		for _, e in ipairs(d.legend) do names[e.series] = true end
+		lab.check("…the legend lists the save's layouts", #d.legend > 0 and #d.legend == lab.count(names)
+			and lab.same_list(sorted_keys(names), sorted_keys(ctx.layouts)), { legend = d.legend, want = ctx.layouts })
+		local layouts = read("layouts")
+		local captions = true
+		for _, e in ipairs(d.legend) do
+			local layout = layouts[tonumber(e.series)]
+			local locos, wagons = 0, 0
+			for _, c in pairs(layout or {}) do
+				if c == 0 then locos = locos + 1 else wagons = wagons + 1 end
+			end
+			if not (e.state == true and type(e.caption) == "string" and e.caption:find("^" .. locos .. "L")
+				and e.average:find("%%$")) then captions = false end
+		end
+		lab.check("…each checked, named by its carriage counts, with its average %", captions, d.legend)
+		lab.check("…every series drawn", d.drawn == #d.legend and d.series == #d.legend, d)
+		lab.check("…the graph as wide as the tab beside the legend, as tall as the tab below the time range",
+			d.width == math.max(400, d.content_width - d.legend_width - 8) and d.height == math.max(300, d.content_height - d.chrome)
+			and d.camera_width == d.width, d)
+		lab.info("utilization: " .. serpent.line(d.legend, { comment = false }) .. string.format(" graph %dx%d", d.width, d.height))
+		ctx.series = d.legend[1].series
+		local state = dev("utilization_toggle", pi, ctx.series)
+		lab.check("a legend checkbox unticks", state == false, state)
+		lab.wait(2)
+	end,
+
+	function(ctx)
+		if not ctx.library then return end
+		local d = dev("dump", pi, "utilization")
+		local e = d.legend[1]
+		lab.check("…its series leaves the chart, the legend keeps it unticked", e and e.series == ctx.series and e.state == false
+			and d.drawn == #d.legend - 1, d)
+		dev("utilization_toggle", pi, ctx.series)
+		lab.wait(2)
+	end,
+
+	function(ctx)
+		if not ctx.library then return end
+		local d = dev("dump", pi, "utilization")
+		lab.check("…and ticked again it is back", d.legend[1].state == true and d.drawn == #d.legend, d)
+		local ok, seen = true, {}
+		for i = 1, #d.captions do
+			dev("click", pi, "utilization_interval_buttons", i)
+			local di = dev("dump", pi, "utilization")
+			local lit = 0
+			for _, b in pairs(di.buttons) do if b then lit = lit + 1 end end
+			local s = dev("utilization_samples", pi)
+			local viewers = 0
+			for _, iv in ipairs(s.intervals) do viewers = viewers + iv.viewers end
+			seen[i] = { interval = di.interval, lit = lit, viewers = viewers, mine = s.intervals[i].viewers,
+				name = s.intervals[i].name, caption = di.captions[i] }
+			if not (di.interval == i and di.buttons[i] and lit == 1 and viewers == 1 and s.intervals[i].viewers == 1
+				and s.intervals[i].name == di.captions[i]) then
+				ok = false
 			end
 		end
-		local m = dev("utilization_model", pi)
-		lab.check("Utilization rows == distinct layouts", #d.rows == lab.count(layouts) and #m.rows == #d.rows and #d.rows > 0,
-			{ rows = d.rows, layouts = layouts })
-		local ok = true
-		for i, r in ipairs(m.rows) do
-			if per[r.layout_id] ~= r.trains or d.rows[i].trains ~= tostring(r.trains) then ok = false end
+		lab.check("each range button selects the interval its caption names, lit alone, the chart registered on it alone", ok
+			and #d.captions == 7, seen)
+		local chunks, distinct = {}, true
+		for _, iv in ipairs(dev("utilization_samples", pi).intervals) do
+			if not iv.chunk or chunks[iv.chunk] then distinct = false end
+			chunks[iv.chunk or "none"] = iv.name
 		end
-		lab.check("…each with its trains as storage.trains counts them", ok, { model = m.rows, per = per })
-		local CLASS = { [0] = "item/locomotive", [1] = "item/cargo-wagon", [2] = "item/fluid-wagon" }
-		local icons_ok = true
-		for i, r in ipairs(m.rows) do
-			local row = d.rows[i]
-			if not (row and row.layout == r.composition and r.runs and #row.icons == #r.runs) then
-				icons_ok = false
-			else
-				for j, run in ipairs(r.runs) do
-					local icon = row.icons[j]
-					if not (type(icon) == "table" and icon[1] == CLASS[run.class] and icon[2] == run.n) then icons_ok = false end
-				end
-			end
-		end
-		lab.check("…its composition as icons with a count badge per run, the L<CC> text in the tooltip", icons_ok,
-			{ model = m.rows, rows = d.rows })
-		lab.check("…under a header that says what busy means", type(d.header) == "table" and
-			d.header[1] == "cybersyn-gui.utilization-header", d.header)
-		local rows_ok = #d.rows > 0
-		for i, r in ipairs(d.rows) do
-			if not (r.height == 32 and r.numbers_right and r.style == (i % 2 == 1 and "cybersyn_station_row_light"
-				or "cybersyn_station_row_dark")) then rows_ok = false end
-		end
-		lab.check("…in the shared 32 px list rows, the numbers right-aligned under right-aligned headers", rows_ok
-			and lab.same_list(d.header_right, { false, true, true, true, true }), { rows = d.rows, header = d.header_right })
-		lab.check("…the Layout column takes what the number columns leave", type(d.layout_width) == "number"
-			and d.layout_width >= 240, d.layout_width)
-		lab.check("…'Recorded so far' is a label beside its value, no colon", d.recorded == false or type(d.recorded) == "string",
-			d.recorded)
-		lab.info("utilization: " .. serpent.line(d.rows, { comment = false }))
-		dev("utilization_set_period", pi, 1)
-		d = dev("dump", pi, "utilization")
-		lab.check("the period drop-down switches the period", d.minutes == 10, d.minutes)
-		dev("utilization_set_period", pi, 2)
-		-- Breakdown, through its hooks (no charts library in the lab).
+		lab.check("…each interval drawn on a chunk of its own on the analytics surface", distinct, chunks)
+		dev("click", pi, "utilization_interval_buttons", 1)
+		dev("close", pi)
+		local s = dev("utilization_samples", pi)
+		local viewers = 0
+		for _, iv in ipairs(s.intervals) do viewers = viewers + iv.viewers end
+		lab.check("closing the window lets go of the interval", viewers == 0, s.intervals)
+		dev("open", pi)
+		local tab = dev("select_tab", pi, "breakdown")
+		lab.check("analytics on with the library: the Breakdown tab is there too", tab == "delivery_breakdown_tab", tab)
+		dev("close", pi)
+	end,
+
+	function(ctx)
+		-- Breakdown, through its hooks (they work with or without the charts library).
 		local tip = dev("breakdown_tooltip", "steam", "travel_to_p", 12)
 		local head = tip and tip[2]
 		lab.check("Breakdown tooltip: a fluid by its localised name and icon", type(head) == "table" and
@@ -308,7 +396,7 @@ local more = {
 		dev("set_setting", "cybersyn-enable-analytics", false)
 		dev("open", pi)
 		local tab = dev("select_tab", pi, "utilization")
-		lab.check("analytics off: the Utilization tab is there", tab == "utilization_tab", tab)
+		lab.check("analytics off: no Utilization tab", tab ~= "utilization_tab", tab)
 		dev("set_setting", "cybersyn-enable-analytics", ctx.analytics)
 		dev("select_tab", pi, "overview")
 	end,

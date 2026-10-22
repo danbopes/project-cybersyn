@@ -71,9 +71,9 @@ function manager.create(player)
 		add_header(stations_tab.create(), "stations_tab", header),
 		add_header(trains_tab.create(), "trains_tab", header),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
-		add_header(utilization_tab.create(), "utilization_tab", header),
 	}
 	if analytics.is_enabled() then
+		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
 		tabs[#tabs + 1] = add_header(delivery_breakdown_tab.create(), "delivery_breakdown_tab", header)
 	end
 	local pane = {
@@ -823,9 +823,12 @@ function manager.handle.manager_open(player, player_data, refs)
 	collector.ensure_fresh()
 	manager.render(player, player_data)
 
+	-- Once per player: the analytics tabs stay hidden, and a line on every open would bury the chat.
 	local analytics_setting = settings.global["cybersyn-enable-analytics"]
-	if analytics_setting and analytics_setting.value and not analytics.is_library_available() then
+	if analytics_setting and analytics_setting.value and not analytics.is_library_available()
+		and not player_data.analytics_notice_tick then
 		player.print({ "cybersyn-gui.analytics-library-missing" })
+		player_data.analytics_notice_tick = game.tick
 	end
 end
 
