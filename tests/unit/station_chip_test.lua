@@ -161,6 +161,14 @@ test("shift on a stop panel slot: the same drill-down without the chip", functio
 	assert_eq(calls.focus, { item = "iron-plate", reveal = { all = true } })
 end)
 
+test("right-click on a stop panel slot does nothing: the panel shows no filter to clear", function()
+	local u, pd, calls, player = click_setup(true)
+	pd.search_item = "coal"
+	slot_click(u, player, pd, { station = 12 }, { right = true })
+	assert_eq(pd.search_item, "coal")
+	assert_eq(calls, {})
+end)
+
 test("an in-flight slot focuses Trains on item + chip, revealing the groups that hold its trains", function()
 	for _, open in ipairs({ false, true }) do
 		local u, pd, calls, player = click_setup(open)
