@@ -953,7 +953,9 @@ local function list_row(key, slots)
 	local row = {
 		type = "flow",
 		direction = "horizontal",
-		style_mods = { horizontal_spacing = 8 },
+		-- 8 cut the fifth slot's right edge by about a pixel under the body's scroll bar, and with it the last
+		-- character of a five-character count ("-200k", D8-10).
+		style_mods = { horizontal_spacing = 4 },
 		{ type = "label", caption = { key }, style_mods = { width = FIELD_LABEL, font_color = MUTED } },
 	}
 	if #slots == 0 then
