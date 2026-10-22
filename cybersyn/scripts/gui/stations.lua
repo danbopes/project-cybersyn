@@ -299,25 +299,6 @@ local function never_dispatched(st)
 end
 stations_tab.never_dispatched = never_dispatched
 
---- Every distinct priority the station's sources advertise with, highest first (the station combinator's alone for a
---- plain station).
---- @param st SnapshotStation
---- @return int[]
-local function priorities(st)
-	local sources = st.sources
-	if not (sources and sources[1]) then return { st.priority or mod_settings.priority or 0 } end
-	local out, seen = {}, {}
-	for _, src in ipairs(sources) do
-		local p = src.priority
-		if p ~= nil and not seen[p] then
-			seen[p] = true
-			out[#out + 1] = p
-		end
-	end
-	table.sort(out, function(a, b) return a > b end)
-	return out
-end
-
 --- The control combinator's priority when it applies (items with their own threshold there), and how many items.
 --- @param st SnapshotStation
 --- @return int? priority
@@ -330,40 +311,48 @@ local function item_priority(st)
 	return p, n
 end
 
---- Sort keys; each must return only numbers or only strings (nil sorts last). Keys are cached per station
---- between collector passes, so they must not depend on the current tick: ages sort by their negated start tick.
---- @type {[string]: fun(st: SnapshotStation, ctx: table): (number|string|nil)}
-local sort_keys = {
-	name = function(st) return natural(st.name_lower) end,
-	station_status = function(st, ctx) return STATUS_RANK[ctx.status[st.id]] end,
-	network = function(st)
-		local name = st.network_name
-		if not name then return nil end
-		local mask = st.network_mask
-		-- A station with inventories sorts by every mask it advertises on.
-		local union = st.mask_union
-		if union and collector.station_has_sections(st) then
-			local one = rtext.masks_caption(rtext.sections_of(st))
-			if one then name, mask = one, union[one] end
+--- The request start tick of the row's longest-waiting active request. A row on the station's own lists (a station
+--- without inventories) is the station's figure.
+--- @param row SnapshotInventory
+--- @return uint?
+local function row_wait_start(row)
+	local st = row.st
+	if row.requested == st.requested then return st.longest_wait_start end
+	local wait = st.wait
+	local start
+	for hash, req in pairs(row.requested) do
+		if req.active then
+			local t = wait and wait[hash]
+			if t and (not start or t < start) then start = t end
 		end
+	end
+	return start
+end
+
+--- Sort keys of a row (PLAN8 D8-1: one row per combinator); each must return only numbers or only strings (nil sorts
+--- last). The network, provided / requested, priority and wait keys are the row's own; the others are its station's,
+--- so a sort on them keeps a station's rows together. Keys are cached per row between collector passes, so they must
+--- not depend on the current tick: ages sort by their negated start tick.
+--- @type {[string]: fun(row: SnapshotInventory, ctx: table): (number|string|nil)}
+local sort_keys = {
+	name = function(row) return natural(row.st.name_lower) end,
+	station_status = function(row, ctx) return STATUS_RANK[ctx.status[row.st.id]] end,
+	network = function(row)
+		local name = row.network_name
+		if not name then return nil end
+		local mask = row.mask
+		if name ~= NETWORK_EACH and mask == nil then return nil end
 		return string.format("%s\0%010.0f", name, type(mask) == "number" and mask + OFFSET or 0)
 	end,
-	-- With inventories, distinct items per network section: an item offered on two masks counts twice, as the strip
-	-- shows it twice. A NETWORK_EACH station without inventories keeps counting its items once.
-	provided_requested = function(st)
-		if rtext.inventory_count(st) == 0 then return count_keys(st.provided) + count_keys(st.requested) end
-		local n = 0
-		for _, sec in ipairs(rtext.sections_of(st)) do n = n + count_keys(sec.provided) + count_keys(sec.requested) end
-		return n
-	end,
-	-- The highest priority any source advertises with: the one the dispatcher serves first.
-	priority = function(st) return priorities(st)[1] end,
-	deliveries = function(st) return st.deliveries_total end,
-	wait = function(st)
-		local start = st.longest_wait_start
+	provided_requested = function(row) return count_keys(row.provided) + count_keys(row.requested) end,
+	priority = function(row) return row.priority end,
+	deliveries = function(row) return row.st.deliveries_total end,
+	wait = function(row)
+		local start = row_wait_start(row)
 		return start and -start or nil
 	end,
-	last_delivery = function(st)
+	last_delivery = function(row)
+		local st = row.st
 		local last = st.last_delivery_tick
 		if not last or never_dispatched(st) then return nil end
 		return -last
@@ -371,7 +360,7 @@ local sort_keys = {
 	-- Open errors first (the Overview's Misconfigured stations), then open warnings and info, then stations whose
 	-- findings are all acknowledged; by worst check within each. Acknowledgements change without a change-log entry,
 	-- so query refreshes these keys when storage.acks.lint_version moves (diag.expire_acks bumps it as well).
-	problems = function(st) return pm.station_rank(st.id, st.lint, diag.is_acked) end,
+	problems = function(row) return pm.station_rank(row.st.id, row.st.lint, diag.is_acked) end,
 }
 
 --- The toggled chip: a status, one of the flag chips, or nil (All). A value no chip has any more reads as All.
@@ -425,27 +414,28 @@ local function lint_ack_version()
 	return acks and acks.lint_version or 0
 end
 
---- Re-reads the Problems sort key of every listed station with a finding after an acknowledgement changed; the
---- stations whose place moved are merged into the order on this render: one explicit click, not a data-driven
+--- Re-reads the Problems sort key of every listed row of a station with a finding after an acknowledgement changed;
+--- the rows whose place moved are merged into the order on this render: one explicit click, not a data-driven
 --- reshuffle that waits for the pass.
 --- @param cache table
---- @param stations {[uint]: SnapshotStation}
-local function refresh_problem_keys(cache, stations)
-	local keys, key_fn = cache.keys, sort_keys.problems
+local function refresh_problem_keys(cache)
+	local keys, key_fn, rec, rows_of = cache.keys, sort_keys.problems, cache.rec, cache.rows_of
 	local changed = cache.changed
 	if not changed then
 		changed = {}
 		cache.changed = changed
 	end
 	for id, fl in pairs(cache.flags) do
-		local st = stations[id]
-		if st and band(fl, FLAG_SETUP) ~= 0 then
-			local key = key_fn(st)
-			if keys[id] ~= key then
-				keys[id] = key
-				changed[id] = true
-				cache.dirty = true
-				cache.sort_now = true
+		if band(fl, FLAG_SETUP) ~= 0 then
+			for _, rk in ipairs(rows_of[id] or {}) do
+				local row = rec[rk]
+				local key = row and key_fn(row)
+				if keys[rk] ~= key then
+					keys[rk] = key
+					changed[rk] = true
+					cache.dirty = true
+					cache.sort_now = true
+				end
 			end
 		end
 	end
@@ -469,18 +459,75 @@ local function open_error_counts(cache)
 	return open, acked
 end
 
+local NO_KEYS = {}
+
+--- Rewrites the cached rows of one station: drops the keys it listed, then adds each of its rows the filters let
+--- through (util.row_passes) with its sort key. Every key dropped or added is marked changed.
+--- @param cache table
+--- @param id uint
+--- @param st SnapshotStation? nil or failing the filters: the station lists no rows
+--- @param f ManagerFilters
+--- @param key_fn function
+--- @param ctx table
+--- @return boolean moved a key was added, dropped or got another sort key
+local function refill_rows(cache, id, st, f, key_fn, ctx)
+	local keys, rec, changed, rows_of = cache.keys, cache.rec, cache.changed, cache.rows_of
+	local old = rows_of[id] or NO_KEYS
+	local moved = false
+	local new
+	if st then
+		local row_passes = util.row_passes
+		for _, row in ipairs(collector.inventories(st)) do
+			if row_passes(row, f) then
+				new = new or {}
+				new[#new + 1] = row.key
+				local key = key_fn(row, ctx)
+				if rec[row.key] ~= row or keys[row.key] ~= key or row.index ~= cache.index[row.key] then
+					rec[row.key] = row
+					keys[row.key] = key
+					cache.index[row.key] = row.index
+					changed[row.key] = true
+					moved = true
+				end
+			end
+		end
+	end
+	for _, rk in ipairs(old) do
+		local still = false
+		for _, k in ipairs(new or NO_KEYS) do
+			if k == rk then
+				still = true
+				break
+			end
+		end
+		if not still then
+			rec[rk], keys[rk], cache.index[rk] = nil, nil, nil
+			changed[rk] = true
+			moved = true
+		end
+	end
+	if not moved and #old ~= #(new or NO_KEYS) then moved = true end
+	rows_of[id] = new
+	return moved
+end
+
 --- Rescans every snapshot station into a fresh per-player query cache.
 local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	local stations = snapshot.stations
 	local key_fn = sort_keys[column]
-	local status, keys, flags, nat = {}, {}, {}, {}
+	local status, flags, nat = {}, {}, {}
 	local counts = { all = 0, unserved = 0, problems = 0, failing = 0 }
 	for _, s in ipairs(STATUSES) do counts[s] = 0 end
 	local ctx = { status = status }
+	local cache = {
+		epoch = epoch, pos = pos, fsig = fsig, column = column, status = status, keys = {}, rec = {}, index = {},
+		rows_of = {}, flags = flags, nat = nat, counts = counts, dirty = true, changed = {},
+	}
 	local station_flags, passes = logic.station_flags, util.station_passes
 	local shown, is_acked = pm.shown_status, diag.is_acked
 	local all, unserved, setup, failing = 0, 0, 0, 0
 	for id, st in pairs(stations) do
+		collector.inventories(st)
 		if passes(st, f) then
 			local s = shown(st.status, id, st.lint, is_acked)
 			status[id] = s
@@ -494,15 +541,12 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 				if band(fl, FLAG_SETUP) ~= 0 then setup = setup + 1 end
 				if band(fl, FAILING) ~= 0 then failing = failing + 1 end
 			end
-			keys[id] = key_fn(st, ctx)
 			nat[id] = natural(st.name_lower)
+			refill_rows(cache, id, st, f, key_fn, ctx)
 		end
 	end
 	counts.all, counts.unserved, counts.problems, counts.failing = all, unserved, setup, failing
-	local cache = {
-		epoch = epoch, pos = pos, fsig = fsig, column = column,
-		status = status, keys = keys, flags = flags, nat = nat, counts = counts, dirty = true, changed = {},
-	}
+	cache.changed = {}
 	player_data.stations_query = cache
 	return cache
 end
@@ -511,16 +555,13 @@ end
 local function apply_changes(cache, snapshot, f, ids, first, last)
 	local stations = snapshot.stations
 	local key_fn = sort_keys[cache.column]
-	local status, keys, counts, flags = cache.status, cache.keys, cache.counts, cache.flags
-	local changed = cache.changed
-	if not changed then
-		changed = {}
-		cache.changed = changed
-	end
+	local status, counts, flags = cache.status, cache.counts, cache.flags
+	if not cache.changed then cache.changed = {} end
 	local ctx = { status = status }
 	for i = first, last do
 		local id = ids[i]
 		local st = stations[id]
+		if st then collector.inventories(st) end
 		local old = status[id]
 		local new = st and util.station_passes(st, f) and pm.shown_status(st.status, id, st.lint, diag.is_acked) or nil
 		local old_flags = flags[id] or 0
@@ -536,10 +577,7 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 				counts.all = counts.all + 1
 			end
 			status[id] = new
-			if not old or not new then
-				cache.dirty = true
-				changed[id] = true
-			end
+			if not old or not new then cache.dirty = true end
 		end
 		if old_flags ~= new_flags then
 			count_flags(counts, old_flags, -1)
@@ -547,17 +585,17 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 			flags[id] = new_flags ~= 0 and new_flags or nil
 			cache.version = (cache.version or 0) + 1
 		end
-		local key = new and key_fn(st, ctx) or nil
 		local name_key = new and natural(st.name_lower) or nil
-		if cache.nat[id] ~= name_key then
-			cache.nat[id] = name_key
+		local renamed = cache.nat[id] ~= name_key
+		if renamed then cache.nat[id] = name_key end
+		if refill_rows(cache, id, new and st or nil, f, key_fn, ctx) then
 			cache.dirty = true
-			changed[id] = true
+			-- The row list follows the keys a station lists, not only its status.
+			cache.version = (cache.version or 0) + 1
 		end
-		if keys[id] ~= key then
-			keys[id] = key
+		if renamed then
 			cache.dirty = true
-			changed[id] = true
+			for _, rk in ipairs(cache.rows_of[id] or NO_KEYS) do cache.changed[rk] = true end
 		end
 	end
 end
@@ -575,14 +613,16 @@ local function refresh_setup_statuses(cache, snapshot, f)
 	if #ids > 0 then apply_changes(cache, snapshot, f, ids, 1, #ids) end
 end
 
---- The display order as a comparator over station ids: key in the requested direction with nil last, then the
---- natural name key and id ascending (the order util.sort_by gives, without its per-row tables: 2,030 of them per sort
---- on pY 123).
---- @param keys {[uint]: any}
---- @param nat {[uint]: string} natural name keys
+--- The display order as a comparator over row keys: key in the requested direction with nil last, then the station's
+--- natural name key and id ascending, then the inventory index, so a name sort keeps a station's rows together
+--- (PLAN8 D8-2). No per-row tables: 2,000+ of them per sort on pY.
+--- @param keys {[string]: any}
+--- @param nat {[uint]: string} natural name keys by station id
+--- @param rec {[string]: SnapshotInventory}
+--- @param index {[string]: int}
 --- @param ascending boolean
---- @return fun(a: uint, b: uint): boolean
-local function order_less(keys, nat, ascending)
+--- @return fun(a: string, b: string): boolean
+local function order_less(keys, nat, rec, index, ascending)
 	return function(a, b)
 		local ka, kb = keys[a], keys[b]
 		if ka ~= kb then
@@ -591,36 +631,40 @@ local function order_less(keys, nat, ascending)
 			if ascending then return ka < kb end
 			return ka > kb
 		end
-		local na, nb = nat[a], nat[b]
-		if na ~= nb then return na < nb end
-		return a < b
+		local ia, ib = rec[a].st.id, rec[b].st.id
+		if ia ~= ib then
+			local na, nb = nat[ia], nat[ib]
+			if na ~= nb then return na < nb end
+			return ia < ib
+		end
+		return index[a] < index[b]
 	end
 end
 
---- Sorting every station costs about 3 ms on a 2,000-station base and a pass changes the keys of only some of
---- them, so the previous order is kept for the rest and the re-sorted changed ids are merged into it.
---- @return uint[]? order nil when so many ids changed that a full sort is cheaper
-local function merge_changes(cache, stations, ascending)
-	local keys, status, changed = cache.keys, cache.status, cache.changed
+--- Sorting every row costs about 3 ms on a 2,000-station base and a pass changes the keys of only some of them, so
+--- the previous order is kept for the rest and the re-sorted changed keys are merged into it.
+--- @return string[]? order nil when so many keys changed that a full sort is cheaper
+local function merge_changes(cache, ascending)
+	local rec, changed = cache.rec, cache.changed
 	local moved = {}
-	for id in pairs(changed) do
-		if status[id] then moved[#moved + 1] = id end
+	for rk in pairs(changed) do
+		if rec[rk] then moved[#moved + 1] = rk end
 	end
 	local old = cache.order
 	if #moved * 4 > #old then return nil end
-	local less = order_less(keys, cache.nat, ascending)
+	local less = order_less(cache.keys, cache.nat, rec, cache.index, ascending)
 	table.sort(moved, less)
 	local order = {}
 	local n, j, m = 0, 1, #moved
-	for _, id in ipairs(old) do
-		if status[id] and not changed[id] then
-			while j <= m and less(moved[j], id) do
+	for _, rk in ipairs(old) do
+		if rec[rk] and not changed[rk] then
+			while j <= m and less(moved[j], rk) do
 				n = n + 1
 				order[n] = moved[j]
 				j = j + 1
 			end
 			n = n + 1
-			order[n] = id
+			order[n] = rk
 		end
 	end
 	for k = j, m do
@@ -654,17 +698,17 @@ local function chip_passes(chip, id, cache, stuck)
 	return band(cache.flags[id] or 0, FLAG_CHIPS[chip]) ~= 0
 end
 
---- Filters, classifies and sorts the snapshot stations. The chip applies after counting so every chip shows what
---- it would yield.
+--- Filters, classifies and sorts the snapshot stations' inventory rows (PLAN8 D8-1: one row per combinator, D8-3: the
+--- counts stay per station). The chip applies after counting so every chip shows what it would yield.
 --- Classification is cached per player and updated only for the records the collector replaced since the last
 --- render, so a render costs O(changed + page) rather than O(stations). Sorting 2,000 rows costs more than the
 --- rest of an update, so the order is kept until the sort or a filter changes, or a completed pass changed a key
 --- or the filtered set; in between, rows show live data in the order of the last sort, which also keeps them
 --- from shuffling while a pass trickles in.
 --- @param player_data PlayerData
---- @return SnapshotStation[] rows
---- @return {[string]: integer} counts per status and chip over the filtered set, plus `all`
---- @return table ctx {status = {[id]=status}, flags, stuck, now, snapshot}
+--- @return SnapshotInventory[] rows
+--- @return {[string]: integer} counts per status and chip over the filtered stations, plus `all`
+--- @return table ctx {status = {[id]=status}, flags, stuck, now, snapshot, stations = stations the rows list}
 --- @return string column
 --- @return boolean ascending
 function stations_tab.query(player_data)
@@ -705,7 +749,7 @@ function stations_tab.query(player_data)
 	local fsig = filter_sig(f)
 	local epoch, pos = collector.log_position()
 	local ids, first, last
-	if cache and cache.fsig == fsig and cache.column == column and cache.flags and cache.nat then
+	if cache and cache.fsig == fsig and cache.column == column and cache.flags and cache.nat and cache.rows_of then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
 	end
 	local av = lint_ack_version()
@@ -717,7 +761,7 @@ function stations_tab.query(player_data)
 		cache.av = av
 	end
 	if cache.av ~= av then
-		if column == "problems" then refresh_problem_keys(cache, stations) end
+		if column == "problems" then refresh_problem_keys(cache) end
 		refresh_setup_statuses(cache, snapshot, f)
 		cache.av = av
 	end
@@ -740,12 +784,12 @@ function stations_tab.query(player_data)
 	-- last collector batch; the next one carries only the cheap start of a new pass.
 	if resort or cache.sort_now or (cache.dirty and cache.sorted_tick ~= snapshot.tick and snapshot.tick ~= game.tick) then
 		cache.sort_now = nil
-		local order = not resort and merge_changes(cache, stations, ascending) or nil
+		local order = not resort and merge_changes(cache, ascending) or nil
 		cache.sort_kind = order and "merged" or "full"
 		if not order then
 			order = {}
-			for id in pairs(status) do order[#order + 1] = id end
-			table.sort(order, order_less(cache.keys, cache.nat, ascending))
+			for rk in pairs(cache.rec) do order[#order + 1] = rk end
+			table.sort(order, order_less(cache.keys, cache.nat, cache.rec, cache.index, ascending))
 		end
 		cache.order = order
 		cache.ascending = ascending
@@ -764,15 +808,26 @@ function stations_tab.query(player_data)
 	end
 	if not rows or cache.rows_order ~= cache.order or cache.rows_wanted ~= want_sig or cache.rows_version ~= cache.version then
 		rows = {}
+		local seen, n_stations = {}, 0
+		local rec = cache.rec
 		local open_errors = util.open_setup_errors
-		for _, id in ipairs(cache.order) do
-			if status[id] and chip_passes(wanted, id, cache, stuck)
-				and (not errors_only or open_errors(id, stations[id].lint) > 0) then
-				rows[#rows + 1] = stations[id]
+		for _, rk in ipairs(cache.order) do
+			local row = rec[rk]
+			local id = row and row.st.id
+			-- Findings are about the stop: the Problems view lists each station once, on its station combinator's row.
+			if row and status[id] and chip_passes(wanted, id, cache, stuck) and not (problems and row.index ~= 0)
+				and (not errors_only or open_errors(id, row.st.lint) > 0) then
+				rows[#rows + 1] = row
+				if not seen[id] then
+					seen[id] = true
+					n_stations = n_stations + 1
+				end
 			end
 		end
 		cache.rows, cache.rows_order, cache.rows_wanted, cache.rows_version = rows, cache.order, want_sig, cache.version
+		cache.rows_stations = n_stations
 	end
+	ctx.stations = cache.rows_stations
 	if cache.defer_sort then
 		cache.defer_sort = nil
 		return {}, {}, { status = {}, flags = {}, stuck = {}, now = game.tick, snapshot = snapshot, pending = true }, column, ascending
@@ -1056,145 +1111,67 @@ local function registry_model(row, ctx)
 	return m
 end
 
-local NET_TIP_SECTIONS = 15
-
--- A sectioned record's signatures at its read_tick: they sort and concatenate every section, and the record changes
--- once per pass while its row is signed every update. Weak keys: the records go with the snapshot. Only ever a
--- shortcut for recomputing the same string, so peers that never filled it still agree.
-local record_sigs = setmetatable({}, { __mode = "k" })
-
---- @param st SnapshotStation
---- @param name string
---- @param build fun(st: SnapshotStation): string
---- @return string
-local function record_sig(st, name, build)
-	local tick = st.read_tick
-	if tick == nil then return build(st) end
-	local c = record_sigs[st]
-	if not c then
-		c = {}
-		record_sigs[st] = c
-	end
-	if c.tick ~= tick then
-		c.tick, c.net, c.slots = tick, nil, nil
-	end
-	local v = c[name]
-	if v == nil then
-		v = build(st)
-		c[name] = v
-	end
-	return v
-end
-
-local function network_sig(st)
-	local parts = { "S", rtext.inventory_count(st) }
-	for _, sec in ipairs(rtext.sections_of(st)) do
-		parts[#parts + 1] = sec.key .. ":" .. count_keys(sec.provided) .. "/" .. count_keys(sec.requested)
-		for _, src in ipairs(sec.sources) do parts[#parts + 1] = src.kind .. src.index .. "=" .. src.priority end
-	end
-	return table.concat(parts, "|")
-end
-
---- The Network cell of a station with inventories or several sections: the masks it advertises on ("1 · 3 · 4"),
---- a "+N" badge for N inventories and one tooltip line per section.
+--- The Network cell of a row: net_sig, and m.network() -> sprite, caption, tooltip (built only when the sig changed).
+--- The row's own network and mask; "×N" for a NETWORK_EACH combinator (PLAN8 D8-1).
 --- @param m table row model
---- @param st SnapshotStation
-local function section_network(m, st)
-	local sections = rtext.sections_of(st)
-	local inventories = rtext.inventory_count(st)
-	m.net_sig = record_sig(st, "net", network_sig)
-	m.net_small = true
-	m.network = function()
-		local one, masks = rtext.masks_caption(sections)
-		local sprite, caption
-		if one then
-			sprite = util.generate_item_references(one)
-			caption = masks
-		else
-			sprite = "virtual-signal/" .. NETWORK_EACH
-			caption = { "cybersyn-gui.network-each-count", #sections }
-		end
-		local tip = { "", { "cybersyn-gui.stations-net-sections", tostring(#sections) } }
-		for i = 1, math.min(#sections, NET_TIP_SECTIONS) do
-			local sec = sections[i]
-			tip[#tip + 1] = { "", "\n", rtext.section_text(sec), " · ", rtext.section_summary(sec) }
-		end
-		if #sections > NET_TIP_SECTIONS then
-			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.relative-more", tostring(#sections - NET_TIP_SECTIONS) } }
-		end
-		return sprite or "utility/close_black", caption, tip, inventories > 0 and ("+" .. inventories) or ""
-	end
-end
-
---- The Network cell: net_sig, and m.network() -> sprite, caption, tooltip, badge (built only when the sig changed).
---- @param m table row model
---- @param st SnapshotStation
-local function network_model(m, st)
-	local network_name = st.network_name
-	local mask = st.network_mask
-	if network_name and collector.station_has_sections(st) then return section_network(m, st) end
+--- @param row SnapshotInventory
+local function network_model(m, row)
+	local network_name = row.network_name
+	local mask = row.mask
 	if not network_name then
 		m.net_sig = ""
 	elseif network_name == NETWORK_EACH then
+		local nets = row.networks
 		local names = {}
-		if type(mask) == "table" then
-			for n in pairs(mask) do names[#names + 1] = n end
+		if nets then
+			for n in pairs(nets) do names[#names + 1] = n end
 		end
 		table.sort(names)
 		local parts = {}
-		for i, n in ipairs(names) do parts[i] = n .. "=" .. mask[n] end
+		for i, n in ipairs(names) do parts[i] = n .. "=" .. nets[n] end
 		m.net_sig = NETWORK_EACH .. "|" .. table.concat(parts, ",")
 		m.net_names = names
+	elseif mask == nil then
+		m.net_sig = network_name .. "=?"
 	else
-		m.net_sig = network_name .. "=" .. (type(mask) == "number" and mask or 0)
+		m.net_sig = network_name .. "=" .. mask
 	end
 	m.network = function()
 		if not network_name then
 			return "utility/close_black", "", { "cybersyn-gui.station-no-network" }
 		elseif network_name == NETWORK_EACH then
-			local names = m.net_names
+			local names, nets = m.net_names, row.networks
 			local lines = { "" }
 			for i, n in ipairs(names) do
 				if i > 20 then break end
 				local _, img = util.generate_item_references(n)
-				lines[#lines + 1] = (i > 1 and "\n" or "") .. (img or n) .. " " .. mask[n]
+				lines[#lines + 1] = (i > 1 and "\n" or "") .. (img or n) .. " " .. nets[n]
 			end
 			return "virtual-signal/" .. NETWORK_EACH, { "cybersyn-gui.network-each-count", #names }, lines
 		end
-		local value = type(mask) == "number" and mask or 0
 		local sprite, img = util.generate_item_references(network_name)
-		return sprite or "utility/close_black", tostring(value), { "", img or network_name, " ",
-			{ "cybersyn-gui.station-network-mask", value, string.format("0x%08X", value < 0 and value + 2 * OFFSET or value) } }
+		if mask == nil then
+			-- An inventory the planner does not read this pass advertises on no mask.
+			return sprite or "utility/close_black", text.NO_VALUE, { rtext.paused_key(row.st), row.label }
+		end
+		return sprite or "utility/close_black", tostring(mask), { "", img or network_name, " ",
+			{ "cybersyn-gui.station-network-mask", mask, string.format("0x%08X", mask < 0 and mask + 2 * OFFSET or mask) } }
 	end
 end
 
-local PRIO_CAPTION_MAX = 3
-
---- The Priority cell: prio_caption, prio_sig and m.prio_tooltip(). A "*" marks a control combinator whose priority
---- replaces the station's for the items it sets a threshold on.
+--- The Priority cell of a row: its combinator's own priority. On the station combinator's row a "*" marks a control
+--- combinator whose priority replaces the station's for the items it sets a threshold on.
 --- @param m table row model
---- @param st SnapshotStation
-local function priority_model(m, st)
-	local list = priorities(st)
-	local item_p, item_n = item_priority(st)
-	local shown = {}
-	for i = 1, math.min(#list, PRIO_CAPTION_MAX) do shown[i] = tostring(list[i]) end
-	local caption = table.concat(shown, " · ") .. (#list > PRIO_CAPTION_MAX and " …" or "") .. (item_p and "*" or "")
+--- @param row SnapshotInventory
+local function priority_model(m, row)
+	local item_p, item_n
+	if row.index == 0 then item_p, item_n = item_priority(row.st) end
+	local caption = tostring(row.priority) .. (item_p and "*" or "")
 	m.prio_caption = caption
-	m.prio_small = #list > 1
-	local sig = { caption }
-	if #list > 1 or item_p then
-		for _, src in ipairs(st.sources or {}) do sig[#sig + 1] = src.kind .. src.index .. "=" .. src.priority end
-		sig[#sig + 1] = item_p and (item_p .. "/" .. item_n) or ""
-	end
-	m.prio_sig = table.concat(sig, "|")
+	m.prio_small = false
+	m.prio_sig = caption .. "|" .. (item_p and (item_p .. "/" .. item_n) or "")
 	m.prio_tooltip = function()
 		local tip = { "", { "cybersyn-gui.stations-priority-tooltip" } }
-		if #list > 1 then
-			for _, src in ipairs(st.sources) do
-				tip[#tip + 1] = { "", "\n", collector.source_label(src), ": ", tostring(src.priority) }
-			end
-		end
 		if item_p then
 			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.stations-priority-item", tostring(item_p), tostring(item_n) } }
 		end
@@ -1202,15 +1179,93 @@ local function priority_model(m, st)
 	end
 end
 
+-- The marker of an inventory row (PLAN8 D8-2): a small combinator icon after the name, and the room it takes.
+local MARKER_SIZE = 16
+local MARKER_W = MARKER_SIZE + 2
+
+--- "network [A] mask 2", "networks [A]1 [B]2" or "not read": a row's network as the marker tooltip words it.
+--- @param row SnapshotInventory
+--- @return LocalisedString
+local function marker_network(row)
+	if row.networks then return { "cybersyn-gui.stations-inventory-networks", rtext.row_network(row) } end
+	local name = row.network_name
+	if not name or row.mask == nil or name == NETWORK_EACH then return { "cybersyn-gui.stations-inventory-unread" } end
+	return { "cybersyn-gui.stations-inventory-network", rtext.network_icon(name), tostring(row.mask) }
+end
+
+--- The marker of an inventory row, nil on the station combinator's row.
+--- @param row SnapshotInventory
+--- @return {unit: uint, sig: string, tooltip: fun(): LocalisedString}?
+local function marker_model(row)
+	if row.index == 0 then return nil end
+	return {
+		unit = row.unit,
+		sig = row.unit .. "|" .. rtext.row_sig(row) .. (row.failed and "|f" or ""),
+		tooltip = function()
+			local tip = { "", { "cybersyn-gui.stations-inventory-marker", tostring(row.index), tostring(row.priority),
+				marker_network(row) } }
+			if row.failed then
+				tip[#tip + 1] = { "", "\n[color=1,0.35,0.35]", { "cybersyn-gui.relative-i-red" }, "[/color]" }
+			end
+			tip[#tip + 1] = { "", "\n", { "cybersyn-gui.stations-inventory-click" } }
+			return tip
+		end,
+	}
+end
+
+--- @param marker table marker_model
+--- @return flib.GuiElemDef
+local function marker_def(marker)
+	return util.hoverable({
+		type = "sprite-button",
+		style = "cybersyn_name_icon",
+		style_mods = { size = MARKER_SIZE },
+		sprite = "item/" .. COMBINATOR_NAME,
+		tooltip = marker.tooltip(),
+		-- The combinator by unit number: util.handle_link_click's "entity" kind opens it.
+		tags = { kind = "entity", id = marker.unit, marker = true },
+		mouse_button_filter = { "left" },
+		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+	}, SCROLL)
+end
+
+--- Adds, rewrites or removes the marker at the end of a name cell, after name_cell wrote the rest.
+--- @param cell LuaGuiElement
+--- @param marker table? marker_model
+local function sync_marker(cell, marker)
+	local elem
+	for _, child in ipairs(cell.children) do
+		if child.tags.marker then elem = child end
+	end
+	if not marker then
+		if elem then elem.destroy() end
+		return
+	end
+	if not elem then
+		gui.add(cell, marker_def(marker))
+		return
+	end
+	elem.tooltip = marker.tooltip()
+	local tags = elem.tags
+	if tags.id ~= marker.unit then
+		tags.id = marker.unit
+		elem.tags = tags
+	end
+end
+
 --- Everything a row shows that is not a slot table, as plain values comparable between updates. Tooltips and the
---- network cell cost API calls, so they are built by functions that run only when their sig changed.
---- @param st SnapshotStation
+--- network cell cost API calls, so they are built by functions that run only when their sig changed. The name,
+--- status, deliveries and last dispatch are the station's on each of its rows; network, priority, slots and wait are
+--- the row's own.
+--- @param row SnapshotInventory
 --- @param ctx table
-local function row_model(st, ctx)
+local function row_model(row, ctx)
+	local st = row.st
 	local now = ctx.now
 	local status = ctx.status[st.id]
 	local m = {
-		key = st.id,
+		key = row.key,
+		row = row,
 		name = st.name,
 		parts = st.name_parts,
 		link = { kind = "station", id = st.id },
@@ -1222,10 +1277,17 @@ local function row_model(st, ctx)
 		m.problems = problems_view(ctx.lint.by_id[st.id], { sid = st.id }, ctx)
 	end
 
+	local marker = marker_model(row)
+	m.marker = marker
+	m.marker_sig = marker and marker.sig or ""
 	local read_age = st.read_tick and now - st.read_tick or nil
-	m.name_sig = st.name .. "\1" .. st.id .. "\1" .. (read_age and text.read_step(read_age) or "")
+	m.name_sig = st.name .. "\1" .. st.id .. "\1" .. (read_age and text.read_step(read_age) or "") .. "\1" .. m.marker_sig
 	m.name_tooltip = function()
 		local tip = { "", "[font=default-semibold]", st.name, "[/font]" }
+		if marker then
+			tip[#tip + 1] = "\n"
+			tip[#tip + 1] = rtext.row_text(row)
+		end
 		if read_age then
 			tip[#tip + 1] = "\n"
 			tip[#tip + 1] = text.read_ago(read_age, util.format_duration)
@@ -1261,14 +1323,14 @@ local function row_model(st, ctx)
 		return tooltip
 	end
 
-	network_model(m, st)
-	priority_model(m, st)
+	network_model(m, row)
+	priority_model(m, row)
 
 	local limit = finite_limit(st)
 	m.dl_caption = { "", st.deliveries_total, "/", limit or { "cybersyn-gui.no-limit-short" } }
 	m.dl_sig = st.deliveries_total .. "/" .. (limit or "")
 
-	local start = st.longest_wait_start
+	local start = row_wait_start(row)
 	if start then
 		m.wait_caption = util.short_duration(now - start)
 		m.wait_sig = m.wait_caption
@@ -1356,7 +1418,6 @@ end
 local function slot_key(def)
 	local tags = def.tags
 	if tags and tags.slot_key then return tags.slot_key end
-	if tags and tags.group then return "g" .. tags.group end
 	if def.type == "label" then return "+" end
 	return def.tags and def.tags.kind == "item" and def.tags.id or def.sprite
 end
@@ -1405,101 +1466,17 @@ local function sync_slots(table_elem, defs, state, hold, minute)
 	return util.sync_children(table_elem, entries, state, hold)
 end
 
-local OVERFLOW_LINES = 24
-
---- One line of grouped slots: as fit_slots, with the group labels taking a slot each and never ending the line.
---- @param groups {label: flib.GuiElemDef, defs: flib.GuiElemDef[]}[]
---- @param capacity int
---- @return flib.GuiElemDef[]
-local function fit_groups(groups, capacity)
-	local flat = {}
-	for _, g in ipairs(groups) do
-		flat[#flat + 1] = g.label
-		for _, d in ipairs(g.defs) do flat[#flat + 1] = d end
-	end
-	if #flat <= capacity then return flat end
-	local shown = math.max(0, capacity - 1)
-	while shown > 0 and flat[shown].tags.group do shown = shown - 1 end
-	local out, lines, over = {}, {}, 0
-	for i = 1, shown do out[i] = flat[i] end
-	for i = shown + 1, #flat do
-		local d = flat[i]
-		if d.tags.group then
-			if #lines < OVERFLOW_LINES then lines[#lines + 1] = d.caption end
-		else
-			over = over + 1
-			if #lines < OVERFLOW_LINES then lines[#lines + 1] = "[img=" .. d.sprite .. "] " .. tostring(d.children[1].caption) end
-		end
-	end
-	out[#out + 1] = {
-		type = "label",
-		style = "cybersyn_overflow_label",
-		style_mods = { width = SLOT, height = SLOT, vertical_align = "center" },
-		caption = "+" .. over,
-		tooltip = table.concat(lines, "\n"),
-		tags = { overflow = true },
-	}
-	return out
-end
-
---- The Provided / requested strip of a station with sections: one labelled group per section that advertises
---- anything, each item's tooltip naming its section, and what other sections hold of it without advertising it.
---- @param st SnapshotStation
---- @param item string?
---- @param capacity int
---- @return flib.GuiElemDef[]
-local function section_slots(st, item, capacity)
-	local sections = rtext.sections_of(st)
-	local nets = {}
-	for i, sec in ipairs(sections) do nets[i] = rtext.section_label(sec) end
-	local reason
-	local groups = {}
-	for i, sec in ipairs(sections) do
-		local defs = util.slot_table_build_from_station({ provided = sec.provided, requested = sec.requested, wait = st.wait })
-		if #defs > 0 then
-			local head = rtext.section_text(sec)
-			for _, d in ipairs(defs) do
-				local hash = d.tags.id
-				local side = string.find(d.style, "green", 1, true) and "p" or "r"
-				local tip = { "", d.tooltip, "\n", { "cybersyn-gui.stations-slot-section", head } }
-				for j, other in ipairs(sections) do
-					local held = other.ignored and other.ignored[hash]
-					if held and #tip < 18 then
-						reason = reason or rtext.ignored_reason(st)
-						tip[#tip + 1] = { "", "\n[color=0.65,0.65,0.65]",
-							{ "cybersyn-gui.stations-slot-ignored", nets[j], format.number(held), reason }, "[/color]" }
-					end
-				end
-				d.tooltip = tip
-				d.tags.slot_key = sec.key .. "|" .. side .. hash
-			end
-			decorate_slots(defs, item)
-			groups[#groups + 1] = {
-				label = {
-					type = "label",
-					style = "cybersyn_overflow_label",
-					style_mods = { minimal_width = 0, height = SLOT, vertical_align = "center", font = "default-small-semibold" },
-					caption = nets[i],
-					tooltip = { "", head, "\n", rtext.section_summary(sec) },
-					tags = { group = sec.key },
-				},
-				defs = defs,
-			}
-		end
-	end
-	return fit_groups(groups, capacity)
-end
-
--- A registry row (no station) has empty slot tables.
+-- A registry row (no station) has empty slot tables. Each row shows its own combinator's provides and requests; the
+-- station's deliveries sit on its station combinator's row, as util.row_passes counts them.
 local SLOT_TABLES = {
-	pr = function(st, item, w)
-		if not st then return {} end
-		if collector.station_has_sections(st) then return section_slots(st, item, w.pr_slots) end
-		return fit_slots(decorate_slots(util.slot_table_build_from_station(st), item), w.pr_slots)
+	pr = function(row, item, w)
+		if not row then return {} end
+		local defs = util.slot_table_build_from_station({ provided = row.provided, requested = row.requested, wait = row.st.wait })
+		return fit_slots(decorate_slots(defs, item), w.pr_slots)
 	end,
-	dl = function(st, item, w)
-		if not st then return {} end
-		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(st), item), w.dl_slots)
+	dl = function(row, item, w)
+		if not row or row.index ~= 0 then return {} end
+		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(row.st), item), w.dl_slots)
 	end,
 }
 local NO_SLOTS = { pr = "", dl = "" }
@@ -1510,22 +1487,18 @@ local function count_parts(parts, prefix, map)
 	end
 end
 
---- Signatures of what each slot table shows, from the record's data, so an unchanged table is not rebuilt as defs at
+--- Signatures of what each slot table shows, from the row's data, so an unchanged table is not rebuilt as defs at
 --- all. The minute is part of the provided/requested sig only when one of its requests shows a wait.
---- @param st SnapshotStation
+--- @param row SnapshotInventory
 --- @param item string?
 --- @param minute integer
 --- @return {pr: string, dl: string}
-local function slot_sigs(st, item, minute)
+local function slot_sigs(row, item, minute)
 	local parts = {}
-	if collector.station_has_sections(st) then
-		parts[1] = record_sig(st, "slots", rtext.sections_content)
-	else
-		count_parts(parts, "p", st.provided)
-	end
+	count_parts(parts, "p", row.provided)
 	local waits = false
-	local wait = st.wait
-	for hash, req in pairs(st.requested) do
+	local wait = row.st.wait
+	for hash, req in pairs(row.requested) do
 		parts[#parts + 1] = "r" .. hash .. "=" .. req.count .. (req.active and "a" or "b")
 		if req.active and wait[hash] then
 			waits = true
@@ -1535,8 +1508,9 @@ local function slot_sigs(st, item, minute)
 	parts[#parts + 1] = item or ""
 	if waits then parts[#parts + 1] = tostring(minute) end
 	local pr = table.concat(parts, "\1")
+	if row.index ~= 0 then return { pr = pr, dl = "" } end
 	parts = {}
-	count_parts(parts, "", st.deliveries)
+	count_parts(parts, "", row.st.deliveries)
 	parts[#parts + 1] = item or ""
 	return { pr = pr, dl = table.concat(parts, "\1") }
 end
@@ -1565,7 +1539,6 @@ local function row_refs(row, problems)
 		net = c[3],
 		net_sprite = net[1],
 		net_label = net[2],
-		net_badge = net[3],
 		prio = c[4],
 		dl_count = dl[1],
 		dl = dl[2],
@@ -1605,7 +1578,7 @@ local function update_problems(r, p, cell)
 end
 
 --- @param row LuaGuiElement
---- @param st SnapshotStation? nil for a registry row
+--- @param inv SnapshotInventory? nil for a registry row
 --- @param m table row model
 --- @param cell table per-row render memo from the previous update (empty on first sight)
 --- @param item string? item filter hash
@@ -1613,11 +1586,20 @@ end
 --- @param minute integer
 --- @param sigs {pr: string, dl: string}
 --- @param w table column widths
-local function update_row(row, st, m, cell, item, hold, minute, sigs, w)
+local function update_row(row, inv, m, cell, item, hold, minute, sigs, w)
 	local r = cell_refs(cell, row, w.problems_view)
 	if cell.name_sig ~= m.name_sig then
-		name_cell.update(r.name, m.parts, m.name, m.link, w.name, m.name_tooltip(), SCROLL)
+		local width = w.name - (m.marker and MARKER_W or 0)
+		if cell.marker_sig ~= m.marker_sig then
+			-- The text button's width follows the marker: name_cell rebuilds the cell rather than rewriting tooltips.
+			local tags = r.name.tags
+			tags.s = ""
+			r.name.tags = tags
+		end
+		name_cell.update(r.name, m.parts, m.name, m.link, width, m.name_tooltip(), SCROLL)
+		sync_marker(r.name, m.marker)
 		cell.name_sig = m.name_sig
+		cell.marker_sig = m.marker_sig
 	end
 
 	if cell.status ~= m.status_sig then
@@ -1631,24 +1613,16 @@ local function update_row(row, st, m, cell, item, hold, minute, sigs, w)
 	end
 
 	if cell.net_sig ~= m.net_sig then
-		local sprite, caption, tooltip, badge = m.network()
+		local sprite, caption, tooltip = m.network()
 		r.net_sprite.sprite = sprite
 		r.net_label.caption = caption
-		local font = m.net_small and "default-small" or "default"
-		if r.net_label.style.font ~= font then r.net_label.style.font = font end
 		r.net.tooltip = tooltip
-		if r.net_badge then
-			r.net_badge.caption = badge or ""
-			r.net_badge.visible = badge ~= nil and badge ~= ""
-		end
 		cell.net_sig = m.net_sig
 	end
 
 	if cell.prio_sig ~= m.prio_sig then
 		r.prio.caption = m.prio_caption or ""
 		r.prio.tooltip = m.prio_tooltip and m.prio_tooltip() or ""
-		local font = m.prio_small and "default-small" or "default"
-		if r.prio.style.font ~= font then r.prio.style.font = font end
 		cell.prio_sig = m.prio_sig
 	end
 
@@ -1684,7 +1658,7 @@ local function update_row(row, st, m, cell, item, hold, minute, sigs, w)
 		local table_elem = r[name]
 		local sig = sigs[name]
 		if table_elem and sig_of[name] ~= sig then
-			local result = sync_slots(table_elem, build(st, item, w), slot_state(slots, name), hold, minute)
+			local result = sync_slots(table_elem, build(inv, item, w), slot_state(slots, name), hold, minute)
 			-- A hold deferred a structural change, so the table is retried next update.
 			sig_of[name] = result ~= "held" and sig or nil
 		end
@@ -1717,14 +1691,19 @@ local function problems_cell_def(w)
 	}
 end
 
---- @param st SnapshotStation? nil for a registry row
+--- @param inv SnapshotInventory? nil for a registry row
 --- @param m table row model
 --- @param color "light"|"dark"
 --- @param item string?
 --- @param w table column widths
-local function row_def(st, m, color, item, w)
-	local defs = { pr = w.problems_view and {} or SLOT_TABLES.pr(st, item, w), dl = SLOT_TABLES.dl(st, item, w) }
-	local net_sprite, net_caption, net_tooltip, net_badge = m.network()
+local function row_def(inv, m, color, item, w)
+	local defs = { pr = w.problems_view and {} or SLOT_TABLES.pr(inv, item, w), dl = SLOT_TABLES.dl(inv, item, w) }
+	local net_sprite, net_caption, net_tooltip = m.network()
+	local name = name_cell.def(m.parts, m.name, m.link, w.name - (m.marker and MARKER_W or 0), m.name_tooltip(), SCROLL)
+	if m.marker then
+		name.style_mods.width = w.name
+		name[#name + 1] = marker_def(m.marker)
+	end
 	local fourth
 	if w.problems_view then
 		fourth = problems_cell_def(w)
@@ -1741,8 +1720,8 @@ local function row_def(st, m, color, item, w)
 		style = "cybersyn_station_row_" .. color,
 		style_mods = { height = ROW_HEIGHT },
 		direction = "horizontal",
-		tags = { station_id = st and st.id or nil, registry = m.registry and m.key or nil },
-		name_cell.def(m.parts, m.name, m.link, w.name, m.name_tooltip(), SCROLL),
+		tags = { station_id = inv and inv.st.id or nil, unit = inv and inv.unit or nil, registry = m.registry and m.key or nil },
+		name,
 		{
 			type = "flow",
 			style = "cybersyn_cell_flow",
@@ -1756,15 +1735,10 @@ local function row_def(st, m, color, item, w)
 			style_mods = { width = w.network },
 			tooltip = net_tooltip,
 			{ type = "sprite", sprite = net_sprite, resize_to_sprite = false, style_mods = { size = 24 }, ignored_by_interaction = true },
-			{ type = "label", caption = net_caption, ignored_by_interaction = true,
-				style_mods = m.net_small and { font = "default-small" } or nil },
-			-- Inventories behind the station (secondary inventory combinators).
-			{ type = "label", style = "cybersyn_overflow_label", caption = net_badge or "", visible = (net_badge or "") ~= "",
-				ignored_by_interaction = true,
-				style_mods = { minimal_width = 0, font = "default-small-semibold", font_color = { 1, 0.65, 0.25 } } },
+			{ type = "label", caption = net_caption, ignored_by_interaction = true },
 		},
 		{ type = "label", style = "cybersyn_cell_value", caption = m.prio_caption or "", tooltip = m.prio_tooltip and m.prio_tooltip() or "",
-			style_mods = { width = w.priority, font = m.prio_small and "default-small" or "default" } },
+			style_mods = { width = w.priority } },
 		fourth,
 		{
 			type = "flow",
@@ -1987,9 +1961,9 @@ local function sync_header(player_data, w, column, ascending)
 	return changed
 end
 
---- The rows of the view: the stations, then (in the Problems view) the registry's findings.
+--- The rows of the view: the stations' inventory rows, then (in the Problems view) the registry's findings.
 --- @param player_data PlayerData
---- @param rows SnapshotStation[]
+--- @param rows SnapshotInventory[]
 --- @param ctx table
 --- @return {e: ProblemEntry, entity: LuaEntity?, name: string}[]
 local function view_registry(player_data, rows, ctx)
@@ -2022,7 +1996,7 @@ function stations_tab.build(map_data, player_data)
 	-- A column the page leaves empty gives its width to the name (PLAN4 D15 item 14), unless it carries the sort.
 	local hide_wait = not ctx.pending and column ~= "wait"
 	for i = first, math.min(last, n_rows) do
-		if rows[i].longest_wait_start then
+		if row_wait_start(rows[i]) then
 			hide_wait = false
 			break
 		end
@@ -2069,15 +2043,15 @@ function stations_tab.build(map_data, player_data)
 	local cells = {}
 	local entries = {}
 	for i = first, last do
-		local st = i <= n_rows and rows[i] or nil
+		local inv = i <= n_rows and rows[i] or nil
 		local index = i - first + 1
-		local m = st and row_model(st, ctx) or registry_model(registry[i - n_rows], ctx)
+		local m = inv and row_model(inv, ctx) or registry_model(registry[i - n_rows], ctx)
 		local key = m.key
 		local color = index % 2 == 0 and "dark" or "light"
 		entries[index] = {
 			key = key,
 			build = function()
-				local def, defs = row_def(st, m, color, item, w)
+				local def, defs = row_def(inv, m, color, item, w)
 				local slots = {}
 				for name, list_defs in pairs(defs) do
 					local keys = {}
@@ -2085,7 +2059,8 @@ function stations_tab.build(map_data, player_data)
 					slots[name] = { keys = keys }
 				end
 				cells[key] = {
-					slots = slots, slot_sigs = st and slot_sigs(st, item, minute) or NO_SLOTS, name_sig = m.name_sig,
+					slots = slots, slot_sigs = inv and slot_sigs(inv, item, minute) or NO_SLOTS, name_sig = m.name_sig,
+					marker_sig = m.marker_sig,
 					status = m.status_sig, color = color, status_tip_sig = m.status_tip_sig, net_sig = m.net_sig,
 					dl_sig = m.dl_sig, wait_sig = m.wait_sig, last_sig = m.last_sig, wait_tip = m.wait_full or m.wait_sig,
 					last_tip = m.last_full or m.last_sig,
@@ -2104,7 +2079,8 @@ function stations_tab.build(map_data, player_data)
 				local old = old_cells[old_key]
 				old_cells[key] = { slots = old and old.slots, color = old and old.color, refs = old and old.refs }
 				local tags = elem.tags
-				tags.station_id = st and st.id or nil
+				tags.station_id = inv and inv.st.id or nil
+				tags.unit = inv and inv.unit or nil
 				tags.registry = m.registry and key or nil
 				elem.tags = tags
 			end,
@@ -2116,7 +2092,7 @@ function stations_tab.build(map_data, player_data)
 					elem.style.height = ROW_HEIGHT
 					cell.color = color
 				end
-				update_row(elem, st, m, cell, item, hold, minute, st and slot_sigs(st, item, minute) or NO_SLOTS, w)
+				update_row(elem, inv, m, cell, item, hold, minute, inv and slot_sigs(inv, item, minute) or NO_SLOTS, w)
 				cells[key] = cell
 			end,
 		}
@@ -2139,15 +2115,20 @@ function stations_tab.build(map_data, player_data)
 	if summary and summary.valid then
 		local open, acked
 		if problems then open, acked = open_error_counts(player_data.stations_query) end
-		local sig = counts.all .. "|" .. n_rows .. "|" .. #registry .. "|" .. summary.index .. "|" .. tostring(open)
-			.. "|" .. tostring(acked)
+		local n_stations = ctx.stations or n_rows
+		local sig = counts.all .. "|" .. n_rows .. "|" .. n_stations .. "|" .. #registry .. "|" .. summary.index .. "|"
+			.. tostring(open) .. "|" .. tostring(acked)
 		if state.summary ~= sig then
 			local caption
 			if #registry > 0 then
-				caption = { "cybersyn-gui.stations-summary-registry", format.number(n_rows), format.number(counts.all),
+				caption = { "cybersyn-gui.stations-summary-registry", format.number(n_stations), format.number(counts.all),
 					format.number(#registry) }
 			else
-				caption = { "cybersyn-gui.stations-summary", format.number(n_rows), format.number(counts.all) }
+				caption = { "cybersyn-gui.stations-summary", format.number(n_stations), format.number(counts.all) }
+			end
+			-- D8-3: the counts are stations; a station with inventories lists a row per combinator.
+			if n_rows ~= n_stations then
+				caption = { "", caption, " · ", { "cybersyn-gui.stations-summary-rows", format.number(n_rows) } }
 			end
 			-- The Overview's Misconfigured number, under the same filters: the stations this view lists first.
 			if open then
@@ -2256,23 +2237,35 @@ local function problems_cell_view(cell)
 	}
 end
 
--- Exposed for the unit tests, which render the Network cell and the strip of fixture records.
-function stations_tab.network_cell(st)
+-- Exposed for the unit tests, which render the cells and strips of fixture rows (collector.inventories).
+function stations_tab.network_cell(row)
 	local m = {}
-	network_model(m, st)
-	local sprite, caption, tooltip, badge = m.network()
-	return { sig = m.net_sig, sprite = sprite, caption = caption, tooltip = tooltip, badge = badge, small = m.net_small }
+	network_model(m, row)
+	local sprite, caption, tooltip = m.network()
+	return { sig = m.net_sig, sprite = sprite, caption = caption, tooltip = tooltip }
 end
 
-function stations_tab.priority_cell(st)
+function stations_tab.priority_cell(row)
 	local m = {}
-	priority_model(m, st)
-	return { sig = m.prio_sig, caption = m.prio_caption, small = m.prio_small, tooltip = m.prio_tooltip() }
+	priority_model(m, row)
+	return { sig = m.prio_sig, caption = m.prio_caption, tooltip = m.prio_tooltip() }
 end
 
-function stations_tab.pr_slots(st, item, capacity)
-	return SLOT_TABLES.pr(st, item, { pr_slots = capacity })
+--- The marker an inventory row's name carries: its sig, unit and tooltip; nil on the station combinator's row.
+function stations_tab.marker(row)
+	local marker = marker_model(row)
+	if not marker then return nil end
+	return { sig = marker.sig, unit = marker.unit, tooltip = marker.tooltip(), def = marker_def(marker) }
 end
+
+function stations_tab.pr_slots(row, item, capacity)
+	return SLOT_TABLES.pr(row, item, { pr_slots = capacity })
+end
+
+function stations_tab.dl_slots(row, item, capacity)
+	return SLOT_TABLES.dl(row, item, { dl_slots = capacity })
+end
+stations_tab.row_wait_start = row_wait_start
 stations_tab.slot_key = slot_key
 stations_tab.slot_sigs = slot_sigs
 stations_tab.sort_keys = sort_keys
@@ -2282,9 +2275,27 @@ dev.register_dump(TAB, function(player_data)
 	local rows, counts, ctx, column, ascending = stations_tab.query(player_data)
 	local key_fn = sort_keys[column]
 	local ids, keys, statuses, names, problems, last, registry, status_children = {}, {}, {}, {}, {}, {}, {}, {}
+	local row_keys, markers, networks, priorities, pr_items, dl_items = {}, {}, {}, {}, {}, {}
 	local stripes_ok = true
 	local registry_last = true
 	local by_id = ctx.snapshot.stations
+	local rec = player_data.stations_query and player_data.stations_query.rec or {}
+	local function row_of(id, unit)
+		local r = rec[id .. "@" .. tostring(unit)]
+		if r then return r end
+		local st = by_id[id]
+		for _, x in ipairs(st and collector.inventories(st) or {}) do
+			if x.unit == unit then return x end
+		end
+		return nil
+	end
+	local function slot_ids(tbl)
+		local out = {}
+		for _, b in ipairs(tbl and tbl.children or {}) do
+			if b.tags and b.tags.kind == "item" then out[#out + 1] = b.tags.id end
+		end
+		return out
+	end
 	for i, row in ipairs(list.children) do
 		local tags = row.tags
 		local color = i % 2 == 0 and "dark" or "light"
@@ -2296,8 +2307,19 @@ dev.register_dump(TAB, function(player_data)
 		if id then
 			local n = #ids + 1
 			ids[n] = id
-			local st = by_id[id]
-			keys[n] = st and key_fn(st, ctx)
+			row_keys[n] = id .. "@" .. tostring(tags.unit)
+			local inv = row_of(id, tags.unit)
+			keys[n] = inv and key_fn(inv, ctx)
+			local marker = false
+			for _, c in ipairs(cells[1].children) do
+				if c.tags.marker then marker = { unit = c.tags.id, kind = c.tags.kind, tooltip = c.tooltip, sprite = c.sprite } end
+			end
+			markers[n] = marker
+			networks[n] = { cells[3].children[2].caption, cells[3].children[1].sprite }
+			priorities[n] = cells[4].caption
+			local fourth = cells[PROBLEMS_COLUMN].children[1]
+			pr_items[n] = fourth and fourth.type == "table" and slot_ids(fourth) or false
+			dl_items[n] = slot_ids(cells[6].children[2])
 			statuses[n] = ctx.status[id]
 			names[n] = button and button.caption
 			problems[n] = prob or false
@@ -2347,6 +2369,13 @@ dev.register_dump(TAB, function(player_data)
 	local chip_row = player_data.refs[CHIP_ROW]
 	return {
 		ids = ids,
+		row_keys = row_keys,
+		markers = markers,
+		networks = networks,
+		priorities = priorities,
+		pr_items = pr_items,
+		dl_items = dl_items,
+		stations_listed = ctx.stations,
 		keys = keys,
 		statuses = statuses,
 		names = names,
