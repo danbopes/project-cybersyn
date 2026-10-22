@@ -168,24 +168,26 @@ function text.read_step(ticks)
 	return math.floor(ticks / text.READ_STEP)
 end
 
--- ---------------------------------------------------------------- sections (secondary inventory combinators)
+-- ---------------------------------------------------------------- inventories (secondary inventory combinators)
 
---- The section of `st` that advertises `hash` on `side` ("provided" or "requested"), for a station that has sections;
---- nil for a plain station, whose texts name the station's network as before. Of several, the first with an active
---- request (the one the dispatcher is trying to serve), else the first.
+--- The combinator row of `st` that advertises `hash` on `side` ("provided" or "requested"), for a station with
+--- inventory combinators; nil for a plain station, whose texts name the station's network as before. Of several, the
+--- first with an active request (the one the dispatcher is trying to serve), else the first.
 --- @param st table? SnapshotStation
 --- @param hash string
 --- @param side "provided"|"requested"
---- @param has_sections (fun(st: table): boolean)? collector.station_has_sections
---- @return SnapshotSection?
-function text.section_of(st, hash, side, has_sections)
-	if not (st and st.sections and has_sections and has_sections(st)) then return nil end
+--- @param inventories (fun(st: table): SnapshotInventory[])? collector.inventories
+--- @return SnapshotInventory?
+function text.inventory_of(st, hash, side, inventories)
+	if not (st and inventories) then return nil end
+	local rows = inventories(st)
+	if #rows < 2 then return nil end
 	local first
-	for _, sec in ipairs(st.sections) do
-		local v = sec[side] and sec[side][hash]
+	for _, row in ipairs(rows) do
+		local v = row[side] and row[side][hash]
 		if v then
-			if side ~= "requested" or v.active then return sec end
-			first = first or sec
+			if side ~= "requested" or v.active then return row end
+			first = first or row
 		end
 	end
 	return first

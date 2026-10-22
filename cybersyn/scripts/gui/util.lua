@@ -1619,8 +1619,9 @@ end
 --- Every link cell's click: left = open, shift = show on map (closing the window, D8-9), control = combinator, alt = control combinator,
 --- control + shift = a map pin, right on an item = clear the item filter. Train and stop links take no right-click.
 --- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
---- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it. The
---- older tag shapes of the Stations and Trains rows are read too.
+--- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it, or a
+--- Cybersyn combinator by unit number (a Stations row's inventory marker). The older tag shapes of the Stations and
+--- Trains rows are read too.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
@@ -1660,6 +1661,12 @@ function util.handle_link_click(player, player_data, e, kind, id)
 	end
 	if kind == "entity" then
 		local entity = lint.registry_entity(id)
+		if not entity and type(id) == "number" then
+			-- A Stations row's inventory marker (D8-2): a combinator Cybersyn registered, which the lint registry does not
+			-- hold (game.get_entity_by_unit_number needs a prototype flag the combinator does not set).
+			local to_comb = storage.to_comb
+			entity = to_comb and to_comb[id] or nil
+		end
 		if not (entity and entity.valid) then
 			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 		elseif e.shift then

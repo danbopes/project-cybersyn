@@ -482,7 +482,7 @@ function interface.station_rows(id)
 			key = row.key, index = row.index, unit = row.unit, kind = row.kind, priority = row.priority, ok = row.ok,
 			read = row.read, network_name = row.network_name, mask = row.mask, networks = row.networks,
 			provided = row.provided, requested = row.requested, ignored = row.ignored, starved = row.starved,
-			label = row.label,
+			failed = row.failed, label = row.label,
 		}
 	end
 	return out

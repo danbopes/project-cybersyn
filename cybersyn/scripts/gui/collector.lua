@@ -71,6 +71,8 @@ collector.UNLIMITED = UNLIMITED
 --- @field ignored {[string]: int}
 --- @field starved {[string]: true}? active requests of this source nobody provides on its networks, as of the last
 ---   collector.station_status call
+--- @field failed boolean? an inventory combinator whose own request failed to dispatch (station.inv_failed, the red I);
+---   nil on the station combinator, whose red S is the station's display_state
 
 --- @class SnapshotInventory one row per combinator (PLAN8 D8-1), from collector.inventories
 --- @field key string collector.row_key: station id .. "@" .. combinator unit number
@@ -89,6 +91,7 @@ collector.UNLIMITED = UNLIMITED
 --- @field requested {[string]: SnapshotRequest}
 --- @field ignored {[string]: int}
 --- @field starved {[string]: true}?
+--- @field failed boolean the inventory combinator shows the red I (its own request failed); false on the station row
 --- @field label LocalisedString collector.source_label of the source
 
 --- @class SnapshotSection round-8 compat (wave 2 removes this): what the station advertises on one network name + mask
@@ -1234,6 +1237,7 @@ local function fill_rows(st, sources)
 		if row.requested ~= src.requested then row.requested = src.requested end
 		if row.ignored ~= src.ignored then row.ignored = src.ignored end
 		if row.starved ~= src.starved then row.starved = src.starved end
+		row.failed = src.failed == true
 	end
 	for i = #rows, #sources + 1, -1 do rows[i] = nil end
 end
@@ -1610,6 +1614,8 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	local sources = st.sources
 	local src0 = source_at(sources, 1)
 	src0.index, src0.unit, src0.ok, src0.priority = 0, comb1.unit_number, st.comb_ok, station_priority
+	src0.failed = nil
+	local inv_failed = station.inv_failed
 	if src0.network_mask ~= st.network_mask then src0.network_mask = st.network_mask end
 	set_source_network(src0, st.network_name, st.network_mask)
 
@@ -1620,6 +1626,7 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 		local sec = sec_list[i]
 		local src = source_at(sources, i + 1)
 		src.index, src.unit, src.priority = i, sec.unit_number, station_priority
+		src.failed = inv_failed ~= nil and inv_failed[sec.unit_number] == true or nil
 		local signals, ok
 		if signals1 then
 			signals, ok = read_signals(sec)

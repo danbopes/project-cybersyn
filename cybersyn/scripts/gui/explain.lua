@@ -43,23 +43,24 @@ local function stop_name(id)
 	return stop and stop.backer_name or tostring(id)
 end
 
---- The section of the requester that asks for the item, from the collector's snapshot; nil for a plain station.
---- @return SnapshotSection?
-local function request_section(r_id, hash)
+--- The combinator row of the requester that asks for the item, from the collector's snapshot; nil for a plain station.
+--- @return SnapshotInventory?
+local function request_row(r_id, hash)
 	local snapshot = collector.get()
 	local st = snapshot and snapshot.stations and snapshot.stations[r_id]
-	return utext.section_of(st, hash, "requested", collector.station_has_sections)
+	return utext.inventory_of(st, hash, "requested", collector.inventories)
 end
 
---- The requester's network as the why / fix lines name it: the section that requests the item when the station has
---- sections (a secondary on A2 is not served on the station combinator's A1), else the station's network.
+--- The requester's network as the why / fix lines name it: the inventory that requests the item when the station has
+--- inventory combinators (an inventory on A2 is not served on the station combinator's A1), else the station's
+--- network.
 --- @param r_id uint
 --- @param hash string
 --- @param station table? storage.stations[r_id]
 --- @return LocalisedString
 function explain.network_of(r_id, hash, station)
-	local sec = request_section(r_id, hash)
-	if sec then return rtext.section_text(sec) end
+	local row = request_row(r_id, hash)
+	if row then return rtext.row_text(row) end
 	return util.network_text(station and station.network_name)
 end
 
@@ -82,8 +83,8 @@ local function sig_of(r_id, hash, e)
 	local now = game.tick
 	local lint_s = storage.manager.lint
 	if not e then return table.concat({ "gone", lint_s and lint_s.pass or 0 }, "|") end
-	local sec = request_section(r_id, hash)
-	local sec_sig = sec and sec.key .. "\1" .. #sec.sources or ""
+	local row = request_row(r_id, hash)
+	local sec_sig = row and rtext.row_sig(row) or ""
 	return table.concat({ sec_sig, e.reason, e.a, e.b, e.n, #e.changes, e.changes[#e.changes] or 0, tostring(e.lost_to), e.lost_n,
 		math.floor((now - e.first_tick) / utext.READ_STEP), lint_s and lint_s.pass or 0,
 		storage.acks and storage.acks.lint_version or 0 }, "|")

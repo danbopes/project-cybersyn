@@ -90,6 +90,26 @@ local function stop_checks(label, id, want_p, want_r)
 		m.is_r == (st.is_r == true), { m.is_p, m.is_r })
 	lab.check(label .. ": network and mask as Cybersyn reads them", m.network_name == st.network_name and m.nets and
 		m.nets[1] and m.nets[1].mask == st.network_mask, { m.nets, st.network_name, st.network_mask })
+	if st.network_name then
+		-- PLAN8 D8-1: one Advertised block per combinator, headed by its letter; a save station has only its own.
+		local slots = serpent.line(d.sections.slots and d.sections.slots.content or {}, { comment = false })
+		local _, n_s = slots:gsub("S%[/color%] ", "")
+		local _, n_i = slots:gsub("I%[/color%] ", "")
+		-- The planner reads inventories only while the station combinator has input signals; the rest are on the
+		-- paused line, not in a block of their own.
+		local comb1 = st.entity_comb1
+		local status = comb1 and comb1.valid and comb1.status
+		local live = (status == defines.entity_status.working or status == defines.entity_status.low_power)
+			and comb1.get_signals(defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green) ~= nil
+		local secs = 0
+		for _, c in pairs(st.secondary_inv_combs or {}) do
+			if c.valid then secs = secs + 1 end
+		end
+		local want_i = live and secs or 0
+		lab.check(label .. ": one Advertised block per combinator (S once, I per inventory read)", n_s == 1 and
+			n_i == want_i and slots:find('{"cybersyn-gui.source-station"}', 1, true) ~= nil,
+			{ s = n_s, i = n_i, inventories = secs, read = want_i })
+	end
 	lab.check(label .. ": occupancy pair = deliveries_total / trains_limit and the stop's trains_count",
 		m.deliveries == st.deliveries_total and m.limit == st.entity_stop.trains_limit and
 		m.trains_count == st.entity_stop.trains_count, { m.deliveries, m.limit, m.trains_count })

@@ -1149,11 +1149,11 @@ local function row_entry(row, acked, ctx)
 	-- Everything but the clocks; the clocks (wait, read age) move every 10 s and then only their cells are written.
 	-- The numbers (stock, evaluations, lost count, request) change on most updates of a large base while the rest
 	-- stays, so a change of only them writes only their cells too.
-	-- The section that requests the item names the network in the chip tooltip (explain.network_of).
-	local sec = text.section_of(r_st, hash, "requested", collector.station_has_sections)
+	-- The inventory that requests the item names the network in the chip tooltip (explain.network_of).
+	local inv = text.inventory_of(r_st, hash, "requested", collector.inventories)
 	local ident_sig = table.concat({
 		reason, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to),
-		acked and "a" or "", inherited and "i" or "", setup and setup.check or "", sec and rtext.section_sig(sec) or "",
+		acked and "a" or "", inherited and "i" or "", setup and setup.check or "", inv and rtext.row_sig(inv) or "",
 	}, "|")
 	local content_sig = ident_sig .. "#" .. table.concat({ e.a, e.b, e.lost_n, e.n, tostring(requested) }, "|")
 	local sig = content_sig .. "|" .. math.floor(wait / text.READ_STEP) .. "|" .. text.read_step(read_age)
