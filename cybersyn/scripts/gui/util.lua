@@ -1124,12 +1124,17 @@ function util.set_rerender(fn)
 	rerender_fn = fn
 end
 
---- @type {open: fun(player: LuaPlayer, player_data: PlayerData), close: fun(player: LuaPlayer, player_data: PlayerData)}?
+--- @class WindowFns
+--- @field open fun(player: LuaPlayer, player_data: PlayerData)
+--- @field close fun(player: LuaPlayer, player_data: PlayerData)
+--- @field focus fun(player: LuaPlayer, player_data: PlayerData, tab: string, focus: ManagerFocus)
+
+--- @type WindowFns?
 local window_fns
 
---- Lets manager.lua open the window (from a stop panel's click) and close it the way its close button does (a
---- shift-click on a link, D8-9) without a require cycle.
---- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData), close: fun(player: LuaPlayer, player_data: PlayerData)}
+--- Lets manager.lua open the window, focus a subject in it (a stop panel's click) and close it the way its close
+--- button does (a shift-click on a link, D8-9) without a require cycle.
+--- @param fns WindowFns
 function util.set_window_fns(fns)
 	window_fns = fns
 end
@@ -1239,15 +1244,11 @@ function util.item_button_click(player, player_data, e, hash)
 		local tags = e.element and e.element.tags
 		local station = tags and tags.station
 		if station then util.set_station_filter(player_data, station) end
-		if station and tags.flight then
-			if item_view then item_view.close(player, player_data) end
-			util.set_item_filter(player_data, hash)
-			player_data.selected_tab = "trains_tab"
-			if player_data.is_manager_open then
-				util.select_tab(player_data, "trains_tab")
-			elseif window_fns then
-				window_fns.open(player, player_data)
-			end
+		if station and tags.flight and window_fns then
+			-- Through manager.focus: a Trains chip, search or place filter left from earlier would hide the very trains
+			-- the slot counts, and a closed window would otherwise open on the surface default.
+			window_fns.focus(player, player_data, "trains_tab", { item = hash, station = station, reveal = { all = true } })
+			return
 		elseif e.shift or not item_view then
 			if item_view then item_view.close(player, player_data) end
 			util.set_item_filter(player_data, hash)

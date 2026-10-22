@@ -123,6 +123,10 @@ local function click_setup(open)
 	u.set_window_fns({
 		open = function(_, pd) calls[#calls + 1] = "open-window"; pd.is_manager_open = true end,
 		close = function(_, pd) calls[#calls + 1] = "close-window"; pd.is_manager_open = false end,
+		focus = function(_, _, tab, focus)
+			calls[#calls + 1] = "focus:" .. tab
+			calls.focus = focus
+		end,
 	})
 	u.set_rerender(function() end)
 	local pd = { is_manager_open = open, selected_tab = "overview_tab", refs = {} }
@@ -144,13 +148,16 @@ test("an Advertised/Unserved slot sets the chip and the item's drill-down, as to
 	assert_eq(calls, { "drill:iron-plate" })
 end)
 
-test("an in-flight slot sets item + chip and lands on Trains, opening the window when closed", function()
-	local u, pd, calls, player = click_setup(false)
-	slot_click(u, player, pd, { station = 12, flight = true })
-	assert_eq(pd.search_station, 12)
-	assert_eq(pd.search_item, "iron-plate")
-	assert_eq(pd.selected_tab, "trains_tab")
-	assert_eq(calls, { "close-drill", "open-window" })
+test("an in-flight slot focuses Trains on item + chip, revealing the groups that hold its trains", function()
+	for _, open in ipairs({ false, true }) do
+		local u, pd, calls, player = click_setup(open)
+		-- manager.focus clears row filters such as this one; building the landing by hand kept it.
+		pd.trains_chip = "parked"
+		slot_click(u, player, pd, { station = 12, flight = true })
+		assert_eq(calls[1], "focus:trains_tab")
+		assert_eq(#calls, 1)
+		assert_eq(calls.focus, { item = "iron-plate", station = 12, reveal = { all = true } })
+	end
 end)
 
 test("a slot without a station leaves the chip alone; right-click clears only the item", function()

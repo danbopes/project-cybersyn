@@ -5,6 +5,7 @@
 -- "R2".
 
 local D, PI = lab.D, lab.pi
+local DT = "cybersyn-manager-dev-trains"
 
 local function dev(fn, ...)
 	return remote.call(D, fn, ...)
@@ -273,8 +274,13 @@ lab.suite("39_station_chip", {
 		end
 		lab.check("Requested slot: the drill-down's rows are the chip station's only", only_s, item.row_keys)
 		dev("close_item", PI)
-		dev("close", PI)
 		dev("clear_filters", PI)
+		-- Leftovers that would hide the slot's trains: a Trains chip they do not match, a search, and grouped mode with
+		-- every depot group collapsed. The landing must clear the first two and expand the groups holding them.
+		remote.call(DT, "set_chip", PI, "parked")
+		dev("set_filter", PI, { query = "zzz-no-such-train" })
+		remote.call(DT, "set_grouped", PI, true, {})
+		dev("close", PI)
 		r = dev("relative_click", PI, { kind = "item", id = flight, station = s, flight = true })
 		local st2 = dev("state", PI)
 		lab.check("in-flight slot: the window opens on Trains with item + chip", st2.is_open and
@@ -282,8 +288,10 @@ lab.suite("39_station_chip", {
 			{ r = r, state = st2 })
 		local want = trains_oracle(s, flight)
 		local got = trains_ids()
-		lab.check("in-flight slot: Trains lists the trains carrying it to or from the stop (" .. #want .. ")",
-			#want > 0 and serpent.line(got) == serpent.line(want), { got = got, want = want })
+		lab.check("in-flight slot: Trains lists the trains carrying it to or from the stop (" .. #want .. "), past an "
+			.. "old chip, search and collapsed groups", #want > 0 and serpent.line(got) == serpent.line(want),
+			{ got = got, want = want })
+		remote.call(DT, "set_grouped", PI, false)
 		dev("relative_close", PI)
 		dev("close", PI)
 		dev("clear_filters", PI)

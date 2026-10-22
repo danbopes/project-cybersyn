@@ -36,7 +36,8 @@ end
 --- @field trains_group_by_depot true? rows grouped by depot name
 --- @field expanded_depots {[string]: true}? depot groups showing their trains
 --- @field selected_train uint? the train the detail pane shows
---- @field trains_reveal {train: uint?, group: string?}? manager.focus: expand the group of this train (or this group)
+--- @field trains_reveal {train: uint?, group: string?, all: true?}? manager.focus: expand the group of this train (or
+--- this group, or every group holding a filtered train)
 --- once, on the first grouped build with a complete snapshot
 
 local TAB = "trains_tab"
@@ -1999,11 +2000,12 @@ local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 				if name then break end
 			end
 		end
-		if name then
-			local expanded = player_data.expanded_depots or {}
-			expanded[name] = true
-			player_data.expanded_depots = expanded
+		local expanded = player_data.expanded_depots or {}
+		if name then expanded[name] = true end
+		if reveal.all then
+			for key in pairs(chips.groups.members) do expanded[key] = true end
 		end
+		player_data.expanded_depots = expanded
 		player_data.trains_reveal = nil
 	end
 	ctx.members = chips.groups.members

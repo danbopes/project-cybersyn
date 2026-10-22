@@ -258,7 +258,8 @@ end
 --- @field stations_chip string? a Stations flag chip ("unserved"|"failing"|"problems")
 --- @field stations_problems_scope "errors"?
 --- @field trains_chip string? a Trains chip ("parked")
---- @field reveal {train: uint?, group: string?}? grouped Trains: expand the group holding this train, or this group
+--- @field reveal {train: uint?, group: string?, all: true?}? grouped Trains: expand the group holding this train, or
+--- this group, or (all) every group holding a train that passes the filters
 --- @field sort {tab: string, column: string, ascending: boolean}?
 
 --- @class PlayerData
@@ -758,6 +759,7 @@ util.set_rerender(manager.render)
 util.set_window_fns({
 	open = function(player, player_data) manager.handle.manager_open(player, player_data, player_data.refs) end,
 	close = function(player, player_data) manager.handle.manager_close(player, player_data, player_data.refs) end,
+	focus = function(player, player_data, tab, focus) manager.focus(player, player_data, tab, focus) end,
 })
 manager.log_tab = log_tab
 overview_tab.manager = manager
