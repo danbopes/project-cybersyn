@@ -281,10 +281,14 @@ function utilization_tab.build(map_data, player_data)
 		camera.surface_index = data.surface.index
 	end
 
-	if not player_data.utilization_registered then
+	-- The interval's own viewer table decides, not the player's flag: the flag outlives a window rebuilt by reset_player
+	-- and an interval set replaced by analytics.init.
+	if interval.guis[player.index] then
+		interval.guis[player.index] = refs
+	else
 		analytics.interval_register_gui(map_data, interval, player, refs, { viewport_width = gw, viewport_height = gh })
-		player_data.utilization_registered = true
 	end
+	player_data.utilization_registered = true
 
 	local chunk = interval.chunk
 	if not chunk then
@@ -316,7 +320,10 @@ function utilization_tab.build(map_data, player_data)
 	local selected_series = player_data.utilization_selected or {}
 	local current_tick = game.tick
 	local cache = player_data.utilization_cache
-	if cache and cache.interval_index == interval_index and (current_tick - cache.tick) < CACHE_DURATION_TICKS then
+	local legend_table = refs.utilization_legend_table
+	-- A window rebuilt within the cache's life (reset_player) has an empty legend that must not wait for the cache.
+	local legend_built = legend_table and legend_table.valid and #legend_table.children > 0
+	if legend_built and cache and cache.interval_index == interval_index and (current_tick - cache.tick) < CACHE_DURATION_TICKS then
 		return
 	end
 	local all_series = utilization_tab.sorted_series(interval)
@@ -327,7 +334,6 @@ function utilization_tab.build(map_data, player_data)
 		series = #all_series,
 		drawn = drawn and #drawn or 0,
 	}
-	local legend_table = refs.utilization_legend_table
 	if legend_table and legend_table.valid then
 		build_legend(map_data, legend_table, all_series, selected_series)
 	end
@@ -343,17 +349,19 @@ function utilization_tab.cleanup(map_data, player_data)
 	local series = map_data.analytics.train_utilization
 	local interval = series and series[player_data.utilization_interval or 1]
 
-	-- Lines left behind would overlap the next tab's chart on the shared surface.
-	if interval and interval.line_ids and charts then
-		charts.destroy_render_objects(interval.line_ids)
-		interval.line_ids = {}
-	end
-
 	local player = game.get_player(player_data.player_index)
-	if player and interval and player_data.utilization_registered then
+	if player and interval and interval.guis[player.index] then
 		analytics.interval_unregister_gui(map_data, interval, player)
 	end
 	player_data.utilization_registered = nil
+
+	-- The lines are every viewer's: only the last one to leave clears them. last_rendered_tick goes too, or a viewer
+	-- coming back within the same tick would get the library's same-tick cache and no lines.
+	if interval and interval.viewer_count <= 0 and interval.line_ids and charts then
+		charts.destroy_render_objects(interval.line_ids)
+		interval.line_ids = {}
+		interval.last_rendered_tick = nil
+	end
 end
 
 utilization_tab.handle = {}
