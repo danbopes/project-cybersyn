@@ -422,10 +422,14 @@ test("stop panel: an unserved request names the inventory that asks for it (D8-1
 	local n = naphthalene()
 	local req = { count = -866, threshold = 100, active = true }
 	n.sources[3].requested = { ["liquid-fuel"] = req }
-	n.requested = { ["liquid-fuel"] = req }
+	-- The station's sum is larger: the line gives the request of the inventory it names.
+	n.requested = { ["liquid-fuel"] = { count = -2866, threshold = 100, active = true } }
 	local e = { first_tick = 0, reason = REASON_NO_PROVIDER, a = 0, b = 0, n = 1 }
 	local tip = r.unserved_texts({ st = n, name = n.name, network_name = "signal-A" }, { hash = "liquid-fuel", e = e }, 60, 0)
 	local why = serpent.line(tip[4], { comment = false })
+	local all = serpent.line(tip, { comment = false })
+	assert_true(all:find('"866"', 1, true) ~= nil and all:find("2866", 1, true) == nil
+		and all:find("2,866", 1, true) == nil, all)
 	assert_true(why:find('{"cybersyn-gui.source-inventory", 2}', 1, true) ~= nil, why)
 	assert_true(why:find("[virtual-signal=signal-A]4", 1, true) ~= nil, why)
 	local p = plain()

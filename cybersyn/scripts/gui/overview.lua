@@ -1141,16 +1141,17 @@ local function row_entry(row, acked, ctx)
 	local inherited = e.first_tick < ctx.inherit_before
 	local wait_caption = text.wait_caption(wait_shown, inherited)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
+	-- The inventory that requests the item names the network in the chip tooltip (explain.network_of), and its request
+	-- is the amount the tooltip gives (PLAN8 D8-1), not the station's sum.
+	local inv = text.inventory_of(r_st, hash, "requested", collector.inventories)
 	local requested
 	if r_st then
-		local req = r_st.requested[hash]
+		local req = (inv or r_st).requested[hash]
 		if req then requested = -req.count end
 	end
 	-- Everything but the clocks; the clocks (wait, read age) move every 10 s and then only their cells are written.
 	-- The numbers (stock, evaluations, lost count, request) change on most updates of a large base while the rest
 	-- stays, so a change of only them writes only their cells too.
-	-- The inventory that requests the item names the network in the chip tooltip (explain.network_of).
-	local inv = text.inventory_of(r_st, hash, "requested", collector.inventories)
 	local ident_sig = table.concat({
 		reason, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to),
 		acked and "a" or "", inherited and "i" or "", setup and setup.check or "", inv and rtext.row_sig(inv) or "",

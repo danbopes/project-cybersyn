@@ -1139,11 +1139,12 @@ local function unserved_texts(m, r, now, inherit_before)
 	local e = r.e
 	local _, _, item_tooltip = util.item_sprite_and_tooltip(r.hash)
 	local st = m.st
-	local req = st and st.requested[r.hash]
+	-- PLAN8 D8-1: on a station with inventories the text names the one that requests the item, as the Overview does,
+	-- with that combinator's request rather than the station's sum.
+	local inv = utext.inventory_of(st, r.hash, "requested", collector.inventories)
+	local req = st and (inv or st).requested[r.hash]
 	local wait = rtext.age_step(now - e.first_tick)
 	local inherited = e.first_tick < inherit_before
-	-- PLAN8 D8-1: on a station with inventories the text names the one that requests the item, as the Overview does.
-	local inv = utext.inventory_of(st, r.hash, "requested", collector.inventories)
 	local tip = utext.chip_tooltip({
 		item = item_tooltip or r.hash,
 		requested = req and -req.count or nil,
