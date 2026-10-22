@@ -36,7 +36,8 @@ end
 --- @field trains_group_by_depot true? rows grouped by depot name
 --- @field expanded_depots {[string]: true}? depot groups showing their trains
 --- @field selected_train uint? the train the detail pane shows
---- @field trains_reveal {train: uint?, group: string?}? manager.focus: expand the group of this train (or this group)
+--- @field trains_reveal {train: uint?, group: string?, all: true?}? manager.focus: expand the group of this train (or
+--- this group, or every group holding a filtered train)
 --- once, on the first grouped build with a complete snapshot
 
 local TAB = "trains_tab"
@@ -576,7 +577,7 @@ function trains_tab.query(map_data, player_data)
 	local names = new_name_cache(snapshot)
 	local qsig = table.concat({
 		tostring(snapshot.trains_version), tostring(snapshot.tick), f.terms and table.concat(f.terms, " ") or "",
-		f.item or "", f.network or "", f.mask, f.surface or "", column, ascending and "+" or "-",
+		f.item or "", f.network or "", f.mask, f.surface or "", f.station or "", column, ascending and "+" or "-",
 	}, "\1")
 	local cache = player_data.trains_query
 	if not (cache and cache.sig == qsig) then
@@ -1999,11 +2000,12 @@ local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 				if name then break end
 			end
 		end
-		if name then
-			local expanded = player_data.expanded_depots or {}
-			expanded[name] = true
-			player_data.expanded_depots = expanded
+		local expanded = player_data.expanded_depots or {}
+		if name then expanded[name] = true end
+		if reveal.all then
+			for key in pairs(chips.groups.members) do expanded[key] = true end
 		end
+		player_data.expanded_depots = expanded
 		player_data.trains_reveal = nil
 	end
 	ctx.members = chips.groups.members
@@ -2400,11 +2402,11 @@ function trains_tab.handle.on_pane_close(player, player_data)
 	util.rerender(player, player_data)
 end
 
---- Whether the detail pane shows: a train selected on the Trains tab, no drill-down over it (manager.top_overlay).
+--- Whether the detail pane shows: a train selected on the Trains tab.
 --- @param player_data PlayerData
 --- @return boolean
 function trains_tab.pane_shown(player_data)
-	if not (player_data.selected_train and player_data.selected_tab == TAB) or player_data.item_view then return false end
+	if not (player_data.selected_train and player_data.selected_tab == TAB) then return false end
 	local pane = player_data.refs and player_data.refs[PANE]
 	return pane ~= nil and pane.valid and pane.visible
 end
@@ -2414,8 +2416,7 @@ end
 --- @return uint? train the train that was selected, nil when no pane showed
 function trains_tab.close_pane(player_data)
 	local id = player_data.selected_train
-	-- Under the item drill-down the pane is hidden; Escape belongs to the drill-down then.
-	if not (id and player_data.selected_tab == TAB) or player_data.item_view then return nil end
+	if not (id and player_data.selected_tab == TAB) then return nil end
 	local pane = player_data.refs and player_data.refs[PANE]
 	if not (pane and pane.valid and pane.visible) then return nil end
 	trains_tab.select(player_data, nil)

@@ -61,18 +61,38 @@ collector.UNLIMITED = UNLIMITED
 --- @field read boolean? false for an inventory the planner skips this pass (the station combinator has no input)
 --- @field network_mask int|{[string]: int}? the mask (a table of networks on a NETWORK_EACH station) the planner
 ---   registers this source under; nil for a secondary it does not read (it or the station combinator is off)
+--- @field network_name string? the station's network (NETWORK_EACH on such a station, with `networks`)
+--- @field mask int? this source's own mask on network_name; nil on NETWORK_EACH, without a network, or unread
+--- @field networks {[string]: int}? NETWORK_EACH only: network -> mask this source registers under
+--- @field provided {[string]: int} what this combinator advertises; while the station combinator is the only source
+---   read these are the record's own st.provided / st.requested / st.ignored (same tables, no copy)
+--- @field requested {[string]: SnapshotRequest} active = above this combinator's own threshold, as the planner, which
+---   dispatches every inventory as its own stop, reads it
+--- @field ignored {[string]: int}
+--- @field starved {[string]: true}? active requests of this source nobody provides on its networks, as of the last
+---   collector.station_status call
+--- @field failed boolean? an inventory combinator whose own request failed to dispatch (station.inv_failed, the red I);
+---   nil on the station combinator, whose red S is the station's display_state
 
---- @class SnapshotSection what the station advertises on one network name + mask value
---- @field key string network_name .. ":" .. mask  (stable across passes; use for GUI element names / diffing)
---- @field network_name string a concrete network (a NETWORK_EACH station yields one section per network)
---- @field mask int
---- @field sources SnapshotSource[] in index order
---- @field provided {[string]: int} advertised provides of these sources (summed when two sources give one item)
---- @field requested {[string]: SnapshotRequest} item signals of these sources the planner treats as requests (same
----   rules as st.requested: active = above threshold)
---- @field ignored {[string]: int} item signals of these sources the P/R switch keeps from being advertised (signed)
---- @field starved {[string]: true}? active requests in this section nobody provides on this section's network, as of
----   the last collector.station_status call
+--- @class SnapshotInventory one row per combinator (PLAN8 D8-1), from collector.inventories
+--- @field key string collector.row_key: station id .. "@" .. combinator unit number
+--- @field st SnapshotStation
+--- @field src SnapshotSource
+--- @field index int 0 = station combinator, 1.. = inventories in unit-number order
+--- @field unit uint
+--- @field kind "station"|"inventory"
+--- @field priority int the priority the planner uses for this combinator
+--- @field ok boolean
+--- @field read boolean false for an inventory the planner skips this pass (it advertises nothing then)
+--- @field network_name string?
+--- @field mask int?
+--- @field networks {[string]: int}?
+--- @field provided {[string]: int}
+--- @field requested {[string]: SnapshotRequest}
+--- @field ignored {[string]: int}
+--- @field starved {[string]: true}?
+--- @field failed boolean the inventory combinator shows the red I (its own request failed); false on the station row
+--- @field label LocalisedString collector.source_label of the source
 
 --- @class SnapshotStation
 --- @field id uint
@@ -103,13 +123,10 @@ collector.UNLIMITED = UNLIMITED
 --- @field longest_wait_start uint?
 --- @field secondary boolean
 --- @field secondary_count int
---- @field sections SnapshotSection[] sorted by network_name, then mask ascending. Always at least one entry when the
----   station has a network; a NETWORK_EACH station whose sources name no network gets one section on NETWORK_EACH with
----   mask 0. For a station no secondary contributes to, every section's provided / requested / ignored ARE
----   st.provided / st.requested / st.ignored (same tables, no copy).
---- @field mask_union {[string]: int} network name -> bitwise OR of every section mask on that network
+--- @field rows SnapshotInventory[] collector.inventories: one per source, in index order, refilled each pass
 --- @field sources SnapshotSource[] all sources, index order (sources[1] is the station combinator)
 --- @field ignored {[string]: int} item signals of every source the P/R switch keeps from being advertised (signed sum)
+---   (provided / requested / ignored are plain sums over every source: PLAN8 D8-3)
 --- @field read_tick uint game tick this record was last refreshed
 --- @field lint int bitmask of setup findings (PLAN3 §4.12), written by the lint job from phase 2b; 0 until then
 --- @field unserved {count: int, worst_reason: int, oldest_first_tick: uint}? copy of the station's diagnostics
@@ -530,7 +547,7 @@ function collector.delivery_age(st)
 	return math.max(0, (storage.total_ticks or 0) - last) * 60 / tps
 end
 
---- The station-wide check, for records without sections (hand-built ones).
+--- The station-wide check, for records without rows (hand-built ones).
 --- @param st SnapshotStation
 --- @param hash string
 --- @param starved {[string]: true}
@@ -548,36 +565,50 @@ local function request_starved(st, hash, starved)
 	return starved[name .. ":" .. hash] == true
 end
 
---- Whether a section that carries an active request for `hash` finds no provider on its own network: a request on
---- one mask of a network can be starved while the station's other sources provide nothing of it either way, and a
---- NETWORK_EACH station's secondaries register under their own networks.
---- @param sections SnapshotSection[]
-local function sections_starved(sections, hash, starved)
-	for i = 1, #sections do
-		local sec = sections[i]
-		local name = sec.network_name
-		if name ~= NETWORK_EACH then
-			local req = sec.requested[hash]
-			if req and req.active and starved[name .. ":" .. hash] then return true end
+--- Whether `row`'s networks hold `hash` in `starved`: a NETWORK_EACH combinator registers under each of its own
+--- networks, every other one under the station's network.
+--- @param row SnapshotInventory
+--- @param hash string
+--- @param starved {[string]: true}
+local function row_key_starved(row, hash, starved)
+	local nets = row.networks
+	if nets then
+		for net in pairs(nets) do
+			if starved[net .. ":" .. hash] then return true end
 		end
+		return false
+	end
+	local name = row.network_name
+	if not name or name == NETWORK_EACH then return false end
+	return starved[name .. ":" .. hash] == true
+end
+
+--- Whether a combinator with an active request for `hash` finds no provider on its own networks: the planner
+--- dispatches every inventory as its own stop, so one inventory can starve while another provides nothing of it.
+--- @param rows SnapshotInventory[]
+local function rows_starved(rows, hash, starved)
+	for i = 1, #rows do
+		local row = rows[i]
+		local req = row.requested[hash]
+		if req and req.active and row_key_starved(row, hash, starved) then return true end
 	end
 	return false
 end
 
---- Active requests of `st` with no provider on the network of a section requesting them, in `requested` order; false
---- when none.
+--- Active requests of `st` with no provider on the networks of a combinator requesting them, in `requested` order;
+--- false when none.
 --- @param st SnapshotStation
 --- @param starved {[string]: true}
 --- @return string[]|false
 function collector.starved_hashes(st, starved)
 	if not st.network_name or st.warming_up or not next(starved) then return false end
-	local sections = st.sections
+	local rows = st.rows
 	local hashes = false
 	for hash, req in pairs(st.requested) do
 		if req.active then
 			local hit
-			if sections then
-				hit = sections_starved(sections, hash, starved)
+			if rows then
+				hit = rows_starved(rows, hash, starved)
 			else
 				hit = request_starved(st, hash, starved)
 			end
@@ -590,32 +621,37 @@ function collector.starved_hashes(st, starved)
 	return hashes
 end
 
---- Refills every section's `starved` against `starved`; a section keeps its table while it stays starved.
+--- Refills every row's (and its source's) `starved` against `starved`; a source keeps its table while it stays
+--- starved.
 --- @return boolean any
-local function refresh_starved(st, starved)
-	local sections = st.sections
+local function refresh_row_starved(st, starved)
+	local rows = st.rows
 	local check = st.network_name ~= nil and not st.warming_up and next(starved) ~= nil
 	local any = false
-	for i = 1, #sections do
-		local sec = sections[i]
-		local out = sec.starved
+	for i = 1, #rows do
+		local row = rows[i]
+		local src = row.src
+		local out = src.starved
 		if out then
 			for k in pairs(out) do out[k] = nil end
 		end
-		local name = sec.network_name
-		if check and name ~= NETWORK_EACH then
-			for hash, req in pairs(sec.requested) do
-				if req.active and starved[name .. ":" .. hash] then
+		if check then
+			for hash, req in pairs(row.requested) do
+				if req.active and row_key_starved(row, hash, starved) then
 					if not out then
 						out = {}
-						sec.starved = out
+						src.starved = out
 					end
 					out[hash] = true
 					any = true
 				end
 			end
 		end
-		if out and next(out) == nil then sec.starved = nil end
+		if out and next(out) == nil then
+			out = nil
+			src.starved = nil
+		end
+		if row.starved ~= out then row.starved = out end
 	end
 	return any
 end
@@ -634,10 +670,10 @@ end
 --- @param starved {[string]: true}
 --- @return string
 function collector.station_status(st, starved)
-	-- Before the early returns, so no section keeps the starved requests of an earlier set.
+	-- Before the early returns, so no row keeps the starved requests of an earlier set.
 	local starving
-	if st.sections then
-		starving = refresh_starved(st, starved)
+	if st.rows then
+		starving = refresh_row_starved(st, starved)
 	end
 	if not st.comb_ok then return "no_power" end
 	if st.trains_limit == 0 then return "disabled" end
@@ -996,21 +1032,19 @@ local SECONDARY_SETTINGS = {
 	[RESERVED_FLUID_CAPACITY] = true,
 }
 
--- The sections the combinator being classified advertises on, when they are not the station's merged tables
--- (see fill_station). Only indices 1..targets_n are read.
-local targets = {}
-local targets_n = 0
-
 --- Mirrors tick_poll_station: negative = request when is_r, positive = provide when is_p; a signal the switch rules
---- out is ignored. Writes the merged record and every section in `targets`. With `b`, also records which
---- network:item pairs this combinator provides or actively requests, under the networks in `nets`: the planner
---- registers each combinator under its own networks, for the starved derivation.
-local function classify(station, signals, st, base_item, base_fluid, control, b)
+--- out is ignored. Writes the merged record and, unless they are the record's own tables, `src`'s lists. With `b`,
+--- also records which network:item pairs this combinator provides or actively requests, under the networks in
+--- `nets`: the planner registers each combinator under its own networks, for the starved derivation.
+--- @param src SnapshotSource the combinator `signals` came from
+local function classify(station, signals, st, base_item, base_fluid, control, b, src)
 	local network_name = station.network_name
 	local r_keys, p_keys, p_over = b and b.r_keys, b and b.p_keys, b and b.p_over
 	local overrides = station.item_thresholds
 	local provided, requested, ignored = st.provided, st.requested, st.ignored
-	local tn = targets_n
+	local sp, sr, si = src.provided, src.requested, src.ignored
+	local own = sp ~= provided
+	local src_mask = src.mask
 	for _, v in pairs(signals) do
 		local signal = v.signal
 		local name = signal.name
@@ -1025,10 +1059,7 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 					local threshold = item_threshold(station, hash, name, item_type, base_item, base_fluid)
 					local active = add_request(requested, hash, count, threshold,
 						network_name ~= NETWORK_EACH and nets_n == 1 and net_masks[1] or nil)
-					for t = 1, tn do
-						local sec = targets[t]
-						add_request(sec.requested, hash, count, threshold, sec.mask)
-					end
+					if own then add_request(sr, hash, count, threshold, src_mask) end
 					if active and r_keys then
 						for i = 1, nets_n do
 							r_keys[nets[i] .. ":" .. hash] = true
@@ -1036,10 +1067,7 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 					end
 				elseif count > 0 and station.is_p then
 					provided[hash] = (provided[hash] or 0) + count
-					for t = 1, tn do
-						local sp = targets[t].provided
-						sp[hash] = (sp[hash] or 0) + count
-					end
+					if own then sp[hash] = (sp[hash] or 0) + count end
 					if p_keys then
 						-- The provider's masks, OR-ed per key: the lint's requester-vs-provider mask check reads them.
 						for i = 1, nets_n do
@@ -1058,10 +1086,7 @@ local function classify(station, signals, st, base_item, base_fluid, control, b)
 					end
 				elseif count ~= 0 then
 					ignored[hash] = (ignored[hash] or 0) + count
-					for t = 1, tn do
-						local si = targets[t].ignored
-						si[hash] = (si[hash] or 0) + count
-					end
+					if own then si[hash] = (si[hash] or 0) + count end
 				end
 			end
 		end
@@ -1092,169 +1117,7 @@ end
 --- @return SnapshotStation
 local function new_record(id)
 	return { id = id, provided = {}, requested = {}, deliveries = {}, control = {}, control2 = {}, thresholds = {}, wait = {},
-		ignored = {}, sections = {}, sources = {}, mask_union = {} }
-end
-
-local function section_order(a, b)
-	if a.network_name ~= b.network_name then return a.network_name < b.network_name end
-	return a.mask < b.mask
-end
-
---- @param sec SnapshotSection
-local function set_section(sec, name, mask)
-	if sec.network_name ~= name or sec.mask ~= mask or not sec.key then
-		sec.network_name = name
-		sec.mask = mask
-		sec.key = name .. ":" .. mask
-	end
-end
-
--- Indices 1..n hold the networks of `nets` sorted by name; a NETWORK_EACH mask iterates in hash order.
-local function sort_nets(n)
-	for i = 2, n do
-		local name, mask = nets[i], net_masks[i]
-		local j = i - 1
-		while j >= 1 and nets[j] > name do
-			nets[j + 1], net_masks[j + 1] = nets[j], net_masks[j]
-			j = j - 1
-		end
-		nets[j + 1], net_masks[j + 1] = name, mask
-	end
-end
-
---- One section per network of the station combinator, all sharing the merged tables: the station's only source is
---- that combinator, so a section's lists are the station's and nothing is allocated per pass.
---- @param st SnapshotStation
---- @param source SnapshotSource
-local function simple_sections(st, source)
-	local sections = st.sections
-	local n = 0
-	if st.network_name then
-		set_networks(st.network_name, st.network_mask)
-		sort_nets(nets_n)
-		n = nets_n
-		for i = 1, n do
-			local sec = sections[i]
-			if not sec then
-				sec = { sources = {} }
-				sections[i] = sec
-			end
-			set_section(sec, nets[i], net_masks[i])
-		end
-		if n == 0 then
-			n = 1
-			local sec = sections[1]
-			if not sec then
-				sec = { sources = {} }
-				sections[1] = sec
-			end
-			set_section(sec, st.network_name, 0)
-		end
-	end
-	local provided, requested, ignored = st.provided, st.requested, st.ignored
-	for i = 1, n do
-		local sec = sections[i]
-		if sec.provided ~= provided then sec.provided = provided end
-		if sec.requested ~= requested then sec.requested = requested end
-		if sec.ignored ~= ignored then sec.ignored = ignored end
-		local list = sec.sources
-		if list[1] ~= source then list[1] = source end
-		for k = #list, 2, -1 do list[k] = nil end
-	end
-	for i = #sections, n + 1, -1 do sections[i] = nil end
-end
-
--- Sections a pass of fill_station has refilled so far (multi-source stations only).
-local touched = {}
-
---- Points `targets` at the sections of the networks in `nets` for `source`, creating or reclaiming them.
---- @param st SnapshotStation
---- @param source SnapshotSource
-local function target_sections(st, source)
-	local sections = st.sections
-	targets_n = 0
-	for i = 1, nets_n do
-		local name, mask = nets[i], net_masks[i]
-		local sec
-		for j = 1, #sections do
-			local s = sections[j]
-			if s.network_name == name and s.mask == mask then
-				sec = s
-				break
-			end
-		end
-		if not sec then
-			sec = { sources = {}, provided = {}, requested = {}, ignored = {} }
-			set_section(sec, name, mask)
-			sections[#sections + 1] = sec
-		end
-		if not touched[sec] then
-			touched[sec] = true
-			local list = sec.sources
-			for k = #list, 1, -1 do list[k] = nil end
-			if sec.provided == st.provided then
-				-- Shared with the record while the station had one source.
-				sec.provided, sec.requested, sec.ignored = {}, {}, {}
-			else
-				mark_counts(sec.provided)
-				mark_requests(sec.requested)
-				mark_counts(sec.ignored)
-			end
-		end
-		local list = sec.sources
-		if list[#list] ~= source then list[#list + 1] = source end
-		targets_n = targets_n + 1
-		targets[targets_n] = sec
-	end
-end
-
---- Drops the sections no source advertised on this time, sweeps the rest and sorts them.
---- @param st SnapshotStation
---- @param fallback SnapshotSource the station combinator, for the one section of a station on no network
-local function finish_sections(st, fallback)
-	local sections = st.sections
-	local n = 0
-	for i = 1, #sections do
-		local sec = sections[i]
-		if touched[sec] then
-			touched[sec] = nil
-			sweep_counts(sec.provided)
-			sweep_requests(sec.requested)
-			sweep_counts(sec.ignored)
-			n = n + 1
-			sections[n] = sec
-		end
-	end
-	for i = #sections, n + 1, -1 do sections[i] = nil end
-	if n == 0 and st.network_name then
-		sections[1] = { sources = { fallback }, provided = {}, requested = {}, ignored = {} }
-		set_section(sections[1], st.network_name, 0)
-	elseif n > 1 then
-		table.sort(sections, section_order)
-	end
-	targets_n = 0
-end
-
--- The pass's union before it is compared into the record.
-local union_scratch = {}
-
---- Writes only the names whose union changed: like the counts' mark/sweep, an unchanged record is not written to.
---- @param st SnapshotStation
-local function fill_mask_union(st)
-	local union = st.mask_union
-	local sections = st.sections
-	for i = 1, #sections do
-		local sec = sections[i]
-		local name = sec.network_name
-		if name ~= NETWORK_EACH then union_scratch[name] = bor(union_scratch[name] or 0, sec.mask) end
-	end
-	for k in pairs(union) do
-		if union_scratch[k] == nil then union[k] = nil end
-	end
-	for k, v in pairs(union_scratch) do
-		if union[k] ~= v then union[k] = v end
-		union_scratch[k] = nil
-	end
+		ignored = {}, sources = {}, rows = {} }
 end
 
 --- @param sources SnapshotSource[]
@@ -1263,10 +1126,109 @@ end
 local function source_at(sources, i)
 	local src = sources[i]
 	if not src then
-		src = { kind = i == 1 and "station" or "inventory" }
+		src = { kind = i == 1 and "station" or "inventory", provided = {}, requested = {}, ignored = {} }
 		sources[i] = src
+	elseif not src.provided then
+		-- A record kept in a save from before sources had lists of their own.
+		src.provided, src.requested, src.ignored = {}, {}, {}
 	end
 	return src
+end
+
+--- @param src SnapshotSource
+--- @param name string?
+--- @param mask int|{[string]: int}? a table on NETWORK_EACH; nil for an unread inventory
+local function set_source_network(src, name, mask)
+	if src.network_name ~= name then src.network_name = name end
+	if name == NETWORK_EACH then
+		src.mask = nil
+		local nets = type(mask) == "table" and mask or nil
+		if src.networks ~= nets then src.networks = nets end
+	else
+		if src.networks then src.networks = nil end
+		if mask ~= nil then mask = type(mask) == "number" and mask or 0 end
+		src.mask = name and mask or nil
+	end
+end
+
+--- @param st SnapshotStation
+--- @param src SnapshotSource
+--- @return string
+function collector.row_key(st, src)
+	return st.id .. "@" .. tostring(src.unit)
+end
+
+-- One label shared by every station row (about 2,000 on pY): rows live as long as the snapshot.
+local STATION_LABEL = { "cybersyn-gui.source-station" }
+
+--- Refills st.rows from st.sources in place: one row per combinator, index order. Readers get them through
+--- collector.inventories, so a render never rebuilds them.
+--- @param st SnapshotStation
+--- @param sources SnapshotSource[]
+local function fill_rows(st, sources)
+	local rows = st.rows
+	for i = 1, #sources do
+		local src = sources[i]
+		local row = rows[i]
+		if not row then
+			row = { st = st }
+			rows[i] = row
+		end
+		if row.src ~= src then row.src = src end
+		if row.index ~= src.index or row.kind ~= src.kind or not row.label then
+			row.index, row.kind = src.index, src.kind
+			row.label = src.kind == "station" and STATION_LABEL or collector.source_label(src)
+		end
+		if row.unit ~= src.unit or not row.key then
+			row.unit = src.unit
+			row.key = collector.row_key(st, src)
+		end
+		row.priority = src.priority
+		row.ok = src.ok == true
+		row.read = src.read ~= false
+		if row.network_name ~= src.network_name then row.network_name = src.network_name end
+		row.mask = src.mask
+		if row.networks ~= src.networks then row.networks = src.networks end
+		if row.provided ~= src.provided then row.provided = src.provided end
+		if row.requested ~= src.requested then row.requested = src.requested end
+		if row.ignored ~= src.ignored then row.ignored = src.ignored end
+		if row.starved ~= src.starved then row.starved = src.starved end
+		row.failed = src.failed == true
+	end
+	for i = #rows, #sources + 1, -1 do rows[i] = nil end
+end
+
+--- The station's rows (PLAN8 D8-1): the station combinator, then each secondary inventory combinator in unit-number
+--- order, each with its own lists, priority and network. Collector records carry them from their last pass; a
+--- hand-built record (tests) gets them derived from its sources, or one station row from its own lists, and keeps
+--- them.
+--- @param st SnapshotStation
+--- @return SnapshotInventory[]
+function collector.inventories(st)
+	local rows = st.rows
+	if rows then return rows end
+	local sources = st.sources
+	if not sources or not sources[1] then
+		sources = { { kind = "station", index = 0, unit = 0, ok = st.comb_ok ~= false, priority = st.priority or 0,
+			network_mask = st.network_mask } }
+	end
+	for _, src in ipairs(sources) do
+		if src.network_name == nil and src.read ~= false then
+			set_source_network(src, st.network_name, src.network_mask or (src.index == 0 and st.network_mask or nil))
+		end
+		if not src.provided then
+			-- Fresh tables, never a shared empty one: a record kept from an older save is refilled in place later.
+			if src.index == 0 and st.provided then
+				src.provided, src.requested, src.ignored = st.provided, st.requested or {}, st.ignored or {}
+			else
+				src.provided, src.requested, src.ignored = {}, {}, {}
+			end
+		end
+	end
+	rows = {}
+	st.rows = rows
+	fill_rows(st, sources)
+	return rows
 end
 
 local function by_unit(a, b) return (a.unit_number or 0) < (b.unit_number or 0) end
@@ -1334,9 +1296,9 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	end
 	refill(st.deliveries, station.deliveries)
 	refill(st.wait, station.request_start_ticks)
-	if not st.sections then
-		st.ignored, st.sections, st.sources, st.mask_union = {}, {}, {}, {}
-	end
+	if not st.ignored then st.ignored = {} end
+	if not st.sources then st.sources = {} end
+	if not st.rows then st.rows = {} end
 	local provided, requested, ignored = st.provided, st.requested, st.ignored
 	mark_counts(provided)
 	mark_requests(requested)
@@ -1405,15 +1367,19 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	local sources = st.sources
 	local src0 = source_at(sources, 1)
 	src0.index, src0.unit, src0.ok, src0.priority = 0, comb1.unit_number, st.comb_ok, station_priority
+	src0.failed = nil
+	local inv_failed = station.inv_failed
 	if src0.network_mask ~= st.network_mask then src0.network_mask = st.network_mask end
+	set_source_network(src0, st.network_name, st.network_mask)
 
 	-- The planner reads secondaries only while the station combinator has input signals (a working combinator with
-	-- an empty input reads as nil too): the rest stay in st.sources, in no section.
+	-- an empty input reads as nil too): the rest stay in st.sources with empty lists.
 	local n_read = 0
 	for i = 1, n_sec do
 		local sec = sec_list[i]
 		local src = source_at(sources, i + 1)
 		src.index, src.unit, src.priority = i, sec.unit_number, station_priority
+		src.failed = inv_failed ~= nil and inv_failed[sec.unit_number] == true or nil
 		local signals, ok
 		if signals1 then
 			signals, ok = read_signals(sec)
@@ -1429,77 +1395,96 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 		else
 			sec_signals[i] = false
 			src.network_mask = nil
+			set_source_network(src, st.network_name, nil)
 		end
 	end
 	for i = #sources, n_sec + 2, -1 do sources[i] = nil end
 
+	-- While it is the only source read, the station combinator's lists are the record's own; with an inventory read
+	-- it needs lists of its own.
 	if n_read == 0 then
-		simple_sections(st, src0)
-		if signals1 then
-			set_networks(st.network_name, st.network_mask)
-			classify(station, signals1, st, default_item, default_fluid, st.control, keyed)
+		if src0.provided ~= provided then src0.provided, src0.requested, src0.ignored = provided, requested, ignored end
+	elseif src0.provided == provided then
+		src0.provided, src0.requested, src0.ignored = {}, {}, {}
+	end
+	for i = 1, #sources do
+		local src = sources[i]
+		if src.provided ~= provided then
+			mark_counts(src.provided)
+			mark_requests(src.requested)
+			mark_counts(src.ignored)
 		end
-	else
+	end
+
+	if signals1 then
 		set_networks(st.network_name, st.network_mask)
-		target_sections(st, src0)
-		classify(station, signals1, st, default_item, default_fluid, st.control, keyed)
-		for i = 1, n_sec do
-			local signals = sec_signals[i]
-			if signals then
-				local src = sources[i + 1]
-				local sec_item, sec_fluid = default_item, default_fluid
-				-- A secondary on one network may carry that network's signal: its own mask, as the planner reads it.
-				local sec_mask
-				if is_each then nets_n = 0 end
-				for _, v in pairs(signals) do
-					local signal = v.signal
-					if signal.type == "virtual" then
-						local name = signal.name
-						if name == SIGNAL_PRIORITY then
-							src.priority = v.count
-						elseif name == REQUEST_THRESHOLD then
-							sec_item = math.abs(v.count)
-						elseif name == REQUEST_FLUID_THRESHOLD then
-							sec_fluid = math.abs(v.count)
-						elseif is_each and name and not SECONDARY_SETTINGS[name] then
-							nets_n = nets_n + 1
-							nets[nets_n] = name
-							net_masks[nets_n] = v.count
-						elseif not is_each and name == st.network_name then
-							sec_mask = v.count
-						end
+		classify(station, signals1, st, default_item, default_fluid, st.control, keyed, src0)
+	end
+	for i = 1, n_sec do
+		local signals = sec_signals[i]
+		if signals then
+			local src = sources[i + 1]
+			local sec_item, sec_fluid = default_item, default_fluid
+			-- A secondary on one network may carry that network's signal: its own mask, as the planner reads it.
+			local sec_mask
+			if is_each then nets_n = 0 end
+			for _, v in pairs(signals) do
+				local signal = v.signal
+				if signal.type == "virtual" then
+					local name = signal.name
+					if name == SIGNAL_PRIORITY then
+						src.priority = v.count
+					elseif name == REQUEST_THRESHOLD then
+						sec_item = math.abs(v.count)
+					elseif name == REQUEST_FLUID_THRESHOLD then
+						sec_fluid = math.abs(v.count)
+					elseif is_each and name and not SECONDARY_SETTINGS[name] then
+						nets_n = nets_n + 1
+						nets[nets_n] = name
+						net_masks[nets_n] = v.count
+					elseif not is_each and name == st.network_name then
+						sec_mask = v.count
 					end
 				end
-				if is_each then
-					local own = src.network_mask
-					if type(own) ~= "table" then
-						own = {}
-						src.network_mask = own
-					end
-					for k in pairs(own) do own[k] = nil end
-					for k = 1, nets_n do own[nets[k]] = net_masks[k] end
-				else
-					set_networks(st.network_name, sec_mask or st.network_mask)
-					src.network_mask = net_masks[1]
-				end
-				target_sections(st, src)
-				classify(station, signals, st, sec_item, sec_fluid, nil, keyed)
-				st.secondary_count = st.secondary_count + 1
-				st.secondary = true
 			end
-			sec_signals[i] = nil
+			if is_each then
+				local own = src.network_mask
+				if type(own) ~= "table" then
+					own = {}
+					src.network_mask = own
+				end
+				for k in pairs(own) do own[k] = nil end
+				for k = 1, nets_n do own[nets[k]] = net_masks[k] end
+				set_source_network(src, NETWORK_EACH, own)
+			else
+				set_networks(st.network_name, sec_mask or st.network_mask)
+				local mask = nets_n == 1 and net_masks[1] or nil
+				src.network_mask = mask
+				set_source_network(src, st.network_name, mask)
+			end
+			classify(station, signals, st, sec_item, sec_fluid, nil, keyed, src)
+			st.secondary_count = st.secondary_count + 1
+			st.secondary = true
 		end
-		finish_sections(st, src0)
+		sec_signals[i] = nil
 	end
 	for i = 1, n_listed do sec_list[i] = nil end
-	fill_mask_union(st)
 
+	for i = 1, #sources do
+		local src = sources[i]
+		if src.provided ~= provided then
+			sweep_counts(src.provided)
+			sweep_requests(src.requested)
+			sweep_counts(src.ignored)
+		end
+	end
 	sweep_counts(provided)
 	sweep_requests(requested)
 	sweep_counts(ignored)
 	sweep_signals(st.control)
 	sweep_signals(st.control2)
 	sweep_signals(st.thresholds)
+	fill_rows(st, sources)
 end
 
 --- Appends a station to an item's list once (a station's items are visited one station at a time).
@@ -1652,7 +1637,7 @@ end
 
 local NO_NETWORKS = {}
 
---- This station's active request keys that nobody on `networks` or on its sections' networks provides, from the
+--- This station's active request keys that nobody on `networks` or on its rows' networks provides, from the
 --- planner's economy; nil while the economy is incomplete (outside dispatch). For a stop read live, when no pass is
 --- running to capture the set.
 --- @param st SnapshotStation
@@ -1673,16 +1658,23 @@ function collector.economy_starved(st, networks)
 		end
 	end
 	-- A NETWORK_EACH station's secondaries request on networks the station combinator may not name.
-	local sections = st.sections
-	if sections then
-		for i = 1, #sections do
-			local sec = sections[i]
-			local name = sec.network_name
-			if name ~= NETWORK_EACH then
-				for hash, req in pairs(sec.requested) do
+	local rows = st.rows
+	if rows then
+		for i = 1, #rows do
+			local row = rows[i]
+			local nets, name = row.networks, row.network_name
+			if nets or (name and name ~= NETWORK_EACH) then
+				for hash, req in pairs(row.requested) do
 					if req.active then
-						local key = name .. ":" .. hash
-						if r_stops[key] and not p_stops[key] then starved[key] = true end
+						if nets then
+							for net in pairs(nets) do
+								local key = net .. ":" .. hash
+								if r_stops[key] and not p_stops[key] then starved[key] = true end
+							end
+						else
+							local key = name .. ":" .. hash
+							if r_stops[key] and not p_stops[key] then starved[key] = true end
+						end
 					end
 				end
 			end
@@ -2022,27 +2014,11 @@ function collector.aggregate(snapshot, pred)
 	return inv
 end
 
---- The mask of a section as the Network columns print it: "3".
+--- A mask as the Network columns print it: "3".
 --- @param mask int
 --- @return string
 function collector.mask_label(mask)
 	return tostring(mask)
-end
-
---- "bits 1+2" for a mask of several bits (bit 1 = value 1), nil for a single bit or 0. Negative masks read as their
---- 32-bit pattern, as the planner's bit32 tests do.
---- @param mask int
---- @return string?
-function collector.mask_bits_label(mask)
-	local bits, n = nil, 0
-	for i = 0, 31 do
-		if bit32.btest(mask, bit32.lshift(1, i)) then
-			n = n + 1
-			bits = bits and (bits .. "+" .. (i + 1)) or tostring(i + 1)
-		end
-	end
-	if n < 2 then return nil end
-	return "bits " .. bits
 end
 
 --- @param source SnapshotSource
@@ -2050,17 +2026,6 @@ end
 function collector.source_label(source)
 	if source.kind == "inventory" then return { "cybersyn-gui.source-inventory", source.index } end
 	return { "cybersyn-gui.source-station" }
-end
-
---- Whether a view should lay the station out in sections: more than one, or any secondary inventory combinator.
---- @param st SnapshotStation
---- @return boolean
-function collector.station_has_sections(st)
-	local sections = st.sections
-	if sections and #sections > 1 then return true end
-	-- sources[1] is the station combinator; every later one is an inventory.
-	local sources = st.sources
-	return sources ~= nil and #sources > 1
 end
 
 return collector

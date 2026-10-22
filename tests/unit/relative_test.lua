@@ -255,152 +255,113 @@ test("last_for_step: more new rows than the budget start over from the newest", 
 	assert_eq(seqs(c.rows), seqs(diag.last_for("station", 7, 10)))
 end)
 
--- ---------------------------------------------------------------- network sections (round 7)
+-- ---------------------------------------------------------------- inventory rows (PLAN8 D8-1)
 
--- Records in the collector's section contract (BRIEF-SECONDARY.md), built by hand.
+-- Records in the collector's inventory-row contract, built by hand: each source carries its own lists, priority and
+-- network, and collector.inventories derives st.rows from them.
 
 local function fluid(name, order)
 	prototypes.fluid[name] = prototypes.fluid[name]
 		or { name = name, order = order, localised_name = { "fluid-name." .. name }, valid = true }
 end
 
-local function source(kind, index, priority)
-	return { kind = kind, index = index, unit = 100 + index, ok = true, priority = priority or 0 }
+local function source(kind, index, priority, mask, provided, requested, ignored)
+	return { kind = kind, index = index, unit = 100 + index, ok = true, priority = priority or 0,
+		network_name = "signal-A", mask = mask, network_mask = mask,
+		provided = provided or {}, requested = requested or {}, ignored = ignored or {} }
 end
 
---- [naphthalene-oil] Provider on pY 126: Provide only, the station combinator on A1, Inventory 1 on A3 (bits 1+2),
---- Inventory 2 on A4 whose -866 liquid fuel the switch keeps from being advertised.
+--- [naphthalene-oil] Provider on pY 126: Provide only, the station combinator on A1, Inventory 1 on A3, Inventory 2 on
+--- A4 whose -866 liquid fuel the switch keeps from being advertised.
 local function naphthalene()
 	fluid("naphthalene-oil", "z[a]")
 	fluid("liquid-fuel", "z[b]")
-	local s0, s1, s2 = source("station", 0), source("inventory", 1), source("inventory", 2)
+	local s0 = source("station", 0, 0, 1, { ["naphthalene-oil"] = 199134 })
+	local s1 = source("inventory", 1, 0, 3, { ["liquid-fuel"] = 99134 })
+	local s2 = source("inventory", 2, 0, 4, {}, {}, { ["liquid-fuel"] = -866 })
 	return {
 		id = 7, name = "[fluid=naphthalene-oil] Provider", is_p = true, is_r = false, is_stack = false,
 		network_name = "signal-A", network_mask = 1, comb_ok = true, priority = 0,
 		provided = { ["naphthalene-oil"] = 199134, ["liquid-fuel"] = 99134 }, requested = {}, wait = {}, deliveries = {},
+		ignored = { ["liquid-fuel"] = -866 },
 		sources = { s0, s1, s2 },
-		mask_union = { ["signal-A"] = 7 },
-		sections = {
-			{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { s0 },
-				provided = { ["naphthalene-oil"] = 199134 }, requested = {}, ignored = {} },
-			{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s1 },
-				provided = { ["liquid-fuel"] = 99134 }, requested = {}, ignored = {} },
-			{ key = "signal-A:4", network_name = "signal-A", mask = 4, sources = { s2 },
-				provided = {}, requested = {}, ignored = { ["liquid-fuel"] = -866 } },
-		},
 	}
 end
 
---- A plain requester: Request only, one section on A3, several requests below threshold, and a provide the switch
---- drops.
+--- A plain requester: Request only, the station combinator on A3, several requests below threshold, and a provide the
+--- switch drops.
 local function plain()
-	local s0 = source("station", 0, 1)
 	local requested = {
 		["iron-plate"] = { count = -1900, threshold = 2000, active = false },
 		["copper-plate"] = { count = -1600, threshold = 2000, active = false },
 		["coal"] = { count = -2500, threshold = 2000, active = true },
 	}
-	local provided = {}
+	local provided, ignored = {}, { stone = 52 }
 	return {
 		id = 9, name = "Circuit Requestor", is_p = false, is_r = true, is_stack = false,
 		network_name = "signal-A", network_mask = 3, comb_ok = true, priority = 1,
-		provided = provided, requested = requested, wait = {}, deliveries = {},
-		sources = { s0 },
-		mask_union = { ["signal-A"] = 3 },
-		sections = {
-			{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s0 },
-				provided = provided, requested = requested, ignored = { stone = 52 } },
-		},
+		provided = provided, requested = requested, ignored = ignored, wait = {}, deliveries = {},
+		sources = { source("station", 0, 1, 3, provided, requested, ignored) },
 	}
 end
 
-test("sections: has_sections, masks caption, inventories and bits for the naphthalene provider and a plain stop", function()
+local function rows_of(st)
+	return collector().inventories(st)
+end
+
+test("rows: network, head and one line of text per row, as the stop panel heads its blocks", function()
+	local t = rt()
+	local rows = rows_of(naphthalene())
+	assert_eq(t.row_network(rows[2]), "[virtual-signal=signal-A]3")
+	assert_eq(t.row_head(rows[2]), { "", { "cybersyn-gui.source-inventory", 1 }, " · ", { "cybersyn-gui.section-priority", "0" } })
+	assert_eq(t.row_text(rows[1]), { "", { "", { "cybersyn-gui.source-station" }, " · ", { "cybersyn-gui.section-priority", "0" } },
+		" · ", "[virtual-signal=signal-A]1" })
+	local sig = t.row_sig(rows[2])
+	rows[2].priority = 9
+	assert_true(t.row_sig(rows[2]) ~= sig, "the priority is in the text, so in the sig")
+	local each = { kind = "station", index = 0, priority = 0, network_name = NETWORK_EACH,
+		networks = { ["signal-B"] = 2, ["signal-A"] = 1 } }
+	assert_eq(t.row_network(each), "[virtual-signal=signal-A]1 [virtual-signal=signal-B]2")
+	assert_eq(t.row_network({ kind = "inventory", index = 1, network_name = "signal-A" }), "", "unread: no mask")
+	assert_eq(t.row_text({ kind = "inventory", index = 1, priority = 2, network_name = "signal-A" }),
+		{ "", { "cybersyn-gui.source-inventory", 1 }, " · ", { "cybersyn-gui.section-priority", "2" } })
+end)
+
+test("rows: inventories, the distinct networks and their mask union", function()
 	local t = rt()
 	local n, p = naphthalene(), plain()
-	assert_true(collector().station_has_sections(n))
-	assert_false(collector().station_has_sections(p), "one section, no inventory")
-	assert_eq({ t.masks_caption(t.sections_of(n)) }, { "signal-A", "1 · 3 · 4" })
-	assert_eq({ t.masks_caption(t.sections_of(p)) }, { "signal-A", "3" })
-	assert_eq(t.inventory_count(n), 2)
-	assert_eq(t.inventory_count(p), 0)
-		assert_eq(t.section_summary(n.sections[1]), { "cybersyn-gui.section-provides", "1" })
-	assert_eq(t.section_summary(n.sections[3]), { "cybersyn-gui.section-nothing" })
-	assert_eq(t.section_summary(p.sections[1]), { "cybersyn-gui.section-requests", "3" })
+	assert_true(t.has_inventories(n))
+	assert_false(t.has_inventories(p))
+	assert_eq(t.row_networks(n), { { name = "signal-A", mask = 1 }, { name = "signal-A", mask = 3 }, { name = "signal-A", mask = 4 } })
+	assert_eq(t.rows_union(n), { ["signal-A"] = 7 })
+	n.sources[3].mask = 3
+	n.rows = nil
+	assert_eq(#t.row_networks(n), 2, "two inventories on one mask are one network")
+	assert_eq(#t.advertised_rows(n), 3, "and still two blocks")
 end)
 
-test("sections: one label and one line of text per section, as the stop panel heads its blocks", function()
-	local t = rt()
-	local n = naphthalene()
-	assert_eq(t.section_label(n.sections[2]), "[virtual-signal=signal-A]3")
-	assert_eq(t.section_text(n.sections[2]),
-		{ "", "[virtual-signal=signal-A]3", " (bits 1+2)", " · ", t.sources_caption(n.sections[2].sources) })
-	assert_eq(t.section_text(n.sections[1])[3], "", "one bit, no bits label")
-	local sig = t.section_sig(n.sections[2])
-	n.sections[2].sources[1].priority = 9
-	assert_true(t.section_sig(n.sections[2]) ~= sig, "a source's priority is in the text, so in the sig")
-end)
-
-test("sections: the switch's reason for what a section does not advertise", function()
+test("rows: the switch's reason for what a row does not advertise", function()
 	local t = rt()
 	assert_eq(t.ignored_reason(naphthalene()), { "cybersyn-gui.section-provide-only" })
 	assert_eq(t.ignored_reason(plain()), { "cybersyn-gui.section-request-only" })
 	assert_eq(t.ignored_reason({ is_p = true, is_r = true }), { "cybersyn-gui.section-switch" })
 end)
 
-test("sections: sources caption with one priority, and with each source's own when they differ", function()
-	local t = rt()
-	local a, b = source("station", 0, 0), source("inventory", 1, 0)
-	assert_eq(t.sources_caption({ a }), { "", collector().source_label(a), " · ", { "cybersyn-gui.section-priority", "0" } })
-	assert_eq(t.sources_caption({ a, b }),
-		{ "", collector().source_label(a), ", ", collector().source_label(b), " · ", { "cybersyn-gui.section-priority", "0" } })
-	b.priority = 5
-	assert_eq(t.sources_caption({ a, b }), { "", collector().source_label(a), " ", { "cybersyn-gui.section-source-priority", "0" },
-		", ", collector().source_label(b), " ", { "cybersyn-gui.section-source-priority", "5" } })
-end)
-
-test("sections: a record without sections reads as one per network, NETWORK_EACH sorted", function()
-	local t = rt()
-	local st = { network_name = "signal-A", network_mask = 3, provided = { coal = 5 }, requested = {}, priority = 2 }
-	local s = t.sections_of(st)
-	assert_eq(#s, 1)
-	assert_eq({ s[1].key, s[1].mask, s[1].sources[1].priority }, { "signal-A:3", 3, 2 })
-	assert_true(s[1].provided == st.provided, "the station's own table")
-	assert_false(collector().station_has_sections(st))
-	s = t.sections_of({ network_name = NETWORK_EACH, network_mask = { ["signal-B"] = 2, ["signal-A"] = 1 },
-		provided = {}, requested = {} })
-	assert_eq({ s[1].key, s[2].key }, { "signal-A:1", "signal-B:2" })
-	assert_eq(#t.sections_of({ provided = {}, requested = {} }), 0, "no network, nothing advertised")
-end)
-
-test("sections: starved per section, from section.starved or the station's network:hash keys on its own network", function()
-	local t = rt()
-	local p = plain()
-	local sec = p.sections[1]
-	assert_eq(t.section_starved(sec, { ["signal-A:coal"] = true, ["signal-A:iron-plate"] = true }), { coal = true },
-		"below-threshold requests are never starved")
-	assert_eq(t.section_starved(sec, { ["signal-B:coal"] = true }), {}, "another network's key")
-	sec.starved = { ["iron-plate"] = true }
-	assert_eq(t.section_starved(sec, { ["signal-A:coal"] = true }), { ["iron-plate"] = true }, "the collector's own set wins")
-end)
-
-test("sections_content: same values sign alike whatever the fill order; ignored and starved change it", function()
+test("rows_content: same values sign alike whatever the fill order; ignored, starved and priority change it", function()
 	local t = rt()
 	local a, b = naphthalene(), naphthalene()
-	b.sections[1].provided = {}
-	b.sections[1].provided["naphthalene-oil"] = 199134
-	assert_eq(t.sections_content(a), t.sections_content(b))
-	b.sections[3].ignored["liquid-fuel"] = -900
-	assert_true(t.sections_content(a) ~= t.sections_content(b), "ignored count")
+	b.sources[1].provided = {}
+	b.sources[1].provided["naphthalene-oil"] = 199134
+	assert_eq(t.rows_content(a), t.rows_content(b))
+	b.sources[3].ignored["liquid-fuel"] = -900
+	assert_true(t.rows_content(a) ~= t.rows_content(b), "ignored count")
 	local p = plain()
-	local base = t.sections_content(p)
-	assert_eq(base, t.sections_content(p, { ["signal-A:coal"] = true }), "a record with sections keeps its own starved sets")
-	p.sections[1].starved = { coal = true }
-	assert_true(base ~= t.sections_content(p), "starved")
-	p.sections[1].starved = nil
-	local old = { network_name = "signal-A", network_mask = 1, provided = {}, requested = { coal = { count = -9, threshold = 1, active = true } } }
-	assert_true(t.sections_content(old) ~= t.sections_content(old, { ["signal-A:coal"] = true }), "without sections, the station's keys")
-	p.sections[1].sources[1].priority = 4
-	assert_true(base ~= t.sections_content(p), "priority")
+	local base = t.rows_content(p)
+	rows_of(p)[1].starved = { coal = true }
+	assert_true(base ~= t.rows_content(p), "starved")
+	rows_of(p)[1].starved = nil
+	rows_of(p)[1].priority = 4
+	assert_true(base ~= t.rows_content(p), "priority")
 end)
 
 -- ---------------------------------------------------------------- stop panel blocks
@@ -433,19 +394,20 @@ local function captions(defs)
 	return out
 end
 
-test("stop panel: the naphthalene provider gets one block per section, Inventory 2 with its unadvertised fuel", function()
+test("stop panel: the naphthalene provider gets one block per combinator, Inventory 2 with its unadvertised fuel", function()
 	local r = relative_mod()
 	local c = captions(r.slots_defs(naphthalene()))
 	assert_eq(c[1], "cybersyn-gui.section-advertised")
 	local text = table.concat(c, "\n")
-	-- Section heads in order: A1, A3 with its bits, A4.
-	local i1 = text:find("[virtual-signal=signal-A]1\n", 1, true)
-	local i3 = text:find("[virtual-signal=signal-A]3\nbits 1+2\n", 1, true)
-	local i4 = text:find("[virtual-signal=signal-A]4\n", 1, true)
+	-- Block heads in order: the station combinator on A1, Inventory 1 on A3, Inventory 2 on A4, each with its letter.
+	local i1 = text:find("[color=0.4,0.9,1]S[/color] cybersyn-gui.source-station · cybersyn-gui.section-priority0\n[virtual-signal=signal-A]1\n", 1, true)
+	local i3 = text:find("[color=0.4,0.9,1]I[/color] cybersyn-gui.source-inventory1 · cybersyn-gui.section-priority0\n[virtual-signal=signal-A]3\n", 1, true)
+	local i4 = text:find("[color=0.4,0.9,1]I[/color] cybersyn-gui.source-inventory2 · cybersyn-gui.section-priority0\n[virtual-signal=signal-A]4\n", 1, true)
 	assert_true(i1 and i3 and i4 and i1 < i3 and i3 < i4, text)
-	assert_true(text:find("slot:naphthalene-oil:green", i1, true) < i3, "naphthalene oil provided on A1")
-	assert_true(text:find("slot:liquid-fuel:green", i3, true) < i4, "liquid fuel provided on A3")
-	assert_nil(text:find("slot:liquid-fuel", i4, true), "never a slot on A4")
+	assert_nil(text:find("bits", 1, true), "no bits labels")
+	assert_true(text:find("slot:naphthalene-oil:green", i1, true) < i3, "naphthalene oil provided by the station combinator")
+	assert_true(text:find("slot:liquid-fuel:green", i3, true) < i4, "liquid fuel provided by Inventory 1")
+	assert_nil(text:find("slot:liquid-fuel", i4, true), "never a slot in Inventory 2")
 	local tail = text:sub(i4)
 	assert_true(tail:find("cybersyn-gui.section-not-advertised [fluid=liquid-fuel", 1, true) and tail:find("]-866 (cybersyn-gui.section-provide-only)", 1, true) ~= nil, tail)
 	local lines = 0
@@ -455,12 +417,42 @@ test("stop panel: the naphthalene provider gets one block per section, Inventory
 	assert_eq(lines, 2, "a separator between three blocks")
 end)
 
+test("stop panel: an unserved request names the inventory that asks for it (D8-1), a plain station its network", function()
+	local r = relative_mod()
+	local n = naphthalene()
+	local req = { count = -866, threshold = 100, active = true }
+	n.sources[3].requested = { ["liquid-fuel"] = req }
+	-- The station's sum is larger: the line gives the request of the inventory it names.
+	n.requested = { ["liquid-fuel"] = { count = -2866, threshold = 100, active = true } }
+	local e = { first_tick = 0, reason = REASON_NO_PROVIDER, a = 0, b = 0, n = 1 }
+	local tip = r.unserved_texts({ st = n, name = n.name, network_name = "signal-A" }, { hash = "liquid-fuel", e = e }, 60, 0)
+	local why = serpent.line(tip[4], { comment = false })
+	local all = serpent.line(tip, { comment = false })
+	assert_true(all:find('"866"', 1, true) ~= nil and all:find("2866", 1, true) == nil
+		and all:find("2,866", 1, true) == nil, all)
+	assert_true(why:find('{"cybersyn-gui.source-inventory", 2}', 1, true) ~= nil, why)
+	assert_true(why:find("[virtual-signal=signal-A]4", 1, true) ~= nil, why)
+	local p = plain()
+	tip = r.unserved_texts({ st = p, name = p.name, network_name = "signal-A" }, { hash = "coal", e = e }, 60, 0)
+	why = serpent.line(tip[4], { comment = false })
+	assert_nil(why:find("source-inventory", 1, true), why)
+end)
+
+test("stop panel: two inventories on one mask are two blocks", function()
+	local r = relative_mod()
+	local n = naphthalene()
+	n.sources[3].mask = 3
+	local text = table.concat(captions(r.slots_defs(n)), "\n")
+	local _, count = text:gsub("%[virtual%-signal=signal%-A%]3\n", "")
+	assert_eq(count, 2, text)
+end)
+
 test("stop panel: a plain requester is a single block with Provided, Requested, the threshold note and its dropped provide", function()
 	local r = relative_mod()
 	local c = captions(r.slots_defs(plain()))
 	local text = table.concat(c, "\n")
 	assert_eq(c[1], "cybersyn-gui.section-advertised")
-	assert_true(text:find("[virtual-signal=signal-A]3\nbits 1+2\n", 1, true) ~= nil, text)
+	assert_true(text:find("S[/color] cybersyn-gui.source-station · cybersyn-gui.section-priority1\n[virtual-signal=signal-A]3\n", 1, true) ~= nil, text)
 	assert_true(text:find("cybersyn-gui.section-provided\ncybersyn-gui.section-none\ncybersyn-gui.section-requested\n", 1, true) ~= nil, text)
 	assert_true(text:find("slot:coal:red", 1, true) ~= nil)
 	assert_true(text:find("slot:iron-plate:orange", 1, true) ~= nil)
@@ -468,12 +460,15 @@ test("stop panel: a plain requester is a single block with Provided, Requested, 
 	assert_true(text:find("cybersyn-gui.section-below-threshold", 1, true) ~= nil)
 	assert_true(text:find("cybersyn-gui.section-not-advertised [item=stone", 1, true) and text:find("]52 (cybersyn-gui.section-request-only)", 1, true) ~= nil, text)
 	for _, d in ipairs(r.slots_defs(plain())) do assert_true(d.type ~= "line", "one block, no separator") end
+	local none = plain()
+	none.network_name = nil
+	assert_eq(captions(r.slots_defs(none)), { "cybersyn-gui.relative-no-items" })
 end)
 
-test("stop panel: a starved request in a section says so in its tooltip", function()
+test("stop panel: a starved request in a row says so in its tooltip", function()
 	local r = relative_mod()
 	local p = plain()
-	p.sections[1].starved = { coal = true }
+	rows_of(p)[1].starved = { coal = true }
 	local found = false
 	local function walk(d)
 		if d.type == "sprite-button" and d.tags.id == "coal" then
@@ -485,7 +480,50 @@ test("stop panel: a starved request in a section says so in its tooltip", functi
 	assert_true(found)
 end)
 
-test("stop panel: the section blocks are rebuilt only when the record changed", function()
+test("stop panel: every Advertised slot's tooltip ends with the click and shift-click hint", function()
+	local r = relative_mod()
+	local p = plain()
+	local slots, hinted = 0, 0
+	local function walk(d)
+		if d.type == "sprite-button" and d.tags and d.tags.kind == "item" then
+			slots = slots + 1
+			assert_eq(d.tags.station, p.id, "a stop panel slot carries its station")
+			local tip = d.tooltip
+			if tip[#tip][1] == "cybersyn-gui.relative-slot-hint" and tip[#tip - 1] == "\n" then hinted = hinted + 1 end
+			assert_true(d.elem_tooltip ~= nil, "the item's own tooltip stays")
+		end
+		for _, c in ipairs(d) do walk(c) end
+	end
+	for _, d in ipairs(r.slots_defs(p)) do walk(d) end
+	assert_true(slots > 0)
+	assert_eq(hinted, slots)
+end)
+
+test("stop panel: red S and red I (D8-4) on the heads, from the combinators' display", function()
+	local r = relative_mod()
+	local n = naphthalene()
+	local text = table.concat(captions(r.slots_defs(n, { s = "green", inv_failed = { [102] = true } })), "\n")
+	assert_true(text:find("[color=0.3,1,0.3]S[/color] cybersyn-gui.source-station", 1, true) ~= nil, text)
+	assert_true(text:find("[color=0.4,0.9,1]I[/color] cybersyn-gui.source-inventory1", 1, true) ~= nil, text)
+	assert_true(text:find("[color=1,0.35,0.35]I[/color] cybersyn-gui.source-inventory2", 1, true) ~= nil, text)
+	-- Without the live display, the collector's row.failed decides the I.
+	n.sources[2].failed = true
+	n.rows = nil
+	text = table.concat(captions(r.slots_defs(n)), "\n")
+	assert_true(text:find("[color=1,0.35,0.35]I[/color] cybersyn-gui.source-inventory1", 1, true) ~= nil, text)
+	local tips = {}
+	local function walk(d)
+		if d.type == "label" and d.style == "bold_label" then tips[#tips + 1] = d.tooltip end
+		for _, c in ipairs(d) do walk(c) end
+	end
+	for _, d in ipairs(r.slots_defs(n, { s = "red" })) do walk(d) end
+	-- An inventory's head also says its priority ranks only its provides.
+	local note = { "cybersyn-gui.inventory-priority-note" }
+	assert_eq(tips, { { "cybersyn-gui.relative-s-red" }, { "", { "cybersyn-gui.relative-i-cyan" }, "\n", note },
+		{ "", { "cybersyn-gui.relative-i-cyan" }, "\n", note } })
+end)
+
+test("stop panel: the blocks are rebuilt only when the record or a letter changed", function()
 	local r = relative_mod()
 	local body = H.element({ name = "body" })
 	body.slots = body.add({ type = "flow", name = "slots" })
@@ -501,19 +539,19 @@ test("stop panel: the section blocks are rebuilt only when the record changed", 
 	st.read_tick = 20
 	r.render_slots(state, body, m)
 	assert_eq(state.rebuilds, 1, "refilled with the same values")
-	st.sections[3].ignored["liquid-fuel"] = -900
+	st.sources[3].ignored["liquid-fuel"] = -900
 	st.read_tick = 30
 	r.render_slots(state, body, m)
 	assert_eq(state.rebuilds, 2, "an unadvertised count moved")
-	-- A live read with diagnostics on: the station-level starved set moves, the sectioned record's signature cache holds.
-	m.source = "live"
-	st.sig_key = -1
-	state.starved = { ["signal-A:coal"] = true }
+	m.display_state = 2
 	r.render_slots(state, body, m)
-	local cached = state.rsig.slots
-	state.starved = { ["signal-A:stone"] = true }
+	assert_eq(state.rebuilds, 3, "the S turned red")
+	storage.stations = { [7] = { inv_failed = { [101] = true } } }
 	r.render_slots(state, body, m)
-	assert_true(state.rsig.slots == cached, "the signature was not built again")
+	assert_eq(state.rebuilds, 4, "Inventory 1's I turned red")
+	r.render_slots(state, body, m)
+	assert_eq(state.rebuilds, 4)
+	storage.stations = nil
 end)
 
 test("stop panel: a working station combinator without input names its inventories as paused for that reason", function()
@@ -522,14 +560,15 @@ test("stop panel: a working station combinator without input names its inventori
 	local n = naphthalene()
 	n.comb_ok = true
 	n.sources[3].read = false
-	table.remove(n.sections, 3)
 	assert_eq(#t.paused_inventories(n), 1)
+	assert_eq(#t.advertised_rows(n), 2)
 	local text = table.concat(captions(r.slots_defs(n)), "\n")
 	assert_true(text:find("cybersyn-gui.section-paused-no-signals", 1, true) ~= nil, text)
+	assert_nil(text:find("source-inventory2 ·", 1, true), "no block for the paused inventory")
 	n.comb_ok = false
 	local off = table.concat(captions(r.slots_defs(n)), "\n")
 	assert_true(off:find("cybersyn-gui.section-paused-no-signals", 1, true) == nil, off)
-	assert_true(t.sections_content(n) ~= t.sections_content(naphthalene()))
+	assert_true(t.rows_content(n) ~= t.rows_content(naphthalene()))
 end)
 
 test("stop panel: inventories the collector could not read are named as paused", function()
@@ -537,9 +576,8 @@ test("stop panel: inventories the collector could not read are named as paused",
 	local t = rt()
 	local n = naphthalene()
 	n.sources[3].ok = false
-	table.remove(n.sections, 3)
 	assert_eq(#t.paused_inventories(n), 1)
 	local text = table.concat(captions(r.slots_defs(n)), "\n")
 	assert_true(text:find("cybersyn-gui.section-paused", 1, true) ~= nil, text)
-	assert_true(t.sections_content(n) ~= t.sections_content(naphthalene()))
+	assert_true(t.rows_content(n) ~= t.rows_content(naphthalene()))
 end)

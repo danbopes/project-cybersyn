@@ -277,9 +277,9 @@ lab.suite("37_tabs", {
 
 		remote.call(DS, "set_chip", pi, "problems")
 		local d = stations_dump()
-		lab.check("Problems chip: count == station rows, the view sorts worst first, column 4 is Problems",
+		lab.check("Problems chip: count == station rows, the view sorts worst first, column 5 is Problems",
 			d.chip == "problems" and d.total == d.chip_counts.problems and #d.ids == d.total and d.total > 0
-			and d.column == "problems" and d.ascending == true and d.header[4] == "problems",
+			and d.column == "problems" and d.ascending == true and d.header[5] == "problems",
 			{ chip = d.chip, total = d.total, count = d.chip_counts.problems, rows = #d.ids, column = d.column, header = d.header })
 		local want = {}
 		for _, row in ipairs(v.stations) do want[row.id] = row end
@@ -291,7 +291,7 @@ lab.suite("37_tabs", {
 		local w = d.widths
 		lab.check("Problems view: the Problems column stretches, Deliveries keeps two slots", w and w.problems_view
 			and w.dl_slots == 2 and w.problems > w.name and w.problems > w.deliveries and w.name >= 160
-			and w.cw - 72 + (w.hide_wait and 8 or 0) - w.name - w.station_status - w.network - w.problems - w.deliveries - w.wait
+			and w.cw - 80 + (w.hide_wait and 8 or 0) - w.name - w.station_status - w.network - w.priority - w.problems - w.deliveries - w.wait
 				- w.last_delivery == 0, w)
 		local caps = d.chip_captions or {}
 		lab.check("the Problems chip leads with the warning triangle, Setup with its yellow dot",
@@ -407,7 +407,7 @@ lab.suite("37_tabs", {
 		-- Acknowledge every finding of the first row from its button, then end it with a second click.
 		d = stations_dump()
 		local first_id = d.ids[1]
-		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 4, 6 })
+		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { 1, 5, 6 })
 		local acks = lab.dev("diag_acks")
 		local by = acks and acks.lint and acks.lint[first_id]
 		local acked_all = by ~= nil and lab.count(by) == lab.count((function()
@@ -430,7 +430,7 @@ lab.suite("37_tabs", {
 		lab.check("acknowledge: the station moves behind every open one", open_after == n_open - 1 and acked_after >= 1
 			and pos ~= nil and pos > open_station_after, { pos = pos, last_open = open_station_after, open = open_after,
 			before = n_open })
-		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { pos or 1, 4, 6 })
+		lab.dev("click", pi, "manager_stations_tab_scroll_pane", { pos or 1, 5, 6 })
 		after = stations_dump()
 		lab.check("acknowledge: a second click ends them", after.problems[pos or 1] and after.problems[pos or 1].ack == false,
 			after.problems[pos or 1])
@@ -445,7 +445,7 @@ lab.suite("37_tabs", {
 		-- Leaving the view gives Provided / requested back and drops the Problems sort.
 		remote.call(DS, "set_chip", pi, "all")
 		d = stations_dump()
-		lab.check("Problems chip off: Provided / requested is back, sorted by name", d.header[4] == "provided_requested"
+		lab.check("Problems chip off: Provided / requested is back, sorted by name", d.header[5] == "provided_requested"
 			and d.column == "name" and #d.registry == 0, { header = d.header, column = d.column })
 		-- The Overview's jump sets player_data.stations_chip = "problems" (p1); the tab reads it as the chip.
 		remote.call("cybersyn", "write_global", "problems", "manager", "players", pi, "stations_chip")
@@ -1257,9 +1257,13 @@ lab.suite("37_tabs", {
 			and t.total == parked, { chip = t.chip, total = t.total, parked = parked, network = worst })
 		remote.call(DT, "set_chip", pi, "all")
 		remote.call(D, "clear_filters", pi)
+		-- An item filter would show its drill-down in place of the grids (D8-6): the jump clears it.
+		remote.call(D, "set_filter", pi, { item = "iron-plate" })
 		lab.dev("click", pi, "overview_tile_throughput")
 		local inv = remote.call(D, "dump", pi, "inventory")
 		lab.check("the Throughput tile sorts every grid by amount", inv.provided.column == "amount" and inv.requested.column == "amount")
+		lab.check("the Throughput tile clears the item filter, so the grids show", remote.call(D, "state", pi).filters.item == nil
+			and not remote.call(D, "item_dump", pi).open)
 		remote.call(D, "set_sort", pi, "inventory", "item_order", true)
 
 		-- Link cells.
@@ -1345,5 +1349,250 @@ lab.suite("37_tabs", {
 		lab.check("after a reopen the Stations summary line is back", key_of(s.summary) == "cybersyn-gui.stations-summary", s.summary)
 		lab.set_status_filter(pi, nil)
 		lab.dev("set_setting", "cybersyn-enable-planner", ctx.planner)
+	end,
+	-- PLAN8 D8-6: an item cell anywhere sets the item filter and selects the Inventory, which shows the item's drill-down
+	-- in place of its grids whenever the filter is set (the tab strip says Inventory); Back clears the filter and the
+	-- grids return; shift+left keeps the Stations jump. A stop panel's slot also sets the station chip (D8-7): the
+	-- drill-down's rows and trains are that station's, and the grids without an item are scoped to it (oracle).
+	function(ctx)
+		local function dev(fn, ...) return remote.call(D, fn, ...) end
+		local function find(elem, pred)
+			if pred(elem) then return elem end
+			for _, child in ipairs(elem.children) do
+				local hit = find(child, pred)
+				if hit then return hit end
+			end
+			return nil
+		end
+		local function window() return game.get_player(pi).gui.screen.manager_window end
+		local function named(name)
+			local w = window()
+			return w and find(w, function(e) return e.name == name end)
+		end
+		local function strip_tab()
+			local pane = named("manager_tabbed_pane")
+			local t = pane and pane.tabs[pane.selected_tab_index]
+			return t and t.tab.name
+		end
+		local function grids_shown()
+			local g = named("inventory_grids_flow")
+			return g ~= nil and g.visible and named("item_view") == nil
+		end
+		--- Path from refs[ref] to its first item cell, and the item it names (false when the row names it).
+		local function item_path(ref)
+			local root = named(ref)
+			if not root then return nil end
+			local function walk(elem, path)
+				for i, child in ipairs(elem.children) do
+					path[#path + 1] = i
+					local tags = child.tags
+					if child.type == "sprite-button" and tags and tags.kind == "item" and tags.id then
+						return path, tags.id
+					end
+					-- The Log's item cells name their item through the row (tags.cell), not a tag of their own.
+					if child.type == "sprite-button" and tags and tags.cell == "item" and child.sprite ~= "" then
+						return path, false
+					end
+					local hit, id = walk(child, path)
+					if hit then return hit, id end
+					path[#path] = nil
+				end
+				return nil
+			end
+			return walk(root, {})
+		end
+		local function lands(label, want)
+			dev("update", pi, 12)
+			local st, d = dev("state", pi), dev("item_dump", pi)
+			want = want or st.filters.item
+			lab.check(label .. ": Inventory selected with the item filter set, its drill-down in place of the grids",
+				st.is_open and st.selected_tab == "inventory_tab" and strip_tab() == "manager_inventory_tab"
+				and want ~= nil and st.filters.item == want and d.open and d.hash == want and d.grids_hidden
+				and not grids_shown(),
+				{ open = st.is_open, tab = st.selected_tab, strip = strip_tab(), item = st.filters.item, want = want,
+					drill = d.open, hash = d.hash, hidden = d.grids_hidden })
+			return d
+		end
+		local function back(label)
+			local r = dev("close_item", pi)
+			dev("update", pi, 2)
+			local st = dev("state", pi)
+			lab.check(label .. ": Back clears the item filter and the grids return", r.filter == nil and st.filters.item == nil
+				and st.selected_tab == "inventory_tab" and not dev("item_dump", pi).open and grids_shown(), { r, st.filters })
+		end
+
+		dev("close", pi)
+		dev("clear_filters", pi)
+		dev("open", pi)
+		lab.big_screen(pi)
+		dev("collect")
+		dev("select_tab", pi, "inventory")
+		local inv = dev("dump", pi, "inventory")
+		local hash = inv.provided.hashes[1]
+		if not lab.check("D8-6: an item in the Inventory grid", hash ~= nil, inv.provided) then return end
+
+		-- The Inventory grid.
+		dev("click", pi, "inventory_provided_table", 1)
+		local d = lands("Inventory grid", hash)
+		lab.check("Inventory grid: the drill-down's Back says it clears the filter",
+			named("item_back_button") and named("item_back_button").tooltip[1] == "cybersyn-gui.item-back-clear-tooltip")
+		back("Inventory grid")
+		-- The filter chip's x clears it the same way.
+		dev("click", pi, "inventory_provided_table", 1)
+		lands("Inventory grid again", hash)
+		dev("select_tab", pi, "stations")
+		lab.check("another tab keeps the item filter and drops the drill-down's elements", dev("state", pi).filters.item == hash
+			and named("item_view") == nil, dev("state", pi).filters)
+		dev("click", pi, "stations_tab_chip")
+		dev("select_tab", pi, "inventory")
+		dev("update", pi, 2)
+		lab.check("the Stations item chip's x clears the filter: the Inventory shows its grids",
+			dev("state", pi).filters.item == nil and grids_shown() and not dev("item_dump", pi).open)
+
+		-- Shift keeps the Stations jump.
+		dev("click", pi, "inventory_provided_table", 1, { shift = true })
+		local st = dev("state", pi)
+		lab.check("shift+left on an Inventory slot: Stations filtered to the item", st.selected_tab == "stations_tab"
+			and st.filters.item == hash, st)
+		dev("clear_filters", pi)
+
+		-- A Stations slot, a Trains shipment slot, the Overview and the Log: the same landing.
+		for _, entry in ipairs({
+			{ tab = "stations", ref = "manager_stations_tab_scroll_pane", label = "Stations slot" },
+			{ tab = "trains", ref = "manager_trains_tab_scroll_pane", label = "Trains shipment slot" },
+			{ tab = "overview", ref = "manager_overview_content_frame", label = "Overview item cell" },
+			{ tab = "log", ref = "manager_log_content_frame", label = "Log item cell" },
+		}) do
+			dev("clear_filters", pi)
+			local selected = dev("select_tab", pi, entry.tab)
+			dev("update", pi, 6)
+			local path, id = item_path(entry.ref)
+			local missing = type(selected) == "string" and selected:find("^no such") ~= nil
+			if missing or not path then
+				lab.skip("D8-6 " .. entry.label, missing and selected or "no item cell on this page")
+			else
+				dev("click", pi, entry.ref, path)
+				lands(entry.label, id or nil)
+				back(entry.label)
+			end
+		end
+		dev("clear_filters", pi)
+
+		-- The train panel (outside the window): the window opens on the Inventory's drill-down.
+		local snap = lab.read("manager").snapshot
+		local tid, thash
+		for id, tr in pairs(snap.trains) do
+			local h = next(tr.manifest_hashes or {})
+			if h and (not tid or id < tid) then tid, thash = id, h end
+		end
+		if tid then
+			dev("close", pi)
+			dev("relative_open", pi, "train", tid)
+			local r = dev("relative_click", pi, { kind = "item", id = thash })
+			if type(r) == "string" then
+				lab.skip("D8-6 train panel slot", r)
+			else
+				lands("train panel slot, window closed", thash)
+				lab.check("train panel slot: no station chip", dev("state", pi).filters.station == nil)
+			end
+			dev("relative_close", pi)
+			dev("clear_filters", pi)
+		else
+			lab.skip("D8-6 train panel slot", "no train carries cargo")
+		end
+
+		-- The stop panel's Advertised / Unserved slot, window closed: item + station chip on the Inventory.
+		-- A requester with a train of its item on the way, when there is one, so the trains check has rows to compare.
+		local sid, rhash, best = nil, nil, -1
+		for id, rec in pairs(snap.stations) do
+			for h in pairs(rec.requested) do
+				local n = 0
+				for _, tr in pairs(snap.trains) do
+					if (tr.p_station_id == id or tr.r_station_id == id) and tr.manifest_hashes[h] then n = n + 1 end
+				end
+				if n > best or (n == best and (id < sid or (id == sid and h < rhash))) then sid, rhash, best = id, h, n end
+			end
+		end
+		if not lab.check("D8-6: a station requesting an item", sid ~= nil) then return end
+		dev("close", pi)
+		dev("relative_open", pi, "stop", sid)
+		local r = dev("relative_click", pi, { kind = "item", id = rhash, station = sid })
+		d = lands("stop panel slot, window closed", rhash)
+		st = dev("state", pi)
+		lab.check("stop panel slot: the station chip is the stop, shown in the drill-down's subheader",
+			st.filters.station == sid and type(d.station_chip) == "table" and d.station_chip[3] == tostring(sid),
+			{ r = r, station = st.filters.station, chip = d.station_chip })
+		local o = dev("item_oracle", rhash)
+		local prefix = sid .. "@"
+		local function only_station(keys)
+			for _, k in ipairs(keys) do if k:sub(1, #prefix) ~= prefix then return false end end
+			return true
+		end
+		local function station_keys(keys)
+			local out = {}
+			for _, k in ipairs(keys) do if k:sub(1, #prefix) == prefix then out[#out + 1] = k end end
+			return out
+		end
+		lab.check("stop panel slot: provider and requester rows are the chip station's only, every row of it advertising the item",
+			only_station(d.row_keys.providers) and only_station(d.row_keys.requesters)
+			and lab.subset(station_keys(o.requester_row_keys), d.row_keys.requesters)
+			and lab.subset(station_keys(o.provider_row_keys), d.row_keys.providers) and #d.row_keys.requesters > 0,
+			{ d.row_keys, o.requester_row_keys })
+		local want = {}
+		for id, tr in pairs(snap.trains) do
+			if (tr.p_station_id == sid or tr.r_station_id == sid) and tr.manifest_hashes[rhash] then want[#want + 1] = id end
+		end
+		table.sort(want)
+		local got = {}
+		for i, id in ipairs(d.model.trains) do got[i] = id end
+		table.sort(got)
+		lab.check("stop panel slot: Trains carrying it are the trains to or from the chip station (" .. #want .. ")",
+			serpent.line(got) == serpent.line(want), { got = got, want = want })
+		lab.check("stop panel slot: the drill-down is marked filtered", d.filtered == true)
+		-- The drill-down's station chip: any click removes it; the rows of every station come back.
+		dev("click", pi, "item_station_chip")
+		dev("update", pi, 12)
+		d = dev("item_dump", pi)
+		lab.check("the drill-down's station chip x clears the chip and keeps the drill-down, every requester row back",
+			dev("state", pi).filters.station == nil and d.open and d.hash == rhash and d.station_chip == nil
+			and d.filtered == false and lab.subset(o.requester_row_keys, d.row_keys.requesters),
+			{ station = dev("state", pi).filters.station, chip = d.station_chip, keys = d.row_keys.requesters })
+		dev("relative_close", pi)
+
+		-- Shift on the stop panel's slot: the same drill-down, without the chip, past a chip set beforehand.
+		dev("set_filter", pi, { station = sid })
+		dev("relative_open", pi, "stop", sid)
+		dev("relative_click", pi, { kind = "item", id = rhash, station = sid }, { shift = true })
+		st = dev("state", pi)
+		d = dev("item_dump", pi)
+		lab.check("shift on a stop panel slot: the item's drill-down without the station chip",
+			st.selected_tab == "inventory_tab" and st.filters.item == rhash and st.filters.station == nil
+			and d.open and d.hash == rhash and d.station_chip == nil, { state = st, chip = d.station_chip })
+		dev("relative_close", pi)
+
+		-- The grids under the station chip alone: that station's advertisements only.
+		dev("clear_filters", pi)
+		dev("set_filter", pi, { station = sid })
+		dev("select_tab", pi, "inventory")
+		dev("update", pi, 3)
+		inv = dev("dump", pi, "inventory")
+		local rec = lab.read("manager").snapshot.stations[sid]
+		local p_want, r_want = {}, {}
+		for h in pairs(rec.provided) do p_want[#p_want + 1] = h end
+		for h, req in pairs(rec.requested) do if req.active then r_want[#r_want + 1] = h end end
+		table.sort(p_want)
+		table.sort(r_want)
+		local p_got, r_got = {}, {}
+		for i, h in ipairs(inv.provided.hashes) do p_got[i] = h end
+		for i, h in ipairs(inv.requested.hashes) do r_got[i] = h end
+		table.sort(p_got)
+		table.sort(r_got)
+		lab.check("station chip: the Inventory grids are that station's provided and requested items",
+			dev("state", pi).filters.station == sid and serpent.line(p_got) == serpent.line(p_want)
+			and serpent.line(r_got) == serpent.line(r_want), { p = p_got, p_want = p_want, r = r_got, r_want = r_want })
+		dev("clear_filters", pi)
+		dev("close", pi)
+		dev("open", pi)
+		lab.big_screen(pi)
 	end,
 })

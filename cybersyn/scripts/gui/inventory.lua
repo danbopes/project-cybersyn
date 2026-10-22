@@ -7,7 +7,6 @@ local dev = require("scripts.gui.dev")
 local stats = require("scripts.stats")
 local logic = require("scripts.gui.tab-logic")
 local stations_tab = require("scripts.gui.stations")
-local sources_sig = require("scripts.gui.item-model").sources_sig
 
 local inventory_tab = {}
 
@@ -204,6 +203,22 @@ function inventory_tab.apply_layout(player_data, layout)
 	end
 end
 
+--- Gives the tab's content to the item drill-down (D8-6), which item.lua adds to the same content frame with a subheader
+--- of its own, or takes it back: the tab's subheader, empty note and grids hide while an item filter is set. Back, the
+--- grids show and the next render's empty check decides between them and the note.
+--- @param player_data PlayerData
+--- @param drill boolean
+function inventory_tab.set_drill_down(player_data, drill)
+	local state = util.gui_state(player_data, "inventory_drill_down")
+	if state.drill == drill then return end
+	state.drill = drill
+	local refs = player_data.refs
+	for _, name in ipairs({ TAB .. "_subheader", "inventory_empty_flow", "inventory_grids_flow" }) do
+		local elem = refs[name]
+		if elem and elem.valid then elem.visible = not drill and name ~= "inventory_empty_flow" end
+	end
+end
+
 --- Whole slot rows a grid shows, measured from the elements rather than taken from the layout: the space the tab
 --- content leaves below the grid header (content height less the visible strips above the grids, the gap and the
 --- grid header, each as its element's style says), against the pane's height. A pane taller than that space, or
@@ -299,19 +314,21 @@ local function net_bucket(nets, name)
 	return nb
 end
 
---- The networks a station's numbers count on: the filter's network, its own, or for a station on several networks
---- each of them for its stock (it can supply any) and the first by name for its requests (counted once).
+--- The networks an inventory row's numbers count on: the filter's network, its own, or for a row on several networks
+--- (the each-network) each of them for its stock (it can supply any) and the first by name for its requests (counted
+--- once).
 --- @param nets table
---- @param st SnapshotStation
+--- @param row SnapshotInventory
 --- @param network string? the network filter
 --- @return table request_bucket
 --- @return table[]? stock_buckets nil = the request bucket alone
-local function station_buckets(nets, st, network)
+local function row_buckets(nets, row, network)
 	if network then return net_bucket(nets, network), nil end
-	local name = st.network_name
-	if name ~= NETWORK_EACH or type(st.network_mask) ~= "table" then return net_bucket(nets, name or ""), nil end
+	local name = row.network_name
+	local networks = row.networks
+	if name ~= NETWORK_EACH or type(networks) ~= "table" then return net_bucket(nets, name or ""), nil end
 	local names = {}
-	for n in pairs(st.network_mask) do names[#names + 1] = n end
+	for n in pairs(networks) do names[#names + 1] = n end
 	if #names == 0 then return net_bucket(nets, ""), nil end
 	table.sort(names)
 	local stock = {}
@@ -326,102 +343,89 @@ local function add_stock(buckets, hash, count)
 	for _, nb in ipairs(buckets) do nb.s[hash] = (nb.s[hash] or 0) + count end
 end
 
---- A station with sections (secondary inventory combinators) counts each item on the section that advertises it:
---- a section on A2 lands in A2's numbers, not in the station combinator's A1, and with a network filter only the
---- sections on it count. Sections built from the same sources (an each-network station yields one per network)
---- advertise the same stock: the totals count it once, the deficit sees it as stock on each of their networks, as
---- station_buckets does for the each-network. The station counts once per item in the totals and top lists.
---- @return boolean counted whether any of its sections passed the filter
-local function add_sections(st, f, nets, inv, top)
-	local p, r, first_bucket
-	local seen = {}
-	local nets_seen = {}
-	for _, sec in ipairs(st.sections) do
-		if f.network == nil and f.mask == -1 or util.network_passes(sec.network_name, sec.mask, f) then
-			local nb = net_bucket(nets, f.network or sec.network_name or "")
-			first_bucket = first_bucket or nb
-			nets_seen[nb] = true
-			local s = nb.s
-			for hash, count in pairs(sec.provided) do s[hash] = (s[hash] or 0) + count end
-			local src = sources_sig(sec)
-			if not seen[src] then
-				seen[src] = true
-				for hash, count in pairs(sec.provided) do
-					p = p or {}
-					p[hash] = (p[hash] or 0) + count
-				end
-				local rb = nb.r
-				for hash, req in pairs(sec.requested) do
-					if req.active then
-						r = r or {}
-						r[hash] = (r[hash] or 0) + req.count
-						rb[hash] = (rb[hash] or 0) - req.count
-					end
-				end
-			end
-		end
-	end
-	if not first_bucket then return false end
-	if p then
-		for hash, count in pairs(p) do accumulate(inv.provided, top.provided, hash, count, count, st) end
-	end
-	local has_wait = false
-	if r then
-		local wait = st.wait
-		for hash, count in pairs(r) do
-			local agg = accumulate(inv.requested, top.requested, hash, count, -count, st)
-			local start = wait and wait[hash]
-			if start and (not agg.earliest_wait_start or start < agg.earliest_wait_start) then
-				agg.earliest_wait_start = start
-				has_wait = true
-			end
-		end
-	end
-	-- Deliveries are kept per station: incoming ones count on its first section's network, outgoing ones reduce the
-	-- stock on each network its sections are on.
-	for hash, count in pairs(st.deliveries) do
-		if count > 0 then
-			accumulate(inv.in_transit, top.in_transit, hash, count, count, st)
-			first_bucket.t[hash] = (first_bucket.t[hash] or 0) + count
-		else
-			for nb in pairs(nets_seen) do nb.s[hash] = (nb.s[hash] or 0) + count end
-		end
-	end
-	return true, has_wait
-end
-
 --- One pass over the snapshot producing the per-grid totals and each item's top stations together, so a
---- tooltip's top list always agrees with the totals shown next to it. The deficit per item is the sum over the
---- networks of what each is short (logic.deficit), so stock on one network never offsets a shortage on another.
+--- tooltip's top list always agrees with the totals shown next to it. Every inventory row (PLAN8 D8-1) that passes
+--- the filters counts what it advertises on its own network: a secondary on A2 lands in A2's numbers, not in the
+--- station combinator's A1. A station's kept rows are summed per item and the station counts once per item in the
+--- totals and top lists (D8-3); its deliveries count once, incoming ones on the network of its first kept row that
+--- requests the item (else its first kept row's), outgoing ones against the stock on every network its kept rows are
+--- on. The deficit per item is the sum over the networks of what each is short (logic.deficit), so stock on one
+--- network never offsets a shortage on another.
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
 local function aggregate_with_top(snapshot, f)
 	local filtered = util.filters_active(f, true)
+	local row_passes = util.row_passes
 	local inv = { provided = {}, requested = {}, in_transit = {} }
 	local top = { provided = {}, requested = {}, in_transit = {} }
 	local has_wait = false
 	local nets = {}
-	local has_sections = collector.station_has_sections
-	-- A station with sections is placed by surface and search here, and on networks by its sections.
-	local place = { terms = f.terms, surface = f.surface, mask = -1 }
+	local inventories = collector.inventories
 	for _, st in pairs(snapshot.stations) do
-		if has_sections and st.sections and has_sections(st) then
-			if not filtered or util.station_passes(st, place, true) then
-				local _, waited = add_sections(st, f, nets, inv, top)
-				has_wait = has_wait or waited
+		local rows = inventories(st)
+		-- Most stations have one row: its own lists are used as they are, and only a station whose kept rows are several
+		-- gets summed copies.
+		local p, r, first_bucket, first_stock, stock_seen, first_row
+		-- {row, bucket, row, bucket, ...} once a second row is kept: an incoming delivery counts on the network of the
+		-- row that requests the item, so its train offsets that network's request.
+		local kept_rows
+		local kept = 0
+		for i = 1, #rows do
+			local row = rows[i]
+			if not filtered or row_passes(row, f, true) then
+				kept = kept + 1
+				local nb, stock = row_buckets(nets, row, f.network)
+				if kept == 1 then
+					first_bucket, first_stock, first_row = nb, stock, row
+				else
+					if kept == 2 then kept_rows = { first_row, first_bucket } end
+					kept_rows[#kept_rows + 1] = row
+					kept_rows[#kept_rows + 1] = nb
+					-- The networks whose stock an outgoing delivery reduces, once a second row is kept.
+					if not stock_seen then
+						stock_seen = {}
+						for _, b in ipairs(first_stock or { first_bucket }) do stock_seen[b] = true end
+					end
+					for _, b in ipairs(stock or { nb }) do stock_seen[b] = true end
+				end
+				local s, rb = nb.s, nb.r
+				for hash, count in pairs(row.provided) do
+					if stock then add_stock(stock, hash, count) else s[hash] = (s[hash] or 0) + count end
+				end
+				for hash, req in pairs(row.requested) do
+					if req.active then rb[hash] = (rb[hash] or 0) - req.count end
+				end
+				if kept == 1 then
+					p, r = row.provided, row.requested
+				else
+					if kept == 2 then
+						local p1, r1 = p, r
+						p, r = {}, {}
+						for hash, count in pairs(p1) do p[hash] = count end
+						for hash, req in pairs(r1) do
+							if req.active then r[hash] = { count = req.count, active = true } end
+						end
+					end
+					for hash, count in pairs(row.provided) do p[hash] = (p[hash] or 0) + count end
+					for hash, req in pairs(row.requested) do
+						if req.active then
+							local sum = r[hash]
+							if sum then
+								sum.count = sum.count + req.count
+							else
+								r[hash] = { count = req.count, active = true }
+							end
+						end
+					end
+				end
 			end
-		elseif not filtered or util.station_passes(st, f, true) then
-			local nb, stock = station_buckets(nets, st, f.network)
-			local r, t, s = nb.r, nb.t, nb.s
-			for hash, count in pairs(st.provided) do
-				accumulate(inv.provided, top.provided, hash, count, count, st)
-				if stock then add_stock(stock, hash, count) else s[hash] = (s[hash] or 0) + count end
-			end
+		end
+		if first_bucket then
+			for hash, count in pairs(p) do accumulate(inv.provided, top.provided, hash, count, count, st) end
 			local wait = st.wait
-			for hash, req in pairs(st.requested) do
+			for hash, req in pairs(r) do
 				if req.active then
 					local agg = accumulate(inv.requested, top.requested, hash, req.count, -req.count, st)
-					r[hash] = (r[hash] or 0) - req.count
 					local start = wait and wait[hash]
 					if start and (not agg.earliest_wait_start or start < agg.earliest_wait_start) then
 						agg.earliest_wait_start = start
@@ -432,11 +436,22 @@ local function aggregate_with_top(snapshot, f)
 			for hash, count in pairs(st.deliveries) do
 				if count > 0 then
 					accumulate(inv.in_transit, top.in_transit, hash, count, count, st)
-					t[hash] = (t[hash] or 0) + count
-				elseif stock then
-					add_stock(stock, hash, count)
+					local tb = first_bucket
+					if kept_rows then
+						for k = 1, #kept_rows, 2 do
+							if kept_rows[k].requested[hash] then
+								tb = kept_rows[k + 1]
+								break
+							end
+						end
+					end
+					tb.t[hash] = (tb.t[hash] or 0) + count
+				elseif stock_seen then
+					for nb in pairs(stock_seen) do nb.s[hash] = (nb.s[hash] or 0) + count end
+				elseif first_stock then
+					add_stock(first_stock, hash, count)
 				else
-					s[hash] = (s[hash] or 0) + count
+					first_bucket.s[hash] = (first_bucket.s[hash] or 0) + count
 				end
 			end
 		end
@@ -455,11 +470,12 @@ local function aggregate_with_top(snapshot, f)
 end
 inventory_tab._aggregate = aggregate_with_top
 
---- Not util.filter_signature: the item filter only highlights a button here (the aggregate passes ignore_item), so
---- picking an item must not re-aggregate.
+--- Not util.filter_signature: the grids never apply the item filter (with one set the tab shows the item's drill-down
+--- instead, D8-6), so picking an item must not re-aggregate.
 --- @param f ManagerFilters
 local function filter_signature(f)
 	return (f.terms and table.concat(f.terms, " ") or "") .. "|" .. (f.network or "") .. "|" .. f.mask .. "|" .. (f.surface or "")
+		.. "|" .. (f.station or "")
 end
 
 --- The aggregate is recomputed only when a collector pass completes or the filters change, and lives in storage so
@@ -757,7 +773,6 @@ local COLOR_CODE = { green = 1, blue = 2, red = 3, orange = 4, pink = 5, grey = 
 --- @param scope string hover scope (the grid's table name)
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
---- @param selected string? item filter hash, highlighted rather than hidden
 --- @param budget {n: integer}? shared by the grids of one render; nil = unlimited
 --- @return table ctx
 --- @return table[] entries
@@ -780,20 +795,11 @@ local function unrequested_of(cache, snapshot, f)
 	return set
 end
 
-local function build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget, delivered, dim)
+local function build_entries(cache, grid, scope, snapshot, f, column, ascending, now, budget, delivered, dim)
 	local inv = cache.inv
 	local bucket = inv[grid]
 	local top_bucket = cache.top[grid]
 	local hashes = ordered_hashes(cache, grid, column, ascending)
-	-- On a large base the filtered item is usually far down a grid, where its highlight would go unseen, so it
-	-- leads every grid it is in. The cached order is shared, so this works on a copy.
-	if selected and bucket[selected] then
-		local pinned = { selected }
-		for _, hash in ipairs(hashes) do
-			if hash ~= selected then pinned[#pinned + 1] = hash end
-		end
-		hashes = pinned
-	end
 	local is_requested = grid == "requested"
 	local base_color = grid == "provided" and "green" or "blue"
 	local ctx = {
@@ -826,10 +832,9 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 			color = base_color
 		end
 		local sent = delivered and delivered[hash] or 0
-		local is_selected = hash == selected
-		local style = (is_selected and "flib_selected_slot_button_" or "flib_slot_button_") .. color
+		local style = "flib_slot_button_" .. color
 		-- Content-based rather than version-based, so a completed pass only touches the items whose numbers moved.
-		local sig = mix(mix(mix(agg.count % DIGEST_MOD, agg.stations), COLOR_CODE[color] * 2 + (is_selected and 1 or 0)), sig_extra or 0)
+		local sig = mix(mix(mix(agg.count % DIGEST_MOD, agg.stations), COLOR_CODE[color] * 2), sig_extra or 0)
 		sig = mix(mix_top(sig, top_bucket[hash]), sent % DIGEST_MOD)
 		entries[i] = { key = hash, sig = sig, agg = agg, style = style, transit = transit, starved = starved, dim = is_dim,
 			deficit = deficit, delivered = sent }
@@ -893,7 +898,8 @@ local function sync_buttons(player_data, columns)
 	if dim and dim.valid then dim.toggled = player_data.inventory_dim == true end
 end
 
---- The item filter highlights instead of hiding; the other filters restrict which stations are aggregated.
+--- The grids, while no item filter is set (with one the tab shows the item's drill-down, D8-6): the other filters
+--- and the station chip restrict which inventory rows are aggregated.
 ---@param map_data MapData
 ---@param player_data PlayerData
 function inventory_tab.build(map_data, player_data)
@@ -928,7 +934,6 @@ function inventory_tab.build(map_data, player_data)
 	-- window was closed are mostly reused then instead of all being built again (~20 ms for 600 items).
 	if not cache.tick then return end
 	local version = cache.version
-	local selected = f.item
 	local now = game.tick
 	local minute = math.floor(now / 3600)
 	-- Only a refresh nobody asked for is spread out; a filter or sort change shows complete numbers at once.
@@ -944,8 +949,7 @@ function inventory_tab.build(map_data, player_data)
 			local column, ascending = sorts[grid][1], sorts[grid][2]
 			-- Wait times in the requested tooltips age even when nothing else changes; delivered amounts once a minute.
 			local wait_bucket = grid == "requested" and cache.has_wait and math.floor(now / WAIT_SIG_TICKS) or ""
-			local render_sig = version .. "|" .. column .. "|" .. tostring(ascending) .. "|" .. (selected or "") .. "|"
-				.. table_elem.index .. "|" .. wait_bucket .. "|" .. minute .. "|" .. (dim and grid == "provided" and "d" or "")
+			local render_sig = version .. "|" .. column .. "|" .. tostring(ascending) .. "|" .. table_elem.index .. "|" .. wait_bucket .. "|" .. minute .. "|" .. (dim and grid == "provided" and "d" or "")
 			if state.render_sig ~= render_sig or state.dirty or not state.keys then
 				if not delivered then
 					-- Once a minute, not on each of the renders a refresh is spread over.
@@ -959,8 +963,8 @@ function inventory_tab.build(map_data, player_data)
 					ctx, entries = pending.ctx, pending.entries
 					ctx.budget, ctx.deferred, ctx.now = budget and { n = BACKGROUND_UPDATE_BUDGET } or nil, nil, now
 				else
-					ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
-						delivered, dim)
+					ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, now, budget, delivered,
+						dim)
 				end
 				local result = render_grid(player_data, grid, table_elem, state, ctx, entries)
 				state.render_sig = (result ~= "held" and not ctx.deferred) and render_sig or nil

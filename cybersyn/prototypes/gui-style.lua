@@ -205,9 +205,14 @@ styles.ltnm_table_row_frame_dark = {
 
 -- LABEL STYLES
 
+-- The count font one size down, outline kept: "-200k" in the 13 px count font ellipsised ("-20…") in the 36 px slots
+-- at UI scale 1.5 and in the Inventory's 40 px slots at 2.0 (D8-10).
+data:extend({ { type = "font", name = "cybersyn-count-12", from = "default-bold", size = 12, border = true, border_color = {} } })
+
 styles.ltnm_label_signal_count_inventory = {
 	type = "label_style",
 	parent = "count_label",
+	font = "cybersyn-count-12",
 	size = 36,
 	width = 36,
 	horizontal_align = "right",

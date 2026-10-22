@@ -19,7 +19,7 @@ lab = {
 	SORTS = {
 		-- Phase 4: Control signals moved to the relative panel; Trains gained state, time in state and last refuel;
 		-- the Requested grid gained deficit.
-		stations = { "name", "station_status", "network", "provided_requested", "deliveries", "wait", "last_delivery" },
+		stations = { "name", "station_status", "network", "priority", "provided_requested", "deliveries", "wait", "last_delivery" },
 		trains = { "train_id", "train_status", "network", "layout", "depot", "state", "time_in_state", "last_refuel",
 			"shipment" },
 		inventory = { "item_order", "amount", "stations", "wait", "deficit" },
@@ -156,7 +156,15 @@ function lab.tab_keys(pi)
 			keys[tab] = d.ids
 		elseif tab == "inventory" then
 			keys[tab] = {}
-			for _, g in ipairs(lab.GRIDS) do keys[tab][g] = d[g] and d[g].hashes or {} end
+			local drill = lab.dev("item_dump", pi)
+			if drill.open then
+				-- PLAN8 D8-6: under the item filter the Inventory shows the item's drill-down instead of its grids.
+				for _, g in ipairs(lab.GRIDS) do keys[tab][g] = {} end
+				keys[tab].drill = { providers = drill.row_keys.providers, requesters = drill.row_keys.requesters,
+					trains = drill.model.trains }
+			else
+				for _, g in ipairs(lab.GRIDS) do keys[tab][g] = d[g] and d[g].hashes or {} end
+			end
 		else
 			keys[tab] = {}
 			keys.overview_total = {}

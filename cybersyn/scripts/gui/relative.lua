@@ -169,18 +169,17 @@ local function networks_of(network_name, network_mask)
 	return out
 end
 
-local HEAD_SECTIONS = 12
+local HEAD_NETWORKS = 12
 
---- "[A]1 · [A]3 · [A]4": every section's network and mask, for the head.
-local function sections_caption(st)
-	local sections = rtext.sections_of(st)
+--- "[A]1 · [A]3 · [B]4": the distinct networks and masks the station's combinators advertise on, for the head.
+--- @param nets {name: string, mask: int}[] rtext.row_networks
+local function networks_caption(nets)
 	local parts = {}
-	for i = 1, math.min(#sections, HEAD_SECTIONS) do
-		local sec = sections[i]
-		parts[i] = rtext.section_label(sec)
+	for i = 1, math.min(#nets, HEAD_NETWORKS) do
+		parts[i] = rtext.network_icon(nets[i].name) .. collector.mask_label(nets[i].mask)
 	end
 	local caption = table.concat(parts, " · ")
-	if #sections > HEAD_SECTIONS then caption = caption .. " +" .. (#sections - HEAD_SECTIONS) end
+	if #nets > HEAD_NETWORKS then caption = caption .. " +" .. (#nets - HEAD_NETWORKS) end
 	return caption
 end
 
@@ -213,18 +212,23 @@ local function stop_link(kind, id, max_width)
 	}
 end
 
-local function slot(hash, count, color, tooltip)
+--- @param station uint? the stop panel's station: a click also sets the station chip (D8-7), shift leaves it off
+--- @param flight true? an in-flight slot: the click lands on the Trains tab
+local function slot(hash, count, color, tooltip, station, flight)
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	if not sprite then return nil end
+	-- The engine shows the custom tooltip next to the item's own (elem_tooltip), so the hint needs no item text.
+	local hint = station and { flight and "cybersyn-gui.relative-flight-slot-hint" or "cybersyn-gui.relative-slot-hint" }
 	return {
 		type = "sprite-button",
 		sprite = sprite,
 		quality = quality,
 		style = "ltnm_small_slot_button_" .. color,
-		tooltip = { "", name_tooltip, tooltip },
+		tooltip = hint and { "", name_tooltip, tooltip, "\n", hint } or { "", name_tooltip, tooltip },
 		elem_tooltip = util.elem_tooltip(hash),
-		tags = { kind = "item", id = hash },
-		mouse_button_filter = { "left", "right" },
+		tags = { kind = "item", id = hash, station = station, flight = flight },
+		-- Right-click clears the manager's item filter, which a stop panel does not show.
+		mouse_button_filter = station and { "left" } or { "left", "right" },
 		handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		{
 			type = "label",
@@ -348,6 +352,7 @@ end
 --- @field cursor DiagScanCursor?
 --- @field fleet {key: string, ids: uint[], i: int, counts: {[string]: RelativeFleetCount}, done_tick: uint?}?
 --- @field schedule {records: table[], tick: uint}?
+--- @field slots_last {r: string, d: string, sig: string}? the parts of the slots signature last built
 
 local function new_state(kind, id)
 	return { kind = kind, id = id, sigs = {}, ages = {}, rebuilds = 0, refreshes = 0, starved = {} }
@@ -382,27 +387,31 @@ end
 
 -- ---------------------------------------------------------------- stop model
 
---- This station's active request keys nobody on its networks provides, each section's requests on that section's own
---- network. With diagnostics on, from the reason the dispatcher recorded (NO_PROVIDER), which holds between cycles;
---- else from the planner's economy, which is complete only while it dispatches (between those ticks the last answer
---- stands).
+--- This station's active request keys nobody on its networks provides, each combinator's requests on that
+--- combinator's own networks (collector.station_status then marks each row's starved set). With diagnostics on, from
+--- the reason the dispatcher recorded (NO_PROVIDER), which holds between cycles; else from the planner's economy, which
+--- is complete only while it dispatches (between those ticks the last answer stands).
 --- @return boolean updated
 local function update_starved(state, st)
 	if not st then return false end
-	local sections = rtext.sections_of(st)
 	local d = storage.diag
 	if d then
 		local starved = {}
 		local by_item = d.unserved[st.id]
 		if by_item then
+			local rows = collector.inventories(st)
 			for ix, e in pairs(by_item) do
 				if e.reason == REASON_NO_PROVIDER then
 					local hash = d.item_hash[ix]
 					if hash then
-						for _, s in ipairs(sections) do
-							local req = s.requested[hash]
-							if req and req.active and s.network_name ~= NETWORK_EACH then
-								starved[s.network_name .. ":" .. hash] = true
+						for _, row in ipairs(rows) do
+							local req = row.requested[hash]
+							if req and req.active then
+								if row.networks then
+									for net in pairs(row.networks) do starved[net .. ":" .. hash] = true end
+								elseif row.network_name and row.network_name ~= NETWORK_EACH then
+									starved[row.network_name .. ":" .. hash] = true
+								end
 							end
 						end
 					end
@@ -412,8 +421,8 @@ local function update_starved(state, st)
 		state.starved = starved
 		return true
 	end
-	-- With sections the collector scans each one on its own network; a record without them names its networks.
-	local starved = collector.economy_starved(st, not st.sections and networks_of(st.network_name, st.network_mask) or nil)
+	-- The collector scans each row on its own networks; a record without rows names the station's.
+	local starved = collector.economy_starved(st, not st.rows and networks_of(st.network_name, st.network_mask) or nil)
 	if not starved then return false end
 	state.starved = starved
 	return true
@@ -455,7 +464,7 @@ local function same_record(a, b)
 	return same_values(a.provided, b.provided) and same_requests(a.requested, b.requested) and
 		same_values(a.deliveries, b.deliveries) and same_values(a.control, b.control) and
 		same_values(a.control2, b.control2) and same_values(a.thresholds, b.thresholds) and
-		a.sections_sig == b.sections_sig
+		a.rows_sig == b.rows_sig
 end
 
 --- Whether this refresh rewrites the unserved rows' ages in place (render_unserved): the live read and a fleet walk
@@ -491,7 +500,7 @@ local function station_record(state, id)
 	if not st then return nil, "live" end
 	if update_starved(state, st) then st.status = collector.station_status(st, state.starved) end
 	-- Built once per read: same_record compares it, and render_slots reuses it as its signature.
-	st.sections_sig = st.sections and rtext.sections_content(st) or nil
+	st.rows_sig = rtext.rows_content(st)
 	if cur and cur.id == id and cur.sig_key and same_record(cur, st) then
 		st.sig_key = cur.sig_key
 	else
@@ -770,11 +779,13 @@ local function effective_model(state, st, station, nets, nets_key)
 	return m
 end
 
---- The head's "Networks" line: each section's network and mask.
-local function section_keys(st)
+--- The networks every combinator of the station advertises on, and the union of their masks per network (the trains
+--- the Effective config counts can serve any of them).
+local function rows_networks(st)
+	local nets = rtext.row_networks(st)
 	local parts = {}
-	for i, s in ipairs(rtext.sections_of(st)) do parts[i] = s.key end
-	return table.concat(parts, ",")
+	for i, n in ipairs(nets) do parts[i] = n.name .. "=" .. n.mask end
+	return { list = nets, key = table.concat(parts, ","), union = rtext.rows_union(st) }
 end
 
 --- Everything the stop panel shows, as plain values.
@@ -808,9 +819,11 @@ local function stop_model(pd, state)
 		m.network_name = st.network_name
 		local nc = state.nets
 		local mask = st.network_mask
-		-- With inventories a network's mask is what any section advertises on: the trains the Effective config counts
+		-- With inventories a network's mask is what any combinator advertises on: the trains the Effective config counts
 		-- and the head's networks follow the union, not the station combinator's mask alone.
-		local union = st.mask_union
+		local has_inventories = rtext.has_inventories(st)
+		local rn = has_inventories and record_sig(state, "row_networks", st, rows_networks) or nil
+		local union = rn and rn.union
 		if not (nc and nc.id == st.id and nc.name == st.network_name and (union and nc.union and same_values(nc.union, union)
 				or not union and not nc.union and type(mask) == "number" and nc.mask == mask)) then
 			local nets = union and networks_of(NETWORK_EACH, union) or networks_of(st.network_name, st.network_mask)
@@ -827,8 +840,9 @@ local function stop_model(pd, state)
 		end
 		m.nets = nc.nets
 		m.nets_key = nc.key
-		m.has_sections = collector.station_has_sections(st)
-		m.sections_key = m.has_sections and record_sig(state, "section_keys", st, section_keys) or nil
+		m.has_inventories = has_inventories
+		m.row_nets = rn and rn.list or nil
+		m.row_nets_key = rn and rn.key or nil
 		m.status = pm.shown_status(st.status, id, m.lint_bits, diag.is_acked)
 		if m.status == "setup" then m.setup_checks, m.setup_mask = pm.open_error_checks(id, m.lint_bits, diag.is_acked) end
 		m.deliveries = st.deliveries_total
@@ -891,7 +905,7 @@ end
 
 local function render_stop_head(state, body, m)
 	local sig = table.concat({ m.sub, tostring(m.is_p), tostring(m.is_r), tostring(m.is_stack), tostring(m.status),
-		m.nets_key or "", m.sections_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
+		m.nets_key or "", m.row_nets_key or "", m.deliveries or 0, m.limit or 0, m.trains_count or 0, tostring(m.occupancy_lint),
 		tostring(m.parked), m.setup_mask or 0 }, "|")
 	if state.sigs["head"] ~= sig then
 		section(state, body, "head", sig, function()
@@ -901,8 +915,9 @@ local function render_stop_head(state, body, m)
 			else
 				out[#out + 1] = field("cybersyn-gui.relative-role", { "cybersyn-gui.relative-role-" .. m.sub })
 			end
-			if m.sections_key then
-				out[#out + 1] = field("cybersyn-gui.relative-networks", sections_caption(m.st))
+			if m.row_nets then
+				out[#out + 1] = field("cybersyn-gui.relative-networks", #m.row_nets > 0 and networks_caption(m.row_nets)
+					or { "cybersyn-gui.station-no-network" })
 			elseif m.nets then
 				if #m.nets == 0 then
 					out[#out + 1] = field("cybersyn-gui.relative-network", { "cybersyn-gui.station-no-network" })
@@ -941,9 +956,10 @@ local function render_stop_head(state, body, m)
 end
 
 local MUTED = { 0.65, 0.65, 0.65 }
+local EMPTY = {}
 -- A section's Provided / Requested lists sit beside their FIELD_LABEL caption: five slots fit what is left of INNER.
 local LIST_COLUMNS = 5
-local SECTIONS_SHOWN = 8
+local BLOCKS_SHOWN = 8
 local NOT_ADVERTISED_SHOWN = 8
 
 --- One "Provided" / "Requested" row of a section: its caption, then the slots or "Nothing".
@@ -951,7 +967,9 @@ local function list_row(key, slots)
 	local row = {
 		type = "flow",
 		direction = "horizontal",
-		style_mods = { horizontal_spacing = 8 },
+		-- 8 cut the fifth slot's right edge by about a pixel under the body's scroll bar, and with it the last
+		-- character of a five-character count ("-200k", D8-10).
+		style_mods = { horizontal_spacing = 4 },
 		{ type = "label", caption = { key }, style_mods = { width = FIELD_LABEL, font_color = MUTED } },
 	}
 	if #slots == 0 then
@@ -978,35 +996,56 @@ local function not_advertised(ignored, reason)
 	return note({ "", { "cybersyn-gui.section-not-advertised" }, " ", icons, " (", reason, ")" })
 end
 
---- One section's block: its network and mask with the sources behind it, what it provides and requests, and the
---- signals the station's switch keeps it from advertising.
-local function section_block(out, st, sec, starved, reason)
+--- The letter a block's head starts with: what its combinator shows, the S of the station combinator (cyan, green,
+--- red: rtext.s_colour) or the I of an inventory (cyan, red when its own request failed, D8-4).
+--- @param row SnapshotInventory
+--- @param display {s: string, inv_failed: {[uint]: true}?}?
+--- @return string colour key of S_COLOUR
+--- @return string letter
+local function row_letter(row, display)
+	if row.kind == "station" then return display and display.s or "cyan", "S" end
+	local failed
+	if display then
+		failed = display.inv_failed ~= nil and display.inv_failed[row.unit] == true
+	else
+		failed = row.failed == true
+	end
+	return failed and "red" or "cyan", "I"
+end
+
+--- One combinator's block: "S Station combinator · priority 1  [A]1" / "I Inventory 2 · priority 5  [A]2", what it
+--- provides and requests, and the signals the station's switch keeps it from advertising.
+local function inventory_block(out, st, row, reason, display)
+	local colour, letter = row_letter(row, display)
 	local head = {
 		type = "flow",
 		direction = "horizontal",
 		style_mods = { horizontal_spacing = 6, vertical_align = "center" },
-		label(rtext.section_label(sec), { style = "bold_label" }),
+		label({ "", "[color=" .. S_COLOUR[colour] .. "]" .. letter .. "[/color] ", rtext.row_head(row) }, {
+			style = "bold_label",
+			-- An inventory's priority signal ranks only its provides (see stations.lua priority_model).
+			tooltip = row.index > 0 and { "", { "cybersyn-gui.relative-i-" .. colour }, "\n",
+				{ "cybersyn-gui.inventory-priority-note" } } or { "cybersyn-gui.relative-" .. string.lower(letter) .. "-" .. colour },
+		}),
 	}
-	local bits = collector.mask_bits_label(sec.mask)
-	if bits then head[#head + 1] = label(bits, { style_mods = { font = "default-small", font_color = MUTED } }) end
-	head[#head + 1] = {
-		type = "label",
-		caption = rtext.sources_caption(sec.sources),
-		style_mods = { font = "default-small", font_color = MUTED, single_line = false, maximal_width = INNER - 64 },
-	}
+	local net = rtext.row_network(row)
+	if net ~= "" then
+		head[#head + 1] = label(net, { style_mods = { font = "default-small", font_color = MUTED } })
+	end
 	out[#out + 1] = head
 
+	local starved = row.starved or EMPTY
 	local provided = {}
-	for _, hash in ipairs(util.hashes_in_item_order(sec.provided)) do
-		local count = sec.provided[hash]
+	for _, hash in ipairs(util.hashes_in_item_order(row.provided)) do
+		local count = row.provided[hash]
 		provided[#provided + 1] = slot(hash, count, "green",
-			{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(count) } })
+			{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(count) } }, st.id)
 	end
 	out[#out + 1] = list_row("cybersyn-gui.section-provided", provided)
 
 	local requested, below = {}, false
-	for _, hash in ipairs(util.hashes_in_item_order(sec.requested)) do
-		local req = sec.requested[hash]
+	for _, hash in ipairs(util.hashes_in_item_order(row.requested)) do
+		local req = row.requested[hash]
 		if not req.active then below = true end
 		local tip = {
 			"", " ", req.active and { "cybersyn-gui.requested" } or { "cybersyn-gui.requested-below-threshold" },
@@ -1018,66 +1057,88 @@ local function section_block(out, st, sec, starved, reason)
 			tip[#tip + 1] = { "cybersyn-gui.section-starved" }
 			tip[#tip + 1] = "[/color]"
 		end
-		requested[#requested + 1] = slot(hash, req.count, req.active and "red" or "orange", tip)
+		requested[#requested + 1] = slot(hash, req.count, req.active and "red" or "orange", tip, st.id)
 	end
 	out[#out + 1] = list_row("cybersyn-gui.section-requested", requested)
 	if below then out[#out + 1] = note({ "cybersyn-gui.section-below-threshold" }) end
-	out[#out + 1] = not_advertised(sec.ignored or {}, reason)
+	out[#out + 1] = not_advertised(row.ignored or EMPTY, reason)
 end
 
---- The section blocks' element defs.
+--- The Advertised blocks' element defs: one per combinator (PLAN8 D8-1), the station combinator first.
 --- @param st SnapshotStation
---- @param starved {[string]: true}? station-level "network:hash" keys, for sections without their own set
+--- @param display {s: string, inv_failed: {[uint]: true}?}? the combinators' letters as shown now; without it the S
+---   reads cyan and each I follows the row's `failed`
 --- @return flib.GuiElemDef[]
-local function slots_defs(st, starved)
-	local sections = rtext.sections_of(st)
-	if #sections == 0 then return { note({ "cybersyn-gui.relative-no-items" }) } end
+local function slots_defs(st, display)
+	if not st.network_name then return { note({ "cybersyn-gui.relative-no-items" }) } end
+	local rows = rtext.advertised_rows(st)
 	local out = { heading({ "cybersyn-gui.section-advertised" }) }
-	if st.sections then starved = nil end
 	local paused = rtext.paused_inventories(st)
 	if #paused > 0 then
 		local names = { "" }
 		for i = 1, math.min(#paused, 4) do
 			if i > 1 then names[#names + 1] = ", " end
-			names[#names + 1] = collector.source_label(paused[i])
+			names[#names + 1] = paused[i].label or collector.source_label(paused[i])
 		end
 		if #paused > 4 then names[#names + 1] = " +" .. (#paused - 4) end
 		out[#out + 1] = line({ rtext.paused_key(st), names }, nil, { 1, 0.78, 0.45 })
 	end
 	local reason = rtext.ignored_reason(st)
-	for i = 1, math.min(#sections, SECTIONS_SHOWN) do
+	for i = 1, math.min(#rows, BLOCKS_SHOWN) do
 		if i > 1 then out[#out + 1] = { type = "line", direction = "horizontal" } end
-		local sec = sections[i]
-		section_block(out, st, sec, rtext.section_starved(sec, starved), reason)
+		inventory_block(out, st, rows[i], reason, display)
 	end
-	if #sections > SECTIONS_SHOWN then
-		out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(#sections - SECTIONS_SHOWN) })
+	if #rows > BLOCKS_SHOWN then
+		out[#out + 1] = note({ "cybersyn-gui.relative-more", tostring(#rows - BLOCKS_SHOWN) })
 	end
 	return out
 end
 -- Exposed for the unit tests, which build the blocks from fixture records.
 relative.slots_defs = slots_defs
 
-local function slots_content(st, starved)
-	return st.sections_sig or rtext.sections_content(st, starved)
+--- @param st SnapshotStation
+--- @return string
+local function slots_content(st)
+	return st.rows_sig or rtext.rows_content(st)
 end
 
---- What the station advertises, one block per network section (D3): a station without inventories on one network
---- is a single block.
+--- The letters' part of the blocks' signature.
+--- @param st SnapshotStation
+--- @param s string the S letter's colour
+--- @param inv {[uint]: true}? station.inv_failed
+--- @return string
+local function display_sig(st, s, inv)
+	if not inv then return s end
+	-- Runs on every refresh: no table, and a lit I is rare.
+	for _, row in ipairs(collector.inventories(st)) do
+		if inv[row.unit] then s = s .. "," .. row.unit end
+	end
+	return s
+end
+
+--- What the station advertises, one block per combinator: a station without inventories is a single block.
 local function render_slots(state, body, m)
 	local st = m.st
 	if not st then
 		if state.sigs["slots"] ~= "" then section(state, body, "slots", "", hidden) end
 		return
 	end
+	local station = storage.stations and storage.stations[st.id]
+	local s_colour, inv_failed = rtext.s_colour(m.display_state), station and station.inv_failed or nil
+	-- Each row carries its starved set (collector.station_status); a new station-level set refills them without a new
+	-- read, so it keys the cached signature too.
 	local snap = collector.live()
 	local starved = m.source == "live" and state.starved or (snap and snap.starved) or nil
-	-- A record with sections carries its own starved sets (sections_content ignores the station-level ones), so the
-	-- signature does not depend on them and the cache holds while diagnostics move them.
-	if st.sections then starved = nil end
-	local sig = record_sig(state, "slots", st, slots_content, starved)
+	local rsig = record_sig(state, "slots", st, slots_content, starved)
+	local dsig = display_sig(st, s_colour, inv_failed)
+	-- The rows part can be several KB on a big requester and is the same cached string between reads: comparing the
+	-- parts skips a concatenation (a fresh long string) on every refresh.
+	local last = state.slots_last
+	if last and last.r == rsig and last.d == dsig and state.sigs["slots"] == last.sig then return end
+	local sig = rsig .. "|" .. dsig
+	state.slots_last = { r = rsig, d = dsig, sig = sig }
 	if state.sigs["slots"] ~= sig then
-		section(state, body, "slots", sig, function() return slots_defs(st, starved) end)
+		section(state, body, "slots", sig, function() return slots_defs(st, { s = s_colour, inv_failed = inv_failed }) end)
 	end
 end
 relative.render_slots = render_slots
@@ -1091,7 +1152,10 @@ local function unserved_texts(m, r, now, inherit_before)
 	local e = r.e
 	local _, _, item_tooltip = util.item_sprite_and_tooltip(r.hash)
 	local st = m.st
-	local req = st and st.requested[r.hash]
+	-- PLAN8 D8-1: on a station with inventories the text names the one that requests the item, as the Overview does,
+	-- with that combinator's request rather than the station's sum.
+	local inv = utext.inventory_of(st, r.hash, "requested", collector.inventories)
+	local req = st and (inv or st).requested[r.hash]
 	local wait = rtext.age_step(now - e.first_tick)
 	local inherited = e.first_tick < inherit_before
 	local tip = utext.chip_tooltip({
@@ -1101,7 +1165,7 @@ local function unserved_texts(m, r, now, inherit_before)
 		reason = e.reason,
 		a = e.a,
 		b = e.b,
-		network = m.network_name and network_rich(m.network_name) or nil,
+		network = inv and rtext.row_text(inv) or m.network_name and network_rich(m.network_name) or nil,
 		rej = e.rej,
 		wait = wait,
 		inherited = inherited,
@@ -1111,6 +1175,7 @@ local function unserved_texts(m, r, now, inherit_before)
 	local stock = utext.stock_caption(e.reason, e.a, e.b)
 	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited)
 end
+relative.unserved_texts = unserved_texts
 
 local function render_unserved(state, body, m, compact)
 	local rows = m.unserved
@@ -1155,9 +1220,10 @@ local function render_unserved(state, body, m, compact)
 						style = "cybersyn_unserved_item",
 						sprite = sprite,
 						quality = quality,
+						tooltip = { "cybersyn-gui.relative-slot-hint" },
 						elem_tooltip = util.elem_tooltip(r.hash),
-						tags = { kind = "item", id = r.hash },
-						mouse_button_filter = { "left", "right" },
+						tags = { kind = "item", id = r.hash, station = state.id },
+						mouse_button_filter = { "left" },
 						handler = { [defines.events.on_gui_click] = util.handle.link_click },
 					} or label(r.hash),
 					{
@@ -1218,7 +1284,7 @@ local function render_deliveries(state, body, m)
 				slots[#slots + 1] = slot(hash, count, count > 0 and "green" or "blue", {
 					"", " ", count > 0 and { "cybersyn-gui.incoming" } or { "cybersyn-gui.outgoing" },
 					"\n", { "cybersyn-gui.amount", format.number(count) },
-				})
+				}, st.id, true)
 			end
 			if total == 0 then return nil end
 			for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
@@ -2398,7 +2464,7 @@ local function tick_pane(manager_data, i, pd)
 		pd.relative_pane = nil
 		return
 	end
-	if not (pd.is_manager_open and pd.selected_tab == "trains_tab") or pd.item_view then return end
+	if not (pd.is_manager_open and pd.selected_tab == "trains_tab") then return end
 	local p = manager_data.relative_samples and game.create_profiler()
 	local alive = relative.render(pd, state, panel)
 	if p then
@@ -2592,8 +2658,9 @@ function relative.handle.relative_toggle_effective(player, pd)
 	rerender(player, pd)
 end
 
---- Opens the manager on the Stations tab searching for this stop (a depot or refueler: the Trains tab searching its
---- name), or on the Trains tab searching "#<id>" for a train; manager.focus clears everything else that could hide it.
+--- Opens the manager on the Stations tab with the station chip on this stop (D8-7: by id, so a name that is a
+--- substring of other names, "R", shows only this stop; a depot or refueler: the Trains tab searching its name), or on
+--- the Trains tab searching "#<id>" for a train; manager.focus clears everything else that could hide it.
 --- @param player LuaPlayer
 --- @param pd PlayerData
 function relative.open_manager(player, pd, state)
@@ -2608,7 +2675,7 @@ function relative.open_manager(player, pd, state)
 	local name = stop_name(kind, state.id)
 	if not name then return end
 	if station then
-		manager.focus(player, pd, "stations_tab", { query = name })
+		manager.focus(player, pd, "stations_tab", { station = state.id })
 	else
 		manager.focus(player, pd, "trains_tab", { query = name,
 			reveal = { group = kind == "depot" and name or trains_tab.REFUELERS } })
@@ -2922,17 +2989,31 @@ function dev_fns.relative_toggle_effective(pi)
 end
 
 --- Clicks a button of the open panel by its element name ("open_manager", "comb1", "locate", ...), or the first link
---- or slot whose tags match `name` when it is a table ({kind = "item", id = hash}: the unnamed item slots).
-function dev_fns.relative_click(pi, name)
+--- or slot whose tags hold every field of `name` when it is a table ({kind = "item", id = hash}: the unnamed item slots;
+--- add flight = true for an in-flight slot). `mods` = {shift, control, alt, right}; `mods.pane` clicks in the Trains
+--- detail pane's panel instead.
+function dev_fns.relative_click(pi, name, mods)
 	local player, pd = dev_context(pi)
-	local open = pd.relative_open
-	if not open then return "no panel open" end
-	local panel = mount_of(player, mount_key(open))[PANEL]
+	mods = mods or {}
+	local panel
+	if mods.pane then
+		local pane = pd.relative_pane_open
+		panel = pane and pane.panel
+		if not (panel and panel.valid) then return "no pane open" end
+	else
+		local open = pd.relative_open
+		if not open then return "no panel open" end
+		panel = mount_of(player, mount_key(open))[PANEL]
+	end
 	local by_tags = type(name) == "table"
 	local function find(elem)
 		if by_tags then
 			local tags = elem.tags
-			if tags and tags.kind == name.kind and tags.id == name.id then return elem end
+			local hit = tags ~= nil
+			for k, v in pairs(name) do
+				if not hit or tags[k] ~= v then hit = false break end
+			end
+			if hit then return elem end
 		elseif elem.name == name then
 			return elem
 		end
@@ -2942,9 +3023,10 @@ function dev_fns.relative_click(pi, name)
 		end
 	end
 	local elem = find(panel)
-	if not elem then return "no element " .. tostring(name) end
+	if not elem then return "no element " .. serpent.line(name) end
 	return gui.dispatch({ name = defines.events.on_gui_click, element = elem, player_index = pi, tick = game.tick,
-		button = defines.mouse_button_type.left, shift = false, control = false, alt = false })
+		button = mods.right and defines.mouse_button_type.right or defines.mouse_button_type.left,
+		shift = mods.shift == true, control = mods.control == true, alt = mods.alt == true })
 end
 
 dev.extend(dev_fns)

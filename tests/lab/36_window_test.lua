@@ -630,9 +630,9 @@ lab.suite("36_window", {
 	end,
 
 	-- E and Escape (on_gui_closed of an unpinned window): with the search field open, focused or not, they cancel the
-	-- search and the window stays holding player.opened, as the game's own search boxes do; with the drill-down open
-	-- they close the drill-down first; otherwise one press closes the window. on_gui_closed is the engine's own, raised
-	-- by setting player.opened to nil.
+	-- search and the window stays holding player.opened, as the game's own search boxes do; otherwise one press closes
+	-- the window, the item drill-down included (PLAN8 D8-6: it is the Inventory under the item filter, no overlay).
+	-- on_gui_closed is the engine's own, raised by setting player.opened to nil.
 	function(ctx)
 		local player = game.get_player(pi)
 		local function window() return player.gui.screen.manager_window end
@@ -688,10 +688,7 @@ lab.suite("36_window", {
 		if not lab.check("an unserved row exists for the drill-down", row ~= nil) then return end
 		remote.call(D, "open_item", pi, row.item)
 		lab.check("drill-down open", remote.call(D, "item_dump", pi).open == true)
-		player.opened = nil
-		lab.check("on_gui_closed with the drill-down open closes the drill-down; the window stays and holds player.opened",
-			not remote.call(D, "item_dump", pi).open and remote.call(D, "state", pi).is_open and player.opened == window())
-		closes("then one on_gui_closed closes the window (drill-down)")
+		closes("with the drill-down open, one on_gui_closed closes the window (D8-6: no overlay)")
 		remote.call(D, "close", pi)
 		remote.call(D, "clear_filters", pi)
 		remote.call(D, "open", pi)
@@ -1031,9 +1028,9 @@ lab.suite("36_window", {
 	end,
 
 	-- PLAN5 D5-2: show on map lands where a click on the target's map pin lands (remote view following the target at
-	-- the screen centre, zoom 1.5), from the character view and from remote view; a train follows its front stock;
-	-- an unpinned window stays open holding player.opened (so E closes it in remote view) and Back returns to the
-	-- view it came from with the window still open; a pinned window gets no Back.
+	-- the screen centre, zoom 1.5), from the character view and from remote view; a train follows its front stock.
+	-- PLAN8 D8-9 (flipped from D5-2's hold): a shift-click on a link inside the window closes it, pinned or not, with no
+	-- Back; the hold with Back stays for the panels' locate buttons.
 	function(ctx)
 		local player = game.get_player(pi)
 		local d = overview()
@@ -1049,47 +1046,71 @@ lab.suite("36_window", {
 				{ controller = player.controller_type, centered_on = c and c.valid and c.unit_number, want = stop.unit_number,
 					position = pos, stop = stop.position, zoom = player.zoom })
 		end
+		local function closed(name)
+			local pd = lab.read("manager", "players", pi)
+			lab.check(name, not pd.is_manager_open and pd.map_from == nil and player.opened == nil,
+				{ open = pd.is_manager_open, map_from = pd.map_from, opened = player.opened and player.opened.name })
+		end
+		-- dev open pins the window; an unpinned one holds player.opened, as a player's click on the shortcut leaves it.
+		local function reopen()
+			remote.call(D, "open", pi)
+			remote.call("cybersyn", "write_global", false, "manager", "players", pi, "pinning")
+			player.opened = player.gui.screen.manager_window
+			return overview().lists.unserved.rendered
+		end
 		if player.controller_type == defines.controllers.remote then player.exit_remote_view() end
 		local was_pinning = lab.read("manager", "players", pi, "pinning")
 		remote.call("cybersyn", "write_global", false, "manager", "players", pi, "pinning")
 		local stop1 = stop_of(rows[1])
-		local res = lab.dev("click", pi, TABLE, { COLUMNS + 2, 1 }, { shift = true })
+		lab.dev("click", pi, TABLE, { COLUMNS + 2, 1 }, { shift = true })
 		lands("shift-click from the character view: the pin's view (centred on the stop, zoom 1.5)", stop1)
-		local pd = lab.read("manager", "players", pi)
-		local window = player.gui.screen.manager_window
-		lab.check("show on map keeps the unpinned window open, holding player.opened, with Back", pd.is_manager_open
-			and not pd.pinning and player.opened == window and pd.map_from ~= nil
-			and remote.call(D, "header", pi).back_button == true, { pinning = pd.pinning, map_from = pd.map_from, res = res })
-		lab.check("the marker pair is drawn", pd.markers ~= nil and #pd.markers == 2, pd.markers)
+		closed("D8-9: the shift-click closes the unpinned window, no Back to return to")
+		local markers = lab.read("manager", "players", pi, "markers")
+		lab.check("the marker pair is drawn", markers ~= nil and #markers == 2, markers)
+		rows = reopen()
 		player.zoom = 0.3
 		player.centered_on = nil
-		local stop2 = stop_of(rows[2])
-		lab.dev("click", pi, TABLE, { 2 * COLUMNS + 2, 1 }, { shift = true })
-		lands("shift-click from remote view at zoom 0.3: the pin's view of the second row", stop2)
-		lab.check("in remote view the window still holds player.opened, and Back still goes to the character view",
-			player.opened == window
-			and lab.read("manager", "players", pi, "map_from").controller == defines.controllers.character)
+		local stop2 = rows[2] and stop_of(rows[2])
+		if stop2 then
+			lab.dev("click", pi, TABLE, { 2 * COLUMNS + 2, 1 }, { shift = true })
+			lands("shift-click from remote view at zoom 0.3: the pin's view of the second row", stop2)
+			closed("D8-9: from remote view the window closes too")
+		end
 		local tid, train = next(lab.read("trains"))
 		local front = train and train.entity and train.entity.valid and train.entity.front_stock
 		if front then
+			reopen()
 			local t = lab.dev("link_click", pi, "train", tid, { shift = true })
 			lab.check("a train link follows the front stock at zoom 1.5", t.centered_on == front.unit_number and t.zoom == 1.5
 				and t.controller == defines.controllers.remote, t)
+			closed("D8-9: a train link closes the window")
+			if player.controller_type == defines.controllers.remote then player.exit_remote_view() end
+			-- The Trains pane's Locate (another show_on_map caller) keeps the hold and Back.
+			reopen()
+			local window = player.gui.screen.manager_window
+			remote.call(D, "select_tab", pi, "trains")
+			remote.call(D, "select_train", pi, tid)
+			local res = lab.dev("relative_click", pi, "locate", { pane = true })
+			local pd = lab.read("manager", "players", pi)
+			lab.check("Locate keeps the unpinned window open, holding player.opened, with Back", pd.is_manager_open
+				and player.opened == window and pd.map_from ~= nil and remote.call(D, "header", pi).back_button == true,
+				{ map_from = pd.map_from, opened = player.opened and player.opened.name, res = res })
+			local ok, err = pcall(remote.call, D, "click", pi, "manager_back_button")
+			lab.check("Back leaves remote view", player.controller_type ~= defines.controllers.remote, { ok = ok, err = err })
+			lab.check("after Back the window is open, holds player.opened and hides Back", remote.call(D, "state", pi).is_open
+				and player.opened == window and lab.read("manager", "players", pi, "map_from") == nil
+				and remote.call(D, "header", pi).back_button == false)
+			remote.call(D, "deselect_train", pi)
 		end
-		local ok, err = pcall(remote.call, D, "click", pi, "manager_back_button")
-		lab.check("Back leaves remote view", player.controller_type ~= defines.controllers.remote, { ok = ok, err = err })
-		lab.check("after Back the window is open, holds player.opened and hides Back", remote.call(D, "state", pi).is_open
-			and player.opened == window and lab.read("manager", "players", pi, "map_from") == nil
-			and remote.call(D, "header", pi).back_button == false)
+		rows = reopen()
 		lab.dev("click", pi, "manager_pin_button")
 		lab.dev("click", pi, TABLE, { COLUMNS + 2, 1 }, { shift = true })
-		lands("shift-click on a pinned window: the same view", stop1)
-		lab.check("a pinned window gets no Back and does not take player.opened",
-			lab.read("manager", "players", pi, "map_from") == nil and player.opened ~= window
-			and remote.call(D, "header", pi).back_button == false)
+		lands("shift-click on a pinned window: the same view", stop_of(rows[1]))
+		closed("D8-9: a pinned window closes too")
 		if player.controller_type == defines.controllers.remote then player.exit_remote_view() end
 		remote.call("cybersyn", "write_global", was_pinning, "manager", "players", pi, "pinning")
 		lab.dev("controller_changed", pi)
+		remote.call(D, "open", pi)
 		remote.call(D, "select_tab", pi, "overview")
 	end,
 

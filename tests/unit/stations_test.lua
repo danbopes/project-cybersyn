@@ -55,9 +55,10 @@ local function setup()
 	return stations_tab, collector, snap
 end
 
+--- Station ids of the rows in display order (a row per combinator: PLAN8 D8-1).
 local function ids(rows)
 	local out = {}
-	for i, r in ipairs(rows) do out[i] = r.id end
+	for i, r in ipairs(rows) do out[i] = r.st.id end
 	return out
 end
 
@@ -180,7 +181,7 @@ test("query: a refilled record is merged into the kept order once its pass has c
 	snap.tick = 20
 	local rows, _, ctx = stations_tab.query(pd)
 	assert_eq(ids(rows), { 1, 2, 3, 4, 5, 6, 7, 8, 9 })
-	assert_eq(rows[8].name, "Aardvark")
+	assert_eq(rows[8].st.name, "Aardvark")
 	assert_eq(ctx.status[8], "ok")
 	game.tick = 21
 	rows = stations_tab.query(pd)
@@ -426,125 +427,284 @@ test("chip_lines: hide zero counts, wrap onto the second line in order, keep the
 	assert_eq(l2, { "no_power", "ok" })
 end)
 
--- ---------------------------------------------------------------- network sections (round 7)
+-- ---------------------------------------------------------------- inventory rows (PLAN8 D8-1, D8-2)
+
+local F = require("inventory_fixtures")
 
 local function fluid(name, order)
 	prototypes.fluid[name] = prototypes.fluid[name]
 		or { name = name, order = order, localised_name = { "fluid-name." .. name }, valid = true }
 end
 
-local function source(kind, index, priority)
-	return { kind = kind, index = index, unit = 100 + index, ok = true, priority = priority or 0 }
+--- The naphthalene plant (F.naphtha: station combinator on A1, Inventory 1 on A3, Inventory 2 on A4) and the coal hub
+--- (F.coal_both: A1 provides coal, Inventory 1 on A2 at priority 3 requests it) beside the nine plain stations.
+local function setup_rows()
+	local stations_tab, collector, snap = setup()
+	fluid(F.NAPHTHA_OIL, "z[a]")
+	fluid(F.LIQUID_FUEL, "z[b]")
+	snap.stations[20] = F.naphtha(20)
+	snap.stations[21] = F.coal_both(21)
+	for _, id in ipairs({ 20, 21 }) do
+		local r = snap.stations[id]
+		r.comb_ok, r.warming_up, r.name_lower = true, false, string.lower(r.name)
+	end
+	return stations_tab, collector, snap
 end
 
---- [naphthalene-oil] Provider (pY 126) in the collector's section contract: Provide only, the station combinator on
---- A1, Inventory 1 on A3, Inventory 2 on A4 holding -866 liquid fuel it does not advertise.
-local function naphthalene()
-	fluid("naphthalene-oil", "z[a]")
-	fluid("liquid-fuel", "z[b]")
-	local s0, s1, s2 = source("station", 0), source("inventory", 1), source("inventory", 2)
-	return st(20, "Naphthalene Provider", {
-		is_p = true, is_r = false, network_mask = 1,
-		provided = { ["naphthalene-oil"] = 199134, ["liquid-fuel"] = 99134 },
-		sources = { s0, s1, s2 },
-		mask_union = { ["signal-A"] = 7 },
-		sections = {
-			{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { s0 },
-				provided = { ["naphthalene-oil"] = 199134 }, requested = {}, ignored = {} },
-			{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s1 },
-				provided = { ["liquid-fuel"] = 99134 }, requested = {}, ignored = {} },
-			{ key = "signal-A:4", network_name = "signal-A", mask = 4, sources = { s2 },
-				provided = {}, requested = {}, ignored = { ["liquid-fuel"] = -866 } },
-		},
-	})
-end
-
---- A plain Request only station on A3 with requests below threshold.
-local function plain()
-	local s0 = source("station", 0, 1)
-	local requested = {
-		["iron-plate"] = { count = -1900, threshold = 2000, active = false },
-		["copper-plate"] = { count = -1600, threshold = 2000, active = false },
-		coal = { count = -2500, threshold = 2000, active = true },
-	}
-	local provided = {}
-	return st(21, "Circuit Requestor", {
-		is_p = false, is_r = true, network_mask = 3, provided = provided, requested = requested,
-		sources = { s0 }, mask_union = { ["signal-A"] = 3 },
-		sections = { { key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { s0 },
-			provided = provided, requested = requested, ignored = { stone = 52 } } },
-	})
+--- "id@index" of each row in display order.
+local function row_ids(rows)
+	local out = {}
+	for i, r in ipairs(rows) do out[i] = r.st.id .. "@" .. r.index end
+	return out
 end
 
 local function slot_ids(defs)
 	local out = {}
-	for i, d in ipairs(defs) do
-		out[i] = d.tags.group and ("[" .. d.caption .. "]") or d.tags.overflow and d.caption or d.tags.id
-	end
+	for i, d in ipairs(defs) do out[i] = d.tags.overflow and d.caption or d.tags.id end
 	return out
 end
 
-test("network cell: the naphthalene provider lists its masks with a +2 badge and one tooltip line per section", function()
-	local stations_tab = setup()
-	local cell = stations_tab.network_cell(naphthalene())
-	assert_eq(cell.sprite, "virtual-signal/signal-A")
-	assert_eq(cell.caption, "1 · 3 · 4")
-	assert_eq(cell.badge, "+2")
-	assert_true(cell.small)
-	local tip = serpent.line(cell.tooltip)
-	assert_true(tip:find('"cybersyn-gui.stations-net-sections", "3"', 1, true) ~= nil, tip)
-	assert_true(tip:find('" (", "bits 1+2", ")"', 1, true) ~= nil or tip:find('" (bits 1+2)"', 1, true) ~= nil, tip)
-	assert_eq(#cell.tooltip, 2 + 3, "title and three section lines")
-	assert_eq(cell.tooltip[5][#cell.tooltip[5]], { "cybersyn-gui.section-nothing" }, "Inventory 2 advertises nothing")
+test("query: a station lists one row per combinator; a name sort keeps them together in index order", function()
+	local stations_tab = setup_rows()
+	local pd = {}
+	local rows, counts, ctx = stations_tab.query(pd)
+	assert_eq(row_ids(rows), { "1@0", "2@0", "3@0", "21@0", "21@1", "4@0", "5@0", "6@0", "7@0", "8@0", "9@0", "20@0",
+		"20@1", "20@2" })
+	assert_eq(counts.all, 11, "D8-3: the counts are stations")
+	assert_eq(ctx.stations, 11)
+	assert_eq(rows[5].key, "21@2002")
+	pd = { sort = { stations_tab = { column = "name", ascending = false } } }
+	stations_tab = setup_rows()
+	assert_eq(row_ids((stations_tab.query(pd))), { "20@0", "20@1", "20@2", "8@0", "9@0", "7@0", "6@0", "5@0", "4@0",
+		"21@0", "21@1", "3@0", "2@0", "1@0" }, "descending keeps the station's own rows ascending")
 end)
 
-test("network cell: a plain station looks as it does today", function()
-	local stations_tab = setup()
-	local cell = stations_tab.network_cell(plain())
-	assert_eq(cell.caption, "3")
-	assert_eq(cell.sig, "signal-A=3")
-	assert_nil(cell.badge)
-	assert_nil(cell.small)
+test("query: rows sort on their own network, provided / requested and priority", function()
+	local stations_tab = setup_rows()
+	local pd = { sort = { stations_tab = { column = "network", ascending = true } } }
+	local rows = stations_tab.query(pd)
+	assert_eq(row_ids(rows), { "1@0", "2@0", "3@0", "21@0", "4@0", "5@0", "6@0", "7@0", "8@0", "9@0", "20@0",
+		"21@1", "20@1", "20@2" }, "mask 1 by name, then masks 2, 3, 4")
+	stations_tab = setup_rows()
+	pd = { sort = { stations_tab = { column = "priority", ascending = false } } }
+	assert_eq(row_ids((stations_tab.query(pd)))[1], "21@1", "Inventory 1 of the coal hub at priority 3")
+	stations_tab = setup_rows()
+	pd = { sort = { stations_tab = { column = "provided_requested", ascending = false } } }
+	rows = stations_tab.query(pd)
+	local first = {}
+	for i = 1, 6 do first[i] = rows[i].st.id .. "@" .. rows[i].index end
+	assert_eq(first, { "3@0", "21@0", "21@1", "4@0", "9@0", "20@0" }, "one item each, by name")
+	assert_eq(row_ids(rows)[#rows], "20@2", "Inventory 2 advertises nothing")
 end)
 
-test("strip: grouped by section with a network label each; A4 advertises nothing and gets no group", function()
-	local stations_tab = setup()
-	local defs = stations_tab.pr_slots(naphthalene(), nil, 12)
-	assert_eq(slot_ids(defs), { "[[virtual-signal=signal-A]1]", "naphthalene-oil", "[[virtual-signal=signal-A]3]", "liquid-fuel" })
-	-- Keys stay unique when one item sits in two sections.
-	local keys = {}
-	for _, d in ipairs(defs) do keys[#keys + 1] = stations_tab.slot_key(d) end
-	assert_eq(keys, { "gsignal-A:1", "signal-A:1|pnaphthalene-oil", "gsignal-A:3", "signal-A:3|pliquid-fuel" })
-	local tip = serpent.line(defs[4].tooltip)
-	assert_true(tip:find('"cybersyn-gui.stations-slot-section", {"", "[virtual-signal=signal-A]3", " (bits 1+2)", " · "', 1, true) ~= nil, tip)
-	assert_true(tip:find('"cybersyn-gui.stations-slot-ignored", "[virtual-signal=signal-A]4", "-866", {"cybersyn-gui.section-provide-only"}', 1, true) ~= nil, tip)
+test("query: the network filter lists the rows on that mask; the counts stay stations", function()
+	local stations_tab = setup_rows()
+	local pd = { search_network_name = "signal-A", search_network_mask = 4 }
+	local rows, counts = stations_tab.query(pd)
+	assert_eq(row_ids(rows), { "20@2" })
+	assert_eq(counts.all, 1)
+	stations_tab = setup_rows()
+	pd = { search_network_name = "signal-A", search_network_mask = 2 }
+	rows, counts = stations_tab.query(pd)
+	assert_eq(row_ids(rows), { "21@1", "20@1" }, "mask 3 holds bit 2 too")
+	assert_eq(counts.all, 2)
+	stations_tab = setup_rows()
+	rows = stations_tab.query({ search_item = F.COAL })
+	assert_eq(row_ids(rows), { "3@0", "21@0", "21@1", "4@0" }, "the coal hub provides it on one row and requests it on the other")
+	stations_tab = setup_rows()
+	rows = stations_tab.query({ search_station = 20 })
+	assert_eq(row_ids(rows), { "20@0", "20@1", "20@2" }, "the station chip lists every row of its station")
 end)
 
-test("strip: a group label never ends a line that overflows", function()
-	local stations_tab = setup()
-	local defs = stations_tab.pr_slots(naphthalene(), nil, 3)
-	assert_eq(slot_ids(defs), { "[[virtual-signal=signal-A]1]", "naphthalene-oil", "+1" })
-	assert_true(defs[3].tooltip:find("[virtual-signal=signal-A]3", 1, true) ~= nil)
+test("query: a refilled station that gained an inventory gets its row merged in", function()
+	local stations_tab, collector, snap = setup_rows()
+	local pd = {}
+	stations_tab.query(pd)
+	local hub = snap.stations[21]
+	local i2 = { kind = "inventory", index = 2, unit = 2003, ok = true, priority = 0, network_name = "signal-A", mask = 1,
+		provided = { stone = 10 }, requested = {}, ignored = {}, read = true }
+	hub.sources[3] = i2
+	hub.rows = nil
+	collector.inventories(hub)
+	local log = storage.manager.collect_log
+	log.ids[#log.ids + 1] = 21
+	snap.tick = 20
+	game.tick = 21
+	local rows = stations_tab.query(pd)
+	assert_eq(row_ids(rows), { "1@0", "2@0", "3@0", "21@0", "21@1", "21@2", "4@0", "5@0", "6@0", "7@0", "8@0", "9@0",
+		"20@0", "20@1", "20@2" })
+	assert_eq(pd.stations_query.sort_kind, "merged")
 end)
 
-test("strip: a plain station keeps today's ungrouped strip and keys", function()
-	local stations_tab = setup()
-	local defs = stations_tab.pr_slots(plain(), nil, 12)
-	assert_eq(slot_ids(defs), { "coal", "copper-plate", "iron-plate" })
-	assert_eq(stations_tab.slot_key(defs[1]), "coal")
+test("query: the Problems view lists a station once, on its station combinator's row", function()
+	local stations_tab, _, snap = setup_rows()
+	snap.stations[20].lint = 8
+	local pd = {}
+	stations_tab.set_chip(pd, "problems")
+	assert_eq(row_ids((stations_tab.query(pd))), { "20@0" })
 end)
 
-test("sort keys: Provided / requested counts items per section; Network sorts by the mask union", function()
-	local stations_tab = setup()
+test("query: under a filter that drops the station combinator's row, the Problems view lists the first kept row", function()
+	local stations_tab, _, snap = setup_rows()
+	snap.stations[20].lint = 8
+	snap.stations[21].lint = 8
+	local pd = { search_network_name = "signal-A", search_network_mask = 2 }
+	stations_tab.set_chip(pd, "problems")
+	local rows, counts = stations_tab.query(pd)
+	assert_eq(counts.problems, 2)
+	assert_eq(row_ids(rows), { "21@1", "20@1" }, "Inventory 1 of each: mask 3 and mask 2 hold bit 2")
+	stations_tab, _, snap = setup_rows()
+	snap.stations[20].lint = 8
+	pd = { search_item = F.LIQUID_FUEL }
+	stations_tab.set_chip(pd, "problems")
+	rows, counts = stations_tab.query(pd)
+	assert_eq(counts.problems, 1)
+	assert_eq(row_ids(rows), { "20@1" }, "only Inventory 1 provides liquid fuel")
+end)
+
+test("network cell: each row shows its own network and mask, no badge", function()
+	local stations_tab, collector = setup_rows()
+	local rows = collector.inventories(F.naphtha(20))
+	local masks = {}
+	for i, row in ipairs(rows) do
+		local cell = stations_tab.network_cell(row)
+		masks[i] = cell.caption
+		assert_eq(cell.sprite, "virtual-signal/signal-A")
+	end
+	assert_eq(masks, { "1", "3", "4" })
+	assert_eq(stations_tab.network_cell(rows[2]).sig, "signal-A=3")
+	local unread = F.naphtha(20)
+	unread.sources[3].mask, unread.sources[3].read = nil, false
+	unread.comb_ok = true
+	unread.rows = nil
+	local cell = stations_tab.network_cell(collector.inventories(unread)[3])
+	assert_eq(cell.caption, "–")
+	assert_eq(cell.tooltip[1], "cybersyn-gui.section-paused-no-signals")
+	-- Read, but its own input is empty or the combinator is off: the station combinator is not to blame.
+	local empty = F.naphtha(20)
+	empty.sources[3].mask, empty.sources[3].read, empty.sources[3].ok = nil, true, true
+	empty.rows = nil
+	cell = stations_tab.network_cell(collector.inventories(empty)[3])
+	assert_eq(cell.caption, "–")
+	assert_eq(cell.tooltip[1], "cybersyn-gui.stations-inventory-empty-tooltip")
+	local off = F.naphtha(20)
+	off.sources[3].mask, off.sources[3].read, off.sources[3].ok = nil, true, false
+	off.rows = nil
+	local off_cell = stations_tab.network_cell(collector.inventories(off)[3])
+	assert_eq(off_cell.tooltip[1], "cybersyn-gui.stations-inventory-off-tooltip")
+	assert_true(off_cell.sig ~= cell.sig, "the reason is part of the sig")
+end)
+
+test("network cell: an inventory on a NETWORK_EACH station that advertises on no network reads –, not ×0", function()
+	local stations_tab = setup_rows()
+	local row = { st = { comb_ok = false }, kind = "inventory", index = 1, label = "Inventory 1",
+		network_name = NETWORK_EACH, src = { read = false, ok = true } }
+	local cell = stations_tab.network_cell(row)
+	assert_eq(cell.caption, "–")
+	assert_eq(cell.sprite, "virtual-signal/" .. NETWORK_EACH)
+	assert_eq(cell.tooltip[1], "cybersyn-gui.section-paused")
+	assert_nil(stations_tab.sort_keys.network(row), "it sorts with the unread rows, last")
+end)
+
+test("network cell: a NETWORK_EACH combinator reads ×N with one tooltip line per network", function()
+	local stations_tab = setup_rows()
+	local row = { st = {}, index = 0, network_name = NETWORK_EACH, networks = { ["signal-B"] = 2, ["signal-A"] = 1 } }
+	local cell = stations_tab.network_cell(row)
+	assert_eq(cell.caption, { "cybersyn-gui.network-each-count", 2 })
+	assert_eq(cell.sig, NETWORK_EACH .. "|signal-A=1,signal-B=2")
+	assert_eq(#cell.tooltip, 3)
+end)
+
+test("strip: each row shows its own provides and requests, ungrouped; deliveries sit on the station row", function()
+	local stations_tab, collector = setup_rows()
+	local n = F.naphtha(20)
+	n.deliveries = { [F.NAPHTHA_OIL] = -2000 }
+	local rows = collector.inventories(n)
+	assert_eq(slot_ids(stations_tab.pr_slots(rows[1], nil, 12)), { F.NAPHTHA_OIL })
+	assert_eq(slot_ids(stations_tab.pr_slots(rows[2], nil, 12)), { F.LIQUID_FUEL })
+	assert_eq(slot_ids(stations_tab.pr_slots(rows[3], nil, 12)), {}, "Inventory 2 holds its fuel back")
+	assert_eq(stations_tab.slot_key(stations_tab.pr_slots(rows[2], nil, 12)[1]), F.LIQUID_FUEL)
+	assert_eq(#stations_tab.dl_slots(rows[1], nil, 4), 1)
+	assert_eq(#stations_tab.dl_slots(rows[2], nil, 4), 0)
+	local sigs = stations_tab.slot_sigs(rows[2], nil, 0)
+	assert_eq(sigs.dl, "")
+	assert_true(sigs.pr ~= stations_tab.slot_sigs(rows[1], nil, 0).pr)
+	local hub = collector.inventories(F.coal_both(21))
+	assert_eq(slot_ids(stations_tab.pr_slots(hub[1], nil, 12)), { F.COAL })
+	assert_eq(slot_ids(stations_tab.pr_slots(hub[2], nil, 12)), { F.COAL })
+end)
+
+test("sort keys and wait: the row's own items, mask, priority and longest active request", function()
+	local stations_tab, collector = setup_rows()
 	local k = stations_tab.sort_keys
-	assert_eq(k.provided_requested(naphthalene()), 2)
-	assert_eq(k.provided_requested(plain()), 3)
-	assert_eq(k.network(naphthalene()), string.format("%s\0%010.0f", "signal-A", 7 + 2147483648))
+	local rows = collector.inventories(F.naphtha(20))
+	assert_eq({ k.provided_requested(rows[1]), k.provided_requested(rows[2]), k.provided_requested(rows[3]) }, { 1, 1, 0 })
+	assert_eq(k.network(rows[3]), string.format("%s\0%010.0f", "signal-A", 4 + 2147483648))
+	local hub = F.coal_both(21)
+	hub.wait = { [F.COAL] = 500 }
+	hub.longest_wait_start = 500
+	local hr = collector.inventories(hub)
+	assert_eq({ k.priority(hr[1]), k.priority(hr[2]) }, { 0, 3 })
+	assert_nil(stations_tab.row_wait_start(hr[1]), "the station combinator requests nothing")
+	assert_eq(stations_tab.row_wait_start(hr[2]), 500)
+	local p = F.plain(30, "Plain", 1, {}, { [F.COAL] = { count = -5, threshold = 1, active = true } })
+	p.longest_wait_start = 77
+	assert_eq(stations_tab.row_wait_start(collector.inventories(p)[1]), 77, "a plain station's row is the station")
 end)
 
-test("network filter: a station shows under every bit any of its sections advertises on", function()
+test("priority cell: the row's own priority; * only on the station combinator's row", function()
+	local stations_tab, collector = setup_rows()
+	local hub = F.coal_both(21)
+	hub.control2 = { [SIGNAL_PRIORITY] = 7 }
+	hub.thresholds = { [F.COAL] = 100 }
+	local rows = collector.inventories(hub)
+	local c0, c1 = stations_tab.priority_cell(rows[1]), stations_tab.priority_cell(rows[2])
+	assert_eq({ c0.caption, c1.caption }, { "0*", "3" })
+	assert_true(serpent.line(c0.tooltip):find('"cybersyn-gui.stations-priority-item", "7", "1"', 1, true) ~= nil)
+	-- An inventory row adds that its priority ranks only its provides (the planner ranks requests at the station's).
+	assert_eq(#c1.tooltip, 3)
+	assert_eq(c1.tooltip[3], { "", "\n", { "cybersyn-gui.inventory-priority-note" } })
+	assert_eq(#c0.tooltip, 3)
+	local legacy = st(30, "No sources", { priority = 3 })
+	assert_eq(stations_tab.priority_cell(collector.inventories(legacy)[1]).caption, "3")
+end)
+
+test("marker (D8-2): an inventory row names its combinator, links it and says when its request failed", function()
+	local stations_tab, collector = setup_rows()
+	local n = F.naphtha(20)
+	local rows = collector.inventories(n)
+	assert_nil(stations_tab.marker(rows[1]), "the station combinator's row has none")
+	local m = stations_tab.marker(rows[2])
+	assert_eq(m.unit, 1002)
+	assert_eq(m.def.tags.kind, "entity")
+	assert_eq(m.def.tags.id, 1002)
+	-- D8-2: muted in the list, full colour on hover.
+	assert_eq(m.def.sprite, "cybersyn-combinator-muted")
+	assert_eq(m.def.hovered_sprite, "item/" .. COMBINATOR_NAME)
+	assert_eq(m.tooltip[2], { "cybersyn-gui.stations-inventory-marker", "1", "0",
+		{ "cybersyn-gui.stations-inventory-network", "[virtual-signal=signal-A]", "3" } })
+	assert_nil(serpent.line(m.tooltip):find("relative-i-red", 1, true))
+	n.sources[2].failed = true
+	n.rows = nil
+	local failed = stations_tab.marker(collector.inventories(n)[2])
+	assert_true(serpent.line(failed.tooltip):find("relative-i-red", 1, true) ~= nil)
+	assert_true(failed.sig ~= m.sig)
+	local empty = F.naphtha(20)
+	empty.sources[3].mask, empty.sources[3].read, empty.sources[3].ok = nil, true, true
+	empty.rows = nil
+	local e = stations_tab.marker(collector.inventories(empty)[3])
+	assert_eq(e.tooltip[2][4], { "cybersyn-gui.stations-inventory-empty" }, "read, with an empty input: not 'not read'")
+	local paused = F.naphtha(20)
+	paused.sources[3].mask, paused.sources[3].read = nil, false
+	paused.rows = nil
+	local pz = stations_tab.marker(collector.inventories(paused)[3])
+	assert_eq(pz.tooltip[2][4], { "cybersyn-gui.stations-inventory-unread" })
+	assert_true(pz.sig ~= e.sig)
+end)
+
+test("network filter: a station shows under every bit any of its rows advertises on", function()
 	local u = H.load("scripts.gui.util")
-	local n = naphthalene()
+	local n = F.naphtha(20)
 	local f = { mask = 4, network = "signal-A" }
 	assert_true(u.station_passes(n, f), "bit 3 comes from Inventory 2")
 	f.mask = 2
@@ -555,7 +715,10 @@ test("network filter: a station shows under every bit any of its sections advert
 	f.mask = -1
 	assert_false(u.station_passes(n, f))
 	assert_true(u.station_passes(n, { mask = 4 }), "mask only")
-	local p = plain()
-	p.mask_union = nil
-	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without a union reads its own mask")
+	assert_true(u.row_passes(n.rows[3], { mask = 4 }))
+	assert_false(u.row_passes(n.rows[1], { mask = 4 }), "the station combinator's row is on bit 1 only")
+	assert_false(u.station_passes(n, { mask = 4, station = 21 }), "the station chip names another station")
+	assert_true(u.station_passes(n, { mask = 4, station = 20 }))
+	local p = st(21, "Circuit Requestor", { network_mask = 3 })
+	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without rows reads its own mask")
 end)
