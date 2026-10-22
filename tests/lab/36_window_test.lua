@@ -630,9 +630,9 @@ lab.suite("36_window", {
 	end,
 
 	-- E and Escape (on_gui_closed of an unpinned window): with the search field open, focused or not, they cancel the
-	-- search and the window stays holding player.opened, as the game's own search boxes do; with the drill-down open
-	-- they close the drill-down first; otherwise one press closes the window. on_gui_closed is the engine's own, raised
-	-- by setting player.opened to nil.
+	-- search and the window stays holding player.opened, as the game's own search boxes do; otherwise one press closes
+	-- the window, the item drill-down included (PLAN8 D8-6: it is the Inventory under the item filter, no overlay).
+	-- on_gui_closed is the engine's own, raised by setting player.opened to nil.
 	function(ctx)
 		local player = game.get_player(pi)
 		local function window() return player.gui.screen.manager_window end
@@ -688,10 +688,7 @@ lab.suite("36_window", {
 		if not lab.check("an unserved row exists for the drill-down", row ~= nil) then return end
 		remote.call(D, "open_item", pi, row.item)
 		lab.check("drill-down open", remote.call(D, "item_dump", pi).open == true)
-		player.opened = nil
-		lab.check("on_gui_closed with the drill-down open closes the drill-down; the window stays and holds player.opened",
-			not remote.call(D, "item_dump", pi).open and remote.call(D, "state", pi).is_open and player.opened == window())
-		closes("then one on_gui_closed closes the window (drill-down)")
+		closes("with the drill-down open, one on_gui_closed closes the window (D8-6: no overlay)")
 		remote.call(D, "close", pi)
 		remote.call(D, "clear_filters", pi)
 		remote.call(D, "open", pi)

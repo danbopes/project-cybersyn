@@ -251,8 +251,8 @@ lab.suite("39_station_chip", {
 		dev("clear_filters", PI)
 	end,
 
-	-- The stop panel's item slots: an advertised (requested) slot sets item drill-down + chip; an in-flight slot
-	-- lands on Trains with item + chip, from a closed window.
+	-- The stop panel's item slots: an advertised (requested) slot lands on the Inventory's drill-down with the chip; an
+	-- in-flight slot lands on Trains with item + chip, from a closed window.
 	function(ctx)
 		if not ctx.s then return end
 		local s = ctx.s
@@ -264,12 +264,13 @@ lab.suite("39_station_chip", {
 		dev("relative_open", PI, "stop", s)
 		local r = dev("relative_click", PI, { kind = "item", id = req, station = s })
 		local st1, item = dev("state", PI), dev("item_dump", PI)
-		lab.check("Requested slot: the window opens on the item's drill-down with the chip on the stop", st1.is_open
-			and st1.filters.station == s and item.open and item.hash == req, { r = r, state = st1.filters, item = item })
+		lab.check("Requested slot: the window opens on the Inventory's drill-down of the item with the chip on the stop",
+			st1.is_open and st1.selected_tab == "inventory_tab" and st1.filters.station == s and item.open and item.hash == req,
+			{ r = r, state = st1.filters, item = item })
 		local only_s = #(item.row_keys and item.row_keys.requesters or {}) > 0
 		for _, t in ipairs({ "providers", "requesters" }) do
 			for _, key in ipairs(item.row_keys and item.row_keys[t] or {}) do
-				if key ~= tostring(s) and key:sub(1, #tostring(s) + 1) ~= s .. " " then only_s = false end
+				if key:sub(1, #tostring(s) + 1) ~= s .. "@" then only_s = false end
 			end
 		end
 		lab.check("Requested slot: the drill-down's rows are the chip station's only", only_s, item.row_keys)

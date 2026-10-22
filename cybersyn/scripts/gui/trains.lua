@@ -2402,11 +2402,11 @@ function trains_tab.handle.on_pane_close(player, player_data)
 	util.rerender(player, player_data)
 end
 
---- Whether the detail pane shows: a train selected on the Trains tab, no drill-down over it (manager.top_overlay).
+--- Whether the detail pane shows: a train selected on the Trains tab.
 --- @param player_data PlayerData
 --- @return boolean
 function trains_tab.pane_shown(player_data)
-	if not (player_data.selected_train and player_data.selected_tab == TAB) or player_data.item_view then return false end
+	if not (player_data.selected_train and player_data.selected_tab == TAB) then return false end
 	local pane = player_data.refs and player_data.refs[PANE]
 	return pane ~= nil and pane.valid and pane.visible
 end
@@ -2416,8 +2416,7 @@ end
 --- @return uint? train the train that was selected, nil when no pane showed
 function trains_tab.close_pane(player_data)
 	local id = player_data.selected_train
-	-- Under the item drill-down the pane is hidden; Escape belongs to the drill-down then.
-	if not (id and player_data.selected_tab == TAB) or player_data.item_view then return nil end
+	if not (id and player_data.selected_tab == TAB) then return nil end
 	local pane = player_data.refs and player_data.refs[PANE]
 	if not (pane and pane.valid and pane.visible) then return nil end
 	trains_tab.select(player_data, nil)

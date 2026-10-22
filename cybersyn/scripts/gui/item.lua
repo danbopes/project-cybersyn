@@ -1,8 +1,10 @@
--- Per-item drill-down (PLAN3 §4.10): a left-click on any item cell replaces the active tab's content with one item's
--- providers, requesters (in the dispatcher's order, B2) and trains; the tab strip stays and the back button in the
--- drill-down's subheader returns to the tab that opened it. Everything comes from the collector's snapshot plus the
--- diagnostics' unserved entries; the model (scripts/gui/item-model.lua) is rebuilt only when the snapshot pass or the
--- item changes, and the rows are synced with sig guards, so a steady update writes nothing.
+-- Per-item drill-down (PLAN3 §4.10, PLAN8 D8-6): the Inventory tab shows one item's providers, requesters (in the
+-- dispatcher's order, B2) and trains whenever the item filter is set, in place of its grids. A left-click on any item
+-- cell sets the filter and selects the Inventory; the back button in the drill-down's subheader (like the filter
+-- chip's x) clears the filter, and the grids return. Other tabs keep applying the filter to their own rows. Everything
+-- comes from the collector's snapshot plus the diagnostics' unserved entries; the model (scripts/gui/item-model.lua)
+-- is rebuilt only when the snapshot pass, the filters or the item change, and the rows are synced with sig guards, so
+-- a steady update writes nothing.
 
 local gui = require("__flib__.gui")
 local format = require("__flib__.format")
@@ -13,16 +15,12 @@ local dev = require("scripts.gui.dev")
 local diag = require("scripts.diag")
 local pm = require("scripts.gui.problems-model")
 local text = require("scripts.gui.unserved-text")
-local rtext = require("scripts.gui.relative-text")
 local name_cell = require("scripts.gui.name-cell")
 local logic = require("scripts.gui.tab-logic")
 local item_model = require("scripts.gui.item-model")
 
 --- @class ItemView
---- @field hash string
---- @field from_tab string the tab the drill-down was opened from; back returns there
---- @field host string the tab whose content it replaces (from_tab, or the Inventory when that tab has no content frame)
---- @field hidden int[] indices of the host content's children it hid, shown again on close
+--- @field hash string the item it shows (the item filter it was built for)
 
 --- @class ItemCache
 --- @field hash string
@@ -35,7 +33,7 @@ local item_model = require("scripts.gui.item-model")
 --- @field header_sig string?
 
 --- @class PlayerData
---- @field item_view ItemView? the open drill-down
+--- @field item_view ItemView? the drill-down's elements exist in the Inventory's content
 --- @field item_cache ItemCache? its model and render caches; dropped on close
 --- @field delivered_items {minute: int, by_period: {[int]: {[string]: int}}}? util.delivered_items' per-minute cache
 
@@ -74,25 +72,8 @@ local FULL_CHECK = 200
 -- Wait clocks below the viewport written per update, in turn.
 local CLOCK_ROWS = 6
 
--- The content element of every tab that can host the drill-down (manager.lua sizes them).
-item.CONTENT_FRAMES = {
-	overview_tab = "manager_overview_content_frame",
-	inventory_tab = "manager_inventory_content_frame",
-	stations_tab = "manager_stations_content_frame",
-	trains_tab = "manager_trains_tab_content_frame",
-	log_tab = "manager_log_content_frame",
-}
-
--- The tab captions, for the back button's tooltip.
-local TAB_CAPTION = {
-	overview_tab = "cybersyn-gui.overview",
-	inventory_tab = "cybersyn-gui.inventory",
-	stations_tab = "cybersyn-gui.stations",
-	trains_tab = "cybersyn-gui.trains",
-	log_tab = "cybersyn-gui.log",
-	utilization_tab = "cybersyn-gui.utilization-tab",
-	delivery_breakdown_tab = "cybersyn-gui.delivery-breakdown-tab",
-}
+-- The Inventory's content, which the drill-down takes over (manager.lua sizes it).
+local HOST_CONTENT = "manager_inventory_content_frame"
 
 --- The reason or queue state is plain coloured text (nothing happens on a click): the chip style's colour as a label.
 --- @param chip_style string? cybersyn_chip_red|orange|grey|acked
@@ -104,14 +85,15 @@ end
 local STATUS_COLOR, status_key = logic.STATUS_COLOR, logic.status_key
 
 -- Logical px; the station / destination column of each table takes what is left of the content width.
--- A row of a station with sections names its section after the station's name ("[A] 3 · Inventory 1"), at most
--- this wide; a plain station's row has no tag and keeps the whole column for its name.
+-- A row of a station with secondary inventories names its inventory after the station's name ("Inventory 2  [A]2",
+-- the station combinator's row "[A]1"), at most this wide; a station with one row has no tag and keeps the whole
+-- column for its name.
 local TAG_W = 120
 local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train = 72, train_status = 150 }
 local FRAME_BORDER = 4
 local TABLE_PADDING = 4 + 10
 local TABLE_SPACING = 8
--- Stations and Trains host the drill-down inside a deep frame, whose border takes a few px of the content width.
+-- Slack kept from when Stations and Trains hosted the drill-down inside a deep frame: the columns keep their widths.
 local HOST_INSET = 8
 
 --- @class ItemColumn
@@ -233,6 +215,7 @@ local function section_def(t, flex)
 					visible = false,
 					{
 						type = "label",
+						name = "item_" .. t .. "_empty_label",
 						style = "cybersyn_overview_empty_label",
 						caption = { "cybersyn-gui.item-empty-" .. t },
 					},
@@ -242,9 +225,8 @@ local function section_def(t, flex)
 	}
 end
 
---- @param from_tab string
 --- @param layout ManagerLayout
-local function view_def(from_tab, layout)
+local function view_def(layout)
 	local flex = flex_widths(layout.content_width)
 	local total = function(name)
 		return { type = "label", name = "item_total_" .. name, style = "cybersyn_item_total", caption = "" }
@@ -263,7 +245,7 @@ local function view_def(from_tab, layout)
 				name = "item_back_button",
 				style = "tool_button",
 				sprite = "flib_nav_backward_black",
-				tooltip = { "cybersyn-gui.item-back-tooltip", { TAB_CAPTION[from_tab] or "cybersyn-gui.overview" } },
+				tooltip = { "cybersyn-gui.item-back-clear-tooltip" },
 				handler = { [defines.events.on_gui_click] = item.handle.item_back },
 			},
 			{
@@ -275,6 +257,31 @@ local function view_def(from_tab, layout)
 				handler = { [defines.events.on_gui_click] = util.handle.link_click },
 			},
 			{ type = "label", name = "item_name", style = "subheader_caption_label", caption = "" },
+			-- The station chip (D8-7) as the tab subheader shows it: the drill-down's subheader takes that one's place.
+			{
+				type = "flow",
+				name = "item_station_chip_flow",
+				direction = "horizontal",
+				visible = false,
+				style_mods = { horizontal_spacing = 0, vertical_align = "center", left_margin = 8 },
+				{
+					type = "sprite-button",
+					name = "item_station_chip_icon",
+					style = "cybersyn_item_chip_icon",
+					sprite = "item/train-stop",
+					tags = { chip = "station" },
+					mouse_button_filter = { "left", "right" },
+					handler = { [defines.events.on_gui_click] = item.handle.item_station_chip },
+				},
+				{
+					type = "button",
+					name = "item_station_chip",
+					style = "cybersyn_item_chip",
+					tags = { chip = "station" },
+					mouse_button_filter = { "left", "right" },
+					handler = { [defines.events.on_gui_click] = item.handle.item_station_chip },
+				},
+			},
 			{ type = "label", name = "item_collecting", style = "cybersyn_subheader_note", visible = false },
 			{ type = "empty-widget", style = "flib_horizontal_pusher" },
 			total("provided"),
@@ -291,35 +298,27 @@ end
 
 -- ---------------------------------------------------------------- open / close
 
---- The tab whose content hosts the drill-down: the tab it is opened from when that tab has a content frame.
---- @param tab string?
---- @return string
-local function host_of(tab)
-	if tab and item.CONTENT_FRAMES[tab] then return tab end
-	return "inventory_tab"
+--- The item the drill-down shows: the item filter, while it names an item that still exists.
+--- @param player_data PlayerData
+--- @return string?
+function item.filter_hash(player_data)
+	local hash = player_data.search_item
+	if hash and util.item_sprite_and_tooltip(hash) then return hash end
+	return nil
 end
 
---- Drops the drill-down's elements and render state, and shows the host tab's content again.
+--- Drops the drill-down's elements and render state; the Inventory shows its grids again on its next render
+--- (inventory_tab.set_drill_down).
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
-local function teardown(player, player_data)
+function item.close(player, player_data)
 	local view = player_data.item_view
 	local refs = player_data.refs
 	player_data.item_view = nil
 	player_data.item_cache = nil
 	if view and refs then
 		local frame = refs[VIEW]
-		-- A rebuilt window has fresh tab contents: nothing of them was hidden.
-		local same = frame ~= nil and frame.valid
-		if same then frame.destroy() end
-		local content = same and refs[item.CONTENT_FRAMES[view.host]]
-		if content and content.valid then
-			local children = content.children
-			for _, i in ipairs(view.hidden or {}) do
-				local child = children[i]
-				if child then child.visible = true end
-			end
-		end
+		if frame and frame.valid then frame.destroy() end
 	end
 	if refs then
 		for name, elem in pairs(refs) do
@@ -333,26 +332,15 @@ local function teardown(player, player_data)
 	end
 end
 
---- Closes the drill-down; with `back`, the tab it was opened from is selected again.
---- @param player LuaPlayer?
---- @param player_data PlayerData
---- @param back boolean?
-function item.close(player, player_data, back)
-	local view = player_data.item_view
-	if not view then return end
-	local from = view.from_tab
-	teardown(player, player_data)
-	if back and from then util.select_tab(player_data, from) end
-end
-
---- Opens the drill-down for `hash` in place of the selected tab's content (or switches an open one to `hash`).
---- @param player LuaPlayer
+--- Builds the drill-down's elements into the Inventory's content when they are not there, or points them at `hash`.
 --- @param player_data PlayerData
 --- @param hash string
-function item.open(player, player_data, hash)
-	if not util.item_sprite_and_tooltip(hash) then return end
+--- @return boolean ready
+local function ensure_view(player_data, hash)
+	local refs = player_data.refs
 	local view = player_data.item_view
-	if view and view.host == player_data.selected_tab and player_data.refs[VIEW] and player_data.refs[VIEW].valid then
+	local frame = refs[VIEW]
+	if view and frame and frame.valid then
 		if view.hash ~= hash then
 			view.hash = hash
 			player_data.item_cache = nil
@@ -360,32 +348,20 @@ function item.open(player, player_data, hash)
 			local states = player_data.gui_state
 			if states then
 				for _, t in ipairs(item_model.TABLES) do
-					local s = states[table_name(t)]
-					if s then s.sigs, s.cells = nil, nil end
+					local st = states[table_name(t)]
+					if st then st.sigs, st.cells = nil, nil end
 				end
 			end
 		end
-		return
+		return true
 	end
-	item.close(player, player_data)
-	local refs = player_data.refs
+	item.close(nil, player_data)
 	local layout = player_data.layout
-	if not layout then return end
-	local from = player_data.selected_tab or "overview_tab"
-	local host = host_of(from)
-	if host ~= from then util.select_tab(player_data, host) end
-	local content = refs[item.CONTENT_FRAMES[host]]
-	if not (content and content.valid) then return end
-	local hidden = {}
-	for i, child in ipairs(content.children) do
-		if child.name ~= host .. "_banner" and child.visible then
-			child.visible = false
-			hidden[#hidden + 1] = i
-		end
-	end
-	gui.add(content, view_def(from, layout), refs)
-	view = { hash = hash, from_tab = from, host = host, hidden = hidden }
-	player_data.item_view = view
+	local content = refs[HOST_CONTENT]
+	if not (layout and content and content.valid) then return false end
+	gui.add(content, view_def(layout), refs)
+	player_data.item_view = { hash = hash }
+	return true
 end
 
 -- ---------------------------------------------------------------- render
@@ -412,26 +388,59 @@ local function tag_def(v, scope)
 	}, scope)
 end
 
---- What the row's network texts depend on: the station's network, or for a station with sections the row's section
---- and its sources. Cheap: rows are signed every update, their texts built only when this changes.
+--- A network as rich text: its icon (its name when no prototype has it).
+--- @param name string
+--- @return string
+local function network_icon(name)
+	if prototypes.virtual_signal[name] then return "[virtual-signal=" .. name .. "]" end
+	if prototypes.item[name] then return "[item=" .. name .. "]" end
+	if prototypes.fluid[name] then return "[fluid=" .. name .. "]" end
+	return name .. " "
+end
+
+--- An inventory row's network as the Stations tab's Network cell shows it: icon and mask ("[A]2"), or for an
+--- each-network row the each icon and how many networks it is on ("×3"). Nil for a row on no network.
+--- @param row SnapshotInventory
+--- @return string?
+local function row_network_label(row)
+	local name = row.network_name
+	if not name then return nil end
+	if name == NETWORK_EACH then
+		local n = 0
+		for _ in pairs(row.networks or {}) do n = n + 1 end
+		return network_icon(name) .. "×" .. n
+	end
+	return network_icon(name) .. (row.mask and tostring(row.mask) or "")
+end
+
+--- What the row's network texts depend on: the station's network, or for a station with several inventory rows the
+--- row's own network, mask, inventory and priority. Cheap: rows are signed every update, their texts built only when
+--- this changes.
 --- @param r ItemProviderRow|ItemRequesterRow
 --- @param st SnapshotStation?
 --- @return string
 local function network_sig(r, st)
-	local sec = r.section
-	if not sec then return tostring(st and st.network_name) end
-	return rtext.section_sig(sec)
+	local row = r.row
+	if not (r.multi and row) then return tostring(st and st.network_name) end
+	return table.concat({ r.key, tostring(row.network_name), row_network_label(row) or "", tostring(row.index),
+		tostring(r.priority) }, "/")
 end
 
---- The network a row names: its section's for a station with sections, else the station's (as before sections).
+--- The network a row names: the station's for a station with one inventory row (as before rows), else the row's own,
+--- with its inventory ("Inventory 2") in the row's short tag.
 --- @param r ItemProviderRow|ItemRequesterRow
 --- @param st SnapshotStation?
 --- @return LocalisedString network for tooltips
---- @return LocalisedString? tag the row's short tag, nil for a plain station
+--- @return LocalisedString? tag the row's short tag, nil for a station with one row
 local function row_network(r, st)
-	local sec = r.section
-	if not sec then return network_text(st and st.network_name), nil end
-	return rtext.section_text(sec), rtext.section_label(sec)
+	local row = r.row
+	if not (r.multi and row) then return network_text(st and st.network_name), nil end
+	local net = row_network_label(row) or network_text(row.network_name)
+	-- The dispatcher's priority for this row (the model's, with the item override), not the combinator's raw signal,
+	-- so the tooltip agrees with the Priority column.
+	local tip = { "", net, " · ", row.label, " · ", { "cybersyn-gui.item-col-priority" }, " ", tostring(r.priority) }
+	if row.index == 0 then return tip, net end
+	return tip, { "", row.label, "  ", net }
 end
 
 --- One cell definition from its column and value.
@@ -608,8 +617,8 @@ local function provider_entry(r, ctx, i)
 	local status = pm.shown_status(r.status, r.id, st and st.lint, diag.is_acked)
 	local sig = table.concat({ name, r.stock, tostring(r.threshold), r.out, status }, "|")
 	local net_sig = network_sig(r, st)
-	-- A station with sections has one row per section, so the section is part of the row's identity.
-	return row_entry("providers", i, r.id .. "@" .. net_sig .. "#" .. sig, function()
+	-- A station with several inventories has one row per inventory, so the inventory is part of the row's identity.
+	return row_entry("providers", i, r.key .. "@" .. net_sig .. "#" .. sig, function()
 		local network, tag = row_network(r, st)
 		return {
 			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network }), tag = tag,
@@ -654,7 +663,7 @@ local function requester_entry(r, ctx, i)
 	local station_sig = table.concat({ name, r.id, tostring(r.position), r.priority, r.group, age_step, network }, "\1")
 	-- The chip's tooltip names the requester and its network, so they are part of its sig: rows are keyed by position.
 	local chip_sig = table.concat({ r.id, name, network, r.group, r.requested, e_sig, e and e.n or "" }, "\1")
-	return row_entry("requesters", i, r.id .. "@" .. network .. "#" .. sig, function()
+	return row_entry("requesters", i, r.key .. "@" .. network .. "#" .. sig, function()
 		local network_tip, tag = row_network(r, st)
 		local last = age and { "cybersyn-gui.time-ago", util.short_duration(age - age % AGE_STEP) }
 			or { "cybersyn-gui.item-last-served-never" }
@@ -789,10 +798,25 @@ local function render_header(player_data, cache)
 	local t = m.totals
 	local collecting = collector.collecting_note()
 	local percent = collecting and math.floor(collecting * 100) or -1
+	local station = player_data.search_station
+	local station_record = station and storage.stations[station]
+	local stop = station_record and station_record.entity_stop
+	local station_name = stop and stop.valid and stop.backer_name or nil
 	local sig = table.concat({ hash, t.provided, t.provided_stations, t.in_transit, t.in_transit_stations, t.requested,
-		t.requested_stations, cache.delivered, period, percent, m.filtered and 1 or 0 }, "|")
+		t.requested_stations, cache.delivered, period, percent, m.filtered and 1 or 0, station or "", station_name or "" },
+		"|")
 	if cache.header_sig == sig then return end
 	cache.header_sig = sig
+	local chip_flow = refs.item_station_chip_flow
+	if chip_flow and chip_flow.valid then
+		chip_flow.visible = station ~= nil
+		local chip = refs.item_station_chip
+		if station and chip and chip.valid then
+			chip.caption = { "cybersyn-gui.station-chip", station_name or "?", tostring(station) }
+			chip.tooltip = { "cybersyn-gui.station-chip-tooltip" }
+			refs.item_station_chip_icon.tooltip = { "cybersyn-gui.station-chip-tooltip" }
+		end
+	end
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	local icon = refs.item_icon
 	if icon and icon.valid then
@@ -850,35 +874,36 @@ local function apply_alloc(refs, alloc)
 	end
 end
 
+--- The filters the drill-down applies: every manager filter but the item (it is the item) and the station search (a
+--- query typed on another tab would hide rows invisibly): network name, network ID, surface and the station chip.
+--- @param player_data PlayerData
+--- @return ManagerFilters
+local function view_filters(player_data)
+	local f = util.get_filters(player_data)
+	f.terms, f.item = nil, nil
+	return f
+end
+
 --- @param player_data PlayerData
 --- @return ItemCache
 --- @return boolean refreshed the model was (re)built in this call: for a new collector pass, a new item or a new view
 local function get_cache(player_data, hash)
 	local snapshot = collector.get()
-	-- The drill-down is about one item and has no station search: like the Overview it leaves out the item filter and
-	-- the search terms (a query typed on another tab would hide rows invisibly), and keeps network, ID and surface.
-	local f = util.get_filters(player_data)
-	f.terms, f.item = nil, nil
-	local filtered = util.place_filters_active(f) or f.station ~= nil
+	local f = view_filters(player_data)
+	local filtered = util.filters_active(f, true)
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. util.filter_signature(f)
 	local cache = player_data.item_cache
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
-	local has_sections = collector.station_has_sections
-	-- A station with sections sits on its sections' networks, not only on the station combinator's: it passes by
-	-- surface, and each section by its own network name and ID.
-	local place = { terms = f.terms, surface = f.surface, mask = -1, station = f.station }
+	local row_passes, train_passes = util.row_passes, util.train_passes
 	local keep = filtered and {
-		station = function(st)
-			if has_sections and st.sections and has_sections(st) then return util.station_passes(st, place, true) end
-			return util.station_passes(st, f, true)
-		end,
-		train = function(tr) return util.train_passes(tr, f, true) end,
-		section = function(_, sec) return util.network_passes(sec.network_name, sec.mask, f) end,
+		row = function(row) return row_passes(row, f, true) end,
+		train = function(tr) return train_passes(tr, f, true) end,
 	} or nil
 	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
 	-- does not (the Stations tab, filtered to the item, reads those records too).
 	local log = storage.manager.collect_log
-	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep, has_sections)
+	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep, collector.inventories)
+	m.empty_suffix = util.empty_filter_suffix(f)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
 		return cache, true
@@ -888,20 +913,16 @@ local function get_cache(player_data, hash)
 	return cache, true
 end
 
---- Renders the open drill-down. False when there is none (or it just closed because another tab was selected),
---- so the selected tab renders instead.
+--- Renders the drill-down of `hash` in the Inventory's content, building its elements first when they are not there.
+--- False when it cannot (no layout or content yet), so the Inventory renders its grids instead.
 --- @param map_data MapData
 --- @param player_data PlayerData
+--- @param hash string
 --- @return boolean rendered
-function item.build(map_data, player_data)
+function item.build(map_data, player_data, hash)
+	if not ensure_view(player_data, hash) then return false end
 	local view = player_data.item_view
-	if not view then return false end
 	local refs = player_data.refs
-	local frame = refs[VIEW]
-	if player_data.selected_tab ~= view.host or not (frame and frame.valid) or not util.item_sprite_and_tooltip(view.hash) then
-		item.close(game.get_player(player_data.player_index), player_data)
-		return false
-	end
 	local profiler = storage.manager.item_samples and game.create_profiler()
 	local cache, refreshed = get_cache(player_data, view.hash)
 	local m = cache.model
@@ -1057,7 +1078,12 @@ function item.build(map_data, player_data)
 		end
 	end
 	local fold = waiting and 0 or FILL_ROWS
-	for _, p in ipairs(plan) do fold = fold - math.max(0, p.keep - p.built) end
+	for _, p in ipairs(plan) do
+		fold = fold - math.max(0, p.keep - p.built)
+		-- Every viewport first: on a short layout one table's viewport fills within the budget while another's is still
+		-- waiting for rows, and the rows nobody sees must not go before those.
+		if p.keep < p.view_n then fold = 0 end
+	end
 	for _, p in ipairs(plan) do
 		local keep, n = p.keep, p.n
 		if keep >= p.view_n and keep < n and fold > 0 then
@@ -1087,6 +1113,14 @@ function item.build(map_data, player_data)
 		local empty = refs["item_" .. t .. "_empty_flow"]
 		local show_empty = shown ~= nil and #shown == 0
 		if empty and empty.valid and empty.visible ~= show_empty then empty.visible = show_empty end
+		-- D8-8: with place filters or the station chip set, "No station provides this item" would deny stations the
+		-- filters merely hide.
+		local label = refs["item_" .. t .. "_empty_label"]
+		local suffix = m.empty_suffix or ""
+		if label and label.valid and state.empty_suffix ~= suffix then
+			state.empty_suffix = suffix
+			label.caption = { "cybersyn-gui.item-empty-" .. t .. suffix }
+		end
 		local c = refs["item_" .. t .. "_count"]
 		local capped = shown ~= nil and #shown > state.shown_n
 		local csig = shown and (state.shown_n .. "/" .. #shown) or ""
@@ -1137,27 +1171,19 @@ item.handle = {}
 
 item.wrapper = util.wrapper
 
+--- Back clears the item filter, as the filter chip's x does: the Inventory shows its grids again.
 function item.handle.item_back(player, player_data, refs, e)
-	item.close(player, player_data, true)
+	util.set_item_filter(player_data, nil)
+	util.rerender(player, player_data)
+end
+
+--- The station chip in the drill-down's subheader: any click removes it, as on the tab subheader's chip.
+function item.handle.item_station_chip(player, player_data, refs, e)
+	util.set_station_filter(player_data, nil)
 	util.rerender(player, player_data)
 end
 
 gui.add_handlers(item.handle, item.wrapper)
-
--- The shared item click (util.item_button_click): left opens the drill-down from any item cell.
-util.set_item_view({
-	open = function(player, player_data, hash)
-		-- An item cell outside the window (the stop and train panels) opens the window on the drill-down.
-		if not player_data.is_manager_open then
-			item.manager.handle.manager_open(player, player_data, player_data.refs)
-			if not player_data.is_manager_open then return end
-		end
-		item.open(player, player_data, hash)
-	end,
-	close = function(player, player_data)
-		item.close(player or game.get_player(player_data.player_index), player_data)
-	end,
-})
 
 -- ---------------------------------------------------------------- dev
 
@@ -1190,9 +1216,13 @@ local function dump(player_data)
 	local out = {
 		open = true,
 		hash = view.hash,
-		from_tab = view.from_tab,
-		host = view.host,
+		filter = player_data.search_item,
+		station = player_data.search_station,
 		selected_tab = player_data.selected_tab,
+		-- The Inventory's own children the drill-down takes the place of.
+		grids_hidden = not (refs.inventory_grids_flow and refs.inventory_grids_flow.valid and refs.inventory_grids_flow.visible),
+		station_chip = refs.item_station_chip_flow and refs.item_station_chip_flow.valid and
+			refs.item_station_chip_flow.visible and refs.item_station_chip.caption or nil,
 		alloc = cache and cache.alloc,
 		total_rows = player_data.layout and player_data.layout.rows_by_tab[TAB],
 		totals = m and m.totals,
@@ -1223,9 +1253,9 @@ local function dump(player_data)
 				or r.id
 		end
 		out.model[t] = ids
-		-- One entry per row: "id" for a plain station, "id key" for a section row (item_oracle's *_rows).
+		-- One entry per row: the inventory row's key, "id@unit" (item_oracle's *_row_keys).
 		local keys = {}
-		for i, r in ipairs(m and m[t] or {}) do keys[i] = r.key and (r.id .. " " .. r.key) or tostring(r.id) end
+		for i, r in ipairs(m and m[t] or {}) do keys[i] = r.key end
 		out.row_keys[t] = keys
 		local rows = {}
 		local tbl = refs[table_name(t)]
@@ -1284,11 +1314,13 @@ local function dump(player_data)
 		local cap = refs["item_" .. t .. "_caption"]
 		local cnt = refs["item_" .. t .. "_count"]
 		local empty = refs["item_" .. t .. "_empty_flow"]
+		local empty_label = refs["item_" .. t .. "_empty_label"]
 		out.captions[t] = {
 			caption = cap and cap.valid and cap.caption or nil,
 			tooltip = cap and cap.valid and cap.tooltip or nil,
 			count = cnt and cnt.valid and cnt.caption or nil,
 			empty = empty and empty.valid and empty.visible or false,
+			empty_caption = empty_label and empty_label.valid and empty_label.caption or nil,
 		}
 	end
 	return out
@@ -1301,23 +1333,20 @@ dev.add("open_item", function(pi, hash)
 	return dump(player_data)
 end)
 
+--- The drill-down's Back button: clears the item filter.
 dev.add("close_item", function(pi)
 	local player = game.get_player(pi)
 	local player_data = storage.manager.players[pi]
-	item.close(player, player_data, true)
-	util.rerender(player, player_data)
-	return { open = player_data.item_view ~= nil, selected_tab = player_data.selected_tab }
+	item.handle.item_back(player, player_data, player_data.refs, {})
+	return { open = player_data.item_view ~= nil, selected_tab = player_data.selected_tab, filter = player_data.search_item }
 end)
 
 --- The snapshot's own answer for `hash`, walked here without item-model: the stations that provide and request it,
 --- the trains carrying it (ids sorted) and its inventory_all entries. provider_row_keys / requester_row_keys are the
 --- inventory rows (PLAN8 D8-1, collector.inventories) advertising the item, as sorted `id@unit` keys.
---- provider_rows / requester_rows (round-8 compat: wave 2 removes them) are the round-7 rows: "id" per plain station,
---- "id key" per section of a station with sections.
 dev.add("item_oracle", function(hash)
 	local snapshot = collector.get()
 	local providers, requesters, trains = {}, {}, {}
-	local provider_rows, requester_rows = {}, {}
 	local provider_keys, requester_keys = {}, {}
 	for id, st in pairs(snapshot.stations) do
 		if st.provided[hash] then providers[#providers + 1] = id end
@@ -1326,18 +1355,7 @@ dev.add("item_oracle", function(hash)
 			if row.provided[hash] then provider_keys[#provider_keys + 1] = row.key end
 			if row.requested[hash] then requester_keys[#requester_keys + 1] = row.key end
 		end
-		if st.sections and collector.station_has_sections(st) then
-			for _, sec in ipairs(st.sections) do
-				if sec.provided[hash] then provider_rows[#provider_rows + 1] = id .. " " .. sec.key end
-				if sec.requested[hash] then requester_rows[#requester_rows + 1] = id .. " " .. sec.key end
-			end
-		else
-			if st.provided[hash] then provider_rows[#provider_rows + 1] = tostring(id) end
-			if st.requested[hash] then requester_rows[#requester_rows + 1] = tostring(id) end
-		end
 	end
-	table.sort(provider_rows)
-	table.sort(requester_rows)
 	table.sort(provider_keys)
 	table.sort(requester_keys)
 	for id, tr in pairs(snapshot.trains) do
@@ -1350,8 +1368,6 @@ dev.add("item_oracle", function(hash)
 	return {
 		providers = providers,
 		requesters = requesters,
-		provider_rows = provider_rows,
-		requester_rows = requester_rows,
 		provider_row_keys = provider_keys,
 		requester_row_keys = requester_keys,
 		trains = trains,
@@ -1404,7 +1420,8 @@ dev.add("item_profile", function(pi, n, rebuild)
 				s.sigs = nil
 			end
 		end
-		item.build(storage, player_data)
+		local hash = item.filter_hash(player_data)
+		if hash then item.build(storage, player_data, hash) end
 	end
 	total.stop()
 	total.divide(n)

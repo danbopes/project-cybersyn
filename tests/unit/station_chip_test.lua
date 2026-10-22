@@ -116,10 +116,6 @@ local function click_setup(open)
 	interface_raise_item_selected = function() end
 	storage.stations = { [12] = {} }
 	local calls = {}
-	u.set_item_view({
-		open = function(_, _, hash) calls[#calls + 1] = "drill:" .. hash end,
-		close = function() calls[#calls + 1] = "close-drill" end,
-	})
 	u.set_window_fns({
 		open = function(_, pd) calls[#calls + 1] = "open-window"; pd.is_manager_open = true end,
 		close = function(_, pd) calls[#calls + 1] = "close-window"; pd.is_manager_open = false end,
@@ -141,11 +137,22 @@ local function slot_click(u, player, pd, tags, mods)
 		or defines.mouse_button_type.left, shift = mods.shift })
 end
 
-test("an Advertised/Unserved slot sets the chip and the item's drill-down, as today", function()
-	local u, pd, calls, player = click_setup(false)
-	slot_click(u, player, pd, { station = 12 })
-	assert_eq(pd.search_station, 12)
-	assert_eq(calls, { "drill:iron-plate" })
+test("an Advertised/Unserved slot focuses the Inventory on item + chip: the item's drill-down (D8-6)", function()
+	for _, open in ipairs({ false, true }) do
+		local u, pd, calls, player = click_setup(open)
+		slot_click(u, player, pd, { station = 12 })
+		assert_eq(calls[1], "focus:inventory_tab")
+		assert_eq(#calls, 1)
+		assert_eq(calls.focus, { item = "iron-plate", station = 12 })
+	end
+end)
+
+test("shift on a stop panel slot: Stations on item + chip", function()
+	local u, pd, calls, player = click_setup(true)
+	slot_click(u, player, pd, { station = 12 }, { shift = true })
+	assert_eq(calls[1], "focus:stations_tab")
+	assert_eq(#calls, 1)
+	assert_eq(calls.focus, { item = "iron-plate", station = 12 })
 end)
 
 test("an in-flight slot focuses Trains on item + chip, revealing the groups that hold its trains", function()
@@ -169,7 +176,26 @@ test("a slot without a station leaves the chip alone; right-click clears only th
 	assert_eq(pd.search_station, 12)
 	slot_click(u, player, pd, {})
 	assert_eq(pd.search_station, 12)
-	assert_eq(calls, { "drill:iron-plate" })
+	assert_eq(pd.search_item, "iron-plate")
+	assert_eq(pd.selected_tab, "inventory_tab", "left lands on the Inventory, which shows the drill-down")
+	slot_click(u, player, pd, { id = "coal" }, { shift = true })
+	assert_eq(pd.search_item, "coal")
+	assert_eq(pd.selected_tab, "stations_tab", "shift keeps the Stations jump")
+	assert_eq(calls, {})
+end)
+
+test("a left click outside the closed window (train panel) opens it on the Inventory with the item filter", function()
+	local u, pd, calls, player = click_setup(false)
+	slot_click(u, player, pd, {})
+	assert_eq(calls, { "open-window" })
+	assert_eq(pd.search_item, "iron-plate")
+	assert_eq(pd.selected_tab, "inventory_tab")
+	assert_nil(pd.search_station)
+	-- Shift with the window closed sets the filter for Stations and leaves the window closed, as before.
+	local u2, pd2, calls2, player2 = click_setup(false)
+	slot_click(u2, player2, pd2, {}, { shift = true })
+	assert_eq(calls2, {})
+	assert_eq(pd2.selected_tab, "stations_tab")
 end)
 
 -- ---------------------------------------------------------------- D8-9
