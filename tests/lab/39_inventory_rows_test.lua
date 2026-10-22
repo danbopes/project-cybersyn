@@ -153,9 +153,18 @@ local steps = {
 			lab.check("network filter mask " .. case[1] .. (case[2] and " finds" or " skips") .. " the station",
 				contains(d.ids, id) == case[2], d.ids)
 		end
+		-- Network and item must match on one row: coal is Inventory 2's (mask 4), bit 2 only Inventory 1's. A station-wide
+		-- rule (the round-7 mask union) would find the station under mask 2 + coal too.
+		for _, case in ipairs({ { 4, true }, { 2, false } }) do
+			dev("set_filter", PI, { network = NETWORK, mask = case[1], item = "coal" })
+			dev("update", PI, 6)
+			local d = dev("dump", PI, "stations")
+			lab.check("network mask " .. case[1] .. " + coal " .. (case[2] and "finds" or "skips") .. " the station",
+				contains(d.ids, id) == case[2], d.ids)
+		end
 		dev("clear_filters", PI)
 
-		-- round-8 compat: the round-7 stop panel still reads sections; it renders for every station.
+		-- The stop panel renders for every station.
 		local ok, errors, total = 0, {}, 0
 		for sid in pairs(read("stations") or {}) do
 			total = total + 1
