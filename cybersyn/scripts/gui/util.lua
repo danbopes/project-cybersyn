@@ -1253,19 +1253,21 @@ end
 --- it); shift+left sets the filter and selects Stations; right clears the item filter. A stop panel's slot carries its
 --- station (tags.station, D8-7): the click also sets the station chip, and an in-flight slot (tags.flight) lands on the
 --- Trains tab, where the trains carrying it to or from that station are; shift there keeps the tab and leaves the
---- chip off, so the view covers every stop.
+--- chip off, so the view covers every stop, and right does nothing, as the panel shows no filter.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
 --- @param hash string
 function util.item_button_click(player, player_data, e, hash)
+	local tags = e.element and e.element.tags
+	local station = tags and tags.station
 	if e.button == defines.mouse_button_type.right then
+		-- A stop panel shows no filter, so its slots have nothing to clear.
+		if station then return end
 		util.set_item_filter(player_data, nil)
 	elseif e.button == defines.mouse_button_type.left then
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
-		local tags = e.element and e.element.tags
-		local station = tags and tags.station
 		if station and window_fns then
 			-- Through manager.focus: a chip, search or place filter left from earlier would hide the very station the
 			-- slot belongs to, and a closed window would otherwise open on the surface default. Shift lands on the

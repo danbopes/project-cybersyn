@@ -227,7 +227,8 @@ local function slot(hash, count, color, tooltip, station, flight)
 		tooltip = hint and { "", name_tooltip, tooltip, "\n", hint } or { "", name_tooltip, tooltip },
 		elem_tooltip = util.elem_tooltip(hash),
 		tags = { kind = "item", id = hash, station = station, flight = flight },
-		mouse_button_filter = { "left", "right" },
+		-- Right-click clears the manager's item filter, which a stop panel does not show.
+		mouse_button_filter = station and { "left" } or { "left", "right" },
 		handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		{
 			type = "label",
@@ -1222,7 +1223,7 @@ local function render_unserved(state, body, m, compact)
 						tooltip = { "cybersyn-gui.relative-slot-hint" },
 						elem_tooltip = util.elem_tooltip(r.hash),
 						tags = { kind = "item", id = r.hash, station = state.id },
-						mouse_button_filter = { "left", "right" },
+						mouse_button_filter = { "left" },
 						handler = { [defines.events.on_gui_click] = util.handle.link_click },
 					} or label(r.hash),
 					{
