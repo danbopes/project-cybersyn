@@ -383,11 +383,11 @@ lab.suite("39_relative", {
 		lab.check("paused banner shown while the dispatcher is off, gone after", paused.banner ~= nil and
 			resumed.banner == nil, { paused.banner, resumed.banner })
 
-		-- Open in manager: Stations tab searching this stop.
+		-- Open in manager: Stations tab with the station chip on this stop (PLAN8 D8-7; it searched the name before).
 		dev("relative_click", PI, "open_manager")
 		local state = dev("state", PI)
-		lab.check("Open in manager: Stations tab, searching the stop's name", state.is_open and
-			state.selected_tab == "stations_tab" and state.filters.terms ~= nil, state)
+		lab.check("Open in manager: Stations tab, station chip on the stop, no search", state.is_open and
+			state.selected_tab == "stations_tab" and state.filters.station == r and state.filters.terms == nil, state)
 		local keys = dev("dump", PI, "stations")
 		lab.check("Open in manager: the stop is listed", serpent.line(keys):find(tostring(r), 1, true) ~= nil)
 		dev("close", PI)

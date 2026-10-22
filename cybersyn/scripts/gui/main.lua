@@ -165,6 +165,7 @@ local function init_player_fields(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
+	util.valid_station_filter(player_data)
 	if player_data.search_query and not player_data.search_terms then
 		util.set_search_query(player_data, player_data.search_query)
 	end

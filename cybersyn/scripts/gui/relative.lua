@@ -213,7 +213,9 @@ local function stop_link(kind, id, max_width)
 	}
 end
 
-local function slot(hash, count, color, tooltip)
+--- @param station uint? the stop panel's station: a click also sets the station chip (D8-7)
+--- @param flight true? an in-flight slot: the click lands on the Trains tab
+local function slot(hash, count, color, tooltip, station, flight)
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	if not sprite then return nil end
 	return {
@@ -223,7 +225,7 @@ local function slot(hash, count, color, tooltip)
 		style = "ltnm_small_slot_button_" .. color,
 		tooltip = { "", name_tooltip, tooltip },
 		elem_tooltip = util.elem_tooltip(hash),
-		tags = { kind = "item", id = hash },
+		tags = { kind = "item", id = hash, station = station, flight = flight },
 		mouse_button_filter = { "left", "right" },
 		handler = { [defines.events.on_gui_click] = util.handle.link_click },
 		{
@@ -1000,7 +1002,7 @@ local function section_block(out, st, sec, starved, reason)
 	for _, hash in ipairs(util.hashes_in_item_order(sec.provided)) do
 		local count = sec.provided[hash]
 		provided[#provided + 1] = slot(hash, count, "green",
-			{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(count) } })
+			{ "", " ", { "cybersyn-gui.provided" }, "\n", { "cybersyn-gui.amount", format.number(count) } }, st.id)
 	end
 	out[#out + 1] = list_row("cybersyn-gui.section-provided", provided)
 
@@ -1018,7 +1020,7 @@ local function section_block(out, st, sec, starved, reason)
 			tip[#tip + 1] = { "cybersyn-gui.section-starved" }
 			tip[#tip + 1] = "[/color]"
 		end
-		requested[#requested + 1] = slot(hash, req.count, req.active and "red" or "orange", tip)
+		requested[#requested + 1] = slot(hash, req.count, req.active and "red" or "orange", tip, st.id)
 	end
 	out[#out + 1] = list_row("cybersyn-gui.section-requested", requested)
 	if below then out[#out + 1] = note({ "cybersyn-gui.section-below-threshold" }) end
@@ -1156,7 +1158,7 @@ local function render_unserved(state, body, m, compact)
 						sprite = sprite,
 						quality = quality,
 						elem_tooltip = util.elem_tooltip(r.hash),
-						tags = { kind = "item", id = r.hash },
+						tags = { kind = "item", id = r.hash, station = state.id },
 						mouse_button_filter = { "left", "right" },
 						handler = { [defines.events.on_gui_click] = util.handle.link_click },
 					} or label(r.hash),
@@ -1218,7 +1220,7 @@ local function render_deliveries(state, body, m)
 				slots[#slots + 1] = slot(hash, count, count > 0 and "green" or "blue", {
 					"", " ", count > 0 and { "cybersyn-gui.incoming" } or { "cybersyn-gui.outgoing" },
 					"\n", { "cybersyn-gui.amount", format.number(count) },
-				})
+				}, st.id, true)
 			end
 			if total == 0 then return nil end
 			for _, def in ipairs(slot_table(slots, total)) do out[#out + 1] = def end
@@ -2592,8 +2594,9 @@ function relative.handle.relative_toggle_effective(player, pd)
 	rerender(player, pd)
 end
 
---- Opens the manager on the Stations tab searching for this stop (a depot or refueler: the Trains tab searching its
---- name), or on the Trains tab searching "#<id>" for a train; manager.focus clears everything else that could hide it.
+--- Opens the manager on the Stations tab with the station chip on this stop (D8-7: by id, so a name that is a
+--- substring of other names, "R", shows only this stop; a depot or refueler: the Trains tab searching its name), or on
+--- the Trains tab searching "#<id>" for a train; manager.focus clears everything else that could hide it.
 --- @param player LuaPlayer
 --- @param pd PlayerData
 function relative.open_manager(player, pd, state)
@@ -2608,7 +2611,7 @@ function relative.open_manager(player, pd, state)
 	local name = stop_name(kind, state.id)
 	if not name then return end
 	if station then
-		manager.focus(player, pd, "stations_tab", { query = name })
+		manager.focus(player, pd, "stations_tab", { station = state.id })
 	else
 		manager.focus(player, pd, "trains_tab", { query = name,
 			reveal = { group = kind == "depot" and name or trains_tab.REFUELERS } })
@@ -2922,17 +2925,31 @@ function dev_fns.relative_toggle_effective(pi)
 end
 
 --- Clicks a button of the open panel by its element name ("open_manager", "comb1", "locate", ...), or the first link
---- or slot whose tags match `name` when it is a table ({kind = "item", id = hash}: the unnamed item slots).
-function dev_fns.relative_click(pi, name)
+--- or slot whose tags hold every field of `name` when it is a table ({kind = "item", id = hash}: the unnamed item slots;
+--- add flight = true for an in-flight slot). `mods` = {shift, control, alt, right}; `mods.pane` clicks in the Trains
+--- detail pane's panel instead.
+function dev_fns.relative_click(pi, name, mods)
 	local player, pd = dev_context(pi)
-	local open = pd.relative_open
-	if not open then return "no panel open" end
-	local panel = mount_of(player, mount_key(open))[PANEL]
+	mods = mods or {}
+	local panel
+	if mods.pane then
+		local pane = pd.relative_pane_open
+		panel = pane and pane.panel
+		if not (panel and panel.valid) then return "no pane open" end
+	else
+		local open = pd.relative_open
+		if not open then return "no panel open" end
+		panel = mount_of(player, mount_key(open))[PANEL]
+	end
 	local by_tags = type(name) == "table"
 	local function find(elem)
 		if by_tags then
 			local tags = elem.tags
-			if tags and tags.kind == name.kind and tags.id == name.id then return elem end
+			local hit = tags ~= nil
+			for k, v in pairs(name) do
+				if not hit or tags[k] ~= v then hit = false break end
+			end
+			if hit then return elem end
 		elseif elem.name == name then
 			return elem
 		end
@@ -2942,9 +2959,10 @@ function dev_fns.relative_click(pi, name)
 		end
 	end
 	local elem = find(panel)
-	if not elem then return "no element " .. tostring(name) end
+	if not elem then return "no element " .. serpent.line(name) end
 	return gui.dispatch({ name = defines.events.on_gui_click, element = elem, player_index = pi, tick = game.tick,
-		button = defines.mouse_button_type.left, shift = false, control = false, alt = false })
+		button = mods.right and defines.mouse_button_type.right or defines.mouse_button_type.left,
+		shift = mods.shift == true, control = mods.control == true, alt = mods.alt == true })
 end
 
 dev.extend(dev_fns)

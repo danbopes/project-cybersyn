@@ -576,7 +576,7 @@ function trains_tab.query(map_data, player_data)
 	local names = new_name_cache(snapshot)
 	local qsig = table.concat({
 		tostring(snapshot.trains_version), tostring(snapshot.tick), f.terms and table.concat(f.terms, " ") or "",
-		f.item or "", f.network or "", f.mask, f.surface or "", column, ascending and "+" or "-",
+		f.item or "", f.network or "", f.mask, f.surface or "", f.station or "", column, ascending and "+" or "-",
 	}, "\1")
 	local cache = player_data.trains_query
 	if not (cache and cache.sig == qsig) then

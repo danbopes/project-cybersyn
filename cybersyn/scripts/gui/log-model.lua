@@ -113,8 +113,9 @@ end
 --- @param f LogFilter
 --- @param now uint
 --- @param item int? the manager's item filter as diag's item index (-1 when diagnostics never logged that item)
+--- @param station uint? the manager's station chip (D8-7): events whose station (or station2 naming a station) is it
 --- @return LogCompiled
-function model.compile(f, now, item)
+function model.compile(f, now, item, station)
 	local kinds, alerts
 	if f.group and model.GROUPS[f.group] then
 		local group = model.GROUPS[f.group]
@@ -127,10 +128,17 @@ function model.compile(f, now, item)
 	elseif f.kind then
 		kinds = { [f.kind] = true }
 	end
-	local station, subject_train
+	local subject_train
 	local s = f.subject
 	if s then
-		if s.kind == "train" then subject_train = s.id else station = s.id end
+		if s.kind == "train" then
+			subject_train = s.id
+		elseif station and station ~= s.id then
+			-- Two different stations match nothing; 0 is no station's unit number.
+			station = 0
+		else
+			station = s.id
+		end
 	end
 	local window = model.WINDOWS[f.window or model.DEFAULT_WINDOW]
 	local sevs = { f.sev[1] == true, f.sev[2] == true, f.sev[3] == true }
@@ -143,9 +151,9 @@ function model.compile(f, now, item)
 		station = station,
 		subject_train = subject_train,
 		min_tick = window and math.max(0, now - window) or nil,
-		any = kinds ~= nil or f.train ~= nil or item ~= nil or s ~= nil,
+		any = kinds ~= nil or f.train ~= nil or item ~= nil or s ~= nil or station ~= nil,
 		sig = table.concat({ tostring(f.group), tostring(f.kind), tostring(f.train), s and s.kind or "", s and s.id or "",
-			tostring(f.window), tostring(item) }, "|"),
+			tostring(f.window), tostring(item), tostring(station) }, "|"),
 		sev_sig = (sevs[1] and "e" or "") .. (sevs[2] and "w" or "") .. (sevs[3] and "i" or ""),
 	}
 end

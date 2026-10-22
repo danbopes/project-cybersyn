@@ -379,7 +379,7 @@ function interface.select_tab(pi, tab)
 	return pd.selected_tab
 end
 
---- Keys present in `f` are applied; pass false to clear one. item is an item hash.
+--- Keys present in `f` are applied; pass false to clear one. item is an item hash, station a station id.
 function interface.set_filter(pi, f)
 	local player, pd = context(pi)
 	f = f or {}
@@ -388,10 +388,30 @@ function interface.set_filter(pi, f)
 	if f.network ~= nil then pd.search_network_name = f.network or nil end
 	if f.mask ~= nil then pd.search_network_mask = f.mask or -1 end
 	if f.surface ~= nil then pd.search_surface_idx = f.surface or nil end
+	if f.station ~= nil then util.set_station_filter(pd, f.station or nil) end
 	util.reset_pages(pd)
 	manager.restore_filter_widgets(pd)
 	render(player, pd)
 	return util.get_filters(pd)
+end
+
+--- The item and station chips of every tab header: shown, caption and tooltip (PLAN8 D8-7).
+function interface.chips(pi)
+	local _, pd, refs = context(pi)
+	local out = {}
+	for _, tab in ipairs({ "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab", "utilization_tab",
+		"delivery_breakdown_tab" }) do
+		local item, station = refs[tab .. "_chip_flow"], refs[tab .. "_station_chip_flow"]
+		local chip = refs[tab .. "_station_chip"]
+		out[tab] = {
+			exists = station ~= nil and station.valid,
+			item = item and item.valid and item.visible or false,
+			station = station and station.valid and station.visible or false,
+			caption = chip and chip.valid and chip.caption or nil,
+			tooltip = chip and chip.valid and chip.tooltip or nil,
+		}
+	end
+	return out
 end
 
 function interface.clear_filters(pi)
