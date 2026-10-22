@@ -203,6 +203,22 @@ function inventory_tab.apply_layout(player_data, layout)
 	end
 end
 
+--- Gives the tab's content to the item drill-down (D8-6), which item.lua adds to the same content frame with a subheader
+--- of its own, or takes it back: the tab's subheader, empty note and grids hide while an item filter is set. Back, the
+--- grids show and the next render's empty check decides between them and the note.
+--- @param player_data PlayerData
+--- @param drill boolean
+function inventory_tab.set_drill_down(player_data, drill)
+	local state = util.gui_state(player_data, "inventory_drill_down")
+	if state.drill == drill then return end
+	state.drill = drill
+	local refs = player_data.refs
+	for _, name in ipairs({ TAB .. "_subheader", "inventory_empty_flow", "inventory_grids_flow" }) do
+		local elem = refs[name]
+		if elem and elem.valid then elem.visible = not drill and name ~= "inventory_empty_flow" end
+	end
+end
+
 --- Whole slot rows a grid shows, measured from the elements rather than taken from the layout: the space the tab
 --- content leaves below the grid header (content height less the visible strips above the grids, the gap and the
 --- grid header, each as its element's style says), against the pane's height. A pane taller than that space, or
@@ -438,8 +454,8 @@ local function aggregate_with_top(snapshot, f)
 end
 inventory_tab._aggregate = aggregate_with_top
 
---- Not util.filter_signature: the item filter only highlights a button here (the aggregate passes ignore_item), so
---- picking an item must not re-aggregate.
+--- Not util.filter_signature: the grids never apply the item filter (with one set the tab shows the item's drill-down
+--- instead, D8-6), so picking an item must not re-aggregate.
 --- @param f ManagerFilters
 local function filter_signature(f)
 	return (f.terms and table.concat(f.terms, " ") or "") .. "|" .. (f.network or "") .. "|" .. f.mask .. "|" .. (f.surface or "")
@@ -741,7 +757,6 @@ local COLOR_CODE = { green = 1, blue = 2, red = 3, orange = 4, pink = 5, grey = 
 --- @param scope string hover scope (the grid's table name)
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
---- @param selected string? item filter hash, highlighted rather than hidden
 --- @param budget {n: integer}? shared by the grids of one render; nil = unlimited
 --- @return table ctx
 --- @return table[] entries
@@ -764,20 +779,11 @@ local function unrequested_of(cache, snapshot, f)
 	return set
 end
 
-local function build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget, delivered, dim)
+local function build_entries(cache, grid, scope, snapshot, f, column, ascending, now, budget, delivered, dim)
 	local inv = cache.inv
 	local bucket = inv[grid]
 	local top_bucket = cache.top[grid]
 	local hashes = ordered_hashes(cache, grid, column, ascending)
-	-- On a large base the filtered item is usually far down a grid, where its highlight would go unseen, so it
-	-- leads every grid it is in. The cached order is shared, so this works on a copy.
-	if selected and bucket[selected] then
-		local pinned = { selected }
-		for _, hash in ipairs(hashes) do
-			if hash ~= selected then pinned[#pinned + 1] = hash end
-		end
-		hashes = pinned
-	end
 	local is_requested = grid == "requested"
 	local base_color = grid == "provided" and "green" or "blue"
 	local ctx = {
@@ -810,10 +816,9 @@ local function build_entries(cache, grid, scope, snapshot, f, column, ascending,
 			color = base_color
 		end
 		local sent = delivered and delivered[hash] or 0
-		local is_selected = hash == selected
-		local style = (is_selected and "flib_selected_slot_button_" or "flib_slot_button_") .. color
+		local style = "flib_slot_button_" .. color
 		-- Content-based rather than version-based, so a completed pass only touches the items whose numbers moved.
-		local sig = mix(mix(mix(agg.count % DIGEST_MOD, agg.stations), COLOR_CODE[color] * 2 + (is_selected and 1 or 0)), sig_extra or 0)
+		local sig = mix(mix(mix(agg.count % DIGEST_MOD, agg.stations), COLOR_CODE[color] * 2), sig_extra or 0)
 		sig = mix(mix_top(sig, top_bucket[hash]), sent % DIGEST_MOD)
 		entries[i] = { key = hash, sig = sig, agg = agg, style = style, transit = transit, starved = starved, dim = is_dim,
 			deficit = deficit, delivered = sent }
@@ -877,7 +882,8 @@ local function sync_buttons(player_data, columns)
 	if dim and dim.valid then dim.toggled = player_data.inventory_dim == true end
 end
 
---- The item filter highlights instead of hiding; the other filters restrict which stations are aggregated.
+--- The grids, while no item filter is set (with one the tab shows the item's drill-down, D8-6): the other filters
+--- and the station chip restrict which inventory rows are aggregated.
 ---@param map_data MapData
 ---@param player_data PlayerData
 function inventory_tab.build(map_data, player_data)
@@ -912,7 +918,6 @@ function inventory_tab.build(map_data, player_data)
 	-- window was closed are mostly reused then instead of all being built again (~20 ms for 600 items).
 	if not cache.tick then return end
 	local version = cache.version
-	local selected = f.item
 	local now = game.tick
 	local minute = math.floor(now / 3600)
 	-- Only a refresh nobody asked for is spread out; a filter or sort change shows complete numbers at once.
@@ -928,8 +933,7 @@ function inventory_tab.build(map_data, player_data)
 			local column, ascending = sorts[grid][1], sorts[grid][2]
 			-- Wait times in the requested tooltips age even when nothing else changes; delivered amounts once a minute.
 			local wait_bucket = grid == "requested" and cache.has_wait and math.floor(now / WAIT_SIG_TICKS) or ""
-			local render_sig = version .. "|" .. column .. "|" .. tostring(ascending) .. "|" .. (selected or "") .. "|"
-				.. table_elem.index .. "|" .. wait_bucket .. "|" .. minute .. "|" .. (dim and grid == "provided" and "d" or "")
+			local render_sig = version .. "|" .. column .. "|" .. tostring(ascending) .. "|" .. table_elem.index .. "|" .. wait_bucket .. "|" .. minute .. "|" .. (dim and grid == "provided" and "d" or "")
 			if state.render_sig ~= render_sig or state.dirty or not state.keys then
 				if not delivered then
 					-- Once a minute, not on each of the renders a refresh is spread over.
@@ -943,8 +947,8 @@ function inventory_tab.build(map_data, player_data)
 					ctx, entries = pending.ctx, pending.entries
 					ctx.budget, ctx.deferred, ctx.now = budget and { n = BACKGROUND_UPDATE_BUDGET } or nil, nil, now
 				else
-					ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, selected, now, budget,
-						delivered, dim)
+					ctx, entries = build_entries(cache, grid, scope, snapshot, f, column, ascending, now, budget, delivered,
+						dim)
 				end
 				local result = render_grid(player_data, grid, table_elem, state, ctx, entries)
 				state.render_sig = (result ~= "held" and not ctx.deferred) and render_sig or nil

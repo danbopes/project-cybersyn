@@ -430,6 +430,16 @@ local function search_shown(player_data)
 	return player_data.search_open == true or player_data.search_query ~= nil
 end
 
+--- Whether the selected tab shows a search field: a search tab, except the Inventory while its drill-down takes the
+--- place of its subheader (D8-6).
+--- @param player_data PlayerData
+--- @return boolean
+local function search_tab(player_data)
+	local tab = player_data.selected_tab
+	if tab == "inventory_tab" and item.filter_hash(player_data) then return false end
+	return SEARCH_TABS[tab] == true
+end
+
 --- @param player_data PlayerData
 function manager.refresh_search_fields(player_data)
 	local refs = player_data.refs
@@ -711,8 +721,15 @@ function manager.update(map_data, player_data)
 		player_data.previous_tab = current_tab
 	end
 
-	-- The drill-down replaces the selected tab's content while it is open.
-	if player_data.item_view and item.build(map_data, player_data) then return end
+	-- D8-6: the Inventory shows the item filter's drill-down in place of its grids; any other tab, or no filter, drops
+	-- the drill-down's elements.
+	local hash = current_tab == "inventory_tab" and item.filter_hash(player_data) or nil
+	if hash and item.build(map_data, player_data, hash) then
+		inventory_tab.set_drill_down(player_data, true)
+		return
+	end
+	if player_data.item_view then item.close(nil, player_data) end
+	if current_tab == "inventory_tab" then inventory_tab.set_drill_down(player_data, false) end
 
 	local builder = tab_builders[current_tab]
 	if builder then
@@ -857,13 +874,13 @@ end
 -- Escape go past it, and its overlays close by their own buttons.
 
 --- What Escape closes before the window, top first: the search field (open, focused or not, as the game's own search
---- boxes), Explain, the item drill-down, the Trains detail pane.
+--- boxes), Explain, the Trains detail pane. The item drill-down is the Inventory under the item filter (D8-6), not an
+--- overlay: Escape closes the window over it, and it shows again when the window reopens.
 --- @param player_data PlayerData
---- @return "search"|"explain"|"item"|"pane"|nil
+--- @return "search"|"explain"|"pane"|nil
 function manager.top_overlay(player_data)
-	if search_shown(player_data) and SEARCH_TABS[player_data.selected_tab] then return "search" end
+	if search_shown(player_data) and search_tab(player_data) then return "search" end
 	if player_data.explain then return "explain" end
-	if player_data.item_view then return "item" end
 	if trains_tab.pane_shown(player_data) then return "pane" end
 	return nil
 end
@@ -876,8 +893,6 @@ local function peel_overlay(player, player_data)
 		manager.cancel_search(player, player_data)
 	elseif kind == "explain" then
 		explain.close(player, player_data)
-	elseif kind == "item" then
-		item.close(player, player_data, true)
 	elseif kind == "pane" then
 		trains_tab.close_pane(player_data)
 	end
@@ -1028,9 +1043,9 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.focus_search(player, player_data)
-	-- The search field lives in the tab's subheader, which the drill-down hides.
-	item.close(player, player_data)
-	if not SEARCH_TABS[player_data.selected_tab] then
+	-- The Inventory's drill-down has no search field (it ignores the station search): the search goes to Stations,
+	-- which keeps the item filter.
+	if not search_tab(player_data) then
 		util.select_tab(player_data, "stations_tab")
 	end
 	player_data.search_open = true
@@ -1047,7 +1062,7 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_toggle_search(player, player_data, refs)
-	if search_shown(player_data) and SEARCH_TABS[player_data.selected_tab] then
+	if search_shown(player_data) and search_tab(player_data) then
 		player_data.search_open = nil
 		if player_data.search_query then
 			util.set_search_query(player_data, nil)
@@ -1093,7 +1108,7 @@ end
 --- @param player_data PlayerData
 --- @return boolean handled
 function manager.cancel_search(player, player_data)
-	if not (search_shown(player_data) and SEARCH_TABS[player_data.selected_tab]) then return false end
+	if not (search_shown(player_data) and search_tab(player_data)) then return false end
 	player_data.search_open = nil
 	util.set_search_query(player_data, nil)
 	util.reset_pages(player_data)

@@ -1682,6 +1682,8 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 		util.set_sort(player_data, "inventory_tab", "amount", false)
 		-- Every grid by amount: the grids' own sort buttons give way to the tab's sort.
 		player_data.inventory_sorts = nil
+		-- The jump is to the grids, which an item filter replaces with its drill-down (D8-6).
+		util.set_item_filter(player_data, nil)
 		util.select_tab(player_data, "inventory_tab")
 		local manager = overview_tab.manager
 		if manager then manager.refresh_sort_headers(player_data) end

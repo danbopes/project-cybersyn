@@ -18,8 +18,6 @@ util.parse_rich_name = rich_name.parse
 --- @type fun(player: LuaPlayer?): boolean
 util.may_act = require("scripts.actions").may_act
 
--- The item drill-down's open/close (scripts/gui/item.lua registers them through util.set_item_view).
-local item_view
 
 --- Create a flying text at the player's cursor with an error sound.
 --- @param player LuaPlayer
@@ -770,10 +768,6 @@ end
 --- @param text string?
 function util.set_search_query(player_data, text)
 	if text == "" then text = nil end
-	-- A new station search comes from outside the drill-down (its subheader has no search field): show the lists.
-	if text ~= player_data.search_query and player_data.item_view and item_view then
-		item_view.close(nil, player_data)
-	end
 	player_data.search_query = text
 	player_data.search_terms = util.search_terms(text)
 end
@@ -1254,15 +1248,10 @@ function util.valid_station_filter(player_data)
 	return id
 end
 
---- Lets item.lua (the drill-down) take item clicks without a require cycle.
---- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData, hash: string), close: fun(player: LuaPlayer, player_data: PlayerData)}
-function util.set_item_view(fns)
-	item_view = fns
-end
-
---- Every item cell's click, in any tab (PLAN3 §4.7, §4.10): left opens the item's drill-down, shift+left shows the
---- Stations tab filtered to the item, right clears the item filter. A stop panel's slot carries its station
---- (tags.station): a left click also sets the station chip (D8-7), and an in-flight slot (tags.flight) lands on the
+--- Every item cell's click, in any tab and panel (PLAN3 §4.7, PLAN8 D8-6): left sets the item filter and selects the
+--- Inventory, which shows the item's drill-down while the filter is set (opening the window when the cell is outside
+--- it); shift+left sets the filter and selects Stations; right clears the item filter. A stop panel's slot carries its
+--- station (tags.station, D8-7): the click also sets the station chip, and an in-flight slot (tags.flight) lands on the
 --- Trains tab, where the trains carrying it to or from that station are.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
@@ -1276,18 +1265,21 @@ function util.item_button_click(player, player_data, e, hash)
 		interface_raise_item_selected(player.index, name)
 		local tags = e.element and e.element.tags
 		local station = tags and tags.station
-		if station then util.set_station_filter(player_data, station) end
-		if station and tags.flight and window_fns then
-			-- Through manager.focus: a Trains chip, search or place filter left from earlier would hide the very trains
-			-- the slot counts, and a closed window would otherwise open on the surface default.
-			window_fns.focus(player, player_data, "trains_tab", { item = hash, station = station, reveal = { all = true } })
+		if station and window_fns then
+			-- Through manager.focus: a chip, search or place filter left from earlier would hide the very station the
+			-- slot belongs to, and a closed window would otherwise open on the surface default.
+			local tab = tags.flight and "trains_tab" or e.shift and "stations_tab" or "inventory_tab"
+			window_fns.focus(player, player_data, tab, { item = hash, station = station,
+				reveal = tags.flight and { all = true } or nil })
 			return
-		elseif e.shift or not item_view then
-			if item_view then item_view.close(player, player_data) end
-			util.set_item_filter(player_data, hash)
-			util.select_tab(player_data, "stations_tab")
-		else
-			item_view.open(player, player_data, hash)
+		end
+		util.set_item_filter(player_data, hash)
+		local tab = e.shift and "stations_tab" or "inventory_tab"
+		if not util.select_tab(player_data, tab) then player_data.selected_tab = tab end
+		if not player_data.is_manager_open then
+			-- The train panel's cells: a left click opens the window on the drill-down.
+			if not e.shift and window_fns then window_fns.open(player, player_data) end
+			return
 		end
 	else
 		return
