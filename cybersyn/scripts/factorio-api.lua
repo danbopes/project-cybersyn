@@ -920,6 +920,28 @@ function update_display(map_data, station)
 	end
 end
 
+--- Shows an inventory combinator's red I while its own request goes unserved (`station.inv_failed`), else the cyan I.
+--- A combinator showing another mode is left alone, as `update_display` leaves a station combinator alone.
+---@param map_data MapData
+---@param station Station
+---@param unit uint
+function update_inv_display(map_data, station, unit)
+	local combs = station.secondary_inv_combs
+	local comb = combs and combs[unit]
+	if comb and comb.valid then
+		local control = get_comb_control(comb)
+		local params = control.parameters
+		if is_secondary_inventory_op(params.operation) then
+			local failed = station.inv_failed
+			local op = failed and failed[unit] and MODE_SECONDARY_INVENTORY_FAILED or MODE_SECONDARY_INVENTORY
+			if params.operation ~= op then
+				params.operation = op
+				control.parameters = params
+			end
+		end
+	end
+end
+
 ---@param comb LuaEntity
 function get_comb_gui_settings(comb)
 	local params = get_comb_params(comb)
@@ -945,7 +967,7 @@ function get_comb_gui_settings(comb)
 		selected_index = 3
 	elseif op == MODE_SECONDARY_IO then
 		selected_index = 4
-	elseif op == MODE_SECONDARY_INVENTORY then
+	elseif is_secondary_inventory_op(op) then
 		selected_index = 5
 	elseif op == MODE_WAGON then
 		selected_index = 6
