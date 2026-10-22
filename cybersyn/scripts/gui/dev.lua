@@ -90,10 +90,11 @@ local function summary()
 		for _ in pairs(t) do n = n + 1 end
 		return n
 	end
-	local warming, comb_bad = 0, 0
+	local warming, comb_bad, rows = 0, 0, 0
 	for _, st in pairs(s.stations) do
 		if st.warming_up then warming = warming + 1 end
 		if not st.comb_ok then comb_bad = comb_bad + 1 end
+		rows = rows + #collector.inventories(st)
 	end
 	return {
 		tick = s.tick,
@@ -101,6 +102,7 @@ local function summary()
 		station_count = s.station_count,
 		train_count = s.train_count,
 		secondary = s.secondary_count,
+		inventory_rows = rows,
 		warming_up = warming,
 		comb_not_ok = comb_bad,
 		provided_items = count(s.inventory_all.provided),
@@ -446,6 +448,24 @@ end
 
 function interface.summary()
 	return summary()
+end
+
+--- A station's inventory rows (collector.inventories) as plain data, in row order: the contract wave-2 views and
+--- their labs compare against. nil when the snapshot has no record of `id`.
+--- @param id uint
+function interface.station_rows(id)
+	local st = collector.get().stations[id]
+	if not st then return nil end
+	local out = {}
+	for i, row in ipairs(collector.inventories(st)) do
+		out[i] = {
+			key = row.key, index = row.index, unit = row.unit, kind = row.kind, priority = row.priority, ok = row.ok,
+			read = row.read, network_name = row.network_name, mask = row.mask, networks = row.networks,
+			provided = row.provided, requested = row.requested, ignored = row.ignored, starved = row.starved,
+			label = row.label,
+		}
+	end
+	return out
 end
 
 --- Times `n` renders of the selected tab (no collection).
