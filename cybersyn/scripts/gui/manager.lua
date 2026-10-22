@@ -479,7 +479,7 @@ function manager.refresh_chips(player_data)
 	local refs = player_data.refs
 	local hash = player_data.search_item
 	if hash and not util.signal_hash_valid(hash) then hash = nil end
-	local station = player_data.search_station
+	local station = util.valid_station_filter(player_data)
 	local station_name = station and station_chip_name(station)
 	local sig = (hash or "") .. "\1" .. (station and (tostring(station) .. "\1" .. (station_name or "")) or "")
 	if player_data.chip_sig == sig then return end
@@ -738,6 +738,8 @@ end
 --- @param player_data PlayerData
 function manager.render(player, player_data)
 	if not player_data.is_manager_open then return end
+	-- A stop removed while the window is open: drop its chip before the tabs filter on a dead id.
+	util.valid_station_filter(player_data)
 	-- A filter set from outside the row (a shift-click on an item, a tile jump) opens the row before the tab renders.
 	if row_filters_active(player_data) then player_data.filter_row_open = true end
 	local row = player_data.refs.manager_filter_row
