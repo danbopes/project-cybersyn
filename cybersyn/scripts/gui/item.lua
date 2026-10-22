@@ -1310,16 +1310,22 @@ dev.add("close_item", function(pi)
 end)
 
 --- The snapshot's own answer for `hash`, walked here without item-model: the stations that provide and request it,
---- the trains carrying it (ids sorted) and its inventory_all entries. provider_rows / requester_rows are the rows
---- the drill-down should show (sorted strings): "id" per plain station, "id key" per section of a station with
---- sections (D3) that advertises the item.
+--- the trains carrying it (ids sorted) and its inventory_all entries. provider_row_keys / requester_row_keys are the
+--- inventory rows (PLAN8 D8-1, collector.inventories) advertising the item, as sorted `id@unit` keys.
+--- provider_rows / requester_rows (round-8 compat: wave 2 removes them) are the round-7 rows: "id" per plain station,
+--- "id key" per section of a station with sections.
 dev.add("item_oracle", function(hash)
 	local snapshot = collector.get()
 	local providers, requesters, trains = {}, {}, {}
 	local provider_rows, requester_rows = {}, {}
+	local provider_keys, requester_keys = {}, {}
 	for id, st in pairs(snapshot.stations) do
 		if st.provided[hash] then providers[#providers + 1] = id end
 		if st.requested[hash] then requesters[#requesters + 1] = id end
+		for _, row in ipairs(collector.inventories(st)) do
+			if row.provided[hash] then provider_keys[#provider_keys + 1] = row.key end
+			if row.requested[hash] then requester_keys[#requester_keys + 1] = row.key end
+		end
 		if st.sections and collector.station_has_sections(st) then
 			for _, sec in ipairs(st.sections) do
 				if sec.provided[hash] then provider_rows[#provider_rows + 1] = id .. " " .. sec.key end
@@ -1332,6 +1338,8 @@ dev.add("item_oracle", function(hash)
 	end
 	table.sort(provider_rows)
 	table.sort(requester_rows)
+	table.sort(provider_keys)
+	table.sort(requester_keys)
 	for id, tr in pairs(snapshot.trains) do
 		if tr.manifest_hashes[hash] then trains[#trains + 1] = id end
 	end
@@ -1344,6 +1352,8 @@ dev.add("item_oracle", function(hash)
 		requesters = requesters,
 		provider_rows = provider_rows,
 		requester_rows = requester_rows,
+		provider_row_keys = provider_keys,
+		requester_row_keys = requester_keys,
 		trains = trains,
 		provided = inv.provided[hash],
 		requested = inv.requested[hash],

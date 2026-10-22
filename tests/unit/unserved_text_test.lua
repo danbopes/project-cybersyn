@@ -122,7 +122,7 @@ end)
 
 -- Round 7 (BRIEF-SECONDARY S4): texts name the section that requests or provides the item.
 
-local SF = require("section_fixtures")
+local SF = require("inventory_fixtures")
 
 test("section_of: the section advertising the item, nil for a plain station", function()
 	local t = text()

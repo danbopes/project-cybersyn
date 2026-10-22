@@ -2,7 +2,7 @@
 -- secondary inventory's items land under its own network ID and the network filter keeps only the sections on it.
 
 local H = require("harness")
-local SF = require("section_fixtures")
+local SF = require("inventory_fixtures")
 
 local function aggregate()
 	local collector = require("scripts.gui.collector")

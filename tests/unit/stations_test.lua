@@ -542,9 +542,11 @@ test("sort keys: Provided / requested counts items per section; Network sorts by
 	assert_eq(k.network(naphthalene()), string.format("%s\0%010.0f", "signal-A", 7 + 2147483648))
 end)
 
-test("network filter: a station shows under every bit any of its sections advertises on", function()
+test("network filter: a station shows under every bit any of its rows advertises on", function()
 	local u = H.load("scripts.gui.util")
 	local n = naphthalene()
+	for i, mask in ipairs({ 1, 3, 4 }) do n.sources[i].network_mask = mask end
+	H.load("scripts.gui.collector").inventories(n)
 	local f = { mask = 4, network = "signal-A" }
 	assert_true(u.station_passes(n, f), "bit 3 comes from Inventory 2")
 	f.mask = 2
@@ -555,9 +557,12 @@ test("network filter: a station shows under every bit any of its sections advert
 	f.mask = -1
 	assert_false(u.station_passes(n, f))
 	assert_true(u.station_passes(n, { mask = 4 }), "mask only")
+	assert_true(u.row_passes(n.rows[3], { mask = 4 }))
+	assert_false(u.row_passes(n.rows[1], { mask = 4 }), "the station combinator's row is on bit 1 only")
+	assert_false(u.station_passes(n, { mask = 4, station = 21 }), "the station chip names another station")
+	assert_true(u.station_passes(n, { mask = 4, station = 20 }))
 	local p = plain()
-	p.mask_union = nil
-	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without a union reads its own mask")
+	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without rows reads its own mask")
 end)
 
 test("priority cell: one value for a plain station, highest first when inventories differ, * for item priorities", function()
