@@ -1234,7 +1234,7 @@ local PREWARM_ROWS = 6
 --- render writes cells into existing rows instead of creating about 13 elements per row in one update.
 --- @param player_data PlayerData
 function log_tab.prewarm(player_data)
-	if player_data.selected_tab == TAB or player_data.item_view then return end
+	if player_data.selected_tab == TAB then return end
 	local parent = player_data.refs[ROWS]
 	if not (parent and parent.valid and player_data.log_widths and collector.get().tick) then return end
 	local state = util.gui_state(player_data, ROWS)

@@ -1,7 +1,6 @@
 -- Delivery throughput counters for the manager's Overview tab. Unlike the collector this is always on, because
--- throughput can only be measured as it happens; every hook is O(1) plus O(manifest), except that a completed
--- delivery spreads its busy time over the buckets it spanned (at most the 60 minute plus 24 hour slots), and every
--- structure is a fixed-size ring, so neither UPS nor the save grows with time.
+-- throughput can only be measured as it happens; every hook is O(1) plus O(manifest) and every structure is a
+-- fixed-size ring, so neither UPS nor the save grows with time.
 
 local stats = {}
 
@@ -38,10 +37,6 @@ stats.HOUR = HOUR
 ---   only networks whose count changed inside the bucket (an unchanged count is the current one)
 --- @field no_train_failures int? requests that turned unserved for want of a train (diagnostics transitions into
 ---   NO_TRAINS_ON_NETWORK, TRAIN_FILTERED or CAPACITY)
---- @field busy {[uint]: uint}? per train layout, ticks its trains spent on deliveries inside this bucket (a delivery
----   is split over the buckets it spanned when it completes)
---- @field trip_sum {[uint]: uint}? per train layout, dispatch-to-unloaded ticks of the deliveries completed here
---- @field trip_n {[uint]: int}? per train layout, deliveries that contributed to trip_sum
 
 --- @class Stats
 --- @field minute {[int]: StatsBucket} ring of one-minute buckets
@@ -53,7 +48,6 @@ stats.HOUR = HOUR
 --- @field refuel_since uint tick from which Train.refuel_tick is recorded (older saves did not track refuelling)
 --- @field available_count {[string]: int} available trains per network, kept equal to the sizes of
 ---   storage.available_trains by add_available_train / remove_available_train
---- @field busy_since uint tick from which the buckets' busy, trip_sum and trip_n are recorded (older saves had none)
 --- @field trip_ema {[string]: {avg: number, n: int}}? per item hash (the manifest's first item), the moving average
 ---   of dispatch-to-unloaded ticks and the deliveries behind it; the slow-delivery baseline
 
@@ -66,7 +60,6 @@ local function new_stats()
 		cycle = { ema_seconds = nil, ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 },
 		available_count = {},
 		refuel_since = game and game.tick or 0,
-		busy_since = game and game.tick or 0,
 	}
 end
 
@@ -98,7 +91,6 @@ local function repair(s)
 	s.cycle.calls_run = s.cycle.calls_run or 0
 	s.available_count = s.available_count or {}
 	s.refuel_since = s.refuel_since or game.tick
-	s.busy_since = s.busy_since or game.tick
 end
 
 --- @param hash string
@@ -336,44 +328,6 @@ function stats.add_trip(ema, hash, ticks)
 	return e
 end
 
---- The part of [from, to) inside each bucket of the ring that is still in it, added to that bucket's busy time.
---- @param ring {[int]: StatsBucket}
---- @param slots int
---- @param width uint
---- @param from uint
---- @param to uint
---- @param layout uint
-local function add_busy(ring, slots, width, from, to, layout)
-	local oldest = to - to % width - (slots - 1) * width
-	local start = math.max(from - from % width, oldest)
-	while start <= to do
-		local lo, hi = math.max(from, start), math.min(to, start + width)
-		if hi > lo then
-			local b = bucket(ring, slots, width, start)
-			local busy = b.busy
-			if not busy then
-				busy = {}
-				b.busy = busy
-			end
-			busy[layout] = (busy[layout] or 0) + (hi - lo)
-		end
-		start = start + width
-	end
-end
-
---- @param b StatsBucket
---- @param layout uint
---- @param ticks uint
-local function add_layout_trip(b, layout, ticks)
-	local sum, n = b.trip_sum, b.trip_n
-	if not sum then
-		sum, n = {}, {}
-		b.trip_sum, b.trip_n = sum, n
-	end
-	sum[layout] = (sum[layout] or 0) + ticks
-	n[layout] = (n[layout] or 0) + 1
-end
-
 --- Called when a train has finished unloading at the requester, before its manifest is cleared.
 --- @param train Train
 function stats.record_delivery_complete(train)
@@ -410,14 +364,6 @@ function stats.record_delivery_complete(train)
 		local ema = cycle.ema_seconds
 		cycle.ema_seconds = ema and (ema + EMA_ALPHA * (seconds - ema)) or seconds
 		local ticks = tick - dispatch_tick
-		local layout = train.layout_id
-		if layout then
-			local from = math.max(dispatch_tick, s.busy_since)
-			add_busy(s.minute, MINUTE_SLOTS, MINUTE, from, tick, layout)
-			add_busy(s.hour, HOUR_SLOTS, HOUR, from, tick, layout)
-			add_layout_trip(m, layout, ticks)
-			add_layout_trip(h, layout, ticks)
-		end
 		local first = manifest and manifest[1]
 		if first then
 			local hash = hash_item(first.name, first.quality)
@@ -639,56 +585,6 @@ function stats.aggregate(minutes, summary)
 	if out.wait_n > 0 then out.wait_avg = wait_sum / out.wait_n end
 	out.wait_max = wait_max
 	return out
-end
-
---- @class StatsLayoutUsage
---- @field busy uint ticks the layout's trains spent on deliveries during the period (completed and in flight)
---- @field trip_sum uint
---- @field trip_n int deliveries completed during the period
-
---- Per train layout over the last `minutes`: delivery time of the completed deliveries in the period's buckets, plus
---- the in-flight part of the deliveries still running (`inflight` = dispatch ticks per layout), and the trips.
---- @param minutes int 10, 60 or 1440
---- @param inflight {[uint]: uint[]}? per layout, dispatch ticks of its trains on a delivery now
---- @return {[uint]: StatsLayoutUsage} usage
---- @return uint span ticks the period covers so far
-function stats.layout_usage(minutes, inflight)
-	local s = get()
-	local tick = game.tick
-	local ring, current, oldest = period(s, minutes, tick)
-	local since = s.busy_since
-	local usage = {}
-	local function of(layout)
-		local u = usage[layout]
-		if not u then
-			u = { busy = 0, trip_sum = 0, trip_n = 0 }
-			usage[layout] = u
-		end
-		return u
-	end
-	for _, b in pairs(ring) do
-		if b.start_tick >= oldest and b.start_tick <= tick then
-			for layout, t in pairs(b.busy or {}) do
-				local u = of(layout)
-				u.busy = u.busy + t
-			end
-			if b.trip_n then
-				for layout, n in pairs(b.trip_n) do
-					local u = of(layout)
-					u.trip_n = u.trip_n + n
-					u.trip_sum = u.trip_sum + b.trip_sum[layout]
-				end
-			end
-		end
-	end
-	local start = math.max(oldest, since)
-	for layout, ticks in pairs(inflight or {}) do
-		local u = of(layout)
-		for _, t in ipairs(ticks) do
-			if t <= tick then u.busy = u.busy + tick - math.max(t, start) end
-		end
-	end
-	return usage, tick - start + 1
 end
 
 --- Fewest available trains per network over the last `minutes` (Overview Fleet headroom, PLAN3 §4.4).

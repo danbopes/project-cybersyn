@@ -1,8 +1,6 @@
 -- Hand-built SnapshotStation records in the shape of the collector's inventory-row contract (PLAN8 D8-1): every
 -- source carries its own lists, priority and network, and st.rows holds one row per combinator in index order, as
--- collector.inventories returns them. The round-7 st.sections / st.mask_union are built alongside for the views that
--- still read them (round-8 compat: wave 2 removes them with the views' last reader). Stubs of the collector's helpers
--- sit here too.
+-- collector.inventories returns them. Stubs of the collector's helpers sit here too.
 
 local F = {}
 
@@ -33,12 +31,6 @@ local function rows(st)
 	end
 	st.rows = out
 	return st
-end
-
--- round-8 compat: wave 2 removes this.
-local function section(name, mask, sources, provided, requested, ignored)
-	return { key = name .. ":" .. mask, network_name = name, mask = mask, sources = sources, provided = provided or {},
-		requested = requested or {}, ignored = ignored or {} }
 end
 
 local function base(t)
@@ -78,12 +70,6 @@ function F.naphtha(id)
 		secondary_count = 2,
 	})
 	st.sources = { s, i1, i2 }
-	st.sections = {
-		section("signal-A", 1, { s }, s.provided),
-		section("signal-A", 3, { i1 }, i1.provided),
-		section("signal-A", 4, { i2 }, {}, {}, i2.ignored),
-	}
-	st.mask_union = { ["signal-A"] = 7 }
 	return rows(st)
 end
 
@@ -106,53 +92,25 @@ function F.coal_both(id)
 		secondary_count = 1,
 	})
 	st.sources = { s, i1 }
-	st.sections = {
-		section("signal-A", 1, { s }, s.provided),
-		section("signal-A", 2, { i1 }, {}, i1.requested),
-	}
-	st.mask_union = { ["signal-A"] = 3 }
 	return rows(st)
 end
 
---- A plain station: one row (and one section) on the record's own provided / requested tables, as the contract
+--- A plain station: one row on the record's own provided / requested tables, as the contract
 --- promises.
 function F.plain(id, name, mask, provided, requested)
 	local st = base({ id = id, name = name, network_name = "signal-A", network_mask = mask, provided = provided or {},
 		requested = requested or {} })
 	local s = source("station", 0, 9000 + id, 0, "signal-A", mask, st.provided, st.requested, st.ignored)
 	st.sources = { s }
-	st.sections = { { key = "signal-A:" .. mask, network_name = "signal-A", mask = mask, sources = { s },
-		provided = st.provided, requested = st.requested, ignored = st.ignored } }
-	st.mask_union = { ["signal-A"] = mask }
 	return rows(st)
-end
-
--- round-8 compat: wave 2 removes this. collector.station_has_sections as the round-7 contract defined it.
-function F.has_sections(st)
-	if #st.sections > 1 then return true end
-	for _, src in ipairs(st.sources) do
-		if src.kind == "inventory" then return true end
-	end
-	return false
 end
 
 function F.mask_label(mask) return tostring(mask) end
 
--- round-8 compat: wave 2 removes this.
-function F.mask_bits_label(mask)
-	local bits = {}
-	for b = 1, 32 do
-		if bit32.btest(mask, bit32.lshift(1, b - 1)) then bits[#bits + 1] = tostring(b) end
-	end
-	if #bits < 2 then return nil end
-	return "bits " .. table.concat(bits, "+")
-end
-
 --- Installs the helper stubs on a loaded collector table that does not have them yet.
 function F.stub_collector(collector)
-	for _, k in ipairs({ "has_sections", "mask_label", "mask_bits_label", "source_label" }) do
-		local name = k == "has_sections" and "station_has_sections" or k
-		if collector[name] == nil then collector[name] = F[k] end
+	for _, k in ipairs({ "mask_label", "source_label" }) do
+		if collector[k] == nil then collector[k] = F[k] end
 	end
 end
 

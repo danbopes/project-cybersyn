@@ -84,8 +84,8 @@ local function sig_of(r_id, hash, e)
 	local lint_s = storage.manager.lint
 	if not e then return table.concat({ "gone", lint_s and lint_s.pass or 0 }, "|") end
 	local row = request_row(r_id, hash)
-	local sec_sig = row and rtext.row_sig(row) or ""
-	return table.concat({ sec_sig, e.reason, e.a, e.b, e.n, #e.changes, e.changes[#e.changes] or 0, tostring(e.lost_to), e.lost_n,
+	local inv_sig = row and rtext.row_sig(row) or ""
+	return table.concat({ inv_sig, e.reason, e.a, e.b, e.n, #e.changes, e.changes[#e.changes] or 0, tostring(e.lost_to), e.lost_n,
 		math.floor((now - e.first_tick) / utext.READ_STEP), lint_s and lint_s.pass or 0,
 		storage.acks and storage.acks.lint_version or 0 }, "|")
 end

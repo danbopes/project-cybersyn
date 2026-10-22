@@ -178,9 +178,7 @@
 
 ---@class Cybersyn.AnalyticsData
 ---@field public surface LuaSurface Hidden rendering surface
----@field public train_utilization Cybersyn.AnalyticsInterval[] 8 intervals for utilization graph
----@field public fulfillment_times Cybersyn.AnalyticsInterval[] 8 intervals: request → delivery
----@field public total_delivery_times Cybersyn.AnalyticsInterval[] 8 intervals: dispatch → completion
+---@field public train_utilization Cybersyn.AnalyticsInterval[] 7 intervals (1m..1000h) for the utilization graph
 ---@field public train_status_ticks {[uint]: {[uint]: uint}} layout_id -> {status -> ticks}
 ---@field public train_status_totals {[uint]: uint} layout_id -> total ticks
 ---@field public delivery_starts {[uint]: {item_hash: string, dispatch_tick: uint}} train_id -> info

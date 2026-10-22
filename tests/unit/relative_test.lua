@@ -347,18 +347,6 @@ test("rows: the switch's reason for what a row does not advertise", function()
 	assert_eq(t.ignored_reason({ is_p = true, is_r = true }), { "cybersyn-gui.section-switch" })
 end)
 
-test("sections: sources caption and section text the drill-down still reads", function()
-	local t = rt()
-	local a, b = source("station", 0, 0), source("inventory", 1, 0)
-	assert_eq(t.sources_caption({ a }), { "", collector().source_label(a), " · ", { "cybersyn-gui.section-priority", "0" } })
-	b.priority = 5
-	assert_eq(t.sources_caption({ a, b }), { "", collector().source_label(a), " ", { "cybersyn-gui.section-source-priority", "0" },
-		", ", collector().source_label(b), " ", { "cybersyn-gui.section-source-priority", "5" } })
-	local sec = { key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { b } }
-	assert_eq(t.section_label(sec), "[virtual-signal=signal-A]3")
-	assert_eq(t.section_sig(sec), "signal-A:3/inventory1=5")
-end)
-
 test("rows_content: same values sign alike whatever the fill order; ignored, starved and priority change it", function()
 	local t = rt()
 	local a, b = naphthalene(), naphthalene()

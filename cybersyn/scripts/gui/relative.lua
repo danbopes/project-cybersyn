@@ -2449,7 +2449,7 @@ local function tick_pane(manager_data, i, pd)
 		pd.relative_pane = nil
 		return
 	end
-	if not (pd.is_manager_open and pd.selected_tab == "trains_tab") or pd.item_view then return end
+	if not (pd.is_manager_open and pd.selected_tab == "trains_tab") then return end
 	local p = manager_data.relative_samples and game.create_profiler()
 	local alive = relative.render(pd, state, panel)
 	if p then

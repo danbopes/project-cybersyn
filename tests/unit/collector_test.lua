@@ -305,20 +305,11 @@ test("full pass: provider record", function()
 		lint = 0,
 		-- Phase 4: no unserved request at a train limit names the station.
 		throttling = false,
-		-- Round 7: a Provide only station does not advertise its coal request; one section, one source.
+		-- Round 7: a Provide only station does not advertise its coal request; one source.
 		ignored = { coal = -100 },
 		sources = { source },
-		sections = { {
-			key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { source },
-			provided = { ["iron-ore"] = 500, water = 2000 }, requested = {}, ignored = { coal = -100 },
-		} },
-		mask_union = { ["signal-A"] = 1 },
 	})
 	local st = snap.stations[1]
-	assert_same(st.sections[1].provided, st.provided)
-	assert_same(st.sections[1].requested, st.requested)
-	assert_same(st.sections[1].ignored, st.ignored)
-	assert_same(st.sections[1].sources[1], st.sources[1])
 	-- PLAN8 D8-1: the station combinator is the only row, on the record's own lists.
 	assert_eq(#st.rows, 1)
 	assert_same(collector.inventories(st), st.rows)
@@ -389,8 +380,6 @@ test("full pass: warming up, each-network stack station, skipped and secondary s
 	assert_eq(#sec.rows, 2)
 	assert_false(sec.rows[2].read)
 	assert_nil(sec.rows[2].mask, "an unread inventory registers under no mask")
-	assert_eq(#sec.sections, 1)
-	assert_eq(sec.sections[1].sources, { sec.sources[1] })
 	assert_eq(snap.station_count, 5)
 	assert_eq(snap.secondary_count, 0)
 	assert_eq(snap.tick, 1000)
@@ -1046,13 +1035,6 @@ test("second pass: changed inputs replace every field of the previous record", f
 		ignored = {},
 		sources = { { kind = "station", index = 0, ok = false, priority = 5, network_mask = 1, network_name = "signal-A",
 			mask = 1, provided = {}, requested = {}, ignored = {} } },
-		sections = { {
-			key = "signal-A:1", network_name = "signal-A", mask = 1,
-			sources = { { kind = "station", index = 0, ok = false, priority = 5, network_mask = 1, network_name = "signal-A",
-				mask = 1, provided = {}, requested = {}, ignored = {} } },
-			provided = {}, requested = {}, ignored = {},
-		} },
-		mask_union = { ["signal-A"] = 1 },
 	})
 	local smelter_requested = {
 		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
@@ -1102,21 +1084,6 @@ test("second pass: changed inputs replace every field of the previous record", f
 		throttling = false,
 		ignored = {},
 		sources = { smelter_source },
-		sections = { {
-			key = "signal-A:3", network_name = "signal-A", mask = 3,
-			sources = { smelter_source },
-			provided = {},
-			requested = {
-				["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
-				["copper-ore"] = { count = -100, threshold = 500, active = false, mask = 3 },
-				stone = { count = -700, threshold = 300, active = true, mask = 3 },
-				water = { count = -50, threshold = 500, active = false, mask = 3 },
-			},
-			ignored = {},
-			-- Nobody provides either on signal-A.
-			starved = { ["iron-ore"] = true, stone = true },
-		} },
-		mask_union = { ["signal-A"] = 3 },
 	})
 	assert_eq(snap.stations[3].warming_up, false)
 	assert_eq(snap.stations[3].requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
@@ -1567,7 +1534,7 @@ test("economy_starved: this stop's active requests nobody provides, only while d
 end)
 
 -- Round 7: what each station advertises per network name + mask, on the patterns of a real pY base.
-local function sections_scenario()
+local function inventories_scenario()
 	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30, priority = 0 }
 	manager()
 	storage.stations = {
@@ -1669,7 +1636,7 @@ local function rows_of(st)
 end
 
 test("inventories (a): one network, no secondaries: one row on the record's own lists", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local st = collector.get().stations[11]
 	assert_same(collector.inventories(st), st.rows)
@@ -1686,21 +1653,10 @@ test("inventories (a): one network, no secondaries: one row on the record's own 
 	assert_same(st.rows[1].starved, st.sources[1].starved)
 	assert_eq(collector.row_key(st, st.sources[1]), "11@110")
 	assert_eq(st.status, "starved")
-	-- round-8 compat: wave 2 removes this. One section on the record's own tables.
-	assert_eq(#st.sections, 1)
-	local sec = st.sections[1]
-	assert_eq({ sec.key, sec.network_name, sec.mask }, { "signal-A:1", "signal-A", 1 })
-	assert_same(sec.provided, st.provided)
-	assert_same(sec.requested, st.requested)
-	assert_same(sec.ignored, st.ignored)
-	assert_same(sec.sources[1], st.sources[1])
-	assert_eq(st.mask_union, { ["signal-A"] = 1 })
-	assert_false(collector.station_has_sections(st))
-	assert_eq(sec.starved, { coal = true })
 end)
 
 test("inventories (b): naphthalene: one row per combinator in unit order, each with its own mask; totals are sums", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local st = collector.get().stations[12]
 	assert_eq(rows_of(st), {
@@ -1718,23 +1674,10 @@ test("inventories (b): naphthalene: one row per combinator in unit order, each w
 	assert_eq(st.secondary_count, 2)
 	assert_eq(collector.get().provider_masks["signal-A:liquid-fuel"], 3)
 	assert_eq({ st.sources[2].network_mask, st.sources[3].network_mask }, { 3, 4 })
-	-- round-8 compat: wave 2 removes this.
-	local station, inv1, inv2 = st.sources[1], st.sources[2], st.sources[3]
-	assert_eq(st.sections, {
-		{ key = "signal-A:1", network_name = "signal-A", mask = 1, sources = { station },
-			provided = { ["naphthalene-oil"] = 5000 }, requested = {}, ignored = {} },
-		{ key = "signal-A:3", network_name = "signal-A", mask = 3, sources = { inv1 },
-			provided = { ["liquid-fuel"] = 2000 }, requested = {}, ignored = {} },
-		{ key = "signal-A:4", network_name = "signal-A", mask = 4, sources = { inv2 },
-			provided = {}, requested = {}, ignored = { ["liquid-fuel"] = -866 } },
-	})
-	assert_same(st.sections[2].sources[1], st.sources[2])
-	assert_eq(st.mask_union, { ["signal-A"] = 7 })
-	assert_true(collector.station_has_sections(st))
 end)
 
 test("inventories (c): a Request only station ignores its secondary's positives; starved per row", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local st = collector.get().stations[13]
 	local rows = rows_of(st)
@@ -1748,17 +1691,10 @@ test("inventories (c): a Request only station ignores its secondary's positives;
 	local hashes = collector.starved_hashes(st, collector.get().starved)
 	table.sort(hashes)
 	assert_eq(hashes, { "copper-plate", "stone" })
-	-- round-8 compat: wave 2 removes this.
-	local s1, s2 = st.sections[1], st.sections[2]
-	assert_eq({ s1.key, s2.key }, { "signal-A:1", "signal-A:2" })
-	assert_eq(s2.requested, { ["copper-plate"] = { count = -2500, threshold = 2000, active = true, mask = 2 } })
-	assert_eq(s2.ignored, { ["iron-plate"] = 400 })
-	assert_eq(s1.starved, { stone = true })
-	assert_eq(s2.starved, { ["copper-plate"] = true })
 end)
 
 test("inventories (d): two combinators on one mask stay two rows; the station total is their sum", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local st = collector.get().stations[14]
 	local rows = rows_of(st)
@@ -1767,21 +1703,11 @@ test("inventories (d): two combinators on one mask stay two rows; the station to
 	assert_eq(rows[1].provided, { ["iron-ore"] = 100 })
 	assert_eq(rows[2].provided, { ["iron-ore"] = 50, wood = 10 })
 	assert_eq(st.provided, { ["iron-ore"] = 150, wood = 10 })
-	-- round-8 compat: wave 2 removes this. One section, both sources.
-	assert_eq(#st.sections, 1)
-	local sec = st.sections[1]
-	assert_eq(sec.key, "signal-A:1")
-	assert_eq(#sec.sources, 2)
-	assert_same(sec.sources[1], st.sources[1])
-	assert_same(sec.sources[2], st.sources[2])
-	assert_eq(sec.provided, { ["iron-ore"] = 150, wood = 10 })
-	assert_true(sec.provided ~= st.provided)
-	assert_eq(st.mask_union, { ["signal-A"] = 1 })
-	assert_true(collector.station_has_sections(st))
+	assert_true(st.rows[1].provided ~= st.provided)
 end)
 
 test("inventories (e): NETWORK_EACH: each row carries its own networks and its own starved check", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local snap = collector.get()
 	local st = snap.stations[15]
@@ -1798,18 +1724,10 @@ test("inventories (e): NETWORK_EACH: each row carries its own networks and its o
 	assert_eq(rows[2].starved, { sulfur = true })
 	assert_eq(st.status, "starved")
 	assert_eq(collector.starved_hashes(st, snap.starved), { "sulfur" })
-	-- round-8 compat: wave 2 removes this.
-	local a, b = st.sections[1], st.sections[2]
-	assert_eq({ a.key, b.key }, { "signal-A:1", "signal-B:2" })
-	assert_eq(a.requested, { coke = { count = -3000, threshold = 2000, active = true, mask = 1 } })
-	assert_eq(b.requested, { sulfur = { count = -3000, threshold = 5, active = true, mask = 2 } })
-	assert_eq(st.mask_union, { ["signal-A"] = 1, ["signal-B"] = 2 })
-	assert_nil(a.starved)
-	assert_eq(b.starved, { sulfur = true })
 end)
 
 test("inventories (f): an invalid secondary is skipped, the live one keeps index 1", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local st = collector.get().stations[17]
 	local rows = rows_of(st)
@@ -1817,11 +1735,10 @@ test("inventories (f): an invalid secondary is skipped, the live one keeps index
 	assert_eq({ rows[2].key, rows[2].index, rows[2].mask, rows[2].provided }, { "17@901", 1, 1, { brick = 5 } })
 	assert_eq(st.provided, { brick = 15 })
 	assert_eq(st.secondary_count, 1)
-	assert_eq(st.sections[1].provided, { brick = 15 })
 end)
 
 test("inventories: a NETWORK_EACH station naming no network; an unpowered inventory is still a row", function()
-	sections_scenario()
+	inventories_scenario()
 	storage.stations[15].network_mask = {}
 	storage.stations[15].secondary_inv_combs[801].status = NO_POWER
 	collector.run_to_completion()
@@ -1834,16 +1751,10 @@ test("inventories: a NETWORK_EACH station naming no network; an unpowered invent
 	assert_eq(rows[2].provided, {})
 	assert_eq(rows[2].requested, {})
 	assert_nil(st.sources[2].network_mask)
-	-- round-8 compat: wave 2 removes this.
-	assert_eq(#st.sections, 1)
-	assert_eq({ st.sections[1].key, st.sections[1].mask }, { NETWORK_EACH .. ":0", 0 })
-	assert_eq(st.sections[1].sources, { st.sources[1] })
-	assert_eq(st.mask_union, {})
-	assert_true(collector.station_has_sections(st))
 end)
 
 test("inventories: a working station combinator without input leaves its inventories unread, empty rows", function()
-	sections_scenario()
+	inventories_scenario()
 	-- get_signals returns nil for a combinator with nothing on its input wires.
 	storage.stations[12].entity_comb1.signals = nil
 	collector.run_to_completion()
@@ -1862,44 +1773,27 @@ test("inventories: a working station combinator without input leaves its invento
 	assert_eq(st.provided, {})
 	assert_eq(st.requested, {})
 	assert_false(st.secondary)
-	-- round-8 compat: wave 2 removes this.
-	assert_eq(#st.sections, 1)
-	assert_eq(st.sections[1].sources, { st.sources[1] })
-	assert_eq(st.mask_union, { ["signal-A"] = 1 })
 end)
 
 test("inventories: refills keep every table; a secondary appearing or going switches the station row's lists", function()
-	sections_scenario()
+	inventories_scenario()
 	collector.run_to_completion()
 	local snap = collector.get()
 	local plain, naph = snap.stations[11], snap.stations[12]
 	local function tables()
 		return {
-			plain.rows, plain.rows[1], plain.sources, plain.sources[1], plain.ignored, plain.sections, plain.sections[1],
-			plain.sections[1].sources, plain.mask_union, naph.rows, naph.rows[1], naph.rows[2], naph.rows[3],
-			naph.rows[1].provided, naph.rows[2].provided, naph.rows[3].ignored, naph.rows[3].label, naph.sources,
-			naph.sources[3], naph.sections, naph.mask_union,
+			plain.rows, plain.rows[1], plain.sources, plain.sources[1], plain.ignored, naph.rows, naph.rows[1],
+			naph.rows[2], naph.rows[3], naph.rows[1].provided, naph.rows[2].provided, naph.rows[3].ignored,
+			naph.rows[3].label, naph.sources, naph.sources[3],
 		}
 	end
 	local keep = tables()
-	local naph_tables = {}
-	for i, sec in ipairs(naph.sections) do
-		naph_tables[sec.key] = { sec = sec, provided = sec.provided, ignored = sec.ignored, sources = sec.sources, i = i }
-	end
 	game.tick = 1100
 	collector.run_to_completion()
 	snap = collector.get()
 	plain, naph = snap.stations[11], snap.stations[12]
 	local again = tables()
 	for i = 1, #keep do assert_same(again[i], keep[i], "table " .. i) end
-	for i, sec in ipairs(naph.sections) do
-		local t = naph_tables[sec.key]
-		assert_same(sec, t.sec)
-		assert_same(sec.provided, t.provided)
-		assert_same(sec.ignored, t.ignored)
-		assert_same(sec.sources, t.sources)
-		assert_eq(i, t.i)
-	end
 
 	-- A secondary added to the plain station gives the station combinator lists of its own.
 	local plain_station = storage.stations[11]
@@ -1912,10 +1806,6 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	assert_eq(plain.rows[2].provided, { ["iron-plate"] = 5 })
 	assert_eq(plain.provided, { ["iron-plate"] = 105 })
 	assert_eq(plain.rows[2].key, "11@111")
-	-- round-8 compat: wave 2 removes this.
-	assert_eq(#plain.sections, 1)
-	assert_eq(plain.sections[1].provided, { ["iron-plate"] = 105 })
-	assert_eq(#plain.sections[1].sources, 2)
 	-- And removed again, it shares them once more.
 	plain_station.secondary_inv_combs = {}
 	collector.run_to_completion()
@@ -1924,8 +1814,6 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	assert_same(plain.rows[1].provided, plain.provided)
 	assert_same(plain.rows[1].requested, plain.requested)
 	assert_eq(plain.provided, { ["iron-plate"] = 100 })
-	assert_same(plain.sections[1].provided, plain.provided)
-	assert_eq(#plain.sections[1].sources, 1)
 
 	-- The naphthalene station's mask-4 inventory moves to mask 3: still its own row.
 	storage.stations[12].secondary_inv_combs[1].signals = { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 3, "virtual") }
@@ -1934,17 +1822,10 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	assert_eq(#naph.rows, 3)
 	assert_eq({ naph.rows[2].mask, naph.rows[3].mask }, { 3, 3 })
 	assert_eq(naph.rows[3].ignored, { ["liquid-fuel"] = -866 })
-	-- round-8 compat: wave 2 removes this. The sections merge.
-	assert_eq(#naph.sections, 2)
-	assert_eq(naph.sections[2].key, "signal-A:3")
-	assert_eq(#naph.sections[2].sources, 2)
-	assert_eq(naph.sections[2].ignored, { ["liquid-fuel"] = -866 })
-	assert_eq(naph.sections[2].provided, { ["liquid-fuel"] = 2000 })
-	assert_eq(naph.mask_union, { ["signal-A"] = 3 })
 end)
 
 test("inventories: read_station fills the same rows for a stop read live", function()
-	sections_scenario()
+	inventories_scenario()
 	local st = collector.read_station(12)
 	assert_eq(#st.rows, 3)
 	assert_eq(st.rows[3].ignored, { ["liquid-fuel"] = -866 })
@@ -1952,7 +1833,6 @@ test("inventories: read_station fills the same rows for a stop read live", funct
 	assert_same(collector.read_station(12, st), st)
 	assert_same(st.rows, rows)
 	assert_eq(#st.rows, 3)
-	assert_eq(#st.sections, 3)
 end)
 
 test("inventories: hand-built records get rows from their sources, or one station row", function()
@@ -1989,26 +1869,14 @@ test("economy_starved: a row's own network counts, whatever networks the caller 
 	storage.economy, storage.tick_state = nil, nil
 end)
 
-test("mask labels: the value, and its bits from 1 when there are several", function()
+test("mask labels: the value", function()
 	assert_eq(collector.mask_label(3), "3")
 	assert_eq(collector.mask_label(0), "0")
-	-- round-8 compat: wave 2 removes this.
-	assert_nil(collector.mask_bits_label(0))
-	assert_nil(collector.mask_bits_label(1))
-	assert_nil(collector.mask_bits_label(4))
-	assert_eq(collector.mask_bits_label(3), "bits 1+2")
-	assert_eq(collector.mask_bits_label(9), "bits 1+4")
-	assert_eq(collector.mask_bits_label(-2147483647), "bits 1+32")
 end)
 
-test("source_label and (round-8 compat) station_has_sections on hand-built records", function()
+test("source_label on hand-built records", function()
 	assert_eq(collector.source_label({ kind = "station", index = 0 }), { "cybersyn-gui.source-station" })
 	assert_eq(collector.source_label({ kind = "inventory", index = 2 }), { "cybersyn-gui.source-inventory", 2 })
-	local station = { kind = "station", index = 0 }
-	assert_false(collector.station_has_sections({ sections = { {} }, sources = { station } }))
-	assert_true(collector.station_has_sections({ sections = { {}, {} }, sources = { station } }))
-	assert_true(collector.station_has_sections({ sections = { {} }, sources = { station, { kind = "inventory", index = 1 } } }))
-	assert_false(collector.station_has_sections({}))
 end)
 
 test("inventory_fixtures: the hand-built rows are what collector.inventories builds from the same sources", function()
