@@ -544,6 +544,24 @@ test("query: the Problems view lists a station once, on its station combinator's
 	assert_eq(row_ids((stations_tab.query(pd))), { "20@0" })
 end)
 
+test("query: under a filter that drops the station combinator's row, the Problems view lists the first kept row", function()
+	local stations_tab, _, snap = setup_rows()
+	snap.stations[20].lint = 8
+	snap.stations[21].lint = 8
+	local pd = { search_network_name = "signal-A", search_network_mask = 2 }
+	stations_tab.set_chip(pd, "problems")
+	local rows, counts = stations_tab.query(pd)
+	assert_eq(counts.problems, 2)
+	assert_eq(row_ids(rows), { "21@1", "20@1" }, "Inventory 1 of each: mask 3 and mask 2 hold bit 2")
+	stations_tab, _, snap = setup_rows()
+	snap.stations[20].lint = 8
+	pd = { search_item = F.LIQUID_FUEL }
+	stations_tab.set_chip(pd, "problems")
+	rows, counts = stations_tab.query(pd)
+	assert_eq(counts.problems, 1)
+	assert_eq(row_ids(rows), { "20@1" }, "only Inventory 1 provides liquid fuel")
+end)
+
 test("network cell: each row shows its own network and mask, no badge", function()
 	local stations_tab, collector = setup_rows()
 	local rows = collector.inventories(F.naphtha(20))
@@ -562,6 +580,30 @@ test("network cell: each row shows its own network and mask, no badge", function
 	local cell = stations_tab.network_cell(collector.inventories(unread)[3])
 	assert_eq(cell.caption, "–")
 	assert_eq(cell.tooltip[1], "cybersyn-gui.section-paused-no-signals")
+	-- Read, but its own input is empty or the combinator is off: the station combinator is not to blame.
+	local empty = F.naphtha(20)
+	empty.sources[3].mask, empty.sources[3].read, empty.sources[3].ok = nil, true, true
+	empty.rows = nil
+	cell = stations_tab.network_cell(collector.inventories(empty)[3])
+	assert_eq(cell.caption, "–")
+	assert_eq(cell.tooltip[1], "cybersyn-gui.stations-inventory-empty-tooltip")
+	local off = F.naphtha(20)
+	off.sources[3].mask, off.sources[3].read, off.sources[3].ok = nil, true, false
+	off.rows = nil
+	local off_cell = stations_tab.network_cell(collector.inventories(off)[3])
+	assert_eq(off_cell.tooltip[1], "cybersyn-gui.stations-inventory-off-tooltip")
+	assert_true(off_cell.sig ~= cell.sig, "the reason is part of the sig")
+end)
+
+test("network cell: an inventory on a NETWORK_EACH station that advertises on no network reads –, not ×0", function()
+	local stations_tab = setup_rows()
+	local row = { st = { comb_ok = false }, kind = "inventory", index = 1, label = "Inventory 1",
+		network_name = NETWORK_EACH, src = { read = false, ok = true } }
+	local cell = stations_tab.network_cell(row)
+	assert_eq(cell.caption, "–")
+	assert_eq(cell.sprite, "virtual-signal/" .. NETWORK_EACH)
+	assert_eq(cell.tooltip[1], "cybersyn-gui.section-paused")
+	assert_nil(stations_tab.sort_keys.network(row), "it sorts with the unread rows, last")
 end)
 
 test("network cell: a NETWORK_EACH combinator reads ×N with one tooltip line per network", function()
@@ -642,6 +684,17 @@ test("marker (D8-2): an inventory row names its combinator, links it and says wh
 	local failed = stations_tab.marker(collector.inventories(n)[2])
 	assert_true(serpent.line(failed.tooltip):find("relative-i-red", 1, true) ~= nil)
 	assert_true(failed.sig ~= m.sig)
+	local empty = F.naphtha(20)
+	empty.sources[3].mask, empty.sources[3].read, empty.sources[3].ok = nil, true, true
+	empty.rows = nil
+	local e = stations_tab.marker(collector.inventories(empty)[3])
+	assert_eq(e.tooltip[2][4], { "cybersyn-gui.stations-inventory-empty" }, "read, with an empty input: not 'not read'")
+	local paused = F.naphtha(20)
+	paused.sources[3].mask, paused.sources[3].read = nil, false
+	paused.rows = nil
+	local pz = stations_tab.marker(collector.inventories(paused)[3])
+	assert_eq(pz.tooltip[2][4], { "cybersyn-gui.stations-inventory-unread" })
+	assert_true(pz.sig ~= e.sig)
 end)
 
 test("network filter: a station shows under every bit any of its rows advertises on", function()

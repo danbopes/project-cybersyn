@@ -405,6 +405,27 @@ function text.rows_union(st)
 	return union
 end
 
+--- Whether the planner skips this inventory row this pass because its station combinator holds it back. Records
+--- without `read` (before it existed) only knew the off case.
+--- @param row SnapshotInventory
+--- @return boolean
+function text.is_paused(row)
+	if row.kind ~= "inventory" then return false end
+	local src = row.src or row
+	return src.read == false or (src.read == nil and not src.ok)
+end
+
+--- Why an inventory row advertises on no network: its station combinator holds it back (paused), the combinator
+--- itself is off, or it is read but its input carries no signals. Paused is the only case the paused texts describe.
+--- @param row SnapshotInventory
+--- @return "paused"|"off"|"empty"
+function text.silent_reason(row)
+	if text.is_paused(row) then return "paused" end
+	local src = row.src or row
+	if not src.ok then return "off" end
+	return "empty"
+end
+
 --- Inventory rows the planner skips this pass (the station combinator is off, or has no input signals). Records
 --- without `read` (before it existed) only knew the off case.
 --- @param st SnapshotStation
@@ -412,10 +433,7 @@ end
 function text.paused_inventories(st)
 	local out = {}
 	for _, row in ipairs(collector.inventories(st)) do
-		local src = row.src or row
-		if row.kind == "inventory" and (src.read == false or (src.read == nil and not src.ok)) then
-			out[#out + 1] = row
-		end
+		if text.is_paused(row) then out[#out + 1] = row end
 	end
 	return out
 end
@@ -426,10 +444,7 @@ end
 function text.advertised_rows(st)
 	local out = {}
 	for _, row in ipairs(collector.inventories(st)) do
-		local src = row.src or row
-		if row.kind ~= "inventory" or not (src.read == false or (src.read == nil and not src.ok)) then
-			out[#out + 1] = row
-		end
+		if not text.is_paused(row) then out[#out + 1] = row end
 	end
 	return out
 end

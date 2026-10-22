@@ -341,7 +341,7 @@ local sort_keys = {
 		local name = row.network_name
 		if not name then return nil end
 		local mask = row.mask
-		if name ~= NETWORK_EACH and mask == nil then return nil end
+		if name ~= NETWORK_EACH and mask == nil or name == NETWORK_EACH and not row.networks then return nil end
 		return string.format("%s\0%010.0f", name, type(mask) == "number" and mask + OFFSET or 0)
 	end,
 	provided_requested = function(row) return count_keys(row.provided) + count_keys(row.requested) end,
@@ -810,13 +810,15 @@ function stations_tab.query(player_data)
 	if not rows or cache.rows_order ~= cache.order or cache.rows_wanted ~= want_sig or cache.rows_version ~= cache.version then
 		rows = {}
 		local seen, n_stations = {}, 0
-		local rec = cache.rec
+		local rec, rows_of = cache.rec, cache.rows_of
 		local open_errors = util.open_setup_errors
 		for _, rk in ipairs(cache.order) do
 			local row = rec[rk]
 			local id = row and row.st.id
-			-- Findings are about the stop: the Problems view lists each station once, on its station combinator's row.
-			if row and status[id] and chip_passes(wanted, id, cache, stuck) and not (problems and row.index ~= 0)
+			-- Findings are about the stop: the Problems view lists each station once, on the first of its rows the
+			-- filters keep. Under a mask or item filter that need not be the station combinator's, and the station
+			-- still counts in the chips.
+			if row and status[id] and chip_passes(wanted, id, cache, stuck) and not (problems and rows_of[id][1] ~= rk)
 				and (not errors_only or open_errors(id, row.st.lint) > 0) then
 				rows[#rows + 1] = row
 				if not seen[id] then
@@ -1112,6 +1114,21 @@ local function registry_model(row, ctx)
 	return m
 end
 
+local SILENT_TOOLTIP = {
+	off = "cybersyn-gui.stations-inventory-off-tooltip",
+	empty = "cybersyn-gui.stations-inventory-empty-tooltip",
+}
+
+--- Why an inventory advertises on no network, as the Network cell's tooltip says it: only a row the station
+--- combinator holds back gets the paused text, which blames the station combinator.
+--- @param row SnapshotInventory
+--- @param reason string rtext.silent_reason(row)
+--- @return LocalisedString
+local function silent_text(row, reason)
+	if reason == "paused" then return { rtext.paused_key(row.st), row.label } end
+	return { SILENT_TOOLTIP[reason], row.label }
+end
+
 --- The Network cell of a row: net_sig, and m.network() -> sprite, caption, tooltip (built only when the sig changed).
 --- The row's own network and mask; "×N" for a NETWORK_EACH combinator (PLAN8 D8-1).
 --- @param m table row model
@@ -1119,8 +1136,14 @@ end
 local function network_model(m, row)
 	local network_name = row.network_name
 	local mask = row.mask
+	-- An inventory that advertises on no mask: a NETWORK_EACH one has no networks then, the others no mask.
+	local silent = network_name and (network_name == NETWORK_EACH and not row.networks
+		or network_name ~= NETWORK_EACH and mask == nil)
+	local reason = silent and rtext.silent_reason(row) or nil
 	if not network_name then
 		m.net_sig = ""
+	elseif silent then
+		m.net_sig = network_name .. "=?" .. reason .. (row.st.comb_ok and "+" or "-")
 	elseif network_name == NETWORK_EACH then
 		local nets = row.networks
 		local names = {}
@@ -1132,14 +1155,16 @@ local function network_model(m, row)
 		for i, n in ipairs(names) do parts[i] = n .. "=" .. nets[n] end
 		m.net_sig = NETWORK_EACH .. "|" .. table.concat(parts, ",")
 		m.net_names = names
-	elseif mask == nil then
-		m.net_sig = network_name .. "=?"
 	else
 		m.net_sig = network_name .. "=" .. mask
 	end
 	m.network = function()
 		if not network_name then
 			return "utility/close_black", "", { "cybersyn-gui.station-no-network" }
+		elseif silent then
+			local sprite = network_name == NETWORK_EACH and ("virtual-signal/" .. NETWORK_EACH)
+				or util.generate_item_references(network_name)
+			return sprite or "utility/close_black", text.NO_VALUE, silent_text(row, reason)
 		elseif network_name == NETWORK_EACH then
 			local names, nets = m.net_names, row.networks
 			local lines = { "" }
@@ -1151,10 +1176,6 @@ local function network_model(m, row)
 			return "virtual-signal/" .. NETWORK_EACH, { "cybersyn-gui.network-each-count", #names }, lines
 		end
 		local sprite, img = util.generate_item_references(network_name)
-		if mask == nil then
-			-- An inventory the planner does not read this pass advertises on no mask.
-			return sprite or "utility/close_black", text.NO_VALUE, { rtext.paused_key(row.st), row.label }
-		end
 		return sprite or "utility/close_black", tostring(mask), { "", img or network_name, " ",
 			{ "cybersyn-gui.station-network-mask", mask, string.format("0x%08X", mask < 0 and mask + 2 * OFFSET or mask) } }
 	end
@@ -1184,13 +1205,21 @@ end
 local MARKER_SIZE = 16
 local MARKER_W = MARKER_SIZE + 2
 
---- "network [A] mask 2", "networks [A]1 [B]2" or "not read": a row's network as the marker tooltip words it.
+local SILENT_MARKER = {
+	paused = "cybersyn-gui.stations-inventory-unread",
+	off = "cybersyn-gui.stations-inventory-off",
+	empty = "cybersyn-gui.stations-inventory-empty",
+}
+
+--- "network [A] mask 2", "networks [A]1 [B]2", or why it advertises on none ("not read", "off", "no input signals"):
+--- a row's network as the marker tooltip words it.
 --- @param row SnapshotInventory
 --- @return LocalisedString
 local function marker_network(row)
 	if row.networks then return { "cybersyn-gui.stations-inventory-networks", rtext.row_network(row) } end
 	local name = row.network_name
-	if not name or row.mask == nil or name == NETWORK_EACH then return { "cybersyn-gui.stations-inventory-unread" } end
+	if not name then return { "cybersyn-gui.station-no-network" } end
+	if row.mask == nil or name == NETWORK_EACH then return { SILENT_MARKER[rtext.silent_reason(row)] } end
 	return { "cybersyn-gui.stations-inventory-network", rtext.network_icon(name), tostring(row.mask) }
 end
 
@@ -1201,7 +1230,7 @@ local function marker_model(row)
 	if row.index == 0 then return nil end
 	return {
 		unit = row.unit,
-		sig = row.unit .. "|" .. rtext.row_sig(row) .. (row.failed and "|f" or ""),
+		sig = row.unit .. "|" .. rtext.row_sig(row) .. (row.failed and "|f" or "") .. "|" .. rtext.silent_reason(row),
 		tooltip = function()
 			local tip = { "", { "cybersyn-gui.stations-inventory-marker", tostring(row.index), tostring(row.priority),
 				marker_network(row) } }
