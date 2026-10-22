@@ -2311,8 +2311,10 @@ dev.register_dump(TAB, function(player_data)
 			local inv = row_of(id, tags.unit)
 			keys[n] = inv and key_fn(inv, ctx)
 			local marker = false
-			for _, c in ipairs(cells[1].children) do
-				if c.tags.marker then marker = { unit = c.tags.id, kind = c.tags.kind, tooltip = c.tooltip, sprite = c.sprite } end
+			for ci, c in ipairs(cells[1].children) do
+				if c.tags.marker then
+					marker = { unit = c.tags.id, kind = c.tags.kind, tooltip = c.tooltip, sprite = c.sprite, index = ci }
+				end
 			end
 			markers[n] = marker
 			networks[n] = { cells[3].children[2].caption, cells[3].children[1].sprite }
