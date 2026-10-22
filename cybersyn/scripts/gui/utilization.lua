@@ -1,114 +1,69 @@
--- Utilization tab (PLAN4 D14): one row per train layout with its trains, how busy they were over the period and
--- their average trip. Read from storage.trains (composition, trains, deliveries in flight) and the always-on stats
--- buckets (delivery time per layout), on the manager tick while the tab shows; no chart, no charts library.
+-- Utilization tab: the factorio-charts line chart of the share of each train layout's trains on a delivery, one line
+-- per layout, sampled every dispatcher tick by analytics.tick. Shown only while analytics is enabled and the library
+-- is installed (analytics.is_enabled).
 
 local gui = require("__flib__.gui")
-local format = require("__flib__.format")
-local dev = require("scripts.gui.dev")
+local analytics = require("scripts.analytics")
 local util = require("scripts.gui.util")
-local logic = require("scripts.gui.tab-logic")
-local sizing = require("scripts.gui.sizing")
-local stats = require("scripts.stats")
+local dev = require("scripts.gui.dev")
+
+local charts_available, charts = pcall(require, "__factorio-charts__.charts")
+if not charts_available then
+	charts = nil
+end
 
 local utilization_tab = {}
 
 local TAB = "utilization_tab"
--- The rows are rebuilt at most this often: busy shares move slowly and a layout appears or goes rarely.
-local REFRESH_TICKS = 60
-utilization_tab.PERIODS = { 10, 60, 1440 }
-local DEFAULT_PERIOD = 2
--- Fixed columns in logical px; Layout takes the rest of the row (layout_width). The four number columns are
--- right-aligned, as on Stations and Trains.
-local W = { trains = 90, busy = 200, trip = 120, deliveries = 120 }
-local BAR_WIDTH = 120
-local PCT_WIDTH = 48
-local LAYOUT_MIN = 240
--- The rows' frame borders and padding (cybersyn_station_row_*: 4 + 4), and the gaps between the five columns.
-local ROW_CHROME = 8 + 8 + 4 * 8
-local ROW_HEIGHT = 32
+local CACHE_DURATION_TICKS = 300 -- 5 seconds at 60 UPS
 
---- @class UtilizationRow
---- @field layout_id uint
---- @field composition string "L<CC>", or "#id" when the layout record is gone
---- @field runs {class: int, n: int}[]? logic.composition_runs, nil when the layout record is gone
---- @field trains int
---- @field busy_now int trains on a delivery now
---- @field busy number? share of the trains' time on deliveries over the period, 0..1
---- @field trip number? average dispatch-to-unloaded ticks of the deliveries completed in the period
---- @field deliveries int
+-- Button i shows the chart's interval i (analytics' interval_defs).
+local interval_names = { "1m", "10m", "1h", "10h", "50h", "250h", "1000h" }
+utilization_tab.INTERVAL_NAMES = interval_names
 
---- Rows for every layout that has trains, most trains first: a pure function of the train table, the layouts and the
---- stats buckets, so the host tests and the lab compare it with an oracle.
---- @param trains {[uint]: Train}
---- @param layouts {[uint]: int[]}
---- @param minutes int
---- @return UtilizationRow[] rows
---- @return uint span ticks of the period recorded so far
-function utilization_tab.model(trains, layouts, minutes)
-	local count, now, inflight = {}, {}, {}
-	for _, train in pairs(trains) do
-		local id = train.layout_id
-		if id then
-			count[id] = (count[id] or 0) + 1
-			if STATUS_ON_DELIVERY[train.status] then
-				now[id] = (now[id] or 0) + 1
-				local t = train.dispatch_tick
-				if t then
-					local list = inflight[id]
-					if not list then
-						list = {}
-						inflight[id] = list
-					end
-					list[#list + 1] = t
-				end
-			end
-		end
-	end
-	local usage, span = stats.layout_usage(minutes, inflight)
-	local rows = {}
-	for id, n in pairs(count) do
-		local u = usage[id]
-		local layout = layouts[id]
-		local busy = u and span > 0 and math.min(1, u.busy / (n * span)) or 0
-		rows[#rows + 1] = {
-			layout_id = id,
-			composition = layout and logic.composition(layout) or ("#" .. id),
-			runs = layout and logic.composition_runs(layout) or nil,
-			trains = n,
-			busy_now = now[id] or 0,
-			busy = busy,
-			trip = u and u.trip_n > 0 and u.trip_sum / u.trip_n or nil,
-			deliveries = u and u.trip_n or 0,
-		}
-	end
-	table.sort(rows, function(a, b)
-		if a.trains ~= b.trains then return a.trains > b.trains end
-		return a.layout_id < b.layout_id
-	end)
-	return rows, span
+-- Graph size in logical px before the first layout is known; build() sizes it to the tab (graph_size).
+local GRAPH_WIDTH = 1100
+local GRAPH_HEIGHT = 700
+local LEGEND_WIDTH = 150
+-- Above the graph: the tab subheader 36, the item filter note 24, the time range row 32, the gaps between them.
+local GRAPH_CHROME = 104
+local GRAPH_MIN_WIDTH, GRAPH_MIN_HEIGHT = 400, 300
+local UNSELECTED_COLOR = { r = 0.5, g = 0.5, b = 0.5 }
+
+--- The graph's size for the player's window: the tab's width beside the legend and its height below the time range.
+--- @param player_data PlayerData
+--- @return int width
+--- @return int height
+local function graph_size(player_data)
+	local layout = player_data.layout
+	if not layout then return GRAPH_WIDTH, GRAPH_HEIGHT end
+	return math.max(GRAPH_MIN_WIDTH, layout.content_width - LEGEND_WIDTH - 8),
+		math.max(GRAPH_MIN_HEIGHT, layout.content_height - GRAPH_CHROME)
 end
 
--- ---------------------------------------------------------------- build
-
-local function header_cell(caption, tooltip, width, right, name)
-	return { type = "label", name = name, style = "bold_label", caption = caption, tooltip = tooltip,
-		style_mods = { width = width, horizontal_align = right and "right" or "left" } }
-end
-
---- The Layout column's width: what the fixed columns leave of the tab's width.
---- @param player_data PlayerData?
---- @return int
-local function layout_width(player_data)
-	local layout = player_data and player_data.layout
-	local cw = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
-	return math.max(LAYOUT_MIN, cw - ROW_CHROME - W.trains - W.busy - W.trip - W.deliveries)
+local function locked_size(width, height)
+	return {
+		width = width,
+		height = height,
+		minimal_width = width,
+		minimal_height = height,
+		maximal_width = width,
+		maximal_height = height,
+	}
 end
 
 function utilization_tab.create()
-	local periods = {}
-	for i, minutes in ipairs(utilization_tab.PERIODS) do
-		periods[i] = { "cybersyn-gui.overview-period-" .. minutes }
+	local interval_buttons = {}
+	for i, name in ipairs(interval_names) do
+		interval_buttons[i] = {
+			type = "button",
+			caption = name,
+			style = i == 1 and "flib_selected_tool_button" or "tool_button",
+			tags = { interval_name = name, interval_index = i },
+			handler = utilization_tab.handle.on_utilization_interval_click,
+		}
 	end
+
 	return {
 		tab = {
 			name = "manager_utilization_tab",
@@ -120,178 +75,285 @@ function utilization_tab.create()
 			name = "manager_utilization_content_frame",
 			type = "flow",
 			direction = "vertical",
-			style = "cybersyn_overview_content",
 			{
-				type = "frame",
-				name = "utilization_frame",
-				direction = "vertical",
-				style = "cybersyn_unserved_frame",
+				type = "label",
+				caption = { "cybersyn-gui.utilization-item-filter-note" },
+				style_mods = { single_line = false, bottom_margin = 4 },
+			},
+			{
+				type = "flow",
+				direction = "horizontal",
+				style_mods = { vertical_align = "center", horizontal_spacing = 8, bottom_margin = 4 },
 				{
-					type = "frame",
-					direction = "horizontal",
-					style = "cybersyn_unserved_caption_frame",
-					{ type = "label", name = "utilization_header", style = "subheader_caption_label",
-						caption = { "cybersyn-gui.utilization-header" }, tooltip = { "cybersyn-gui.utilization-header-tooltip" },
-						style_mods = { horizontally_squashable = true } },
-					{ type = "empty-widget", style = "flib_horizontal_pusher" },
-					{
-						type = "flow",
-						name = "utilization_recorded_flow",
-						direction = "horizontal",
-						visible = false,
-						style_mods = { horizontal_spacing = 6 },
-						{ type = "label", style = "cybersyn_subheader_note", caption = { "cybersyn-gui.overview-recorded-line" } },
-						{ type = "label", name = "utilization_recorded", caption = "" },
-					},
-					{
-						type = "drop-down",
-						name = "utilization_period",
-						items = periods,
-						selected_index = DEFAULT_PERIOD,
-						tooltip = { "cybersyn-gui.utilization-period-tooltip" },
-						handler = { [defines.events.on_gui_selection_state_changed] = utilization_tab.handle.on_utilization_period_changed },
-					},
+					type = "label",
+					caption = { "cybersyn-gui.time-range" },
+					style = "caption_label",
 				},
 				{
-					type = "frame",
-					name = "utilization_header_row",
-					style = "cybersyn_list_header",
-					header_cell({ "cybersyn-gui.utilization-col-layout" }, { "cybersyn-gui.utilization-col-layout-tooltip" },
-						layout_width(nil), false, "utilization_layout_header"),
-					header_cell({ "cybersyn-gui.utilization-col-trains" }, { "cybersyn-gui.utilization-col-trains-tooltip" }, W.trains, true),
-					header_cell({ "cybersyn-gui.utilization-col-busy" }, { "cybersyn-gui.utilization-col-busy-tooltip" }, W.busy, true),
-					header_cell({ "cybersyn-gui.utilization-col-trip" }, { "cybersyn-gui.utilization-col-trip-tooltip" }, W.trip, true),
-					header_cell({ "cybersyn-gui.utilization-col-deliveries" }, { "cybersyn-gui.utilization-col-deliveries-tooltip" }, W.deliveries, true),
-				},
-				{
+					name = "utilization_interval_buttons",
 					type = "flow",
-					name = "utilization_empty_flow",
 					direction = "horizontal",
-					style = "cybersyn_overview_empty_flow",
-					visible = false,
-					{ type = "label", style = "cybersyn_overview_empty_label", caption = { "cybersyn-gui.utilization-empty" } },
+					table.unpack(interval_buttons),
 				},
-				{ type = "flow", name = "utilization_rows", direction = "vertical", style = "cybersyn_list_rows" },
+			},
+			{
+				name = "utilization_main_flow",
+				type = "flow",
+				direction = "horizontal",
+				style_mods = {
+					horizontal_spacing = 8,
+					horizontally_stretchable = true,
+					vertically_stretchable = true,
+				},
+				visible = false,
+				{
+					name = "utilization_legend_flow",
+					type = "flow",
+					direction = "vertical",
+					style_mods = { width = LEGEND_WIDTH, vertically_stretchable = true },
+					{
+						type = "label",
+						caption = { "cybersyn-gui.train-types" },
+						style = "caption_label",
+					},
+					{
+						type = "scroll-pane",
+						style = "flib_naked_scroll_pane_no_padding",
+						style_mods = { vertically_stretchable = true },
+						{
+							name = "utilization_legend_table",
+							type = "table",
+							column_count = 1,
+						},
+					},
+				},
+				{
+					name = "utilization_camera_frame",
+					type = "frame",
+					style = "deep_frame_in_shallow_frame",
+					style_mods = locked_size(GRAPH_WIDTH, GRAPH_HEIGHT),
+					{
+						name = "utilization_camera",
+						type = "camera",
+						position = { 0, 0 },
+						surface_index = 1,
+						zoom = 1,
+						style_mods = locked_size(GRAPH_WIDTH, GRAPH_HEIGHT),
+					},
+				},
+			},
+			{
+				name = "utilization_no_data_label",
+				type = "label",
+				caption = { "cybersyn-gui.no-analytics-data" },
+				visible = true,
 			},
 		},
 	}
 end
 
---- @param player_data PlayerData
---- @return int minutes
-local function period_of(player_data)
-	return utilization_tab.PERIODS[player_data.utilization_period or DEFAULT_PERIOD] or 60
+--- The legend's order (and the chart's colour order): the highest sum first, then by name.
+--- @param interval {counts: {[string]: int}, sum: {[string]: number}}
+--- @return {name: string, sum: number, count: int}[]
+function utilization_tab.sorted_series(interval)
+	local all_series = {}
+	for name, count in pairs(interval.counts) do
+		all_series[#all_series + 1] = { name = name, sum = interval.sum[name] or 0, count = count }
+	end
+	table.sort(all_series, function(a, b)
+		if a.sum ~= b.sum then
+			return a.sum > b.sum
+		end
+		return a.name < b.name
+	end)
+	return all_series
 end
 
---- The Layout cell: the Trains tab's composition icons (one per run of one carriage class, the run's length as its
---- badge), the "L<CC>" text in the tooltip; the last icon the column holds becomes "+n" when a layout has more runs.
---- @param row UtilizationRow
---- @param width int the Layout column's width
---- @return flib.GuiElemDef
-local function layout_def(row, width)
-	local tooltip = { "cybersyn-gui.utilization-layout-tooltip", row.composition, tostring(row.layout_id) }
-	local cell = {
-		type = "flow",
-		direction = "horizontal",
-		tooltip = tooltip,
-		style_mods = { width = width, vertical_align = "center", horizontal_spacing = 0 },
-	}
-	local runs = row.runs
-	if not runs then
-		cell[1] = { type = "label", caption = row.composition, tooltip = tooltip }
-		return cell
+--- @param refs table<string, LuaGuiElement>
+--- @param interval_index int
+local function style_interval_buttons(refs, interval_index)
+	local interval_buttons = refs.utilization_interval_buttons
+	if not (interval_buttons and interval_buttons.valid) then return end
+	for _, button in pairs(interval_buttons.children) do
+		if button.tags and button.tags.interval_index then
+			button.style = button.tags.interval_index == interval_index and "flib_selected_tool_button" or "tool_button"
+		end
 	end
-	local shown, over = logic.fit_slots(#runs, math.floor(width / logic.COMPOSITION_ICON))
-	for i = 1, shown do
-		local r = runs[i]
-		cell[i] = {
-			type = "sprite-button",
-			style = "cybersyn_composition_icon",
-			sprite = logic.CLASS_SPRITE[r.class],
-			number = r.n > 1 and r.n or nil,
-			-- Hover falls through to the cell, whose tooltip names the layout; the icons are not buttons.
-			ignored_by_interaction = true,
-		}
-	end
-	if over > 0 then
-		cell[shown + 1] = { type = "label", style = "cybersyn_overflow_label", caption = "+" .. over, tooltip = tooltip,
-			style_mods = { width = logic.COMPOSITION_ICON } }
-	end
-	return cell
 end
 
---- One layout's row: the shared 32 px list row, the numbers on their columns' right edge.
---- @param row UtilizationRow
---- @param i int
---- @param width int the Layout column's width
---- @return flib.GuiElemDef
-local function row_def(row, i, width)
-	local busy_pct = math.floor(row.busy * 100 + 0.5)
-	return {
-		type = "frame",
-		style = i % 2 == 1 and "cybersyn_station_row_light" or "cybersyn_station_row_dark",
-		style_mods = { height = ROW_HEIGHT },
-		direction = "horizontal",
-		layout_def(row, width),
-		{ type = "label", style = "cybersyn_cell_value", caption = format.number(row.trains), style_mods = { width = W.trains } },
-		{
-			type = "flow",
-			direction = "horizontal",
-			style_mods = { width = W.busy, vertical_align = "center", horizontal_align = "right", horizontal_spacing = 8 },
-			tooltip = { "cybersyn-gui.utilization-busy-tooltip", tostring(busy_pct), format.number(row.busy_now),
-				format.number(row.trains) },
-			{ type = "progressbar", value = row.busy, style_mods = { width = BAR_WIDTH } },
-			{ type = "label", style = "cybersyn_cell_value", caption = busy_pct .. " %", style_mods = { width = PCT_WIDTH } },
-		},
-		{ type = "label", style = "cybersyn_cell_value", caption = row.trip and util.short_duration(row.trip) or "–",
-			style_mods = { width = W.trip } },
-		{ type = "label", style = "cybersyn_cell_value", caption = format.number(row.deliveries), style_mods = { width = W.deliveries } },
-	}
+--- @param map_data MapData
+--- @param legend_table LuaGuiElement
+--- @param all_series {name: string, sum: number, count: int}[]
+--- @param selected_series {[string]: boolean}
+local function build_legend(map_data, legend_table, all_series, selected_series)
+	legend_table.clear()
+	local colors = charts.get_series_colors()
+	for i, entry in ipairs(all_series) do
+		local layout_id = tonumber(entry.name)
+		local layout = layout_id and map_data.layouts[layout_id]
+		local avg_util = entry.sum / (entry.count or 1)
+		local color = colors[((i - 1) % #colors) + 1]
+		local is_selected = selected_series[entry.name] ~= false
+		gui.add(legend_table, {
+			{
+				type = "flow",
+				direction = "horizontal",
+				style_mods = { vertical_align = "center", horizontal_spacing = 4 },
+				{
+					type = "progressbar",
+					value = 1,
+					style_mods = {
+						width = 12,
+						height = 4,
+						color = is_selected and color or UNSELECTED_COLOR,
+					},
+				},
+				{
+					type = "checkbox",
+					state = is_selected,
+					caption = analytics.format_layout_name(layout, layout_id),
+					tags = { series_name = entry.name },
+					-- A click on a checkbox raises on_gui_click too; the state change is the one event that carries it.
+					handler = { [defines.events.on_gui_checked_state_changed] = utilization_tab.handle.on_utilization_legend_checkbox_changed },
+				},
+				{
+					type = "label",
+					caption = string.format("%.1f%%", avg_util),
+					style_mods = { font_color = is_selected and color or UNSELECTED_COLOR },
+				},
+			},
+		})
+	end
 end
 
 ---@param map_data MapData
 ---@param player_data PlayerData
 function utilization_tab.build(map_data, player_data)
+	if not analytics.is_enabled() then
+		return
+	end
+	analytics.init(map_data)
+	if not map_data.analytics then
+		return
+	end
+
 	local refs = player_data.refs
-	local tbl = refs.utilization_rows
-	if not (tbl and tbl.valid) then return end
-	local minutes = period_of(player_data)
+	local data = map_data.analytics
+
+	local interval_index = player_data.utilization_interval or 1
+	if not interval_names[interval_index] then interval_index = 1 end
+	local intervals = data.train_utilization
+	local interval = intervals[interval_index]
+
+	style_interval_buttons(refs, interval_index)
+
+	local has_data = interval and next(interval.counts) ~= nil or false
+	if refs.utilization_no_data_label then
+		refs.utilization_no_data_label.visible = not has_data
+	end
+	if refs.utilization_main_flow then
+		refs.utilization_main_flow.visible = has_data
+	end
+
+	local player = game.get_player(player_data.player_index)
+	if not player then return end
+
+	-- The graph fills the tab: its size follows the window's layout.
+	local gw, gh = graph_size(player_data)
+	local frame, camera = refs.utilization_camera_frame, refs.utilization_camera
+	local resized = frame and frame.valid and (frame.style.minimal_width ~= gw or frame.style.minimal_height ~= gh)
+	if resized then
+		for _, e in ipairs({ frame, camera }) do
+			if e and e.valid then
+				e.style.width, e.style.height = gw, gh
+				e.style.minimal_width, e.style.minimal_height = gw, gh
+				e.style.maximal_width, e.style.maximal_height = gw, gh
+			end
+		end
+		if interval.chunk and data.surface_data then
+			charts.ensure_tile_coverage(data.surface_data, interval.chunk, { viewport_width = gw, viewport_height = gh })
+		end
+		player_data.utilization_cache = nil
+	end
+
+	-- Keeps the camera off the player's own surface even when no chunk could be allocated.
+	if camera and data.surface then
+		camera.surface_index = data.surface.index
+	end
+
+	if not player_data.utilization_registered then
+		analytics.interval_register_gui(map_data, interval, player, refs, { viewport_width = gw, viewport_height = gh })
+		player_data.utilization_registered = true
+	end
+
+	local chunk = interval.chunk
+	if not chunk then
+		return
+	end
+
+	-- zoom = scale / density puts one tile on 32 logical px on any display (Windows density 1.0-1.75, Mac 2.0). The
+	-- library centres the camera on a 900x700 viewport (it is not told the size); the offsets move it onto the graph's
+	-- centre (tuned on the former fixed 1100x700 graph: 3.0, 0.1).
+	local display_scale = player.display_scale or 1.0
+	local display_density = player.display_density_scale or 1.0
+	local zoom = display_scale / display_density
+	local xoffset = (gw - 900) / 64 - 0.125
+	local yoffset = (gh - 700) / 64 + 0.1
+	if camera and charts then
+		charts.setup_camera_widget(camera, data.surface, chunk, {
+			widget_width = gw,
+			widget_height = gh,
+			display_scale = display_scale,
+			position_offset = { x = xoffset, y = yoffset },
+			zoom_override = zoom,
+		})
+	end
+
+	if not has_data then
+		return
+	end
+
+	local selected_series = player_data.utilization_selected or {}
+	local current_tick = game.tick
 	local cache = player_data.utilization_cache
-	local now = game.tick
-	if cache and cache.minutes == minutes and now - cache.tick < REFRESH_TICKS then return end
-	local rows, span = utilization_tab.model(map_data.trains, map_data.layouts, minutes)
-	local width = layout_width(player_data)
-	local sig = { minutes, width }
-	for _, r in ipairs(rows) do
-		sig[#sig + 1] = table.concat({ r.layout_id, r.composition, r.trains, r.busy_now, math.floor(r.busy * 1000),
-			r.trip and math.floor(r.trip / 60) or "", r.deliveries }, ":")
+	if cache and cache.interval_index == interval_index and (current_tick - cache.tick) < CACHE_DURATION_TICKS then
+		return
 	end
-	sig = table.concat(sig, ",")
-	player_data.utilization_cache = { tick = now, minutes = minutes, rows = #rows }
-	local dropdown = refs.utilization_period
-	if dropdown and dropdown.valid then dropdown.selected_index = player_data.utilization_period or DEFAULT_PERIOD end
-	local recorded, recorded_flow = refs.utilization_recorded, refs.utilization_recorded_flow
-	local partial = span < minutes * 3600
-	if recorded and recorded.valid then
-		recorded.caption = partial and util.short_duration(span) or ""
-		recorded_flow.visible = partial
+	local all_series = utilization_tab.sorted_series(interval)
+	local drawn = analytics.render_graph(map_data, intervals, interval_index, selected_series, { 0, 100 }, nil, gw, gh)
+	player_data.utilization_cache = {
+		tick = current_tick,
+		interval_index = interval_index,
+		series = #all_series,
+		drawn = drawn and #drawn or 0,
+	}
+	local legend_table = refs.utilization_legend_table
+	if legend_table and legend_table.valid then
+		build_legend(map_data, legend_table, all_series, selected_series)
 	end
-	local empty = refs.utilization_empty_flow
-	if empty and empty.valid then empty.visible = #rows == 0 end
-	if player_data.utilization_sig == sig then return end
-	player_data.utilization_sig = sig
-	-- A handful of layout rows, rebuilt whole when anything in them changed.
-	local header = refs.utilization_layout_header
-	if header and header.valid then header.style.width = width end
-	tbl.clear()
-	for i, row in ipairs(rows) do gui.add(tbl, row_def(row, i, width)) end
 end
 
 ---@param map_data MapData
 ---@param player_data PlayerData
 function utilization_tab.cleanup(map_data, player_data)
 	player_data.utilization_cache = nil
-	player_data.utilization_sig = nil
+	if not map_data.analytics then return end
+	if not player_data.player_index then return end
+
+	local series = map_data.analytics.train_utilization
+	local interval = series and series[player_data.utilization_interval or 1]
+
+	-- Lines left behind would overlap the next tab's chart on the shared surface.
+	if interval and interval.line_ids and charts then
+		charts.destroy_render_objects(interval.line_ids)
+		interval.line_ids = {}
+	end
+
+	local player = game.get_player(player_data.player_index)
+	if player and interval and player_data.utilization_registered then
+		analytics.interval_unregister_gui(map_data, interval, player)
+	end
+	player_data.utilization_registered = nil
 end
 
 utilization_tab.handle = {}
@@ -304,9 +366,37 @@ function utilization_tab.handle.on_utilization_tab_selected(player, player_data)
 	player_data.selected_tab = TAB
 end
 
---- @param e EventData.on_gui_selection_state_changed
-function utilization_tab.handle.on_utilization_period_changed(player, player_data, refs, e)
-	player_data.utilization_period = e.element.selected_index
+---@param player LuaPlayer
+---@param player_data PlayerData
+---@param refs table<string, LuaGuiElement>
+---@param e EventData.on_gui_click
+function utilization_tab.handle.on_utilization_interval_click(player, player_data, refs, e)
+	local element = e.element
+	if not element or not element.tags then return end
+	local interval_index = element.tags.interval_index
+	if not interval_index then return end
+
+	-- Unregisters the interval shown so far; build registers the new one.
+	utilization_tab.cleanup(storage, player_data)
+	player_data.utilization_interval = interval_index
+	style_interval_buttons(refs, interval_index)
+	util.rerender(player, player_data)
+end
+
+---@param player LuaPlayer
+---@param player_data PlayerData
+---@param refs table<string, LuaGuiElement>
+---@param e EventData.on_gui_checked_state_changed
+function utilization_tab.handle.on_utilization_legend_checkbox_changed(player, player_data, refs, e)
+	local element = e.element
+	if not element or not element.tags then return end
+	local series_name = element.tags.series_name
+	if not series_name then return end
+
+	if not player_data.utilization_selected then
+		player_data.utilization_selected = {}
+	end
+	player_data.utilization_selected[series_name] = element.state
 	player_data.utilization_cache = nil
 	util.rerender(player, player_data)
 end
@@ -315,51 +405,75 @@ gui.add_handlers(utilization_tab.handle, utilization_tab.wrapper)
 
 dev.register_dump(TAB, function(player_data)
 	local refs = player_data.refs
-	local list = refs.utilization_rows
-	local rows = {}
+	local legend = {}
+	local list = refs.utilization_legend_table
 	for _, row in ipairs(list and list.valid and list.children or {}) do
 		local cells = row.children
-		local icons = {}
-		for j, icon in ipairs(cells[1].children) do
-			icons[j] = icon.type == "sprite-button" and { icon.sprite, icon.number or 1 } or icon.caption
-		end
-		local busy = cells[3].children[2]
-		rows[#rows + 1] = {
-			layout = cells[1].tooltip[2],
-			icons = icons,
-			trains = cells[2].caption,
-			busy = busy.caption,
-			trip = cells[4].caption,
-			deliveries = cells[5].caption,
-			style = row.style.name,
-			height = row.style.maximal_height,
-			numbers_right = cells[2].style.name == "cybersyn_cell_value" and busy.style.name == "cybersyn_cell_value"
-				and cells[3].style.horizontal_align == "right" and cells[4].style.name == "cybersyn_cell_value"
-				and cells[5].style.name == "cybersyn_cell_value",
-		}
+		legend[#legend + 1] = { series = cells[2].tags.series_name, caption = cells[2].caption, state = cells[2].state,
+			average = cells[3].caption }
 	end
-	local header_right = {}
-	for i, cell in ipairs(refs.utilization_header_row.children) do header_right[i] = cell.style.horizontal_align == "right" end
-	return { rows = rows, minutes = period_of(player_data), header = refs.utilization_header.caption,
-		empty = refs.utilization_empty_flow.visible, header_right = header_right,
-		recorded = refs.utilization_recorded_flow.visible and refs.utilization_recorded.caption or false,
-		layout_width = refs.utilization_layout_header.style.minimal_width }
+	local selected = {}
+	local buttons = refs.utilization_interval_buttons
+	for i, button in ipairs(buttons and buttons.valid and buttons.children or {}) do
+		selected[i] = button.style.name == "flib_selected_tool_button"
+	end
+	local cache = player_data.utilization_cache
+	local camera = refs.utilization_camera
+	local gw, gh = graph_size(player_data)
+	local layout = player_data.layout
+	return {
+		interval = player_data.utilization_interval or 1,
+		buttons = selected,
+		captions = interval_names,
+		legend = legend,
+		chart = refs.utilization_main_flow.visible,
+		no_data = refs.utilization_no_data_label.visible,
+		registered = player_data.utilization_registered == true,
+		series = cache and cache.series or 0,
+		drawn = cache and cache.drawn or 0,
+		camera_surface = camera and camera.valid and camera.surface_index or nil,
+		camera_width = camera and camera.valid and camera.style.minimal_width or nil,
+		width = gw,
+		height = gh,
+		content_width = layout and layout.content_width,
+		content_height = layout and layout.content_height,
+		legend_width = LEGEND_WIDTH,
+		chrome = GRAPH_CHROME,
+	}
 end)
 
---- The model the tab renders, for oracles: (pi, minutes) -> rows, span.
-dev.add("utilization_model", function(pi, minutes)
+--- The legend checkbox of `series` toggled as a player's click toggles it.
+dev.add("utilization_toggle", function(pi, series)
 	local player_data = storage.manager.players[pi]
-	local rows, span = utilization_tab.model(storage.trains, storage.layouts, minutes or period_of(player_data))
-	return { rows = rows, span = span }
+	local list = player_data.refs.utilization_legend_table
+	for _, row in ipairs(list and list.valid and list.children or {}) do
+		local box = row.children[2]
+		if box.tags.series_name == series then
+			local state = not box.state
+			box.state = state
+			-- The handler rebuilds the legend, so `box` is gone afterwards.
+			util.dispatch({ name = defines.events.on_gui_checked_state_changed, element = box, player_index = pi,
+				tick = game.tick })
+			return state
+		end
+	end
+	return "no series " .. tostring(series)
 end)
 
-dev.add("utilization_set_period", function(pi, index)
-	local player_data = storage.manager.players[pi]
-	player_data.utilization_period = index
-	player_data.utilization_cache = nil
-	local player = game.get_player(pi)
-	if player and player_data.is_manager_open then util.rerender(player, player_data) end
-	return period_of(player_data)
+--- The chart's samples (per interval: series -> sample count), whether the library loaded and the tick the missing
+--- library was named to player `pi`, for oracles.
+dev.add("utilization_samples", function(pi)
+	local data = storage.analytics
+	local player_data = pi and storage.manager.players[pi]
+	local out = { library = analytics.is_library_available(), enabled = analytics.is_enabled() and true or false,
+		notice = player_data and player_data.analytics_notice_tick }
+	if data and data.train_utilization then
+		out.intervals = {}
+		for i, interval in ipairs(data.train_utilization) do
+			out.intervals[i] = { name = interval.name, counts = interval.counts, viewers = interval.viewer_count }
+		end
+	end
+	return out
 end)
 
 return utilization_tab

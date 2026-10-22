@@ -1,11 +1,8 @@
--- Analytics tabs (PLAN4 D14): the Breakdown range buttons and the Utilization table model.
+-- Analytics tabs: the Breakdown range buttons (PLAN4 D14) and the Utilization chart's samples and legend (PLAN8 D8-5).
 
 local H = require("harness")
 local analytics = loadfile("cybersyn/scripts/analytics.lua")()
 local utilization = require("scripts.gui.utilization")
-local stats = require("scripts.stats")
-
-local MIN = 3600
 
 test("breakdown ranges: every button covers exactly the span its caption names", function()
 	local keys = {}
@@ -30,45 +27,58 @@ end)
 
 local function trains()
 	return {
-		[1] = { layout_id = 1, status = STATUS_TO_P, dispatch_tick = 9 * MIN },
+		[1] = { layout_id = 1, status = STATUS_TO_P },
 		[2] = { layout_id = 1, status = STATUS_D },
-		[3] = { layout_id = 2, status = STATUS_R, dispatch_tick = 5 * MIN },
+		[3] = { layout_id = 2, status = STATUS_R },
 		[4] = { layout_id = 1, status = STATUS_F },
-		[5] = { status = STATUS_D },
+		[5] = { layout_id = 1, status = STATUS_TO_R },
+		[6] = { status = STATUS_D },
 	}
 end
 
-test("utilization model: one row per layout with trains, most trains first, busy over the period", function()
-	game.tick = 0
-	storage.stats = nil
-	stats.get()
-	-- Layout 1 finished a 2-minute delivery in minutes 2-4.
-	game.tick = 4 * MIN
-	stats.record_delivery_complete({ layout_id = 1, manifest = {}, dispatch_tick = 2 * MIN })
-	game.tick = 10 * MIN
-	local rows, span = utilization.model(trains(), { [1] = { 0, 1, 1 }, [2] = { 0, 2 } }, 10)
-	-- Ten minute buckets: the current one has just begun, so the period reaches back to 1:00.
-	assert_eq(span, 9 * MIN + 1)
-	assert_eq(#rows, 2, "rows == distinct layouts among the trains")
-	assert_eq({ rows[1].layout_id, rows[1].composition, rows[1].trains, rows[1].busy_now, rows[1].deliveries },
-		{ 1, "L<CC>", 3, 1, 1 })
-	assert_near(rows[1].busy, (2 * MIN + 1 * MIN) / (3 * span))
-	assert_eq(rows[1].trip, 2 * MIN)
-	assert_eq({ rows[2].layout_id, rows[2].composition, rows[2].trains, rows[2].busy_now, rows[2].trip },
-		{ 2, "L<F>", 1, 1, nil })
-	assert_near(rows[2].busy, 5 * MIN / span)
-	assert_eq(rows[1].runs, { { class = 0, n = 1 }, { class = 1, n = 2 } }, "the Trains tab's composition runs")
-	assert_eq(rows[2].runs, { { class = 0, n = 1 }, { class = 2, n = 1 } })
+test("utilization sample: per layout, the share of its trains on a delivery now, in percent", function()
+	local sample = analytics.utilization_sample(trains())
+	assert_eq(sample, { ["1"] = 50, ["2"] = 100 }, "a train without a layout is no series")
+	assert_eq(analytics.utilization_sample({ [1] = { layout_id = 3, status = STATUS_TO_D } }), { ["3"] = 0 })
+	assert_eq(analytics.utilization_sample({}), {})
 end)
 
-test("utilization model: a layout record that is gone shows its id; busy is capped at 100 %", function()
-	game.tick = 0
-	storage.stats = nil
-	stats.get()
-	game.tick = MIN
-	local rows = utilization.model({ [1] = { layout_id = 9, status = STATUS_P, dispatch_tick = 0 } }, {}, 10)
-	assert_eq(rows[1].composition, "#9")
-	assert_nil(rows[1].runs, "no icons without the layout record")
-	assert_true(rows[1].busy <= 1)
-	assert_eq(utilization.model({}, {}, 10), {})
+test("utilization sample: every on-delivery status counts as working, depot, refuel and return do not", function()
+	for status, working in pairs({ [STATUS_D] = false, [STATUS_TO_P] = true, [STATUS_P] = true, [STATUS_TO_R] = true,
+		[STATUS_R] = true, [STATUS_TO_D] = false, [STATUS_TO_D_BYPASS] = false, [STATUS_TO_F] = false, [STATUS_F] = false }) do
+		assert_eq(analytics.utilization_sample({ { layout_id = 1, status = status } })["1"], working and 100 or 0, status)
+	end
+end)
+
+test("utilization legend: layouts named by their carriage counts, a missing record by its id", function()
+	assert_eq(analytics.format_layout_name({ 0, 1, 1, 1, 1 }, 1), "1L-4C")
+	assert_eq(analytics.format_layout_name({ 0, 0, 2, 1, 0 }, 2), "3L-1C-1F")
+	assert_eq(analytics.format_layout_name(nil, 9), "#9")
+	assert_eq(analytics.format_layout_name({}, 4), "#4")
+end)
+
+test("utilization legend: highest sum first, ties by name, each with its sample count", function()
+	local series = utilization.sorted_series({ counts = { ["1"] = 3, ["2"] = 3, ["10"] = 2 },
+		sum = { ["1"] = 150, ["2"] = 300, ["10"] = 150 } })
+	assert_eq(series, { { name = "2", sum = 300, count = 3 }, { name = "1", sum = 150, count = 3 },
+		{ name = "10", sum = 150, count = 2 } })
+	assert_eq(utilization.sorted_series({ counts = {}, sum = {} }), {})
+end)
+
+test("utilization: a range button per interval after the 5 s one", function()
+	assert_eq(utilization.INTERVAL_NAMES, { "1m", "10m", "1h", "10h", "50h", "250h", "1000h" })
+end)
+
+test("utilization locale: the chart's keys are in en, the table's are gone from every locale", function()
+	local en = H.locale_text("en")
+	for _, key in ipairs({ "utilization-tab", "utilization-item-filter-note", "train-types", "no-analytics-data",
+		"time-range", "analytics-library-missing" }) do
+		assert_true(en:find("\n" .. key .. "=", 1, true) ~= nil, key)
+	end
+	for _, lang in ipairs(H.LOCALES) do
+		local text = H.locale_text(lang)
+		for _, key in ipairs({ "utilization-header", "utilization-period-tooltip", "utilization-col-busy", "utilization-empty" }) do
+			assert_true(text:find("\n" .. key .. "=", 1, true) == nil, lang .. " " .. key)
+		end
+	end
 end)
