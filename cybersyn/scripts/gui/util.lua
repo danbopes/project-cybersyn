@@ -18,8 +18,6 @@ util.parse_rich_name = rich_name.parse
 --- @type fun(player: LuaPlayer?): boolean
 util.may_act = require("scripts.actions").may_act
 
--- The item drill-down's open/close (scripts/gui/item.lua registers them through util.set_item_view).
-local item_view
 
 --- Create a flying text at the player's cursor with an error sound.
 --- @param player LuaPlayer
@@ -770,10 +768,6 @@ end
 --- @param text string?
 function util.set_search_query(player_data, text)
 	if text == "" then text = nil end
-	-- A new station search comes from outside the drill-down (its subheader has no search field): show the lists.
-	if text ~= player_data.search_query and player_data.item_view and item_view then
-		item_view.close(nil, player_data)
-	end
 	player_data.search_query = text
 	player_data.search_terms = util.search_terms(text)
 end
@@ -784,6 +778,7 @@ end
 --- @field network string? network signal name
 --- @field mask int -1 = any
 --- @field surface uint? surface index
+--- @field station uint? station id (the station chip, PLAN8 D8-7): only that station's rows pass
 
 --- @param player_data PlayerData
 --- @return ManagerFilters
@@ -799,6 +794,7 @@ function util.get_filters(player_data)
 		network = player_data.search_network_name,
 		mask = player_data.search_network_mask or -1,
 		surface = player_data.search_surface_idx,
+		station = player_data.search_station,
 	}
 end
 
@@ -806,11 +802,11 @@ end
 --- @param ignore_item boolean?
 --- @return boolean
 function util.filters_active(f, ignore_item)
-	return f.terms ~= nil or f.network ~= nil or f.mask ~= -1 or f.surface ~= nil or (not ignore_item and f.item ~= nil)
+	return f.terms ~= nil or f.network ~= nil or f.mask ~= -1 or f.surface ~= nil or f.station ~= nil
+		or (not ignore_item and f.item ~= nil)
 end
 
 local btest = bit32.btest
-local has_sections = collector.station_has_sections
 
 --- @param network_name string?
 --- @param network_mask int|{[string]: int}?
@@ -837,26 +833,61 @@ function util.network_passes(network_name, network_mask, f)
 	return true
 end
 
+--- The row's own part of row_passes: its network and its item.
+--- @param row SnapshotInventory
+--- @param f ManagerFilters
+--- @param ignore_item boolean?
+--- @return boolean
+local function row_own_passes(row, f, ignore_item)
+	if not util.network_passes(row.network_name, row.networks or row.mask, f) then return false end
+	local item = f.item
+	if item and not ignore_item then
+		-- Deliveries belong to the station; they show on its first row.
+		if not (row.provided[item] or row.requested[item] or (row.index == 0 and row.st.deliveries[item])) then
+			return false
+		end
+	end
+	return true
+end
+
+--- Whether one inventory row (collector.inventories) passes the filters: its station's surface, name terms and the
+--- station chip, then the row's own network, mask and item.
+--- @param row SnapshotInventory
+--- @param f ManagerFilters
+--- @param ignore_item boolean?
+--- @return boolean
+function util.row_passes(row, f, ignore_item)
+	local st = row.st
+	if f.station and st.id ~= f.station then return false end
+	if f.surface and st.surface_index ~= f.surface then return false end
+	local terms = f.terms
+	if terms and not util.terms_match(st.name_lower, terms) then return false end
+	return row_own_passes(row, f, ignore_item)
+end
+
+--- A station passes when any of its rows does. A record without rows (hand-built) is one row on its own lists.
 --- @param st SnapshotStation
 --- @param f ManagerFilters
 --- @param ignore_item boolean?
 --- @return boolean
 function util.station_passes(st, f, ignore_item)
+	if f.station and st.id ~= f.station then return false end
 	if f.surface and st.surface_index ~= f.surface then return false end
 	local terms = f.terms
 	if terms and not util.terms_match(st.name_lower, terms) then return false end
-	-- A station with sections passes under every network bit any of its sources advertises on (mask_union); a plain
-	-- one advertises only on its own network, which skips the union's per-name walk on most stations.
-	if st.mask_union and has_sections(st) then
-		if not util.network_passes(NETWORK_EACH, st.mask_union, f) then return false end
-	elseif not util.network_passes(st.network_name, st.network_mask, f) then
-		return false
+	local rows = st.rows
+	if rows == nil then
+		if not util.network_passes(st.network_name, st.network_mask, f) then return false end
+		local item = f.item
+		if item and not ignore_item then
+			if not (st.provided[item] or st.requested[item] or st.deliveries[item]) then return false end
+		end
+		return true
 	end
-	local item = f.item
-	if item and not ignore_item then
-		if not (st.provided[item] or st.requested[item] or st.deliveries[item]) then return false end
+	for i = 1, #rows do
+		if row_own_passes(rows[i], f, ignore_item) then return true end
 	end
-	return true
+	return false
 end
 
 --- The filters the Overview applies (PLAN4 D2): network name, network ID, surface and item. It has no station search,
@@ -866,6 +897,8 @@ end
 function util.overview_filters(player_data)
 	local f = util.get_filters(player_data)
 	f.terms = nil
+	-- D8-7: the Overview ignores the station chip (its tooltip says so there).
+	f.station = nil
 	if f.item and not util.signal_hash_valid(f.item) then f.item = nil end
 	return f
 end
@@ -876,6 +909,7 @@ end
 function util.filter_signature(f)
 	return table.concat({
 		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
+		f.station or "",
 	}, "\1")
 end
 
@@ -884,6 +918,16 @@ end
 --- @return boolean
 function util.place_filters_active(f)
 	return f.network ~= nil or f.mask ~= -1 or f.surface ~= nil
+end
+
+--- The locale-key suffix of the drill-down's empty texts (D8-8): with a place filter or the station chip set, "No
+--- station provides this item" would deny stations the filters merely hide, so the text names the filters.
+--- Used as {"cybersyn-gui.item-empty-<table>" .. util.empty_filter_suffix(f)}.
+--- @param f ManagerFilters
+--- @return string
+function util.empty_filter_suffix(f)
+	if f.station ~= nil or util.place_filters_active(f) then return "-filtered" end
+	return ""
 end
 
 --- Whether requester `r_id` of an Unserved entry passes the network name, network ID and surface filters (D2): read
@@ -937,6 +981,8 @@ end
 --- @param ignore_item boolean?
 --- @return boolean
 function util.train_passes(tr, f, ignore_item)
+	local station = f.station
+	if station and tr.p_station_id ~= station and tr.r_station_id ~= station then return false end
 	if f.surface and tr.surface_index ~= f.surface then return false end
 	if not util.network_passes(tr.network_name, tr.network_mask, f) then return false end
 	if f.item and not ignore_item and not tr.manifest_hashes[f.item] then return false end
@@ -1105,6 +1151,21 @@ function util.set_rerender(fn)
 	rerender_fn = fn
 end
 
+--- @class WindowFns
+--- @field open fun(player: LuaPlayer, player_data: PlayerData)
+--- @field close fun(player: LuaPlayer, player_data: PlayerData)
+--- @field focus fun(player: LuaPlayer, player_data: PlayerData, tab: string, focus: ManagerFocus)
+
+--- @type WindowFns?
+local window_fns
+
+--- Lets manager.lua open the window, focus a subject in it (a stop panel's click) and close it the way its close
+--- button does (a shift-click on a link, D8-9) without a require cycle.
+--- @param fns WindowFns
+function util.set_window_fns(fns)
+	window_fns = fns
+end
+
 --- Re-renders the selected tab now instead of waiting for the next manager update.
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
@@ -1164,14 +1225,34 @@ function util.set_item_filter(player_data, hash)
 	util.reset_pages(player_data)
 end
 
---- Lets item.lua (the drill-down) take item clicks without a require cycle.
---- @param fns {open: fun(player: LuaPlayer, player_data: PlayerData, hash: string), close: fun(player: LuaPlayer, player_data: PlayerData)}
-function util.set_item_view(fns)
-	item_view = fns
+--- The station chip (D8-7): a station id, or nil to clear it. An id Cybersyn no longer knows clears it.
+--- @param player_data PlayerData
+--- @param id uint?
+function util.set_station_filter(player_data, id)
+	if id and not storage.stations[id] then id = nil end
+	if player_data.search_station == id then return end
+	player_data.search_station = id
+	if id then player_data.filter_row_open = true end
+	util.reset_pages(player_data)
 end
 
---- Every item cell's click, in any tab (PLAN3 §4.7, §4.10): left opens the item's drill-down, shift+left shows the
---- Stations tab filtered to the item, right clears the item filter.
+--- The station chip's station when it still exists; a stale id is dropped (a removed stop), as an unknown item is.
+--- @param player_data PlayerData
+--- @return uint?
+function util.valid_station_filter(player_data)
+	local id = player_data.search_station
+	if id and not storage.stations[id] then
+		player_data.search_station = nil
+		id = nil
+	end
+	return id
+end
+
+--- Every item cell's click, in any tab and panel (PLAN3 §4.7, PLAN8 D8-6): left sets the item filter and selects the
+--- Inventory, which shows the item's drill-down while the filter is set (opening the window when the cell is outside
+--- it); shift+left sets the filter and selects Stations; right clears the item filter. A stop panel's slot carries its
+--- station (tags.station, D8-7): the click also sets the station chip, and an in-flight slot (tags.flight) lands on the
+--- Trains tab, where the trains carrying it to or from that station are.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
@@ -1182,12 +1263,23 @@ function util.item_button_click(player, player_data, e, hash)
 	elseif e.button == defines.mouse_button_type.left then
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
-		if e.shift or not item_view then
-			if item_view then item_view.close(player, player_data) end
-			util.set_item_filter(player_data, hash)
-			util.select_tab(player_data, "stations_tab")
-		else
-			item_view.open(player, player_data, hash)
+		local tags = e.element and e.element.tags
+		local station = tags and tags.station
+		if station and window_fns then
+			-- Through manager.focus: a chip, search or place filter left from earlier would hide the very station the
+			-- slot belongs to, and a closed window would otherwise open on the surface default.
+			local tab = tags.flight and "trains_tab" or e.shift and "stations_tab" or "inventory_tab"
+			window_fns.focus(player, player_data, tab, { item = hash, station = station,
+				reveal = tags.flight and { all = true } or nil })
+			return
+		end
+		util.set_item_filter(player_data, hash)
+		local tab = e.shift and "stations_tab" or "inventory_tab"
+		if not util.select_tab(player_data, tab) then player_data.selected_tab = tab end
+		if not player_data.is_manager_open then
+			-- The train panel's cells: a left click opens the window on the drill-down.
+			if not e.shift and window_fns then window_fns.open(player, player_data) end
+			return
 		end
 	else
 		return
@@ -1486,11 +1578,42 @@ function util.set_pin(fn)
 	pin_fn = fn
 end
 
---- Every link cell's click: left = open, shift = show on map, control = combinator, alt = control combinator,
+--- Whether a click came from inside the open manager window, not from a stop or train panel beside a game window.
+--- Synthetic events (the Log rows, the dev interface) carry a plain table for an element and come from the window.
+--- @param player_data PlayerData
+--- @param element LuaGuiElement|table?
+--- @return boolean
+local function in_manager(player_data, element)
+	if not player_data.is_manager_open then return false end
+	if not (element and element.object_name == "LuaGuiElement") then return true end
+	local window = player_data.refs and player_data.refs.manager_window
+	if not (window and window.valid) then return false end
+	local index = window.index
+	while element do
+		if element.index == index then return true end
+		element = element.parent
+	end
+	return false
+end
+
+--- Shift-click on a link inside the window (D8-9): the map view replaces the window, pinned or not, instead of the
+--- window holding over the map with Back. From a panel the window is not involved and stays as it is.
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param e EventData.on_gui_click
+--- @param target LuaEntity
+--- @param follow LuaEntity?
+local function show_from_link(player, player_data, e, target, follow)
+	if window_fns and in_manager(player_data, e.element) then window_fns.close(player, player_data) end
+	util.show_on_map(player, player_data, target, follow)
+end
+
+--- Every link cell's click: left = open, shift = show on map (closing the window, D8-9), control = combinator, alt = control combinator,
 --- control + shift = a map pin, right on an item = clear the item filter. Train and stop links take no right-click.
 --- Tags {kind = "station"|"depot"|"refueler"|"train"|"item"|"entity", id};
---- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it. The
---- older tag shapes of the Stations and Trains rows are read too.
+--- "entity" is a stop or combinator Cybersyn has not registered, by unit number, as the lint registry recorded it, or a
+--- Cybersyn combinator by unit number (a Stations row's inventory marker). The older tag shapes of the Stations and
+--- Trains rows are read too.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
@@ -1518,7 +1641,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		local locomotive = main_locomotive(entity)
 		if e.shift then
 			local front = entity.front_stock
-			if front then util.show_on_map(player, player_data, front, front) end
+			if front then show_from_link(player, player_data, e, front, front) end
 			return
 		end
 		if not (locomotive and locomotive.valid) then
@@ -1530,10 +1653,16 @@ function util.handle_link_click(player, player_data, e, kind, id)
 	end
 	if kind == "entity" then
 		local entity = lint.registry_entity(id)
+		if not entity and type(id) == "number" then
+			-- A Stations row's inventory marker (D8-2): a combinator Cybersyn registered, which the lint registry does not
+			-- hold (game.get_entity_by_unit_number needs a prototype flag the combinator does not set).
+			local to_comb = storage.to_comb
+			entity = to_comb and to_comb[id] or nil
+		end
 		if not (entity and entity.valid) then
 			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 		elseif e.shift then
-			util.show_on_map(player, player_data, entity)
+			show_from_link(player, player_data, e, entity)
 		else
 			util.open_entity(player, player_data, entity)
 		end
@@ -1553,7 +1682,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 		return
 	end
 	if e.shift then
-		util.show_on_map(player, player_data, stop)
+		show_from_link(player, player_data, e, stop)
 	elseif e.control then
 		local comb = kind == "station" and record.entity_comb1 or record.entity_comb
 		if comb and comb.valid then

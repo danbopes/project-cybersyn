@@ -1141,19 +1141,20 @@ local function row_entry(row, acked, ctx)
 	local inherited = e.first_tick < ctx.inherit_before
 	local wait_caption = text.wait_caption(wait_shown, inherited)
 	local read_age = r_st and r_st.read_tick and now - r_st.read_tick or nil
+	-- The inventory that requests the item names the network in the chip tooltip (explain.network_of), and its request
+	-- is the amount the tooltip gives (PLAN8 D8-1), not the station's sum.
+	local inv = text.inventory_of(r_st, hash, "requested", collector.inventories)
 	local requested
 	if r_st then
-		local req = r_st.requested[hash]
+		local req = (inv or r_st).requested[hash]
 		if req then requested = -req.count end
 	end
 	-- Everything but the clocks; the clocks (wait, read age) move every 10 s and then only their cells are written.
 	-- The numbers (stock, evaluations, lost count, request) change on most updates of a large base while the rest
 	-- stays, so a change of only them writes only their cells too.
-	-- The section that requests the item names the network in the chip tooltip (explain.network_of).
-	local sec = text.section_of(r_st, hash, "requested", collector.station_has_sections)
 	local ident_sig = table.concat({
 		reason, tostring(p_id), view_sig(provider), view_sig(requester), tostring(e.lost_to),
-		acked and "a" or "", inherited and "i" or "", setup and setup.check or "", sec and rtext.section_sig(sec) or "",
+		acked and "a" or "", inherited and "i" or "", setup and setup.check or "", inv and rtext.row_sig(inv) or "",
 	}, "|")
 	local content_sig = ident_sig .. "#" .. table.concat({ e.a, e.b, e.lost_n, e.n, tostring(requested) }, "|")
 	local sig = content_sig .. "|" .. math.floor(wait / text.READ_STEP) .. "|" .. text.read_step(read_age)
@@ -1682,6 +1683,8 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 		util.set_sort(player_data, "inventory_tab", "amount", false)
 		-- Every grid by amount: the grids' own sort buttons give way to the tab's sort.
 		player_data.inventory_sorts = nil
+		-- The jump is to the grids, which an item filter replaces with its drill-down (D8-6).
+		util.set_item_filter(player_data, nil)
 		util.select_tab(player_data, "inventory_tab")
 		local manager = overview_tab.manager
 		if manager then manager.refresh_sort_headers(player_data) end

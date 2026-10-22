@@ -128,7 +128,8 @@ lab.suite("39_hardening", {
 		dev("select_tab", PI, "inventory")
 	end,
 
-	-- Unpinned: Escape peels the overlays, the window holding player.opened throughout, then closes the window.
+	-- Unpinned: Escape peels the overlays (Explain, the search), the window holding player.opened throughout, then
+	-- closes the window.
 	function(ctx)
 		local row = ctx.row
 		if not row then return end
@@ -141,8 +142,13 @@ lab.suite("39_hardening", {
 			dev("explain_dump", PI).open == false and dev("item_dump", PI).open and dev("state", PI).is_open
 			and player().opened == window())
 		escape()
-		lab.check("unpinned: the next Escape closes the drill-down", not dev("item_dump", PI).open
-			and dev("state", PI).is_open and player().opened == window())
+		-- PLAN8 D8-6: the drill-down is the Inventory under the item filter, not an overlay (it was peeled before).
+		lab.check("unpinned: the next Escape closes the window over the drill-down", not dev("state", PI).is_open)
+		dev("open", PI)
+		lab.big_screen(PI)
+		dev("clear_filters", PI)
+		dev("click", PI, "manager_pin_button")
+		lab.check("unpinned again: the window holds player.opened", player().opened == window())
 		dev("select_tab", PI, "stations")
 		dev("search_input", PI)
 		dev("set_filter", PI, { query = "stn-1" })

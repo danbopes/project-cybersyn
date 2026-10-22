@@ -25,6 +25,8 @@ local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_t
 	"utilization_tab", "delivery_breakdown_tab" }
 -- Tabs that ignore the item filter, so they never show its chip.
 local NO_ITEM_CHIP = {}
+-- Tabs that show the station chip but do not apply it (D8-7): its tooltip says so.
+local STATION_CHIP_IGNORED = { overview_tab = true, utilization_tab = true, delivery_breakdown_tab = true }
 -- Tabs the station-name search applies to.
 local SEARCH_TABS = { inventory_tab = true, stations_tab = true, trains_tab = true }
 -- The last render must be this old before the title bar says how old it is.
@@ -69,9 +71,9 @@ function manager.create(player)
 		add_header(stations_tab.create(), "stations_tab", header),
 		add_header(trains_tab.create(), "trains_tab", header),
 		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
-		add_header(utilization_tab.create(), "utilization_tab", header),
 	}
 	if analytics.is_enabled() then
+		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
 		tabs[#tabs + 1] = add_header(delivery_breakdown_tab.create(), "delivery_breakdown_tab", header)
 	end
 	local pane = {
@@ -202,12 +204,12 @@ function manager.dispatch_paused()
 	return settings.global["cybersyn-enable-planner"].value == false
 end
 
---- The filters the title bar's filter button resets (PLAN4 D4): item, network, network ID and surface. The station
---- search has its own button and is not one of them.
+--- The filters the title bar's filter button resets (PLAN4 D4): item, station chip (D8-7), network, network ID and
+--- surface. The station search has its own button and is not one of them.
 --- @param player_data PlayerData
 --- @return boolean
 local function row_filters_active(player_data)
-	return player_data.search_item ~= nil or player_data.search_network_name ~= nil
+	return player_data.search_item ~= nil or player_data.search_station ~= nil or player_data.search_network_name ~= nil
 		or (player_data.search_network_mask or -1) ~= -1 or player_data.search_surface_idx ~= nil
 end
 
@@ -223,6 +225,7 @@ end
 --- @param player_data PlayerData
 local function clear_row_filters(player_data)
 	player_data.search_item = nil
+	player_data.search_station = nil
 	player_data.search_network_name = nil
 	player_data.search_network_mask = -1
 	player_data.search_surface_idx = nil
@@ -250,11 +253,13 @@ end
 --- @field keep_row true? leave network, network ID, surface and item as they are (the Overview's Stations jumps: the
 --- tile counted under them, D2)
 --- @field item string? item hash to filter by
+--- @field station uint? station id for the station chip (D8-7)
 --- @field network string? network name to filter by
 --- @field stations_chip string? a Stations flag chip ("unserved"|"failing"|"problems")
 --- @field stations_problems_scope "errors"?
 --- @field trains_chip string? a Trains chip ("parked")
---- @field reveal {train: uint?, group: string?}? grouped Trains: expand the group holding this train, or this group
+--- @field reveal {train: uint?, group: string?, all: true?}? grouped Trains: expand the group holding this train, or
+--- this group, or (all) every group holding a train that passes the filters
 --- @field sort {tab: string, column: string, ascending: boolean}?
 
 --- @class PlayerData
@@ -271,6 +276,8 @@ function manager.focus(player, player_data, tab, focus)
 	item.close(player, player_data)
 	explain.close(player, player_data)
 	if focus.keep_row then
+		-- The Overview tile counted without the station chip (it ignores it), so the jump must not keep it either.
+		player_data.search_station = nil
 		player_data.stations_chip = nil
 		player_data.stations_problems_scope = nil
 		player_data.trains_chip = nil
@@ -282,6 +289,7 @@ function manager.focus(player, player_data, tab, focus)
 	util.set_search_query(player_data, focus.query)
 	if focus.query then player_data.search_open = true end
 	if focus.item then util.set_item_filter(player_data, focus.item) end
+	if focus.station then util.set_station_filter(player_data, focus.station) end
 	if focus.network then player_data.search_network_name = focus.network end
 	player_data.stations_chip = focus.stations_chip
 	player_data.stations_problems_scope = focus.stations_problems_scope
@@ -422,6 +430,16 @@ local function search_shown(player_data)
 	return player_data.search_open == true or player_data.search_query ~= nil
 end
 
+--- Whether the selected tab shows a search field: a search tab, except the Inventory while its drill-down takes the
+--- place of its subheader (D8-6).
+--- @param player_data PlayerData
+--- @return boolean
+local function search_tab(player_data)
+	local tab = player_data.selected_tab
+	if tab == "inventory_tab" and item.filter_hash(player_data) then return false end
+	return SEARCH_TABS[tab] == true
+end
+
 --- @param player_data PlayerData
 function manager.refresh_search_fields(player_data)
 	local refs = player_data.refs
@@ -437,14 +455,46 @@ function manager.refresh_search_fields(player_data)
 	set_frame_toggle(refs.manager_search_button, shown)
 end
 
+--- The stop name the station chip shows: its current name, so a rename shows on the next render.
+--- @param id uint
+--- @return string?
+local function station_chip_name(id)
+	local station = storage.stations[id]
+	local stop = station and station.entity_stop
+	return stop and stop.valid and stop.backer_name or nil
+end
+
+--- @param player_data PlayerData
+local function refresh_station_chips(player_data, id, name)
+	local refs = player_data.refs
+	local shown = id ~= nil
+	for _, tab in ipairs(HEADER_TABS) do
+		local flow = refs[tab .. "_station_chip_flow"]
+		if flow and flow.valid then
+			flow.visible = shown
+			if shown then
+				local tooltip = STATION_CHIP_IGNORED[tab] and { "cybersyn-gui.station-chip-ignored-tooltip" }
+					or { "cybersyn-gui.station-chip-tooltip" }
+				refs[tab .. "_station_chip_icon"].tooltip = tooltip
+				local chip = refs[tab .. "_station_chip"]
+				chip.caption = { "cybersyn-gui.station-chip", name or "?", tostring(id) }
+				chip.tooltip = tooltip
+			end
+		end
+	end
+end
+
 --- @param player_data PlayerData
 function manager.refresh_chips(player_data)
 	local refs = player_data.refs
 	local hash = player_data.search_item
 	if hash and not util.signal_hash_valid(hash) then hash = nil end
-	local sig = hash or ""
+	local station = util.valid_station_filter(player_data)
+	local station_name = station and station_chip_name(station)
+	local sig = (hash or "") .. "\1" .. (station and (tostring(station) .. "\1" .. (station_name or "")) or "")
 	if player_data.chip_sig == sig then return end
 	player_data.chip_sig = sig
+	refresh_station_chips(player_data, station, station_name)
 	local sprite, quality, name_tooltip = nil, nil, nil
 	if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
@@ -611,6 +661,7 @@ function manager.restore_filter_widgets(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
+	util.valid_station_filter(player_data)
 	-- Every path that sets a filter ends here or in manager.render: the row opens with it.
 	if row_filters_active(player_data) then player_data.filter_row_open = true end
 	refs.manager_item_filter.elem_value = player_data.search_item and util.signalid_from_hash(player_data.search_item) or nil
@@ -670,8 +721,15 @@ function manager.update(map_data, player_data)
 		player_data.previous_tab = current_tab
 	end
 
-	-- The drill-down replaces the selected tab's content while it is open.
-	if player_data.item_view and item.build(map_data, player_data) then return end
+	-- D8-6: the Inventory shows the item filter's drill-down in place of its grids; any other tab, or no filter, drops
+	-- the drill-down's elements.
+	local hash = current_tab == "inventory_tab" and item.filter_hash(player_data) or nil
+	if hash and item.build(map_data, player_data, hash) then
+		inventory_tab.set_drill_down(player_data, true)
+		return
+	end
+	if player_data.item_view then item.close(nil, player_data) end
+	if current_tab == "inventory_tab" then inventory_tab.set_drill_down(player_data, false) end
 
 	local builder = tab_builders[current_tab]
 	if builder then
@@ -697,6 +755,8 @@ end
 --- @param player_data PlayerData
 function manager.render(player, player_data)
 	if not player_data.is_manager_open then return end
+	-- A stop removed while the window is open: drop its chip before the tabs filter on a dead id.
+	util.valid_station_filter(player_data)
 	-- A filter set from outside the row (a shift-click on an item, a tile jump) opens the row before the tab renders.
 	if row_filters_active(player_data) then player_data.filter_row_open = true end
 	local row = player_data.refs.manager_filter_row
@@ -715,6 +775,11 @@ function manager.render(player, player_data)
 end
 
 util.set_rerender(manager.render)
+util.set_window_fns({
+	open = function(player, player_data) manager.handle.manager_open(player, player_data, player_data.refs) end,
+	close = function(player, player_data) manager.handle.manager_close(player, player_data, player_data.refs) end,
+	focus = function(player, player_data, tab, focus) manager.focus(player, player_data, tab, focus) end,
+})
 manager.log_tab = log_tab
 overview_tab.manager = manager
 item.manager = manager
@@ -775,9 +840,12 @@ function manager.handle.manager_open(player, player_data, refs)
 	collector.ensure_fresh()
 	manager.render(player, player_data)
 
+	-- Once per player: the analytics tabs stay hidden, and a line on every open would bury the chat.
 	local analytics_setting = settings.global["cybersyn-enable-analytics"]
-	if analytics_setting and analytics_setting.value and not analytics.is_library_available() then
+	if analytics_setting and analytics_setting.value and not analytics.is_library_available()
+		and not player_data.analytics_notice_tick then
 		player.print({ "cybersyn-gui.analytics-library-missing" })
+		player_data.analytics_notice_tick = game.tick
 	end
 end
 
@@ -806,13 +874,13 @@ end
 -- Escape go past it, and its overlays close by their own buttons.
 
 --- What Escape closes before the window, top first: the search field (open, focused or not, as the game's own search
---- boxes), Explain, the item drill-down, the Trains detail pane.
+--- boxes), Explain, the Trains detail pane. The item drill-down is the Inventory under the item filter (D8-6), not an
+--- overlay: Escape closes the window over it, and it shows again when the window reopens.
 --- @param player_data PlayerData
---- @return "search"|"explain"|"item"|"pane"|nil
+--- @return "search"|"explain"|"pane"|nil
 function manager.top_overlay(player_data)
-	if search_shown(player_data) and SEARCH_TABS[player_data.selected_tab] then return "search" end
+	if search_shown(player_data) and search_tab(player_data) then return "search" end
 	if player_data.explain then return "explain" end
-	if player_data.item_view then return "item" end
 	if trains_tab.pane_shown(player_data) then return "pane" end
 	return nil
 end
@@ -825,8 +893,6 @@ local function peel_overlay(player, player_data)
 		manager.cancel_search(player, player_data)
 	elseif kind == "explain" then
 		explain.close(player, player_data)
-	elseif kind == "item" then
-		item.close(player, player_data, true)
 	elseif kind == "pane" then
 		trains_tab.close_pane(player_data)
 	end
@@ -977,9 +1043,9 @@ end
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.focus_search(player, player_data)
-	-- The search field lives in the tab's subheader, which the drill-down hides.
-	item.close(player, player_data)
-	if not SEARCH_TABS[player_data.selected_tab] then
+	-- The Inventory's drill-down has no search field (it ignores the station search): the search goes to Stations,
+	-- which keeps the item filter.
+	if not search_tab(player_data) then
 		util.select_tab(player_data, "stations_tab")
 	end
 	player_data.search_open = true
@@ -996,7 +1062,7 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_toggle_search(player, player_data, refs)
-	if search_shown(player_data) and SEARCH_TABS[player_data.selected_tab] then
+	if search_shown(player_data) and search_tab(player_data) then
 		player_data.search_open = nil
 		if player_data.search_query then
 			util.set_search_query(player_data, nil)
@@ -1042,7 +1108,7 @@ end
 --- @param player_data PlayerData
 --- @return boolean handled
 function manager.cancel_search(player, player_data)
-	if not (search_shown(player_data) and SEARCH_TABS[player_data.selected_tab]) then return false end
+	if not (search_shown(player_data) and search_tab(player_data)) then return false end
 	player_data.search_open = nil
 	util.set_search_query(player_data, nil)
 	util.reset_pages(player_data)
@@ -1051,10 +1117,14 @@ function manager.cancel_search(player, player_data)
 	return true
 end
 
---- The item chip (either half): any click removes the item filter.
+--- The item chip or the station chip (either half): any click removes that filter.
 --- @param e EventData.on_gui_click
 function manager.handle.manager_chip_click(player, player_data, refs, e)
-	util.set_item_filter(player_data, nil)
+	if e.element and e.element.tags.chip == "station" then
+		util.set_station_filter(player_data, nil)
+	else
+		util.set_item_filter(player_data, nil)
+	end
 	manager.restore_filter_widgets(player_data)
 	manager.render(player, player_data)
 end

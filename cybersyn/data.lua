@@ -25,6 +25,7 @@ data:extend({
 	locked_slots_signal,
 	reserved_fluid_capacity_signal,
 	both_wagon_sprite,
+	combinator_muted_sprite,
 	missing_train_icon,
 	lost_train_icon,
 	nonempty_train_icon,

@@ -120,28 +120,30 @@ test("locale: every reason's chip, why and fix line gets every __n__ it names, i
 	assert_eq(t.fix(REASON_NO_PROVIDER, nil), { "cybersyn-diag.fix-no-provider", "?" })
 end)
 
--- Round 7 (BRIEF-SECONDARY S4): texts name the section that requests or provides the item.
+-- PLAN8 D8-1: texts name the inventory combinator that requests or provides the item.
 
-local SF = require("section_fixtures")
+local SF = require("inventory_fixtures")
 
-test("section_of: the section advertising the item, nil for a plain station", function()
+test("inventory_of: the combinator row advertising the item, nil for a plain station", function()
 	local t = text()
+	local collector = require("scripts.gui.collector")
+	local inv = collector.inventories
 	local coal = SF.coal_both(200)
-	assert_eq(t.section_of(coal, SF.COAL, "requested", SF.has_sections).key, "signal-A:2")
-	assert_eq(t.section_of(coal, SF.COAL, "provided", SF.has_sections).key, "signal-A:1")
-	assert_nil(t.section_of(coal, "iron-plate", "requested", SF.has_sections))
-	assert_nil(t.section_of(coal, SF.COAL, "requested", nil))
-	assert_nil(t.section_of(SF.plain(7, "Plain", 1, {}, { [SF.COAL] = { count = -1, active = true } }), SF.COAL,
-		"requested", SF.has_sections))
+	assert_eq(t.inventory_of(coal, SF.COAL, "requested", inv).key, "200@2002")
+	assert_eq(t.inventory_of(coal, SF.COAL, "provided", inv).key, "200@2001")
+	assert_nil(t.inventory_of(coal, "iron-plate", "requested", inv))
+	assert_nil(t.inventory_of(coal, SF.COAL, "requested", nil))
+	assert_nil(t.inventory_of(SF.plain(7, "Plain", 1, {}, { [SF.COAL] = { count = -1, active = true } }), SF.COAL,
+		"requested", inv))
 	-- An active request wins over an earlier inactive one.
 	local st = SF.coal_both(201)
-	st.sections[1].requested = { [SF.COAL] = { count = -1, threshold = 10, active = false } }
-	assert_eq(t.section_of(st, SF.COAL, "requested", SF.has_sections).key, "signal-A:2")
-	st.sections[2].requested[SF.COAL].active = false
-	assert_eq(t.section_of(st, SF.COAL, "requested", SF.has_sections).key, "signal-A:1")
+	st.rows[1].requested = { [SF.COAL] = { count = -1, threshold = 10, active = false } }
+	assert_eq(t.inventory_of(st, SF.COAL, "requested", inv).index, 1)
+	st.rows[2].requested[SF.COAL].active = false
+	assert_eq(t.inventory_of(st, SF.COAL, "requested", inv).index, 0)
 end)
 
-test("explain.network_of: the requesting section for a station with sections, the station's network otherwise", function()
+test("explain.network_of: the requesting inventory for a station with inventories, the station's network otherwise", function()
 	local collector = require("scripts.gui.collector")
 	SF.stub_collector(collector)
 	local explain = H.load("scripts.gui.explain")
@@ -150,9 +152,10 @@ test("explain.network_of: the requesting section for a station with sections, th
 	collector.get = function() return { stations = { [200] = coal, [7] = plain } } end
 	local ok, err = pcall(function()
 		local net = explain.network_of(200, SF.COAL, coal)
-		-- The stop panel's section head (relative-text.section_text): the requesting section is A2.
-		assert_eq(net, H.load("scripts.gui.relative-text").section_text(coal.sections[2]))
-		assert_eq(net[2], "[virtual-signal=signal-A]2")
+		-- "Inventory 1 · priority 3 · [A]2", as the stop panel heads the block (relative-text.row_text).
+		assert_eq(net, H.load("scripts.gui.relative-text").row_text(coal.rows[2]))
+		assert_eq(net, { "", { "", { "cybersyn-gui.source-inventory", 1 }, " · ", { "cybersyn-gui.section-priority", "3" } },
+			" · ", "[virtual-signal=signal-A]2" })
 		assert_eq(explain.network_of(7, SF.COAL, plain), H.load("scripts.gui.util").network_text("signal-A"))
 	end)
 	collector.get = get

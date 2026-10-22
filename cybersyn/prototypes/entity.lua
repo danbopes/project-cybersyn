@@ -44,6 +44,12 @@ local function create_combinator_display(filename, x, y)
 	}
 end
 
+-- cybernetic-displays.png: 30x22 cells addressed (column, row), the operation each one stands for in brackets.
+--   (0,0) D depot [+]   (1,0) W wagon [-]   (2,0) S station [/]   (3,0) C control [%]
+--   (0,1) red S, the station's request went unserved [^]   (1,1) green S, unused: the base game's green is drawn for [<<]
+--   (2,1) R refueler [>>]   (3,1) I inventory [AND]
+--   (0,2) red I, that inventory's own request went unserved [OR]: (3,1) recoloured the way (2,0) became (0,1)
+-- The red I has a row of its own rather than (1,1), so upstream's green S art stays in the sheet for [<<].
 local CYBERSYN_DISPLAYS = "__cybersyn__/graphics/combinator/cybernetic-displays.png"
 local FACTORIO_DISPLAYS = "__base__/graphics/entity/combinator/combinator-displays.png"
 
@@ -55,6 +61,7 @@ combinator_entity.power_symbol_sprites = create_combinator_display(CYBERSYN_DISP
 combinator_entity.left_shift_symbol_sprites = create_combinator_display(FACTORIO_DISPLAYS, 1, 1)  -- green '>'
 combinator_entity.right_shift_symbol_sprites = create_combinator_display(CYBERSYN_DISPLAYS, 2, 1)
 combinator_entity.and_symbol_sprites = create_combinator_display(CYBERSYN_DISPLAYS, 3, 1)
+combinator_entity.or_symbol_sprites = create_combinator_display(CYBERSYN_DISPLAYS, 0, 2)
 combinator_entity.multiply_symbol_sprites = combinator_entity.divide_symbol_sprites
 
 combinator_out_entity = flib.copy_prototype(data.raw["constant-combinator"]["constant-combinator"], COMBINATOR_OUT_NAME) --[[@as data.ConstantCombinatorPrototype]]

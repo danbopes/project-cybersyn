@@ -35,6 +35,7 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field search_network_mask int
 --- @field search_surface_idx uint?
 --- @field search_item string? item hash (name or name|quality)
+--- @field search_station uint? station id of the station chip (PLAN8 D8-7); dropped by util.valid_station_filter once the stop is gone
 --- @field surface_dropdown_ids {[integer]: uint}? drop-down index -> surface index
 --- @field surface_count integer? #game.surfaces when the drop-down was built
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see util.get_sort
@@ -165,6 +166,7 @@ local function init_player_fields(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
+	util.valid_station_filter(player_data)
 	if player_data.search_query and not player_data.search_terms then
 		util.set_search_query(player_data, player_data.search_query)
 	end

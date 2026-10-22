@@ -58,9 +58,11 @@ function templates.pager(tab, handler)
 end
 
 --- The strips at the top of every tab (PLAN3 §4.3): the dispatch-paused banner, then the subheader with the
---- station-name search field (left), the item filter chip, the collecting progress and `right` (right-aligned).
+--- station-name search field (left), the item filter chip, the station chip (D8-7), the collecting progress and
+--- `right` (right-aligned).
 --- Element names are `<tab>_banner`, `<tab>_banner_label`, `<tab>_search_field`, `<tab>_chip_flow`,
---- `<tab>_chip_icon`, `<tab>_chip`, `<tab>_collecting`.
+--- `<tab>_chip_icon`, `<tab>_chip`, `<tab>_station_chip_flow`, `<tab>_station_chip_icon`, `<tab>_station_chip`,
+--- `<tab>_collecting`.
 --- @param tab string canonical tab name, e.g. "stations_tab"
 --- @param handlers {search_changed: function, chip_click: function}
 --- @param right flib.GuiElemDef[]? subheader children after the pusher
@@ -113,6 +115,30 @@ function templates.tab_header(tab, handlers, right, search)
 			type = "button",
 			name = tab .. "_chip",
 			style = "cybersyn_item_chip",
+			mouse_button_filter = { "left", "right" },
+			handler = { [defines.events.on_gui_click] = handlers.chip_click },
+		},
+	}
+	subheader[#subheader + 1] = {
+		type = "flow",
+		name = tab .. "_station_chip_flow",
+		direction = "horizontal",
+		visible = false,
+		style_mods = { horizontal_spacing = 0, vertical_align = "center" },
+		{
+			type = "sprite-button",
+			name = tab .. "_station_chip_icon",
+			style = "cybersyn_item_chip_icon",
+			sprite = "item/train-stop",
+			tags = { chip = "station" },
+			mouse_button_filter = { "left", "right" },
+			handler = { [defines.events.on_gui_click] = handlers.chip_click },
+		},
+		{
+			type = "button",
+			name = tab .. "_station_chip",
+			style = "cybersyn_item_chip",
+			tags = { chip = "station" },
 			mouse_button_filter = { "left", "right" },
 			handler = { [defines.events.on_gui_click] = handlers.chip_click },
 		},

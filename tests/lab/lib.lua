@@ -156,7 +156,15 @@ function lab.tab_keys(pi)
 			keys[tab] = d.ids
 		elseif tab == "inventory" then
 			keys[tab] = {}
-			for _, g in ipairs(lab.GRIDS) do keys[tab][g] = d[g] and d[g].hashes or {} end
+			local drill = lab.dev("item_dump", pi)
+			if drill.open then
+				-- PLAN8 D8-6: under the item filter the Inventory shows the item's drill-down instead of its grids.
+				for _, g in ipairs(lab.GRIDS) do keys[tab][g] = {} end
+				keys[tab].drill = { providers = drill.row_keys.providers, requesters = drill.row_keys.requesters,
+					trains = drill.model.trains }
+			else
+				for _, g in ipairs(lab.GRIDS) do keys[tab][g] = d[g] and d[g].hashes or {} end
+			end
 		else
 			keys[tab] = {}
 			keys.overview_total = {}

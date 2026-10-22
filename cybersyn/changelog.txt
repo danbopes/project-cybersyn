@@ -1,4 +1,35 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.1.0
+Date: 2026-10-22
+  Major Features:
+    - (Manager) A station with secondary inventory combinators shows one row per combinator: the station combinator first, then each inventory in the order it was built. Each row has its own network and mask, priority and Provided and Requested items, in the Stations tab, the stop panel's Advertised list, the item drill-down and the Unserved and Explain texts. Two inventories on the same mask are two rows. This replaces the per-network blocks, the "+N inventories" badge and the "A2 A3" labels
+    - (Manager) Station chip: "Open in manager" and every item slot of the stop panel set a station filter shown as "Name #ID ×" beside the item chip. Stations, Trains, Log, Inventory and the drill-down show only that station; Overview, Utilization and Breakdown ignore it and say so in its tooltip. It stays across tab switches and a closed window, and its ×, Clear filters, the filter-row toggle and the Overview tile jumps remove it
+    - (Manager) Clicking an item anywhere opens its drill-down on the Inventory tab: the item filter is set and the tab strip says Inventory. The drill-down shows while the item filter is set; Back clears the filter and brings the grids back, as does the item chip's × on the other tabs. Shift+click still lists the stations with the item, right-click still clears the filter
+    - A Secondary Inventory combinator shows a red I when its own request could not be dispatched, and goes back to the cyan I once it requests nothing; the station combinator's S still turns red for any failed request of the station
+    - (Manager) The Utilization tab is a line chart again: one line per train layout with a checkbox and its average in the Train types legend, and range buttons from 1m to 1000h. It needs the "Enable analytics" map setting and the Factorio Charts mod (factorio-charts), like the Breakdown tab
+  Features:
+    - (Manager) An inventory row in the Stations tab ends in a small grey combinator icon: its tooltip names the inventory, its priority, network and mask (or why it is not read), and clicking it opens that combinator
+    - (Manager) Stop panel: each Advertised block starts with the combinator's letter in the colour of its display (S for the station combinator, I for an inventory), its name and priority, and its network and mask; a Networks line lists every network the station advertises on
+    - (Manager) Deliveries in flight in the stop panel open the Trains tab filtered by the item and the station; Advertised and Unserved slots open the item's drill-down for that station
+    - (Manager) The Stations footer counts rows as well as stations when a station has inventories ("1,937 of 1,937 stations · 2,069 rows")
+  Changes:
+    - (Manager) Shift+click on a station, depot, refueler or train link shows it on the map and closes the manager window, also from a link in the Trains detail pane; Locate still keeps the window with a Back button
+    - (Manager) With the place filters or the station chip set, an empty drill-down table says "No station provides this item under the current filters" (and the same for requesters and trains)
+    - (Manager) Item counts on the 36 and 40 px slots use a font one size smaller, so five characters such as "-200k" fit at UI scale 1.5 and 2.0
+    - (Manager) A network filter together with an item filter now needs one combinator row that matches both; with a network, network ID or item filter the Stations tab lists only a station's matching rows
+    - (Manager) A station counts as Starved per combinator: two combinators on one mask that each request below the threshold no longer add up to a starved request
+    - (Manager) The drill-down's requesters show the station's priority, the one the dispatcher ranks requests by; the Stations Priority cell and the stop panel keep an inventory's own priority, which ranks only what it provides, and their tooltips say so
+    - (Manager) An inventory that is not read, is off or has no input signals shows "–" in the Network column with the reason in its tooltip
+    - (Manager) Unserved tooltips name the inventory that requests the item and give that inventory's request, not the station's total
+    - (Manager) In the Inventory grids an incoming delivery counts on the network of the inventory that requested it
+    - (Manager) One Escape closes the window while a drill-down shows, and Ctrl+F there searches the Stations tab and keeps the item filter
+    - (Manager) The Inventory grids no longer move the filtered item to the front: the item filter shows its drill-down instead
+    - (Manager) The Problems view lists a station once, on the first of its rows that the filters keep
+    - The "Enable delivery breakdown" map setting is "Enable analytics" again and turns on both the Utilization and the Breakdown tabs
+    - (Manager) The message that factorio-charts is missing is printed once per player instead of on every open
+  Bugfixes:
+    - (Manager) "Open in manager" in the stop panel shows that stop even when other stops share its name
+---------------------------------------------------------------------------------------------------
 Version: 3.0.1
 Date: 2026-10-21
   Changes:
