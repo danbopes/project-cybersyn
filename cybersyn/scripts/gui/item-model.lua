@@ -68,13 +68,12 @@ end
 --- @param priority_signal string the priority signal's name (SIGNAL_PRIORITY)
 --- @return int
 function model.effective_priority(st, hash, priority_signal)
-	local prior = st.priority or 0
 	local thresholds, control2 = st.thresholds, st.control2
 	if thresholds and thresholds[hash] ~= nil and control2 then
 		local item_prior = control2[priority_signal]
-		if item_prior ~= nil then prior = item_prior end
+		if item_prior ~= nil then return item_prior end
 	end
-	return prior
+	return st.priority or 0
 end
 
 --- Why a request is outside the dispatcher's queue this cycle, in the order tick_poll_station and tick_dispatch test it.
@@ -94,8 +93,9 @@ function model.requester_group(st, req, hash)
 end
 
 --- The dispatcher's order: queued first, priority descending, then the oldest last delivery. The dispatcher breaks a
---- full tie by its poll order, which the snapshot does not keep; the station id stands in for it, and the rows of one
---- station follow their inventory index (D8-2).
+--- full tie by its poll order, which the snapshot does not keep; the station id stands in for it. Within one station
+--- the poll registers the inventory stops before the station combinator's, so the station combinator's row goes last;
+--- the inventories among themselves follow their index, which the poll's own order only approximates.
 --- @param a {group: int, priority: int, last_served: number, id: uint, index: int?}
 --- @param b {group: int, priority: int, last_served: number, id: uint, index: int?}
 --- @return boolean
@@ -104,7 +104,10 @@ function model.dispatch_before(a, b)
 	if a.priority ~= b.priority then return a.priority > b.priority end
 	if a.last_served ~= b.last_served then return a.last_served < b.last_served end
 	if a.id ~= b.id then return a.id < b.id end
-	return (a.index or 0) < (b.index or 0)
+	local ai, bi = a.index or 0, b.index or 0
+	if ai == 0 then ai = math.huge end
+	if bi == 0 then bi = math.huge end
+	return ai < bi
 end
 
 local function by_amount(key)
@@ -115,17 +118,24 @@ local function by_amount(key)
 	end
 end
 
---- The priority the dispatcher compares for an item of one inventory row: the planner registers every combinator as
---- its own stop at its own priority, and only the station combinator's stop takes the control combinator's item
---- override.
+--- The priority the dispatcher compares when an inventory row provides the item. Every combinator is its own provider
+--- stop at its own priority (tick_dispatch reads p_stop.priority), and the control combinator's item override replaces
+--- it on every stop of the station. Requests are different: tick_dispatch ranks every requester stop by
+--- station.priority, so a secondary's own priority signal never moves a request; requester rows use
+--- model.effective_priority.
 --- @param st table
 --- @param row {index: int, priority: int?}
 --- @param hash string
 --- @param priority_signal string
 --- @return int
-function model.row_priority(st, row, hash, priority_signal)
-	if row.index == 0 then return model.effective_priority(st, hash, priority_signal) end
-	return row.priority or 0
+function model.provider_priority(st, row, hash, priority_signal)
+	if row.index == 0 or row.priority == nil then return model.effective_priority(st, hash, priority_signal) end
+	local thresholds, control2 = st.thresholds, st.control2
+	if thresholds and thresholds[hash] ~= nil and control2 then
+		local item_prior = control2[priority_signal]
+		if item_prior ~= nil then return item_prior end
+	end
+	return row.priority
 end
 
 --- A record without inventory rows (built by hand, or from before rows existed) is one station row on its own lists.
@@ -149,6 +159,7 @@ end
 --- @field multi boolean? the station has more than one inventory row, so the row names its inventory
 --- @field stock int
 --- @field threshold int? the item's own threshold on the control combinator; nil = the requester's applies
+--- @field priority int the dispatcher's priority for this row as a provider (model.provider_priority)
 --- @field out int amount on its way out of this station
 --- @field status string
 
@@ -251,6 +262,7 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 							multi = multi,
 							stock = stock,
 							threshold = st.thresholds and st.thresholds[hash] or nil,
+							priority = model.provider_priority(st, row, hash, priority_signal),
 							out = p_rows == 0 and d < 0 and -d or 0,
 							status = st.status,
 						}
@@ -269,7 +281,7 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 							threshold = req.threshold or 0,
 							wait_start = st.wait and st.wait[hash] or nil,
 							incoming = r_rows == 0 and d > 0 and d or 0,
-							priority = model.row_priority(st, row, hash, priority_signal),
+							priority = model.effective_priority(st, hash, priority_signal),
 							last_served = st.last_delivery_tick or 0,
 							group = model.requester_group(st, req, hash),
 							network = row.network_name,
@@ -294,11 +306,12 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 				end
 				if p_rows == 0 and d < 0 then
 					providers[#providers + 1] = { id = id, key = first.key, index = first.index, row = first, multi = multi,
-						stock = 0, threshold = st.thresholds and st.thresholds[hash] or nil, out = -d, status = st.status }
+						stock = 0, threshold = st.thresholds and st.thresholds[hash] or nil,
+						priority = model.provider_priority(st, first, hash, priority_signal), out = -d, status = st.status }
 				end
 				if r_rows == 0 and d > 0 then
 					requesters[#requesters + 1] = { id = id, key = first.key, index = first.index, row = first, multi = multi,
-						requested = 0, threshold = 0, incoming = d, priority = model.row_priority(st, first, hash, priority_signal),
+						requested = 0, threshold = 0, incoming = d, priority = model.effective_priority(st, hash, priority_signal),
 						last_served = st.last_delivery_tick or 0, group = model.NOT_REQUESTING, network = first.network_name }
 				end
 			end

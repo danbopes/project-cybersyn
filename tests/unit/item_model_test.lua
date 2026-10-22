@@ -180,8 +180,9 @@ test("build: providers by stock, requesters in dispatch order, trains by amount,
 	assert_eq(r.totals, { provided = 1400, provided_stations = 2, requested = 7000, requested_stations = 3,
 		in_transit = 400, in_transit_stations = 1 })
 	assert_eq(#r.providers, 2)
-	assert_eq(plain_row(r.providers[1]), { id = 11, stock = 900, out = 0, status = "ok" })
-	assert_eq(plain_row(r.providers[2]), { id = 10, stock = 500, threshold = 400, out = 200, status = "ok" })
+	assert_eq(plain_row(r.providers[1]), { id = 11, stock = 900, priority = 0, out = 0, status = "ok" })
+	assert_eq(plain_row(r.providers[2]), { id = 10, stock = 500, threshold = 400, priority = 0, out = 200,
+		status = "ok" })
 	-- A record without inventory rows is one station row of its own lists.
 	assert_eq(r.providers[1].key, "11@0")
 	assert_eq(r.providers[1].index, 0)
@@ -425,6 +426,7 @@ test("build rows: provided by one inventory and requested by another, the statio
 	local m = model()
 	local st = SF.coal_both(200)
 	st.deliveries = { [SF.COAL] = 700 }
+	st.priority = 4
 	local r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "200@2001" })
 	assert_eq(keys_of(r.requesters), { "200@2002" })
@@ -432,8 +434,8 @@ test("build rows: provided by one inventory and requested by another, the statio
 	assert_eq(req.requested, 2000)
 	assert_eq(req.threshold, 1000)
 	assert_eq(req.incoming, 700)
-	-- Inventory 1's own priority: the planner dispatches it as its own stop.
-	assert_eq(req.priority, 3)
+	-- The station's priority, not Inventory 1's own 3: tick_dispatch ranks every requester stop by station.priority.
+	assert_eq(req.priority, 4)
 	assert_eq(req.group, m.QUEUED)
 	assert_eq(req.position, 1)
 	assert_eq(r.providers[1].out, 0)
@@ -518,10 +520,38 @@ test("build rows: rows of one station sort by inventory index after the station 
 	assert_eq(keys_of(r.providers), { "100@999", "100@1003" })
 end)
 
-test("row_priority: the station combinator's with its item override, an inventory's own", function()
+test("provider_priority: an inventory's own priority, the item override on every row", function()
 	local m = model()
 	local st = { priority = 2, thresholds = { coal = 10 }, control2 = { [PRIORITY] = 6 } }
-	assert_eq(m.row_priority(st, { index = 0, priority = 2 }, "coal", PRIORITY), 6, "the item override")
-	assert_eq(m.row_priority(st, { index = 0, priority = 2 }, "iron-ore", PRIORITY), 2)
-	assert_eq(m.row_priority(st, { index = 1, priority = 9 }, "coal", PRIORITY), 9, "an inventory ignores the override")
+	assert_eq(m.provider_priority(st, { index = 0, priority = 2 }, "coal", PRIORITY), 6, "the item override")
+	assert_eq(m.provider_priority(st, { index = 0, priority = 2 }, "iron-ore", PRIORITY), 2)
+	assert_eq(m.provider_priority(st, { index = 1, priority = 9 }, "coal", PRIORITY), 6,
+		"tick_dispatch's override replaces p_stop.priority on an inventory's stop too")
+	assert_eq(m.provider_priority(st, { index = 1, priority = 9 }, "iron-ore", PRIORITY), 9, "the inventory's own stop")
+end)
+
+test("build rows: a requesting inventory ranks at the station's priority with the item override, a providing one at its own", function()
+	local m = model()
+	local st = SF.coal_both(200)
+	st.priority = 1
+	st.rows[1].priority = 1
+	st.rows[2].priority = 9
+	local r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY)
+	assert_eq(r.requesters[1].priority, 1, "Inventory 1's priority 9 does not move its request")
+	assert_eq(r.providers[1].priority, 1)
+	st.thresholds = { [SF.COAL] = 10 }
+	st.control2 = { [PRIORITY] = 7 }
+	r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY)
+	assert_eq(r.requesters[1].priority, 7, "the control combinator's item override")
+	assert_eq(r.providers[1].priority, 7)
+end)
+
+test("dispatch_before: on a full tie inside one station the inventories go before the station combinator", function()
+	local m = model()
+	local function row(index) return { group = m.QUEUED, priority = 0, last_served = 0, id = 5, index = index } end
+	local sorted = { row(0), row(2), row(1) }
+	table.sort(sorted, m.dispatch_before)
+	assert_eq({ sorted[1].index, sorted[2].index, sorted[3].index }, { 1, 2, 0 },
+		"the poll registers the inventory stops first and the dispatcher keeps the first on a tie")
+	assert_false(m.dispatch_before(row(0), row(0)))
 end)

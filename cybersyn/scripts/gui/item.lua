@@ -423,7 +423,7 @@ local function network_sig(r, st)
 	local row = r.row
 	if not (r.multi and row) then return tostring(st and st.network_name) end
 	return table.concat({ r.key, tostring(row.network_name), row_network_label(row) or "", tostring(row.index),
-		tostring(row.priority) }, "/")
+		tostring(r.priority) }, "/")
 end
 
 --- The network a row names: the station's for a station with one inventory row (as before rows), else the row's own,
@@ -436,7 +436,9 @@ local function row_network(r, st)
 	local row = r.row
 	if not (r.multi and row) then return network_text(st and st.network_name), nil end
 	local net = row_network_label(row) or network_text(row.network_name)
-	local tip = { "", net, " · ", row.label, " · ", { "cybersyn-gui.item-col-priority" }, " ", tostring(row.priority) }
+	-- The dispatcher's priority for this row (the model's, with the item override), not the combinator's raw signal,
+	-- so the tooltip agrees with the Priority column.
+	local tip = { "", net, " · ", row.label, " · ", { "cybersyn-gui.item-col-priority" }, " ", tostring(r.priority) }
 	if row.index == 0 then return tip, net end
 	return tip, { "", row.label, "  ", net }
 end
