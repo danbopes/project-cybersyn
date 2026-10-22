@@ -29,6 +29,9 @@ local LEGEND_WIDTH = 150
 local GRAPH_CHROME = 104
 local GRAPH_MIN_WIDTH, GRAPH_MIN_HEIGHT = 400, 300
 local UNSELECTED_COLOR = { r = 0.5, g = 0.5, b = 0.5 }
+-- Time-ago labels under the plot. ticks_per_point is left out: time_series.render takes it from the interval shown,
+-- so each range button's labels span exactly its caption.
+local X_AXIS = { format = "auto", labels = "auto" }
 
 --- The graph's size for the player's window: the tab's width beside the legend and its height below the time range.
 --- @param player_data PlayerData
@@ -327,7 +330,17 @@ function utilization_tab.build(map_data, player_data)
 		return
 	end
 	local all_series = utilization_tab.sorted_series(interval)
-	local drawn = analytics.render_graph(map_data, intervals, interval_index, selected_series, { 0, 100 }, nil, gw, gh)
+	-- One drawing serves every viewer, so line widths follow the zoom of whoever renders it. A fixed {0, 100} keeps the
+	-- library's 5 grid lines (0/25/50/75/100); nice_ticks only rounds auto ranges, so it is not passed.
+	local drawn = analytics.render_graph(map_data, intervals, interval_index, {
+		selected_series = selected_series,
+		y_range = { 0, 100 },
+		label_format = "percent",
+		x_axis = X_AXIS,
+		camera_zoom = zoom,
+		viewport_width = gw,
+		viewport_height = gh,
+	})
 	player_data.utilization_cache = {
 		tick = current_tick,
 		interval_index = interval_index,

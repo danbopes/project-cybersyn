@@ -505,6 +505,7 @@ function on_config_changed(config_change_data)
 		for _, force in pairs(game.forces) do
 			force.set_surface_hidden(storage.analytics.surface, true)
 		end
+		analytics.restyle_chunks(storage)
 	end
 
 	retrigger_train_calculation(false)

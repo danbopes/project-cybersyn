@@ -208,21 +208,29 @@ end
 ---@param map_data MapData
 ---@param intervals table[]
 ---@param interval_index number
----@param selected_series table? {[series]: false} hides a series
----@param fixed_range table? {min, max}
----@param label_format string? "percent" (default) or "time"
----@param viewport_width number?
----@param viewport_height number?
+---@param options table factorio-charts time_series.render options (selected_series, y_range, label_format, x_axis,
+---  camera_zoom, viewport_width, viewport_height, ...)
 ---@return table? ordered_sums the series drawn, by sum
 ---@return table? hit_regions
-function analytics.render_graph(map_data, intervals, interval_index, selected_series, fixed_range, label_format, viewport_width, viewport_height)
-	return charts.render_time_series(map_data.analytics.surface, intervals, interval_index, {
-		selected_series = selected_series,
-		y_range = fixed_range,
-		label_format = label_format,
-		viewport_width = viewport_width,
-		viewport_height = viewport_height,
-	})
+function analytics.render_graph(map_data, intervals, interval_index, options)
+	return charts.render_time_series(map_data.analytics.surface, intervals, interval_index, options)
+end
+
+---Gives every chart chunk the save holds the factorio-charts 1.3.0 background (black, no lights): chunks allocated
+---by an older library keep their lit lab tiles otherwise. Idempotent, so on_configuration_changed may call it on
+---every change.
+---@param map_data MapData
+function analytics.restyle_chunks(map_data)
+	local data = map_data.analytics
+	local restyle = charts and charts.surface and charts.surface.restyle_chunk
+	if not (restyle and data and data.surface_data and data.surface_data.surface and data.surface_data.surface.valid) then
+		return
+	end
+	for _, interval in ipairs(data.train_utilization or {}) do
+		if interval.chunk then restyle(data.surface_data, interval.chunk) end
+	end
+	local breakdown = data.breakdown_interval
+	if breakdown and breakdown.chunk then restyle(data.surface_data, breakdown.chunk) end
 end
 
 ---Record delivery start for time tracking
