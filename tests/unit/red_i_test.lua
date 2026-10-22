@@ -1,7 +1,7 @@
--- PLAN8 D8-4: an inventory combinator's red I. The planner records a failed request per stop: the station
--- combinator's stop lights the station's red S (display_state bit 2), an inventory's stop lights only that
--- combinator's red I (`station.inv_failed[unit]`, operation OR). Driven through the real `tick` (poll, then dispatch)
--- against fake combinators.
+-- PLAN8 D8-4: an inventory combinator's red I. The planner records a failed request per stop: any failed request
+-- of the station lights the station combinator's red S (display_state bit 2, as before round 8), and one made by an
+-- inventory's stop also lights that combinator's red I (`station.inv_failed[unit]`, operation OR). Driven through the
+-- real `tick` (poll, then dispatch) against fake combinators.
 
 local H = require("harness")
 
@@ -36,7 +36,7 @@ local function station(id, own, invs, extra)
 	local secs = {}
 	for unit, inputs in pairs(invs or {}) do secs[unit] = comb(unit, MODE_SECONDARY_INVENTORY, inputs) end
 	local st = {
-		entity_stop = { valid = true, trains_limit = 5, unit_number = id },
+		entity_stop = { valid = true, trains_limit = 5, unit_number = id, surface_index = 1, position = { x = id, y = 0 } },
 		entity_comb1 = comb(id + 1, MODE_PRIMARY_IO, own),
 		secondary_inv_combs = secs,
 		is_r = true,
@@ -100,7 +100,7 @@ test("is_secondary_inventory_op: AND and OR are one mode, nothing else is", func
 	assert_eq(MODE_SECONDARY_INVENTORY_FAILED, "OR")
 end)
 
-test("no provider: only the inventory that requests goes red, the station combinator stays cyan", function()
+test("no provider: only the inventory that requests shows the red I; the station shows the red S as before", function()
 	H.fresh()
 	local inv = { list = { sig("iron-plate", -5000) } }
 	local st = station(100, { list = { NET } }, { [201] = inv, [202] = { list = {} } })
@@ -108,7 +108,7 @@ test("no provider: only the inventory that requests goes red, the station combin
 	pass(map_data)
 	assert_eq(st.inv_failed, { [201] = true })
 	assert_eq({ op(st.secondary_inv_combs[201]), op(st.secondary_inv_combs[202]), op(st.entity_comb1), st.display_state },
-		{ "OR", "AND", "/", 0 })
+		{ "OR", "AND", "^", 2 })
 
 	-- Still unserved: unchanged. Then it stops requesting: cleared on the next poll, the I goes cyan.
 	pass(map_data)
@@ -116,10 +116,10 @@ test("no provider: only the inventory that requests goes red, the station combin
 	inv.list = {}
 	pass(map_data)
 	assert_nil(st.inv_failed, "an empty set is dropped")
-	assert_eq(op(st.secondary_inv_combs[201]), "AND")
+	assert_eq({ op(st.secondary_inv_combs[201]), op(st.entity_comb1), st.display_state }, { "AND", "/", 0 })
 end)
 
-test("the station combinator's own failure lights its S, not the inventory's I; each clears on its own requests", function()
+test("the station combinator's own failure lights its S, not the inventory's I; the S clears with the whole station", function()
 	H.fresh()
 	local own = { list = { NET, sig("copper-plate", -5000) } }
 	local inv = { list = {} }
@@ -128,13 +128,19 @@ test("the station combinator's own failure lights its S, not the inventory's I; 
 	pass(map_data)
 	assert_eq({ op(st.entity_comb1), st.inv_failed, op(st.secondary_inv_combs[201]) }, { "^", nil, "AND" })
 
-	-- The station stops requesting while its inventory starts: the S goes out although the station still requests
-	-- through the inventory, and the I lights.
+	-- The station combinator stops requesting while its inventory starts: the station still has an unserved request,
+	-- so the S stays red, and the I lights.
 	own.list = { NET }
 	inv.list = { sig("iron-plate", -5000) }
 	pass(map_data)
 	assert_eq({ op(st.entity_comb1), st.display_state, st.inv_failed, op(st.secondary_inv_combs[201]) },
-		{ "/", 0, { [201] = true }, "OR" })
+		{ "^", 2, { [201] = true }, "OR" })
+
+	-- The station requests again while the inventory stops: the I goes out, the S stays red.
+	own.list = { NET, sig("copper-plate", -5000) }
+	inv.list = {}
+	pass(map_data)
+	assert_eq({ op(st.entity_comb1), st.inv_failed, op(st.secondary_inv_combs[201]) }, { "^", nil, "AND" })
 end)
 
 test("no requester can take a train: every listed inventory stop goes red, the station's own stop goes red", function()
@@ -147,6 +153,22 @@ test("no requester can take a train: every listed inventory stop goes red, the s
 	local map_data = world({ req, prov })
 	pass(map_data)
 	assert_eq({ req.inv_failed, op(req.secondary_inv_combs[201]), op(req.entity_comb1) }, { { [201] = true }, "OR", "^" })
+	assert_eq({ prov.inv_failed, op(prov.entity_comb1) }, { nil, "/" })
+end)
+
+test("a provider but no train (an evaluated requester fails): the inventory's I and the station's S light", function()
+	H.fresh()
+	-- Only the inventory requests, so the requester is evaluated and fails on the missing train (not skipped).
+	local req = station(100, { list = { NET } }, { [201] = { list = { sig("iron-plate", -5000) } } }, { is_p = false })
+	local prov = station(300, { list = { NET, sig("iron-plate", 9000) } }, nil, { is_r = false })
+	local map_data = world({ req, prov })
+	local surfaces = Surfaces
+	Surfaces = { find_surface_connections_masked = function() return {} end }
+	local ok, err = pcall(pass, map_data)
+	Surfaces = surfaces
+	assert(ok, err)
+	assert_eq({ req.inv_failed, op(req.secondary_inv_combs[201]), op(req.entity_comb1), req.display_state },
+		{ { [201] = true }, "OR", "^", 2 })
 	assert_eq({ prov.inv_failed, op(prov.entity_comb1) }, { nil, "/" })
 end)
 

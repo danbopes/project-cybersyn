@@ -1,9 +1,10 @@
 -- PLAN8 D8-4: the red I. A station (requester, threshold 1,000) with two inventory combinators; the first asks for
 -- 2,000 iron nobody provides. By the end of the first whole planner pass after the request its combinator shows OR
--- (the red I), the second inventory and the station combinator keep their cyan displays, and the station's red S bit
--- stays clear. A red I copied by blueprint is built as AND; one pasted onto the second inventory goes out there and
--- leaves it registered. Then a provider offers the iron: the train is dispatched, the inventory stops requesting
--- (the delivery covers it) and the first whole pass after that shows AND again.
+-- (the red I), the second inventory keeps its cyan I, and the station combinator shows the red S as it did before
+-- round 8 (the station has a failed request) but never the I. A red I copied by blueprint is built as AND; one
+-- copied onto the second inventory goes out there and leaves it registered. Then a provider offers the iron: the
+-- train is dispatched, the inventory stops requesting (the delivery covers it) and the first whole pass after that
+-- shows AND and clears the S bit. Last, a red I outlives neither the removal of its station combinator nor a rebuild.
 --
 -- Row k = 110 on cyb-bench with a network of its own (one train), torn down at the end.
 
@@ -93,8 +94,8 @@ local steps = {
 			snap.inv_failed ~= nil and snap.inv_failed[ctx.inv1.unit] == true and snap.inv_failed[ctx.inv2.unit] == nil,
 			snap.inv_failed)
 		lab.check("the other inventory combinator stays AND", snap.inv2 == MODE_INVENTORY, snap.inv2)
-		lab.check("the station combinator is untouched: no red S", snap.station == MODE_STATION
-			and bit32.band(snap.display_state or 0, 2) == 0, { op = snap.station, display_state = snap.display_state })
+		lab.check("the station combinator shows the red S as before, not the I", snap.station == "^"
+			and bit32.band(snap.display_state or 0, 2) == 2, { op = snap.station, display_state = snap.display_state })
 		lab.check("the stored params say AND", (read("to_comb_params", ctx.inv1.unit) or {}).operation == MODE_INVENTORY,
 			read("to_comb_params", ctx.inv1.unit))
 
@@ -126,13 +127,14 @@ local steps = {
 		if copy then ctx.case.entities[#ctx.case.entities + 1] = copy end
 		lab.check("the built copy is AND", copy ~= nil and op(copy) == MODE_INVENTORY, copy and op(copy))
 
-		-- A red I pasted onto the second inventory (on_entity_settings_pasted runs combinator_update): it has not
-		-- failed, so it goes out, and it stays registered (a display change, no rebuild).
+		-- A red I copied onto the second inventory, then combinator_update without reset_display (the combinator
+		-- window's path; copy_settings raises no on_entity_settings_pasted, whose handler passes reset_display and
+		-- takes the same branch): it has not failed, so it goes out, and it stays registered (no rebuild).
 		ctx.inv2.comb.copy_settings(ctx.inv1.comb)
 		local pasted = op(ctx.inv2.comb)
 		remote.call("cybersyn", "combinator_update", ctx.inv2.comb)
 		local combs = read("stations", ctx.st.id, "secondary_inv_combs") or {}
-		lab.check("a red I pasted onto an inventory that has not failed shows AND", pasted == "OR"
+		lab.check("a red I copied onto an inventory that has not failed shows AND after combinator_update", pasted == "OR"
 			and op(ctx.inv2.comb) == MODE_INVENTORY, { pasted = pasted, now = op(ctx.inv2.comb) })
 		lab.check("the pasted-onto inventory stays registered", combs[ctx.inv2.unit] ~= nil)
 		lab.check("the failed inventory keeps its red I", op(ctx.inv1.comb) == "OR")
@@ -150,6 +152,35 @@ local steps = {
 		local snap = ctx.at[ctx.c1 + 2] or {}
 		lab.check("served (the delivery covers the request): back to AND within one planner pass",
 			snap.inv1 == MODE_INVENTORY and snap.inv_failed == nil, snap)
+		lab.check("served: the station's S bit clears with it", bit32.band(snap.display_state or 0, 2) == 0, snap)
+		-- Copper nobody provides lights the I again for the removal check.
+		cases.set_signals(ctx.inv1, { { "copper-plate", -2000 } })
+		ctx.c2 = ctx.pass
+		lab.wait_until(function() return ctx.pass >= ctx.c2 + 2 end, 3600)
+	end,
+	function(ctx)
+		lab.check("an unserved copper request lights the I again", op(ctx.inv1.comb) == "OR", op(ctx.inv1.comb))
+		local comb = ctx.st.comb
+		local pos, params = comb.position, comb.get_or_create_control_behavior().parameters
+		comb.destroy({ raise_destroy = true })
+		lab.check("removing the station combinator drops the station and puts out the I",
+			read("stations", ctx.st.id) == nil and op(ctx.inv1.comb) == MODE_INVENTORY,
+			{ station = read("stations", ctx.st.id) ~= nil, inv1 = op(ctx.inv1.comb) })
+
+		-- A red I left over from an older build (before the removal reset it) is put out when the station is rebuilt.
+		local ctl = ctx.inv1.comb.get_or_create_control_behavior()
+		local p1 = ctl.parameters
+		p1.operation = "OR"
+		ctl.parameters = p1
+		local again = ctx.case.surface.create_entity({ name = "cybersyn-combinator", position = pos,
+			direction = defines.direction.north, force = game.forces.player })
+		ctx.case.entities[#ctx.case.entities + 1] = again
+		again.get_or_create_control_behavior().parameters = params
+		script.raise_script_built({ entity = again })
+		local combs = read("stations", ctx.st.id, "secondary_inv_combs") or {}
+		lab.check("a rebuilt station adopts the inventory and shows its I cyan",
+			combs[ctx.inv1.unit] ~= nil and op(ctx.inv1.comb) == MODE_INVENTORY,
+			{ adopted = combs[ctx.inv1.unit] ~= nil, inv1 = op(ctx.inv1.comb) })
 		unwatch()
 		ctx.case.cleanup()
 		lab.check("the station is gone after teardown", read("stations", ctx.st.id) == nil)
