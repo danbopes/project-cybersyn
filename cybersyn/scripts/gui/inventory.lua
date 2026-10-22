@@ -7,7 +7,6 @@ local dev = require("scripts.gui.dev")
 local stats = require("scripts.stats")
 local logic = require("scripts.gui.tab-logic")
 local stations_tab = require("scripts.gui.stations")
-local sources_sig = require("scripts.gui.item-model").sources_sig
 
 local inventory_tab = {}
 
@@ -299,19 +298,21 @@ local function net_bucket(nets, name)
 	return nb
 end
 
---- The networks a station's numbers count on: the filter's network, its own, or for a station on several networks
---- each of them for its stock (it can supply any) and the first by name for its requests (counted once).
+--- The networks an inventory row's numbers count on: the filter's network, its own, or for a row on several networks
+--- (the each-network) each of them for its stock (it can supply any) and the first by name for its requests (counted
+--- once).
 --- @param nets table
---- @param st SnapshotStation
+--- @param row SnapshotInventory
 --- @param network string? the network filter
 --- @return table request_bucket
 --- @return table[]? stock_buckets nil = the request bucket alone
-local function station_buckets(nets, st, network)
+local function row_buckets(nets, row, network)
 	if network then return net_bucket(nets, network), nil end
-	local name = st.network_name
-	if name ~= NETWORK_EACH or type(st.network_mask) ~= "table" then return net_bucket(nets, name or ""), nil end
+	local name = row.network_name
+	local networks = row.networks
+	if name ~= NETWORK_EACH or type(networks) ~= "table" then return net_bucket(nets, name or ""), nil end
 	local names = {}
-	for n in pairs(st.network_mask) do names[#names + 1] = n end
+	for n in pairs(networks) do names[#names + 1] = n end
 	if #names == 0 then return net_bucket(nets, ""), nil end
 	table.sort(names)
 	local stock = {}
@@ -326,102 +327,82 @@ local function add_stock(buckets, hash, count)
 	for _, nb in ipairs(buckets) do nb.s[hash] = (nb.s[hash] or 0) + count end
 end
 
---- A station with sections (secondary inventory combinators) counts each item on the section that advertises it:
---- a section on A2 lands in A2's numbers, not in the station combinator's A1, and with a network filter only the
---- sections on it count. Sections built from the same sources (an each-network station yields one per network)
---- advertise the same stock: the totals count it once, the deficit sees it as stock on each of their networks, as
---- station_buckets does for the each-network. The station counts once per item in the totals and top lists.
---- @return boolean counted whether any of its sections passed the filter
-local function add_sections(st, f, nets, inv, top)
-	local p, r, first_bucket
-	local seen = {}
-	local nets_seen = {}
-	for _, sec in ipairs(st.sections) do
-		if f.network == nil and f.mask == -1 or util.network_passes(sec.network_name, sec.mask, f) then
-			local nb = net_bucket(nets, f.network or sec.network_name or "")
-			first_bucket = first_bucket or nb
-			nets_seen[nb] = true
-			local s = nb.s
-			for hash, count in pairs(sec.provided) do s[hash] = (s[hash] or 0) + count end
-			local src = sources_sig(sec)
-			if not seen[src] then
-				seen[src] = true
-				for hash, count in pairs(sec.provided) do
-					p = p or {}
-					p[hash] = (p[hash] or 0) + count
-				end
-				local rb = nb.r
-				for hash, req in pairs(sec.requested) do
-					if req.active then
-						r = r or {}
-						r[hash] = (r[hash] or 0) + req.count
-						rb[hash] = (rb[hash] or 0) - req.count
-					end
-				end
-			end
-		end
-	end
-	if not first_bucket then return false end
-	if p then
-		for hash, count in pairs(p) do accumulate(inv.provided, top.provided, hash, count, count, st) end
-	end
-	local has_wait = false
-	if r then
-		local wait = st.wait
-		for hash, count in pairs(r) do
-			local agg = accumulate(inv.requested, top.requested, hash, count, -count, st)
-			local start = wait and wait[hash]
-			if start and (not agg.earliest_wait_start or start < agg.earliest_wait_start) then
-				agg.earliest_wait_start = start
-				has_wait = true
-			end
-		end
-	end
-	-- Deliveries are kept per station: incoming ones count on its first section's network, outgoing ones reduce the
-	-- stock on each network its sections are on.
-	for hash, count in pairs(st.deliveries) do
-		if count > 0 then
-			accumulate(inv.in_transit, top.in_transit, hash, count, count, st)
-			first_bucket.t[hash] = (first_bucket.t[hash] or 0) + count
-		else
-			for nb in pairs(nets_seen) do nb.s[hash] = (nb.s[hash] or 0) + count end
-		end
-	end
-	return true, has_wait
-end
-
 --- One pass over the snapshot producing the per-grid totals and each item's top stations together, so a
---- tooltip's top list always agrees with the totals shown next to it. The deficit per item is the sum over the
---- networks of what each is short (logic.deficit), so stock on one network never offsets a shortage on another.
+--- tooltip's top list always agrees with the totals shown next to it. Every inventory row (PLAN8 D8-1) that passes
+--- the filters counts what it advertises on its own network: a secondary on A2 lands in A2's numbers, not in the
+--- station combinator's A1. A station's kept rows are summed per item and the station counts once per item in the
+--- totals and top lists (D8-3); its deliveries count once, incoming ones on its first kept row's network, outgoing ones
+--- against the stock on every network its kept rows are on. The deficit per item is the sum over the networks of what
+--- each is short (logic.deficit), so stock on one network never offsets a shortage on another.
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
 local function aggregate_with_top(snapshot, f)
 	local filtered = util.filters_active(f, true)
+	local row_passes = util.row_passes
 	local inv = { provided = {}, requested = {}, in_transit = {} }
 	local top = { provided = {}, requested = {}, in_transit = {} }
 	local has_wait = false
 	local nets = {}
-	local has_sections = collector.station_has_sections
-	-- A station with sections is placed by surface and search here, and on networks by its sections.
-	local place = { terms = f.terms, surface = f.surface, mask = -1, station = f.station }
+	local inventories = collector.inventories
 	for _, st in pairs(snapshot.stations) do
-		if has_sections and st.sections and has_sections(st) then
-			if not filtered or util.station_passes(st, place, true) then
-				local _, waited = add_sections(st, f, nets, inv, top)
-				has_wait = has_wait or waited
+		local rows = inventories(st)
+		-- Most stations have one row: its own lists are used as they are, and only a station whose kept rows are several
+		-- gets summed copies.
+		local p, r, first_bucket, first_stock, stock_seen
+		local kept = 0
+		for i = 1, #rows do
+			local row = rows[i]
+			if not filtered or row_passes(row, f, true) then
+				kept = kept + 1
+				local nb, stock = row_buckets(nets, row, f.network)
+				if kept == 1 then
+					first_bucket, first_stock = nb, stock
+				else
+					-- The networks whose stock an outgoing delivery reduces, once a second row is kept.
+					if not stock_seen then
+						stock_seen = {}
+						for _, b in ipairs(first_stock or { first_bucket }) do stock_seen[b] = true end
+					end
+					for _, b in ipairs(stock or { nb }) do stock_seen[b] = true end
+				end
+				local s, rb = nb.s, nb.r
+				for hash, count in pairs(row.provided) do
+					if stock then add_stock(stock, hash, count) else s[hash] = (s[hash] or 0) + count end
+				end
+				for hash, req in pairs(row.requested) do
+					if req.active then rb[hash] = (rb[hash] or 0) - req.count end
+				end
+				if kept == 1 then
+					p, r = row.provided, row.requested
+				else
+					if kept == 2 then
+						local p1, r1 = p, r
+						p, r = {}, {}
+						for hash, count in pairs(p1) do p[hash] = count end
+						for hash, req in pairs(r1) do
+							if req.active then r[hash] = { count = req.count, active = true } end
+						end
+					end
+					for hash, count in pairs(row.provided) do p[hash] = (p[hash] or 0) + count end
+					for hash, req in pairs(row.requested) do
+						if req.active then
+							local sum = r[hash]
+							if sum then
+								sum.count = sum.count + req.count
+							else
+								r[hash] = { count = req.count, active = true }
+							end
+						end
+					end
+				end
 			end
-		elseif not filtered or util.station_passes(st, f, true) then
-			local nb, stock = station_buckets(nets, st, f.network)
-			local r, t, s = nb.r, nb.t, nb.s
-			for hash, count in pairs(st.provided) do
-				accumulate(inv.provided, top.provided, hash, count, count, st)
-				if stock then add_stock(stock, hash, count) else s[hash] = (s[hash] or 0) + count end
-			end
+		end
+		if first_bucket then
+			for hash, count in pairs(p) do accumulate(inv.provided, top.provided, hash, count, count, st) end
 			local wait = st.wait
-			for hash, req in pairs(st.requested) do
+			for hash, req in pairs(r) do
 				if req.active then
 					local agg = accumulate(inv.requested, top.requested, hash, req.count, -req.count, st)
-					r[hash] = (r[hash] or 0) - req.count
 					local start = wait and wait[hash]
 					if start and (not agg.earliest_wait_start or start < agg.earliest_wait_start) then
 						agg.earliest_wait_start = start
@@ -432,11 +413,13 @@ local function aggregate_with_top(snapshot, f)
 			for hash, count in pairs(st.deliveries) do
 				if count > 0 then
 					accumulate(inv.in_transit, top.in_transit, hash, count, count, st)
-					t[hash] = (t[hash] or 0) + count
-				elseif stock then
-					add_stock(stock, hash, count)
+					first_bucket.t[hash] = (first_bucket.t[hash] or 0) + count
+				elseif stock_seen then
+					for nb in pairs(stock_seen) do nb.s[hash] = (nb.s[hash] or 0) + count end
+				elseif first_stock then
+					add_stock(first_stock, hash, count)
 				else
-					s[hash] = (s[hash] or 0) + count
+					first_bucket.s[hash] = (first_bucket.s[hash] or 0) + count
 				end
 			end
 		end
