@@ -945,6 +945,22 @@ dev.add("breakdown_layout", function(pi, max_seconds)
 		ticks = max_seconds and logic.duration_ticks(max_seconds) or nil, drawn = player_data.breakdown_axis }
 end)
 
+--- Dev: records `n` completed deliveries of `item` ending now, with the phase durations in `phases` (seconds), as
+--- analytics.record_delivery_complete stores them; a lab world whose trains finish no delivery can draw the chart.
+dev.add("breakdown_inject", function(item, n, phases)
+	local data = storage.analytics
+	if not data then return "analytics not initialised" end
+	data.completed_deliveries = data.completed_deliveries or {}
+	local list = data.completed_deliveries[item] or {}
+	data.completed_deliveries[item] = list
+	phases = phases or {}
+	for _ = 1, n or 1 do
+		list[#list + 1] = { complete_tick = game.tick, wait = phases.wait or 5, travel_to_p = phases.travel_to_p or 20,
+			loading = phases.loading or 8, travel_to_r = phases.travel_to_r or 25, unloading = phases.unloading or 6 }
+	end
+	return #list
+end)
+
 --- Dev: the Stats rows for given totals (the lab has no charts, so the tab cannot show them).
 dev.add("breakdown_stats_rows", function(stats)
 	return stats_rows(stats)

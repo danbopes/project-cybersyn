@@ -495,6 +495,21 @@ end
 
 gui.add_handlers(utilization_tab.handle, utilization_tab.wrapper)
 
+--- The drawn chart's axis labels (Y bottom first, X newest first) and its id, for oracles.
+--- @param player_data PlayerData
+--- @return table?
+local function axis_texts(player_data)
+	local data = storage.analytics
+	local interval = data and data.train_utilization and data.train_utilization[player_data.utilization_interval or 1]
+	local m = interval and interval.chart and interval.chart.metadata
+	if not m then return nil end
+	local y, x = {}, {}
+	for i, t in ipairs(m.y_ticks or {}) do y[i] = t.text end
+	for i, l in ipairs(m.x_labels or {}) do x[i] = l.text end
+	return { id = interval.chart.id, y = y, x = x, unit = m.x_unit, ticks_per_point = m.ticks_per_point,
+		camera_zoom = m.camera_zoom }
+end
+
 dev.register_dump(TAB, function(player_data)
 	local refs = player_data.refs
 	local legend = {}
@@ -526,6 +541,7 @@ dev.register_dump(TAB, function(player_data)
 		camera_surface = camera and camera.valid and camera.surface_index or nil,
 		camera_width = camera and camera.valid and camera.style.minimal_width or nil,
 		hover_buttons = camera and camera.valid and #camera.children or 0,
+		axes = axis_texts(player_data),
 		width = gw,
 		height = gh,
 		content_width = layout and layout.content_width,
