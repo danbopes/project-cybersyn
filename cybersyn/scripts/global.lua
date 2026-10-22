@@ -56,6 +56,7 @@
 
 ---@class (exact) StopInfo
 ---@field public station_id uint
+---@field public unit uint? the inventory combinator's unit number; nil on the station combinator's stop
 ---@field public priority int
 ---@field public network_name string?
 ---@field public network_mask int|{[string]: int} --transient
@@ -93,6 +94,7 @@
 ---@field public layout_pattern (0|1|2|3)[]?
 ---@field public item_thresholds {[string]: int}? --transient
 ---@field public display_state int
+---@field public inv_failed {[uint]: true}? inventory combinators (by unit number) whose own request went unserved: their red I; nil when none, and on saves from before it existed
 ---@field public is_warming_up true?
 
 ---@class Depot

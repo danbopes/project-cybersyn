@@ -59,6 +59,29 @@ function clear_all_request_tracking(station)
 	station.request_start_ticks = nil
 end
 
+--- A request of `stop` went unserved: the station combinator's red S for the station's own stop, the inventory
+--- combinator's red I for an inventory's stop. Neither lights the other.
+---@param map_data MapData
+---@param station Station
+---@param stop StopInfo
+local function mark_request_failed(map_data, station, stop)
+	local unit = stop.unit
+	if unit then
+		local failed = station.inv_failed
+		if not failed then
+			failed = {}
+			station.inv_failed = failed
+		end
+		if not failed[unit] then
+			failed[unit] = true
+			update_inv_display(map_data, station, unit)
+		end
+	elseif band(station.display_state, 2) == 0 then
+		station.display_state = station.display_state + 2
+		update_display(map_data, station)
+	end
+end
+
 ---@param name string The name of the item
 ---@param quality string? The name of the quality of the item or nil if it is common
 ---@return string
@@ -611,10 +634,7 @@ local function tick_dispatch(map_data, mod_settings)
 					local id = stop.station_id
 					local station = stations[id]
 					if station then
-						if band(station.display_state, 2) == 0 then
-							station.display_state = station.display_state + 2
-							update_display(map_data, station)
-						end
+						mark_request_failed(map_data, station, stop)
 						-- Record failed dispatch for analytics
 						local wait_so_far = 0
 						if station.request_start_ticks and station.request_start_ticks[no_provider_item_hash] then
@@ -681,10 +701,7 @@ local function tick_dispatch(map_data, mod_settings)
 		if not r_stop_i then
 			for _, stop in ipairs(r_stops) do
 				local station = stations[stop.station_id]
-				if station and band(station.display_state, 2) == 0 then
-					station.display_state = station.display_state + 2
-					update_display(map_data, station)
-				end
+				if station then mark_request_failed(map_data, station, stop) end
 				-- Every requester still listed was skipped by the loop above (evaluated ones were removed).
 				if d and station then diag.skipped(d, stop.station_id, station, item_hash) end
 			end
@@ -1078,10 +1095,7 @@ local function tick_dispatch(map_data, mod_settings)
 				end
 				diag_fail(d, r_station_id, item_hash, reason, a, b, p_station_id, diag_rej, lost_to)
 			end
-			if band(r_station.display_state, 2) == 0 then
-				r_station.display_state = r_station.display_state + 2
-				update_display(map_data, r_station)
-			end
+			mark_request_failed(map_data, r_station, r_stop)
 		end
 
 		table_remove(r_stops, r_stop_i)
@@ -1150,7 +1164,10 @@ local function tick_poll_station(map_data, mod_settings)
 	end
 	station.stops = {}
 
-	local is_requesting_nothing = true
+	-- The station combinator's own requests light its S; each inventory's own requests light its I.
+	local own_requesting_nothing = true
+	---@type {[uint]: true}?
+	local inv_requesting = nil
 	if comb1_signals then
 		if comb2_signals then
 			station.item_thresholds = {}
@@ -1228,6 +1245,7 @@ local function tick_poll_station(map_data, mod_settings)
 					---@type StopInfo
 					local stop = {
 						station_id = station_id,
+						unit = unit_number,
 						tick_signals = signals,
 						network_name = station.network_name,
 						network_mask = is_each and {} or station.network_mask,
@@ -1299,7 +1317,8 @@ local function tick_poll_station(map_data, mod_settings)
 
 							if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 								is_not_requesting = false
-								is_requesting_nothing = false
+								if not inv_requesting then inv_requesting = {} end
+								inv_requesting[unit_number] = true
 
 								if not inv_requested then inv_requested = {} end
 								inv_requested[item_hash] = true
@@ -1387,7 +1406,7 @@ local function tick_poll_station(map_data, mod_settings)
 				end
 				if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 					is_not_requesting = false
-					is_requesting_nothing = false
+					own_requesting_nothing = false
 
 					-- Track when this item request started
 					track_request_start(station, item_hash)
@@ -1464,9 +1483,19 @@ local function tick_poll_station(map_data, mod_settings)
 			end
 		end
 	end
+	local inv_failed = station.inv_failed
+	if inv_failed then
+		for unit in pairs(inv_failed) do
+			if not (inv_requesting and inv_requesting[unit]) then
+				inv_failed[unit] = nil
+				update_inv_display(map_data, station, unit)
+			end
+		end
+		if not next(inv_failed) then station.inv_failed = nil end
+	end
 	-- Update the graphic of the station combinator based on the result of polling the station.
 	if station.display_state > 1 then
-		if is_requesting_nothing and band(station.display_state, 2) > 0 then
+		if own_requesting_nothing and band(station.display_state, 2) > 0 then
 			station.display_state = station.display_state - 2
 			update_display(map_data, station)
 		end
