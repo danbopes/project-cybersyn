@@ -292,6 +292,19 @@ lab.suite("39_station_chip", {
 		lab.check("in-flight slot: Trains lists the trains carrying it to or from the stop (" .. #want .. "), past an "
 			.. "old chip, search and collapsed groups", #want > 0 and serpent.line(got) == serpent.line(want),
 			{ got = got, want = want })
+		-- Shift: the same landings without the chip; the chip the clicks above set must go.
+		r = dev("relative_click", PI, { kind = "item", id = req, station = s }, { shift = true })
+		local st3, item3 = dev("state", PI), dev("item_dump", PI)
+		lab.check("shift on the Requested slot: the item's drill-down opens without the station chip",
+			st3.is_open and st3.selected_tab == "inventory_tab" and st3.filters.station == nil
+			and st3.filters.item == req and item3.open and item3.hash == req,
+			{ r = r, state = st3.filters, item = item3 })
+		dev("close_item", PI)
+		r = dev("relative_click", PI, { kind = "item", id = flight, station = s, flight = true }, { shift = true })
+		local st4 = dev("state", PI)
+		lab.check("shift on the in-flight slot: Trains on the item without the chip", st4.is_open
+			and st4.selected_tab == "trains_tab" and st4.filters.station == nil and st4.filters.item == flight,
+			{ r = r, state = st4.filters })
 		remote.call(DT, "set_grouped", PI, false)
 		dev("relative_close", PI)
 		dev("close", PI)

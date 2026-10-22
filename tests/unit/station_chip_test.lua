@@ -147,12 +147,18 @@ test("an Advertised/Unserved slot focuses the Inventory on item + chip: the item
 	end
 end)
 
-test("shift on a stop panel slot: Stations on item + chip", function()
+test("shift on a stop panel slot: the same drill-down without the chip", function()
 	local u, pd, calls, player = click_setup(true)
 	slot_click(u, player, pd, { station = 12 }, { shift = true })
-	assert_eq(calls[1], "focus:stations_tab")
+	assert_eq(calls[1], "focus:inventory_tab")
 	assert_eq(#calls, 1)
-	assert_eq(calls.focus, { item = "iron-plate", station = 12 })
+	assert_eq(calls.focus, { item = "iron-plate" })
+	-- The in-flight slot: Trains on the item alone, also from a closed window.
+	u, pd, calls, player = click_setup(false)
+	slot_click(u, player, pd, { station = 12, flight = true }, { shift = true })
+	assert_eq(calls[1], "focus:trains_tab")
+	assert_eq(#calls, 1)
+	assert_eq(calls.focus, { item = "iron-plate", reveal = { all = true } })
 end)
 
 test("an in-flight slot focuses Trains on item + chip, revealing the groups that hold its trains", function()

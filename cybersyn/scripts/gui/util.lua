@@ -1252,7 +1252,8 @@ end
 --- Inventory, which shows the item's drill-down while the filter is set (opening the window when the cell is outside
 --- it); shift+left sets the filter and selects Stations; right clears the item filter. A stop panel's slot carries its
 --- station (tags.station, D8-7): the click also sets the station chip, and an in-flight slot (tags.flight) lands on the
---- Trains tab, where the trains carrying it to or from that station are.
+--- Trains tab, where the trains carrying it to or from that station are; shift there keeps the tab and leaves the
+--- chip off, so the view covers every stop.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @param e EventData.on_gui_click
@@ -1267,9 +1268,10 @@ function util.item_button_click(player, player_data, e, hash)
 		local station = tags and tags.station
 		if station and window_fns then
 			-- Through manager.focus: a chip, search or place filter left from earlier would hide the very station the
-			-- slot belongs to, and a closed window would otherwise open on the surface default.
-			local tab = tags.flight and "trains_tab" or e.shift and "stations_tab" or "inventory_tab"
-			window_fns.focus(player, player_data, tab, { item = hash, station = station,
+			-- slot belongs to, and a closed window would otherwise open on the surface default. Shift lands on the
+			-- same tab without the station chip, so the drill-down or Trains cover every stop.
+			local tab = tags.flight and "trains_tab" or "inventory_tab"
+			window_fns.focus(player, player_data, tab, { item = hash, station = not e.shift and station or nil,
 				reveal = tags.flight and { all = true } or nil })
 			return
 		end

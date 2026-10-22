@@ -1559,12 +1559,15 @@ lab.suite("37_tabs", {
 			{ station = dev("state", pi).filters.station, chip = d.station_chip, keys = d.row_keys.requesters })
 		dev("relative_close", pi)
 
-		-- Shift on the stop panel's slot: Stations with item + chip.
+		-- Shift on the stop panel's slot: the same drill-down, without the chip, past a chip set beforehand.
+		dev("set_filter", pi, { station = sid })
 		dev("relative_open", pi, "stop", sid)
 		dev("relative_click", pi, { kind = "item", id = rhash, station = sid }, { shift = true })
 		st = dev("state", pi)
-		lab.check("shift on a stop panel slot: Stations with item + station chip", st.selected_tab == "stations_tab"
-			and st.filters.item == rhash and st.filters.station == sid, st)
+		d = dev("item_dump", pi)
+		lab.check("shift on a stop panel slot: the item's drill-down without the station chip",
+			st.selected_tab == "inventory_tab" and st.filters.item == rhash and st.filters.station == nil
+			and d.open and d.hash == rhash and d.station_chip == nil, { state = st, chip = d.station_chip })
 		dev("relative_close", pi)
 
 		-- The grids under the station chip alone: that station's advertisements only.

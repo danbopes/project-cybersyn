@@ -212,17 +212,19 @@ local function stop_link(kind, id, max_width)
 	}
 end
 
---- @param station uint? the stop panel's station: a click also sets the station chip (D8-7)
+--- @param station uint? the stop panel's station: a click also sets the station chip (D8-7), shift leaves it off
 --- @param flight true? an in-flight slot: the click lands on the Trains tab
 local function slot(hash, count, color, tooltip, station, flight)
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	if not sprite then return nil end
+	-- The engine shows the custom tooltip next to the item's own (elem_tooltip), so the hint needs no item text.
+	local hint = station and { flight and "cybersyn-gui.relative-flight-slot-hint" or "cybersyn-gui.relative-slot-hint" }
 	return {
 		type = "sprite-button",
 		sprite = sprite,
 		quality = quality,
 		style = "ltnm_small_slot_button_" .. color,
-		tooltip = { "", name_tooltip, tooltip },
+		tooltip = hint and { "", name_tooltip, tooltip, "\n", hint } or { "", name_tooltip, tooltip },
 		elem_tooltip = util.elem_tooltip(hash),
 		tags = { kind = "item", id = hash, station = station, flight = flight },
 		mouse_button_filter = { "left", "right" },
@@ -1217,6 +1219,7 @@ local function render_unserved(state, body, m, compact)
 						style = "cybersyn_unserved_item",
 						sprite = sprite,
 						quality = quality,
+						tooltip = { "cybersyn-gui.relative-slot-hint" },
 						elem_tooltip = util.elem_tooltip(r.hash),
 						tags = { kind = "item", id = r.hash, station = state.id },
 						mouse_button_filter = { "left", "right" },
