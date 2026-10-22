@@ -1,5 +1,5 @@
 --By Mami
-local flib_migration = require("__flib__.migration")
+local flib_migration = require("__cybersyn__.flib-migration")
 local manager_gui = require("gui.main")
 local debug_revision = require("info")
 local analytics = require("scripts.analytics")

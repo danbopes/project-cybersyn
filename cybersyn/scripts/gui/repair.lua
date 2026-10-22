@@ -640,7 +640,7 @@ dev.extend({
 		local out, trains = {}, {}
 		while storage.manager.repair_job do
 			local before = storage.manager.repair_job.i
-			local p = game.create_profiler()
+			local p = helpers.create_profiler()
 			repair.job_tick()
 			p.stop()
 			out[#out + 1] = p

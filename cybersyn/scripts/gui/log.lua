@@ -1840,7 +1840,7 @@ dev.add("log_export_bench", function(pi)
 	local out = {}
 	while d.export_jobs[1] do
 		local before = job.rows
-		local p = game.create_profiler()
+		local p = helpers.create_profiler()
 		diag.export_step()
 		p.stop()
 		out[#out + 1] = { "", #out + 1, ": ", job.rows - before, " rows ", p }
@@ -1854,9 +1854,9 @@ dev.add("log_profile", function(pi)
 	local player_data = storage.manager.players[pi]
 	prof = { written = 0 }
 	for _, k in ipairs({ "counts", "rows", "render", "rest", "display", "entries", "sync" }) do
-		prof[k] = game.create_profiler(true)
+		prof[k] = helpers.create_profiler(true)
 	end
-	local total = game.create_profiler()
+	local total = helpers.create_profiler()
 	log_tab.build(storage, player_data)
 	total.stop()
 	local p = prof
@@ -1886,25 +1886,25 @@ dev.add("log_bench_rows", function(pi, n)
 	local rs = player_data.log_rows
 	r_widths, r_now, r_memo = player_data.log_widths, game.tick, {}
 	view_cache = {}
-	local p1 = game.create_profiler()
+	local p1 = helpers.create_profiler()
 	local elems = {}
 	for i = 1, n do elems[i] = build_row(parent, nil, r_widths) end
 	p1.stop()
 	local shown = #rs.display
-	local p2 = game.create_profiler()
+	local p2 = helpers.create_profiler()
 	for i = 1, n do
 		local row = rs.display[(i - 1) % shown + 1]
 		r_memo[-1000 - i] = {}
 		row_write(elems[i], { key = -1000 - i, g = row.g }, true)
 	end
 	p2.stop()
-	local p3 = game.create_profiler()
+	local p3 = helpers.create_profiler()
 	for i = 1, n do
 		local row = rs.display[(i - 1) % shown + 1]
 		row_write(elems[i], { key = -1000 - i, g = row.g }, true)
 	end
 	p3.stop()
-	local p4 = game.create_profiler()
+	local p4 = helpers.create_profiler()
 	for i = 1, n do parent.add({ type = "frame", direction = "horizontal", style = "cybersyn_log_row" }) end
 	p4.stop()
 	parent.destroy()

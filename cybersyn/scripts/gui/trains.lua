@@ -2026,7 +2026,7 @@ local function refresh_fuel(player_data, state, seq, first, last, grouped)
 	local refresh = renders % FUEL_EVERY == 1
 	local new_fuel = {}
 	local page = {}
-	local profiler = refresh and dev.enabled() and game.create_profiler() or nil
+	local profiler = refresh and dev.enabled() and helpers.create_profiler() or nil
 	for i = first, last do
 		local tr = row_train(seq[i], grouped)
 		if tr then
@@ -2658,13 +2658,13 @@ dev.add("pane_refresh_ms", function(pi, n, rebuild)
 	local open = pd.relative_pane_open
 	if not (open and open.panel and open.panel.valid) then return "no pane open" end
 	n = n or 1
-	local total = game.create_profiler()
+	local total = helpers.create_profiler()
 	for _ = 1, n do
 		if rebuild then pd.relative_pane.sigs = {} end
 		relative.render(pd, pd.relative_pane, open.panel)
 	end
 	total.stop()
-	local avg = game.create_profiler()
+	local avg = helpers.create_profiler()
 	avg.stop()
 	avg.add(total)
 	avg.divide(n)

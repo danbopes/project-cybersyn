@@ -2399,7 +2399,7 @@ local function tick_pane(manager_data, i, pd)
 		return
 	end
 	if not (pd.is_manager_open and pd.selected_tab == "trains_tab") or pd.item_view then return end
-	local p = manager_data.relative_samples and game.create_profiler()
+	local p = manager_data.relative_samples and helpers.create_profiler()
 	local alive = relative.render(pd, state, panel)
 	if p then
 		p.stop()
@@ -2439,7 +2439,7 @@ function relative.tick(manager_data)
 			elseif open.narrow then
 				-- Hidden on a narrow screen: the window check above is all it costs.
 			else
-				local p = manager_data.relative_samples and game.create_profiler()
+				local p = manager_data.relative_samples and helpers.create_profiler()
 				local alive = relative.render(pd, state, panel)
 				if p then
 					p.stop()
@@ -2815,13 +2815,13 @@ function dev_fns.relative_refresh_ms(pi, n, rebuild)
 	local frame = mount_of(player, mount_key(open))
 	local panel = frame[PANEL]
 	n = n or 1
-	local total = game.create_profiler()
+	local total = helpers.create_profiler()
 	for _ = 1, n do
 		if rebuild then pd.relative.sigs = {} end
 		relative.render(pd, pd.relative, panel)
 	end
 	total.stop()
-	local avg = game.create_profiler()
+	local avg = helpers.create_profiler()
 	avg.stop()
 	avg.add(total)
 	avg.divide(n)
@@ -2838,7 +2838,7 @@ function dev_fns.relative_profile(pi)
 	local body = panel.scroll.body
 	local out = { "" }
 	local function step(name, fn)
-		local p = game.create_profiler()
+		local p = helpers.create_profiler()
 		local r = fn()
 		p.stop()
 		out[#out + 1] = { "", name, " ", p, "  " }

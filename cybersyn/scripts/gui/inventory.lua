@@ -770,7 +770,7 @@ local COLOR_CODE = { green = 1, blue = 2, red = 3, orange = 4, pink = 5, grey = 
 local function unrequested_of(cache, snapshot, f)
 	local set = cache.unrequested
 	if set then return set end
-	local profiler = dev.enabled() and game.create_profiler() or nil
+	local profiler = dev.enabled() and helpers.create_profiler() or nil
 	set = logic.unrequested(snapshot.provider_masks or {}, snapshot.request_keys or {}, f.network)
 	if profiler then
 		profiler.stop()

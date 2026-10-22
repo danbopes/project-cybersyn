@@ -902,7 +902,7 @@ function item.build(map_data, player_data)
 		item.close(game.get_player(player_data.player_index), player_data)
 		return false
 	end
-	local profiler = storage.manager.item_samples and game.create_profiler()
+	local profiler = storage.manager.item_samples and helpers.create_profiler()
 	local cache, refreshed = get_cache(player_data, view.hash)
 	local m = cache.model
 	-- A new pass rebuilds the model in this update and rewrites the rows in the next ones, so neither update pays
@@ -1385,7 +1385,7 @@ end)
 dev.add("item_profile", function(pi, n, rebuild)
 	local player_data = storage.manager.players[pi]
 	n = n or 1
-	local total = game.create_profiler()
+	local total = helpers.create_profiler()
 	for _ = 1, n do
 		if rebuild then
 			player_data.item_cache = nil
@@ -1405,7 +1405,7 @@ end)
 dev.add("item_model_profile", function(hash, n)
 	n = n or 1
 	local snapshot = collector.get()
-	local p = game.create_profiler()
+	local p = helpers.create_profiler()
 	for _ = 1, n do item_model.build(snapshot, hash, SIGNAL_PRIORITY) end
 	p.stop()
 	p.divide(n)

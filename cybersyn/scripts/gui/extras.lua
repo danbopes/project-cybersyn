@@ -504,7 +504,7 @@ dev.extend({
 			if not train_id then return { error = "no train has a path" } end
 		end
 		local before = object_count(player)
-		local p = game.create_profiler()
+		local p = helpers.create_profiler()
 		local trace, why = extras.draw_path_trace(player, pd, train_id)
 		p.stop()
 		local entity = lua_train(train_id)

@@ -120,8 +120,8 @@ local function summary()
 end
 
 local function profile(n, fn)
-	local total = game.create_profiler()
-	local avg = game.create_profiler()
+	local total = helpers.create_profiler()
+	local avg = helpers.create_profiler()
 	for _ = 1, n do
 		fn()
 	end
@@ -480,10 +480,10 @@ function interface.tick_split(pi)
 	local player, pd = context(pi)
 	local before = collector.get().tick
 	local heap = collectgarbage("count")
-	local step = game.create_profiler()
+	local step = helpers.create_profiler()
 	if storage.manager.collect_boost then collector.boost_tick(true) else collector.tick() end
 	step.stop()
-	local render = game.create_profiler()
+	local render = helpers.create_profiler()
 	manager.render(player, pd)
 	render.stop()
 	return { "", "step ", step, " render ", render, " heap ", math.floor(collectgarbage("count") - heap), " KB",
@@ -520,10 +520,10 @@ function interface.bench_pass(pi)
 	local out = {}
 	local done = false
 	while not done do
-		local step = game.create_profiler()
+		local step = helpers.create_profiler()
 		done = collector.step()
 		step.stop()
-		local render = game.create_profiler()
+		local render = helpers.create_profiler()
 		if pd then manager.update(storage, pd) end
 		render.stop()
 		out[#out + 1] = { "", #out + 1, done and " (last)" or "", " step ", step, " render ", render }
@@ -605,7 +605,7 @@ function interface.boost_samples(cmd, pi)
 		boost_log = {}
 		manager_gui.set_boost_probe(function(kind, work, m)
 			local heap = collectgarbage("count")
-			local prof = game.create_profiler()
+			local prof = helpers.create_profiler()
 			local done = work(m)
 			prof.stop()
 			local delta = collectgarbage("count") - heap
@@ -1182,7 +1182,7 @@ end
 
 --- Rebuilds the registry from Cybersyn's tables as the schema-3 migration does, timed; returns what it found.
 function interface.lint_registry_seed()
-	local p = game.create_profiler()
+	local p = helpers.create_profiler()
 	local r = lint.registry_seed()
 	p.stop()
 	r.ms = p

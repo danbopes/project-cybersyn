@@ -545,7 +545,7 @@ local setup_parts = nil
 --- @return LuaProfiler?
 local function part_start(name)
 	if not setup_parts then return nil end
-	local p = game.create_profiler()
+	local p = helpers.create_profiler()
 	setup_parts[#setup_parts + 1] = name
 	setup_parts[#setup_parts + 1] = p
 	return p
@@ -1043,7 +1043,7 @@ function lint.tick()
 	local s = lint.state()
 	local k = s.job and s.job.updates or 0
 	setup_parts = {}
-	local p = game.create_profiler()
+	local p = helpers.create_profiler()
 	lint.step()
 	p.stop()
 	samples[#samples + 1] = { k + 1, p, setup_parts[1] and setup_parts or nil }
