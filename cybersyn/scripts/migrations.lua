@@ -242,7 +242,7 @@ local migrations_table = {
 				if train.entity.valid then
 					local e = get_any_train_entity(train.entity)
 					if e then
-						local stops = e.force.get_train_stops({ name = train.depot_name, surface = e.surface })
+						local stops = game.train_manager.get_train_stops({ station_name = train.depot_name, surface = e.surface, force = e.force })
 						for stop in rnext_consume, stops do
 							local new_depot_id = stop.unit_number
 							if map_data.depots[new_depot_id] then
@@ -452,7 +452,48 @@ local migrations_table = {
 			local map_data = storage
 			analytics.init(map_data)
 		end
-	end
+	end,
+	["2.2.0"] = function()
+		---@type MapData
+		local map_data = storage
+
+		map_data.recent_external_items = nil
+		-- warmup_station_cycles holds every warming station on its own.
+		map_data.warmup_station_ids = nil
+		-- tick_init refills the economy under the per-stop keys; the per-station ones would only linger.
+		map_data.economy = { all_r_stops = {}, all_p_stops = {}, all_names = {} }
+
+		for _, station in pairs(map_data.stations) do
+			station.secondary_inv_combs = station.secondary_inv_combs or {}
+			-- Moved onto each stop's StopInfo, rebuilt by every poll.
+			station.tick_signals = nil
+			station.item_p_counts = nil
+			-- Wait tracking was optional before and its cleanup hung on the same setting, so entries left from a time
+			-- it was on would read as hours-long waits.
+			station.request_start_ticks = {}
+		end
+
+		local tick = game.tick
+		for _, train in pairs(map_data.trains) do
+			local entity = train.entity
+			if entity and entity.valid then
+				train.last_state = entity.state
+				train.state_tick = tick
+			end
+		end
+
+		local players = map_data.manager and map_data.manager.players
+		for _, pd in pairs(players or {}) do
+			pd.stations_sort, pd.trains_sort, pd.auto_refresh, pd.pinned = nil, nil, nil, nil
+			pd.recent_panel_dirty, pd.disable_top_left_button = nil, nil
+			pd.delivery_times_interval, pd.delivery_times_mode, pd.delivery_times_selected = nil, nil, nil
+		end
+
+		-- Reshapes the utilization series, moves every chart onto fresh chunks and drops the series no tab draws.
+		if map_data.analytics and analytics.is_library_available() then
+			analytics.init(map_data)
+		end
+	end,
 }
 
 ---@param config_change_data ConfigurationChangedData
@@ -544,8 +585,9 @@ function on_config_changed(config_change_data)
 		sanitize_economy_names(config_change_data)
 	end
 
-	-- Ensure analytics is initialized if enabled (in case migration didn't run)
-	if analytics.is_enabled() and not storage.analytics then
+	-- Also reshapes a table an older version left when factorio-charts was missing during the upgrade, so the samples
+	-- taken before a tab opens go into the current series.
+	if analytics.is_enabled() then
 		analytics.init(storage)
 	end
 
@@ -554,6 +596,7 @@ function on_config_changed(config_change_data)
 		for _, force in pairs(game.forces) do
 			force.set_surface_hidden(storage.analytics.surface, true)
 		end
+		analytics.restyle_chunks(storage)
 	end
 
 	retrigger_train_calculation(false)
