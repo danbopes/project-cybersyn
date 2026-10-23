@@ -4,8 +4,8 @@
 export SAVETOOL_SCRATCH="$1"; shift
 DEV_ON='{"cybersyn-manager-dev-interface": true}'
 export CYBLAB_STARTUP="${CYBLAB_STARTUP-$DEV_ON}"
-DOCS=/home/daniel/factorio_20/manager-facelift
-cd /home/daniel/factorio_20/cs2-migration || exit 1
+DOCS=/home/daniel/factorio/manager-facelift
+cd /home/daniel/factorio/cs2-migration || exit 1
 case "$1" in
   start)
     shift

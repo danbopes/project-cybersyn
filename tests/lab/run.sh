@@ -3,7 +3,7 @@
 # runs every tests/lab/*_test.lua in sorted order and compares against tests/baseline/.
 # usage: tests/lab/run.sh <scratch> <rcon port> [save.zip] [--record]
 set -u
-LAB=${LAB:-/home/daniel/factorio_20/manager-facelift/lab.sh}
+LAB=${LAB:-/home/daniel/factorio/manager-facelift/lab.sh}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 MOD=${MOD:-$ROOT/cybersyn}
@@ -29,7 +29,7 @@ if [ ${#ARGS[@]} -lt 2 ]; then
 fi
 SCRATCH=${ARGS[0]}
 PORT=${ARGS[1]}
-SAVE=${ARGS[2]:-/home/daniel/factorio_20/manager-facelift/saves/layout-dev.zip}
+SAVE=${ARGS[2]:-/home/daniel/factorio/manager-facelift/saves/layout-dev.zip}
 mkdir -p "$SCRATCH"
 LOG="$SCRATCH/lab-run.log"
 OUTPUT="$SCRATCH/cyblab/write-data/script-output/lab"

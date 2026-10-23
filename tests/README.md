@@ -6,7 +6,7 @@ Three layers. The first two gate every commit (both green); the third is how GUI
 |---|---|---|---|
 | Host unit tests | `tests/unit/` | `lua5.2` only | about 0.05 s |
 | In-game characterization suite | `tests/lab/` | Factorio 2.0 headless, `lab.sh` | about 14 s |
-| Screenshots | `~/factorio_20/manager-facelift/shots.sh` | the virtual display on `:2`, a running lab | about 30 s on layout-dev |
+| Screenshots | `~/factorio/manager-facelift/shots.sh` | the virtual display on `:2`, a running lab | about 30 s on layout-dev |
 
 ## 1. Host unit tests (`tests/unit`)
 
@@ -23,17 +23,17 @@ Plain Lua 5.2 against the mod's real modules (`constants`, `lib`, `factorio-api`
 tests/lab/run.sh <scratch> <rcon port> [save.zip] [--record]
 ```
 
-Boots `~/factorio_20/manager-facelift/saves/layout-dev.zip` headless (2 s), records a golden dispatch trace with a fixed stimulus, runs `aitest` and drives every manager tab, sort, filter, period and pager through the `cybersyn-manager-dev` remote interface, builds one planner scenario per reason code (`40_reason_codes_test.lua`), then compares against `tests/baseline/`. One `PASS`/`FAIL`/`INFO` line per check (`SKIP` for a check whose subject does not exist yet, such as the reason checks before the diagnostics core lands), `SKIP k` and `PASS n FAIL m` at the end, non-zero exit on failure. The lab is always stopped. Details, the suite protocol and helpers are in `tests/lab/README.md`. New suites go in `tests/lab/NN_name_test.lua` (only `*_test.lua` files run).
+Boots `~/factorio/manager-facelift/saves/layout-dev.zip` headless (2 s), records a golden dispatch trace with a fixed stimulus, runs `aitest` and drives every manager tab, sort, filter, period and pager through the `cybersyn-manager-dev` remote interface, builds one planner scenario per reason code (`40_reason_codes_test.lua`), then compares against `tests/baseline/`. One `PASS`/`FAIL`/`INFO` line per check (`SKIP` for a check whose subject does not exist yet, such as the reason checks before the diagnostics core lands), `SKIP k` and `PASS n FAIL m` at the end, non-zero exit on failure. The lab is always stopped. Details, the suite protocol and helpers are in `tests/lab/README.md`. New suites go in `tests/lab/NN_name_test.lua` (only `*_test.lua` files run).
 
 ## 3. Screenshots
 
 ```
-lab.sh <scratch> start <mod root> <port> ~/factorio_20/manager-facelift/saves/layout-dev.zip
+lab.sh <scratch> start <mod root> <port> ~/factorio/manager-facelift/saves/layout-dev.zip
 SHOT_PREFIX=layout- shots.sh <scratch> <port> <outdir> [scale] [WxH] [tabs...]
 lab.sh <scratch> stop
 ```
 
-One PNG per tab at the given UI scale and resolution; settle and gap times grow automatically on saves with more than 100 stations (pY). Look at every PNG. The round-3 "before" gallery is `~/factorio_20/manager-facelift/shots/round3/before/`. See `~/factorio_20/manager-facelift/README.md`.
+One PNG per tab at the given UI scale and resolution; settle and gap times grow automatically on saves with more than 100 stations (pY). Look at every PNG. The round-3 "before" gallery is `~/factorio/manager-facelift/shots/round3/before/`. See `~/factorio/manager-facelift/README.md`.
 
 ## Baselines
 
