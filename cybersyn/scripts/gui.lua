@@ -43,8 +43,9 @@ end
 local function set_visibility(main_window, selected_index)
 	local is_station = selected_index == 1
 	local is_depot = selected_index == 2
-	local is_wagon = selected_index == 5
-	local uses_network = is_station or is_depot or selected_index == 3
+	local is_wagon = selected_index == 6
+	local is_secondary_inventory = selected_index == 5
+	local uses_network = is_station or is_depot or selected_index == 3 or is_secondary_inventory
 	local uses_allow_list = is_station or selected_index == 3
 
 	local vflow = main_window.frame.vflow --[[@as LuaGuiElement]]
@@ -56,8 +57,11 @@ local function set_visibility(main_window, selected_index)
 	local depot_settings = bottom_flow.depot --[[@as LuaGuiElement]]
 
 	top_flow.is_pr_switch.visible = is_station
+	vflow.mode_description.caption = selected_index >= 1 and { "cybersyn-gui.mode-description-" .. selected_index } or ""
 	vflow.network_label.visible = uses_network
-	bottom_flow.network.visible = uses_network
+	-- The planner always puts an inventory combinator on its station's network, so a picker here would do nothing.
+	vflow.network_inherited.visible = is_secondary_inventory
+	bottom_flow.network.visible = uses_network and not is_secondary_inventory
 	first_settings.allow_list.visible = uses_allow_list
 	first_settings.is_stack.visible = is_station
 	second_settings.enable_inactive.visible = is_station
@@ -284,6 +288,8 @@ local function handle_drop_down(e)
 	elseif element.selected_index == 4 then
 		set_comb_operation(comb, MODE_SECONDARY_IO)
 	elseif element.selected_index == 5 then
+		set_comb_operation(comb, MODE_SECONDARY_INVENTORY)
+	elseif element.selected_index == 6 then
 		set_comb_operation(comb, MODE_WAGON)
 	else
 		return
@@ -535,6 +541,7 @@ function gui_opened(event, player, comb, is_ghost)
 												{ "cybersyn-gui.depot" },
 												{ "cybersyn-gui.refueler" },
 												{ "cybersyn-gui.comb2" },
+												{ "cybersyn-gui.secondary-inventory" },
 												{ "cybersyn-gui.wagon-manifest" },
 											},
 										},
@@ -551,6 +558,11 @@ function gui_opened(event, player, comb, is_ghost)
 											tags = { id = comb.unit_number },
 										},
 									},
+								},
+								{
+									type = "label",
+									name = "mode_description",
+									style_mods = { single_line = false, maximal_width = 380, top_margin = 4, font_color = { 0.8, 0.8, 0.8 } },
 								},
 								---Settings section for modal settings
 								{
@@ -596,6 +608,12 @@ function gui_opened(event, player, comb, is_ghost)
 									style = "heading_2_label",
 									caption = { "cybersyn-gui.network" },
 									style_mods = { top_padding = 8 },
+								},
+								{
+									type = "label",
+									name = "network_inherited",
+									caption = { "cybersyn-gui.network-inherited" },
+									style_mods = { single_line = false, maximal_width = 380, font_color = { 0.8, 0.8, 0.8 } },
 								},
 								{
 									type = "flow",
