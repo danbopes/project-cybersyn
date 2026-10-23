@@ -1071,12 +1071,15 @@ local function main()
 	register_gui_actions()
 
 	script.on_init(function()
+		ElevatorTravel.setup_se_compat()
+		picker_dollies_compat.setup_picker_dollies_compat()
+		-- An adopted save is finished by on_configuration_changed, which follows in the same load: it knows the
+		-- replaced mod's version, so it can run the version migrations that save still needs.
+		if fork_migrations.adopt_replaced_storage() then return end
 		init_global()
 		if analytics.is_enabled() then
 			analytics.init(storage)
 		end
-		ElevatorTravel.setup_se_compat()
-		picker_dollies_compat.setup_picker_dollies_compat()
 		manager.on_init()
 		fork_migrations.migrate_schema()
 	end)

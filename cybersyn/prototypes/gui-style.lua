@@ -9,8 +9,8 @@ for key, value in pairs(require("__core__.lualib.util")) do
 end
 
 util.paths = {
-	nav_icons = "__cybersyn__/graphics/gui/frame-action-icons.png",
-	shortcut_icons = "__cybersyn__/graphics/shortcut/ltn-manager-shortcut.png",
+	nav_icons = "__cybersyn-plus__/graphics/gui/frame-action-icons.png",
+	shortcut_icons = "__cybersyn-plus__/graphics/shortcut/ltn-manager-shortcut.png",
 }
 
 util.empty_checkmark = {
@@ -29,7 +29,7 @@ data:extend({
 	data_util.build_sprite("ltnm_refresh_white", { 32, 0 }, util.paths.nav_icons, 32),
 	-- utility/pause is dark grey, which vanishes on an unselected frame action button; the button style inverts a
 	-- light sprite on hover by itself.
-	data_util.build_sprite("cybersyn_pause_white", { 0, 0 }, "__cybersyn__/graphics/gui/pause-white.png", 32),
+	data_util.build_sprite("cybersyn_pause_white", { 0, 0 }, "__cybersyn-plus__/graphics/gui/pause-white.png", 32),
 })
 
 
@@ -324,9 +324,9 @@ data:extend({
 	{
 		type = "shortcut",
 		name = "cybersyn-toggle-gui",
-		icon = "__cybersyn__/graphics/shortcut/manager-toolbar-white.png",
+		icon = "__cybersyn-plus__/graphics/shortcut/manager-toolbar-white.png",
 		icon_size = 32,
-		small_icon = "__cybersyn__/graphics/shortcut/manager-toolbar-white.png",
+		small_icon = "__cybersyn-plus__/graphics/shortcut/manager-toolbar-white.png",
 		small_icon_size = 32,
 		style = "green",
 		toggleable = true,
@@ -339,7 +339,7 @@ data:extend({
 -- WINDOW (PLAN3 §4.3)
 
 data:extend({
-	data_util.build_sprite("cybersyn_filter_white", { 0, 0 }, "__cybersyn__/graphics/gui/filter-white.png", 32),
+	data_util.build_sprite("cybersyn_filter_white", { 0, 0 }, "__cybersyn-plus__/graphics/gui/filter-white.png", 32),
 	{
 		-- Ctrl+F (or whatever the player bound to the game's search) while the manager is open.
 		type = "custom-input",

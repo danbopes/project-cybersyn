@@ -1,5 +1,5 @@
-if ... ~= "__cybersyn__.flib-migration" then
-  return require("__cybersyn__.flib-migration")
+if ... ~= "__cybersyn-plus__.flib-migration" then
+  return require("__cybersyn-plus__.flib-migration")
 end
 
 --- @diagnostic disable
@@ -8,7 +8,7 @@ end
 --- NOTICE: This module is deprecated and should not be used. Use `helpers.compare_versions` and Lua migration files instead.
 --- See https://lua-api.factorio.com/latest/auxiliary/migrations.html#lua-migrations
 --- ```lua
---- local flib_migration = require("__cybersyn__.flib-migration")
+--- local flib_migration = require("__cybersyn-plus__.flib-migration")
 --- ```
 --- @class flib_migration
 local flib_migration = {}

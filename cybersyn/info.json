@@ -1,19 +1,23 @@
 {
-    "name": "cybersyn",
-    "version": "3.1.0",
-    "title": "Project Cybersyn",
+    "name": "cybersyn-plus",
+    "version": "3.2.0",
+    "title": "Project Cybersyn Plus (fork)",
     "author": "danbopes (fork of Project Cybersyn by Mami)",
     "contact": "https://github.com/danbopes/project-cybersyn/issues",
     "homepage": "https://github.com/danbopes/project-cybersyn",
-    "description": "Fork of Project Cybersyn with a rebuilt Cybersyn Manager and diagnostics for large bases: why each request waits, setup checks, an event log. Same combinators and signals; existing saves carry over.",
+    "description": "Fork of Project Cybersyn with a rebuilt Cybersyn Manager and diagnostics for large bases: why each request waits, setup checks, an event log. Same combinators and signals; saves from Project Cybersyn carry over, deliveries in flight included.",
     "factorio_version": "2.1",
     "dependencies": [
-        "base >= 2.0.60",
-        "flib >= 0.15.0",
+        "base >= 2.1.18",
+        "flib >= 0.17.1",
+        "! cybersyn",
         "? factorio-charts >= 1.3.0",
         "? space-exploration >= 0.6.94",
         "? miniloader",
         "? nullius",
         "? pypostprocessing"
+    ],
+    "migrates_from": [
+        "cybersyn"
     ]
 }

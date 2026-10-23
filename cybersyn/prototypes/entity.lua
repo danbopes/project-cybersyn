@@ -1,9 +1,9 @@
 --By Mami
 combinator_entity = flib.copy_prototype(data.raw["arithmetic-combinator"]["arithmetic-combinator"], COMBINATOR_NAME)
-combinator_entity.icon = "__cybersyn__/graphics/icons/cybernetic-combinator.png"
+combinator_entity.icon = "__cybersyn-plus__/graphics/icons/cybernetic-combinator.png"
 combinator_entity.radius_visualisation_specification = {
 	sprite = {
-		filename = "__cybersyn__/graphics/icons/area-of-effect.png",
+		filename = "__cybersyn-plus__/graphics/icons/area-of-effect.png",
 		tint = { r = 1, g = 1, b = 0, a = .5 },
 		height = 64,
 		width = 64,
@@ -20,7 +20,7 @@ end
 
 for _, dir in pairs({ "north", "east", "south", "west" }) do
 	-- same sprites, just with some parts painted red
-	combinator_entity.sprites[dir].layers[1].filename = "__cybersyn__/graphics/combinator/cybernetic-combinator.png"
+	combinator_entity.sprites[dir].layers[1].filename = "__cybersyn-plus__/graphics/combinator/cybernetic-combinator.png"
 end
 
 local function create_combinator_display_direction(filename, x, y, shift)
@@ -50,7 +50,7 @@ end
 --   (2,1) R refueler [>>]   (3,1) I inventory [AND]
 --   (0,2) red I, that inventory's own request went unserved [OR]: (3,1) recoloured the way (2,0) became (0,1)
 -- The red I has a row of its own rather than (1,1), so upstream's green S art stays in the sheet for [<<].
-local CYBERSYN_DISPLAYS = "__cybersyn__/graphics/combinator/cybernetic-displays.png"
+local CYBERSYN_DISPLAYS = "__cybersyn-plus__/graphics/combinator/cybernetic-displays.png"
 local FACTORIO_DISPLAYS = "__base__/graphics/entity/combinator/combinator-displays.png"
 
 combinator_entity.plus_symbol_sprites = create_combinator_display(CYBERSYN_DISPLAYS, 0, 0)
@@ -77,7 +77,7 @@ combinator_out_entity.flags = { "not-blueprintable", "not-deconstructable", "pla
 combinator_out_entity.hidden_in_factoriopedia = true
 
 local origin = { 0.0, 0.0 }
-local invisible_sprite = { filename = "__cybersyn__/graphics/invisible.png", width = 1, height = 1 }
+local invisible_sprite = { filename = "__cybersyn-plus__/graphics/invisible.png", width = 1, height = 1 }
 local wire_con1 = {
 	red = origin,
 	green = origin,

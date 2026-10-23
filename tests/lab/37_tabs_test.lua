@@ -11,7 +11,7 @@ local STATION_CHIPS = { "no_power", "disabled", "warming_up", "starved", "setup"
 	"stuck", "failing" }
 local TRAIN_CHIPS = { "parked", "to_p", "loading", "to_r", "unloading", "returning", "refuel", "interrupt",
 	"not_refuelled", "in_group", "trouble", "problems" }
-local HANDLER = "__cybersyn_handler"
+local HANDLER = "__cybersyn-plus_handler"
 local HOUR = 216000
 
 local function key_of(c)

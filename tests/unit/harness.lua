@@ -236,8 +236,8 @@ settings = {
 }
 
 script = {
-	mod_name = "cybersyn",
-	active_mods = { base = "2.0.0", flib = "0.16.5", cybersyn = "0.0.0" },
+	mod_name = "cybersyn-plus",
+	active_mods = { base = "2.0.0", flib = "0.16.5", ["cybersyn-plus"] = "0.0.0" },
 	on_event = function() end,
 	on_nth_tick = function() end,
 	on_init = function() end,

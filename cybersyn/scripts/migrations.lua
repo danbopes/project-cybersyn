@@ -1,8 +1,9 @@
 --By Mami
-local flib_migration = require("__cybersyn__.flib-migration")
+local flib_migration = require("__cybersyn-plus__.flib-migration")
 local manager_gui = require("gui.main")
 local debug_revision = require("info")
 local analytics = require("scripts.analytics")
+local fork_migrations = require("scripts.fork-migrations")
 local check_debug_revision
 
 local migrations_table = {
@@ -480,7 +481,10 @@ function on_config_changed(config_change_data)
 	storage.tick_data = {}
 	storage.perf_cache = {}
 
-	flib_migration.on_config_changed(config_change_data, migrations_table)
+	local previous_version = fork_migrations.previous_version(config_change_data)
+	if previous_version then
+		flib_migration.run(previous_version, migrations_table)
+	end
 
 	IS_SE_PRESENT = remote.interfaces["space-exploration"] ~= nil
 

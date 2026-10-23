@@ -172,6 +172,37 @@ function fork_migrations.migrate_schema()
 	storage.fork_schema = SCHEMA
 end
 
+--- The mod that this one replaces, listed in info.json's migrates_from. Stock Cybersyn and this fork's releases
+--- up to 3.1.0 both ran under that name, so a save from either arrives through it.
+fork_migrations.REPLACED_MOD = "cybersyn"
+
+--- Takes over the replaced mod's storage, which Factorio has already moved into storage._migrated by the time
+--- on_init runs. Its entities, render objects, GUI elements and on_object_destroyed registrations came across
+--- with it, so the data stays valid as is, deliveries in flight included.
+--- @return boolean adopted false on a save that never had the replaced mod
+function fork_migrations.adopt_replaced_storage()
+	local migrated = storage._migrated and storage._migrated[fork_migrations.REPLACED_MOD]
+	if not migrated then return false end
+	storage._migrated = nil
+	for key, value in pairs(migrated) do
+		storage[key] = value
+	end
+	return true
+end
+
+--- The version the save's data was written by: this mod's previous version, or on the load that adopted the
+--- replaced mod's storage, that mod's version.
+--- @param e ConfigurationChangedData
+--- @return string?
+function fork_migrations.previous_version(e)
+	local own = e.mod_changes[script.mod_name]
+	if own and own.old_version then return own.old_version end
+	local replaced = e.mod_changes[fork_migrations.REPLACED_MOD]
+	if own and replaced and replaced.old_version and not replaced.new_version then
+		return replaced.old_version
+	end
+end
+
 function fork_migrations.run_once()
 	if not storage.fork_migrated then
 		migrate_to_fork()

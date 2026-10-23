@@ -509,7 +509,7 @@ lab.suite("39_log", {
 			end
 		end
 		local function handler_of(elem)
-			local h = elem.tags and elem.tags.__cybersyn_handler
+			local h = elem.tags and elem.tags["__cybersyn-plus_handler"]
 			return h and h[tostring(defines.events.on_gui_click)] or nil
 		end
 		local function is_item(tags)

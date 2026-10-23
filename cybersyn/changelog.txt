@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.2.0
+Date: 2026-10-23
+  Major Features:
+    - Renamed to cybersyn-plus ("Project Cybersyn Plus (fork)") for the mod portal and moved to Factorio 2.1 (2.1.18 or newer). Saves from Project Cybersyn and from this fork's earlier releases (named cybersyn) carry over through Factorio's migrates_from: stations, depots, trains, deliveries in flight, settings and the Manager state are taken over as they are. The mod cannot be enabled together with Project Cybersyn
+  Compatibility:
+    - Every cybersyn-* entity, item, signal, technology and setting name and the cybersyn remote interface are unchanged, so blueprints and mods that talk to Cybersyn through its remote interface keep working. Mods that require the mod named cybersyn (for example Cybersyn Combinator) need an update that also accepts cybersyn-plus
+---------------------------------------------------------------------------------------------------
 Version: 3.1.0
 Date: 2026-10-22
   Major Features:

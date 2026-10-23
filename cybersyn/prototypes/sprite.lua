@@ -1,7 +1,7 @@
 both_wagon_sprite = {
 	type = "sprite",
 	name = "cybersyn-both-wagon",
-	filename = "__cybersyn__/graphics/icons/both-wagon.png",
+	filename = "__cybersyn-plus__/graphics/icons/both-wagon.png",
 	size = 64,
 	scale = 0.5,
 	flags = { "gui-icon" },
@@ -12,7 +12,7 @@ both_wagon_sprite = {
 combinator_muted_sprite = {
 	type = "sprite",
 	name = "cybersyn-combinator-muted",
-	filename = "__cybersyn__/graphics/icons/cybernetic-combinator-muted.png",
+	filename = "__cybersyn-plus__/graphics/icons/cybernetic-combinator-muted.png",
 	size = 64,
 	mipmap_count = 4,
 	flags = { "gui-icon" },

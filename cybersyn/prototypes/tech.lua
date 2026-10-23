@@ -10,7 +10,7 @@ combinator_recipe.subgroup = data.raw["recipe"]["train-stop"].subgroup
 
 cybersyn_tech = flib.copy_prototype(data.raw["technology"]["automated-rail-transportation"], "cybersyn-train-network")
 
-cybersyn_tech.icon = "__cybersyn__/graphics/icons/tech.png"
+cybersyn_tech.icon = "__cybersyn-plus__/graphics/icons/tech.png"
 cybersyn_tech.icon_size = 256
 cybersyn_tech.prerequisites = {
 	"automated-rail-transportation",

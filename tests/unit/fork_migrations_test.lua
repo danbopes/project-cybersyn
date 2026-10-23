@@ -104,3 +104,36 @@ test("migrate_schema: re-keying a second time changes nothing and logs nothing",
 	assert_eq(H.keys(storage.stations[1].secondary_inv_combs), { 301 })
 	assert_eq(H.keys(storage.stations[2].secondary_inv_combs), {})
 end)
+
+test("adopt_replaced_storage: the replaced mod's storage becomes ours, deliveries in flight included", function()
+	local fm = H.load("scripts.fork-migrations")
+	local train = { status = 2, p_station_id = 7, manifest = { { name = "iron-plate", count = 4000 } } }
+	storage._migrated = { cybersyn = { trains = { [11] = train }, fork_migrated = true } }
+	assert_true(fm.adopt_replaced_storage())
+	assert_nil(storage._migrated)
+	assert_true(storage.trains[11] == train, "the same table, not a copy")
+	assert_true(storage.fork_migrated)
+end)
+
+test("adopt_replaced_storage: a save that never had the replaced mod is left alone", function()
+	local fm = H.load("scripts.fork-migrations")
+	storage._migrated = nil
+	assert_eq(fm.adopt_replaced_storage(), false)
+	storage._migrated = { ["some-other-mod"] = {} }
+	assert_eq(fm.adopt_replaced_storage(), false)
+	assert_not_nil(storage._migrated["some-other-mod"])
+	storage._migrated = nil
+end)
+
+test("previous_version: the replaced mod's version on the adopting load, ours afterwards", function()
+	local fm = H.load("scripts.fork-migrations")
+	local me = script.mod_name
+	assert_eq(fm.previous_version({ mod_changes = {
+		[me] = { new_version = "3.2.0" },
+		cybersyn = { old_version = "2.1.2" },
+	} }), "2.1.2")
+	assert_eq(fm.previous_version({ mod_changes = { [me] = { old_version = "3.2.0", new_version = "3.2.1" } } }), "3.2.0")
+	assert_nil(fm.previous_version({ mod_changes = { [me] = { new_version = "3.2.0" } } }), "a fresh install runs nothing")
+	assert_nil(fm.previous_version({ mod_changes = { flib = { old_version = "0.17.1", new_version = "0.17.2" } } }),
+		"another mod's change runs nothing")
+end)
