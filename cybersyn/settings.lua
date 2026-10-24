@@ -62,6 +62,13 @@ data:extend({
 		maximum_value = 1000,
 	},
 	{
+		type = "bool-setting",
+		name = "cybersyn-locked-slots-per-item",
+		order = "bca",
+		setting_type = "runtime-global",
+		default_value = false,
+	},
+	{
 		type = "int-setting",
 		name = "cybersyn-reserved-fluid-capacity",
 		order = "bd",
