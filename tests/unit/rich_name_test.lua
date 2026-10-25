@@ -42,6 +42,11 @@ test("leading icons of every supported type, with quality", function()
 	}, "Smelter"))
 	assert_eq(parse("[item=iron-plate,quality=rare] Iron"), parts({ icon("item/iron-plate", "rare") }, "Iron"))
 	assert_eq(parse("[item= iron-plate , quality = epic ] Iron"), parts({ icon("item/iron-plate", "epic") }, "Iron"))
+	assert_eq(parse("[planet=vulcanus][space-location=nauvis] [recipe=gear] Hub [tile=concrete][technology=steel][quality=rare]"),
+		parts({ icon("space-location/vulcanus"), icon("space-location/nauvis"), icon("recipe/gear") }, "Hub",
+			{ icon("tile/concrete"), icon("technology/steel"), icon("quality/rare") }))
+	-- An img tag already holds a sprite path.
+	assert_eq(parse("[img=item/coal] Coal"), parts({ icon("item/coal") }, "Coal"))
 end)
 
 test("trailing icons and mixed names", function()
@@ -73,7 +78,6 @@ test("malformed and unknown tags are text", function()
 	assert_eq(parse("[item=] Empty"), parts({}, "[item=] Empty"))
 	assert_eq(parse("[item=coal Unclosed"), parts({}, "[item=coal Unclosed"))
 	assert_eq(parse("[color=red]Red[/color]"), parts({}, "[color=red]Red[/color]"))
-	assert_eq(parse("[img=item/coal] Coal"), parts({}, "[img=item/coal] Coal"))
 	assert_eq(parse("[item=coal,foo=bar] Coal"), parts({}, "[item=coal,foo=bar] Coal"))
 	assert_eq(parse("[[item=coal]] x"), parts({}, "[[item=coal]] x"))
 	-- An unknown tag ends the leading run; the icon after it is inside the text.
