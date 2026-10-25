@@ -602,13 +602,7 @@ end
 local function live_refueler(refueler)
 	local comb = refueler.entity_comb
 	if not (comb and comb.valid) or refueler.network_name == NETWORK_EACH then return refueler end
-	local signal = get_comb_params(comb).first_signal
-	local name = signal and signal.name
-	local mask = mod_settings.network_mask or 1
-	local signals = comb.get_signals(defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green)
-	for _, v in pairs(signals or {}) do
-		if v.signal.name == name then mask = v.count end
-	end
+	local name, mask = read_refueler_network(comb, get_comb_params(comb), mod_settings)
 	return { network_name = name, network_mask = mask }
 end
 

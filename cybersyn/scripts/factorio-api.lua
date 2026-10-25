@@ -812,33 +812,21 @@ function set_train_from_comb(mod_settings, train, comb)
 		end
 	end
 end
----@param map_data MapData
+--- A refueler combinator's network, mask and priority as its parameters and circuit signals say now.
+---@param comb LuaEntity
+---@param params ArithmeticCombinatorParameters get_comb_params(comb)
 ---@param mod_settings CybersynModSettings
----@param id uint
----@param refueler Refueler
-function set_refueler_from_comb(map_data, mod_settings, id, refueler)
-	--NOTE: this does nothing to update currently active deliveries
-	local params = get_comb_params(refueler.entity_comb)
-	local bits = params.second_constant or 0
+---@return string? network_name
+---@return int|{[string]: int} network_mask
+---@return int priority
+function read_refueler_network(comb, params, mod_settings)
 	local signal = params.first_signal
-	local old_network = refueler.network_name
-	local old_network_mask = refueler.network_mask
+	local network_name = signal and signal.name or nil
+	local is_each = network_name == NETWORK_EACH
+	local network_mask = is_each and {} or mod_settings.network_mask
+	local priority = mod_settings.priority
 
-	refueler.network_name = signal and signal.name or nil
-	refueler.allows_all_trains = bit_extract(bits, SETTING_DISABLE_ALLOW_LIST) > 0
-	refueler.priority = mod_settings.priority
-
-	local is_each = refueler.network_name == NETWORK_EACH
-	if is_each then
-		map_data.each_refuelers[id] = true
-		refueler.network_mask = {}
-	else
-		map_data.each_refuelers[id] = nil
-		refueler.network_mask = mod_settings.network_mask
-	end
-
-	local signals = refueler.entity_comb.get_signals(defines.wire_connector_id.circuit_red,
-		defines.wire_connector_id.circuit_green)
+	local signals = comb.get_signals(defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green)
 	if signals then
 		for k, v in pairs(signals) do
 			local item_name = v.signal.name
@@ -847,19 +835,37 @@ function set_refueler_from_comb(map_data, mod_settings, id, refueler)
 			if item_name then
 				if item_type == "virtual" then
 					if item_name == SIGNAL_PRIORITY then
-						refueler.priority = item_count
+						priority = item_count
 					elseif is_each then
 						if item_name ~= REQUEST_THRESHOLD and item_name ~= REQUEST_FLUID_THRESHOLD and  item_name ~= LOCKED_SLOTS then
-							refueler.network_mask[item_name] = item_count
+							network_mask[item_name] = item_count
 						end
 					end
 				end
-				if item_name == refueler.network_name then
-					refueler.network_mask = item_count
+				if item_name == network_name then
+					network_mask = item_count
 				end
 			end
 		end
 	end
+	return network_name, network_mask, priority
+end
+
+---@param map_data MapData
+---@param mod_settings CybersynModSettings
+---@param id uint
+---@param refueler Refueler
+function set_refueler_from_comb(map_data, mod_settings, id, refueler)
+	--NOTE: this does nothing to update currently active deliveries
+	local params = get_comb_params(refueler.entity_comb)
+	local bits = params.second_constant or 0
+	local old_network = refueler.network_name
+	local old_network_mask = refueler.network_mask
+
+	refueler.network_name, refueler.network_mask, refueler.priority =
+		read_refueler_network(refueler.entity_comb, params, mod_settings)
+	refueler.allows_all_trains = bit_extract(bits, SETTING_DISABLE_ALLOW_LIST) > 0
+	map_data.each_refuelers[id] = refueler.network_name == NETWORK_EACH or nil
 
 	local f, a
 	if old_network == NETWORK_EACH then
