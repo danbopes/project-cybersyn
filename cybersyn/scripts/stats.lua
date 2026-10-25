@@ -380,7 +380,8 @@ end
 --- @field slowest StatsBucket[] buckets with a fulfilled request, as they are; read only
 --- @field slowest_minutes {[StatsBucket]: true} entries of `slowest` that are minute buckets in an hour-bucket period
 --- @field min_available_by_network {[string]: int} fewest available trains per network during the period
---- @field no_train_failures int requests that turned unserved for want of a train during the period
+--- @field no_train_failures int? requests that turned unserved for want of a train during the period; nil while
+---   diagnostics are off, since only diagnostics count them
 
 -- Merged per-item amounts of the closed buckets of a period, per period. Closed buckets never change (records go to
 -- the current bucket), so this is valid until the current bucket rolls over. A pure function of storage.stats and the
@@ -452,7 +453,7 @@ function stats.aggregate(minutes, summary)
 		wait_n = 0,
 		slowest = {},
 		slowest_minutes = {},
-		no_train_failures = 0,
+		no_train_failures = storage.diag and 0 or nil,
 	}
 	local items = out.items
 	-- The Overview reads the sums only: no per-item map and no slowest list for it (`summary`).
@@ -466,7 +467,7 @@ function stats.aggregate(minutes, summary)
 		if b.start_tick >= oldest and b.start_tick <= tick then
 			out.deliveries = out.deliveries + b.deliveries
 			out.dispatches = out.dispatches + b.dispatches
-			if b.no_train_failures then out.no_train_failures = out.no_train_failures + b.no_train_failures end
+			if b.no_train_failures and out.no_train_failures then out.no_train_failures = out.no_train_failures + b.no_train_failures end
 			local live = not summary and b.start_tick >= current
 			for hash, n in pairs(b.items) do
 				if live then items[hash] = (items[hash] or 0) + n end

@@ -857,6 +857,8 @@ test("stats: available counters, the window minimum and no-train failures", func
 	assert_eq(stats.aggregate(1440).min_available_by_network, { ["signal-A"] = 0, ["signal-B"] = 1, ["signal-C"] = 0 })
 	stats.record_no_train_failure()
 	stats.record_no_train_failure()
+	assert_nil(stats.aggregate(10).no_train_failures, "not measured while diagnostics are off")
+	storage.diag = {}
 	assert_eq(stats.aggregate(10).no_train_failures, 2)
 	assert_eq(stats.aggregate(1440).no_train_failures, 2)
 end)

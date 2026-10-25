@@ -355,7 +355,9 @@ test("aggregate: min_available_by_network and no_train_failures", function()
 	at(0)
 	local out = stats.aggregate(60)
 	assert_eq(out.min_available_by_network, {})
-	assert_eq(out.no_train_failures, 0)
+	assert_nil(out.no_train_failures)
+	storage.diag = {}
+	assert_eq(stats.aggregate(60).no_train_failures, 0)
 end)
 
 test("aggregate: longer periods cover only the last 24 hours, stale ring slots excluded", function()
