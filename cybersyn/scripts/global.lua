@@ -84,8 +84,8 @@
 ---@field public allows_all_trains true?
 ---@field public deliveries_total int
 ---@field public last_delivery_tick int
----@field public created_tick int? total_ticks when built (nil on stations from before 2.2.0)
----@field public request_start_ticks {[string]: int}? item hash -> tick its request started, for the wait times
+---@field public created_tick uint? total_ticks when built (nil on stations from before 2.2.0)
+---@field public request_start_ticks {[string]: uint}? item hash -> tick its request started, for the wait times
 ---@field public trains_limit int --transient
 ---@field public priority int --transient
 ---@field public primary_stop StopInfo? the station combinator's stop from the latest poll, which lets the remote create_manifest take station ids --transient
@@ -98,14 +98,12 @@
 ---@field public network_mask int|{[string]: int} --transient
 ---@field public wagon_combs {[int]: LuaEntity}?--NOTE: allowed to be invalid entities or combinators with the wrong operation, these must be checked and lazy deleted when found
 ---@field public deliveries {[string]: int}
----@field public request_start_ticks {[string]: uint} item hash -> tick its request started waiting
 ---@field public accepted_layouts {[uint]: true?}
 ---@field public layout_pattern (0|1|2|3)[]?
 ---@field public item_thresholds {[string]: int}? --transient
 ---@field public display_state int
 ---@field public inv_failed {[uint]: true}? inventory combinators (by unit number) whose own request went unserved: their red I; nil when none, and on saves from before it existed
 ---@field public is_warming_up true?
----@field public created_tick uint? total_ticks at creation; nil on stations from before 2.2.0
 
 ---@class Depot
 ---@field public entity_stop LuaEntity
