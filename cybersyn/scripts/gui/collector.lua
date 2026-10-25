@@ -522,14 +522,22 @@ local function has_active_request(st)
 	return false
 end
 
+--- Game ticks per planner tick, the nth register_tick runs the planner on; nil at 0 tps, where total_ticks stops and
+--- planner-tick stamps cannot be turned into ages. Uses the current setting, so a tps change rescales old stamps.
+--- @return integer?
+local function ticks_per_planner_tick()
+	local tps = mod_settings.tps
+	return tps and tps > 0 and math.ceil(60 / tps) or nil
+end
+
 --- Game ticks since the station's last delivery; last_delivery_tick counts planner ticks, not game ticks.
 --- @param st SnapshotStation
 --- @return number?
 function collector.delivery_age(st)
 	local last = st.last_delivery_tick
-	local tps = mod_settings.tps
-	if not last or not tps or tps <= 0 then return nil end
-	return math.max(0, (storage.total_ticks or 0) - last) * 60 / tps
+	local factor = ticks_per_planner_tick()
+	if not last or not factor then return nil end
+	return math.max(0, (storage.total_ticks or 0) - last) * factor
 end
 
 --- The station-wide check, for records without rows (hand-built ones).
@@ -851,9 +859,10 @@ local function summarize_trains(b)
 	end
 
 	local alerts = {}
-	local ticks_per_main_tick = (mod_settings.tps or 0) > 0 and math.ceil(60 / mod_settings.tps) or 1
+	-- At 0 tps an alert's age freezes at what it was when the planner stopped.
+	local factor = ticks_per_planner_tick() or 1
 	for train_id, data in pairs(storage.active_alerts or {}) do
-		local since = data[3] and (game.tick - (storage.total_ticks - data[3]) * ticks_per_main_tick) or game.tick
+		local since = data[3] and (game.tick - (storage.total_ticks - data[3]) * factor) or game.tick
 		alerts[#alerts + 1] = { train_id = train_id, kind = data[2], since_tick = since }
 	end
 	table.sort(alerts, function(a, c) return a.train_id < c.train_id end)

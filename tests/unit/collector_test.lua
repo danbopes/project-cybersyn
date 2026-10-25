@@ -529,6 +529,14 @@ test("alerts: tps 0 means one tick per main tick", function()
 	assert_eq(collector.get().alerts[1].since_tick, 990)
 end)
 
+test("delivery_age: the planner's nth, ceil(60 / tps), per planner tick; nil at tps 0", function()
+	storage.total_ticks = 110
+	mod_settings.tps = 7
+	assert_eq(collector.delivery_age({ last_delivery_tick = 100 }), 90)
+	mod_settings.tps = 0
+	assert_nil(collector.delivery_age({ last_delivery_tick = 100 }))
+end)
+
 test("passes: change log, removed stations, stable starved set", function()
 	scenario()
 	collector.run_to_completion()
