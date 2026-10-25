@@ -1026,21 +1026,24 @@ local function registry_rows(px, f)
 		-- The entity went without an event the registry hears (a script destroy that raised none): no row.
 		if gone and not gone.valid then goto continue end
 		local entity = entity_of(e.f)
-		local name
+		local name, parts
 		if entity then
 			if entity.type == "train-stop" then
 				name = entity.backer_name
 			else
 				local pos = entity.position
-				name = "[item=" .. COMBINATOR_NAME .. "] " .. math.floor(pos.x) .. ", " .. math.floor(pos.y)
+				parts = { lead = { "item/" .. COMBINATOR_NAME }, text = math.floor(pos.x) .. ", " .. math.floor(pos.y) }
+				name = "[item=" .. COMBINATOR_NAME .. "] " .. parts.text
 			end
 		else
 			name = "#" .. e.f.id
 		end
 		-- Without its entity a row cannot tell its surface: a surface filter hides it.
 		local pass = not (f.surface and (not entity or entity.surface_index ~= f.surface))
-		if pass and f.terms then pass = util.terms_match(helpers.multilingual_to_lower(name), f.terms) end
-		if pass then out[#out + 1] = { e = e, entity = entity, name = name } end
+		if pass and f.terms then
+			pass = util.terms_match(helpers.multilingual_to_lower(parts and parts.text or name), f.terms)
+		end
+		if pass then out[#out + 1] = { e = e, entity = entity, name = name, parts = parts } end
 		::continue::
 	end
 	return out
@@ -1055,7 +1058,7 @@ end
 --- A registry row in the shape of a station row (rows are reused across both): the stop's name or the combinator's
 --- position linked to the entity, "Train stop" or "Combinator" in the Status column, the finding in the Problems
 --- column, the other cells empty.
---- @param row {e: ProblemEntry, entity: LuaEntity?, name: string}
+--- @param row {e: ProblemEntry, entity: LuaEntity?, name: string, parts: RichNameParts?}
 --- @param ctx table
 --- @return table
 local function registry_model(row, ctx)
@@ -1070,7 +1073,7 @@ local function registry_model(row, ctx)
 		registry = true,
 		key = registry_key(f),
 		name = row.name,
-		parts = parse_name(row.name),
+		parts = row.parts or parse_name(row.name),
 		link = { kind = kind, id = f.id },
 		status_sig = "registry:" .. subject,
 		status_sprite = "flib_indicator_white",
