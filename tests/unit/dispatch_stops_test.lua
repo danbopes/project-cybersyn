@@ -206,3 +206,17 @@ test("a network's last stale available train takes its table with it", function(
 	with_globals(ANY_ROUTE, function() pass(map_data) end)
 	assert_nil(map_data.available_trains["signal-A"])
 end)
+
+test("on_failed_delivery takes the delivery off a station whose control combinator is gone", function()
+	H.fresh()
+	local r = station(100, { list = { NET } }, nil, { is_p = false, deliveries = { ["iron-plate"] = 100 },
+		deliveries_total = 1, display_state = 1, entity_comb2 = { valid = false } })
+	local map_data = world({ r })
+	map_data.to_output = {}
+	local train = { status = STATUS_TO_R, r_station_id = 100, p_station_id = 300,
+		manifest = { { type = "item", name = "iron-plate", count = 100 } } }
+	with_globals({ interface_raise_train_failed_delivery = function() end }, function()
+		on_failed_delivery(map_data, 7, train, nil)
+	end)
+	assert_eq({ r.deliveries, r.deliveries_total, r.display_state }, { {}, 0, 0 })
+end)

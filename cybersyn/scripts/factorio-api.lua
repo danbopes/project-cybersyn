@@ -1071,7 +1071,7 @@ end
 ---@param map_data MapData
 ---@param station Station
 function set_comb2(map_data, station)
-	if station.entity_comb2 then
+	if station.entity_comb2 and station.entity_comb2.valid then
 		local deliveries = station.deliveries
 		---@type LogisticFilter[]
 		local signals = {}

@@ -108,7 +108,7 @@ function on_failed_delivery(map_data, train_id, train, cause)
 	local is_r_in_progress = is_p_in_progress or train.status == STATUS_TO_R or train.status == STATUS_R
 	if is_p_in_progress then
 		local station = map_data.stations[p_station_id]
-		if station and station.entity_comb1.valid and (not station.entity_comb2 or station.entity_comb2.valid) then
+		if station then
 			remove_manifest(map_data, station, manifest, 1)
 			if train.status == STATUS_P then
 				set_comb1(map_data, station, nil)
@@ -118,7 +118,7 @@ function on_failed_delivery(map_data, train_id, train, cause)
 	end
 	if is_r_in_progress then
 		local station = map_data.stations[r_station_id]
-		if station and station.entity_comb1.valid and (not station.entity_comb2 or station.entity_comb2.valid) then
+		if station then
 			remove_manifest(map_data, station, manifest, -1)
 			if train.status == STATUS_R then
 				set_comb1(map_data, station, nil)

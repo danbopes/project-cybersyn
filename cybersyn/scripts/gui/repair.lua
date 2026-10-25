@@ -83,9 +83,8 @@ function repair.fail_delivery(train_id)
 	return true
 end
 
---- Sets one station's `deliveries_total` and `deliveries` to what the trains bound to it account for (the counter
---- leak: on_failed_delivery skips the decrement while a combinator is invalid), then refreshes what the
---- dispatcher derives from them: the comb2 output and the "deliveries pending" bit of the stop's display.
+--- Sets one station's `deliveries_total` and `deliveries` to what the trains bound to it account for, then refreshes
+--- what the dispatcher derives from them: the comb2 output and the "deliveries pending" bit of the stop's display.
 --- @param station_id uint
 --- @return {total: int, deliveries: {[string]: int}}? before nil when the station is gone
 --- @return {total: int, deliveries: {[string]: int}, trains: uint[]}? after
