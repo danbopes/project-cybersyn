@@ -442,6 +442,10 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs, opts)
 	return "rebuilt"
 end
 
+--- Invariants: keys are unique within one call; with `movable`, `update` applies everything that depends on the
+--- child's index unless `moved_keeps_sig` is set; a budget defers work only by keeping the old sig and setting
+--- `deferred`, so the next call picks it up. Tests: the "sync_children" ones in
+--- tests/unit/util_test.lua.
 --- Reconciles `parent`'s children with `entries`, an ordered array of
 --- `{key=, build=fun(entry): GuiElemDef, update=fun(elem, entry, index)?, sig=string|number?}` (build, built and reuse
 --- also get the entry, so one function can serve every row).
