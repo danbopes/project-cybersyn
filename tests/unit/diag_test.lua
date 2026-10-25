@@ -948,3 +948,9 @@ test("schedule_edited, lint and manual_action rows", function()
 	diag.lint(LINT_CAPACITY, LINT_SUBJECT_STATION, 44, true)
 	diag.manual_action(ACTION_FIX_PRIORITIES, nil, 3)
 end)
+
+test("kind schema: every kind has an entry, so the ring readers index it without a check", function()
+	for kind, name in ipairs(DIAG_KIND_NAMES) do assert_not_nil(DIAG_KIND_SCHEMA[kind], name) end
+	assert_eq(diag.code_name(DIAG_KIND_TRAIN_STATE, defines.train_state.on_the_path), "on_the_path")
+	assert_eq(diag.code_name(DIAG_KIND_STATION_LIMIT, 7), "7", "a kind without code names writes the number")
+end)

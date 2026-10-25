@@ -53,19 +53,10 @@ diag.SWEEP_EVERY = SWEEP_EVERY
 diag.SWEEP_SPARE = SWEEP_SPARE
 diag.EDIT_REPEAT = EDIT_REPEAT
 
+-- What station2, delivery, code, a and b hold depends on the kind: DIAG_KIND_SCHEMA.
 local COLUMNS = { "seq", "tick", "kind", "sev", "code", "delivery", "train", "station", "station2", "item", "a", "b" }
 diag.COLUMNS = COLUMNS
-
---- Kinds whose station2 column holds a second station (provider, requester, the other end of a delivery); the others
---- put a player index or a lint subject type there.
-local STATION2_IS_STATION = {
-	[DIAG_KIND_UNSERVED_REASON] = true, [DIAG_KIND_SERVED] = true, [DIAG_KIND_FLAPPING] = true,
-	[DIAG_KIND_DISPATCH_FAILED] = true, [DIAG_KIND_DELIVERY_FAILED] = true, [DIAG_KIND_ALERT] = true,
-	[DIAG_KIND_SHORT_LOAD] = true, [DIAG_KIND_UNEXPECTED_CARGO] = true, [DIAG_KIND_RESIDUAL_CARGO] = true,
-	[DIAG_KIND_DISPATCHED] = true, [DIAG_KIND_ARRIVE_P] = true, [DIAG_KIND_LEAVE_P] = true,
-	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true, [DIAG_KIND_SLOW_DELIVERY] = true,
-}
-diag.STATION2_IS_STATION = STATION2_IS_STATION
+local SCHEMA = DIAG_KIND_SCHEMA
 
 local NO_TRAIN_REASONS = {
 	[REASON_NO_TRAINS_ON_NETWORK] = true,
@@ -315,7 +306,7 @@ end
 --- @param sev int DIAG_SEV_*
 --- @return uint? seq
 function diag.event(d, kind, sev, code, delivery, train, station, station2, item, a, b)
-	if DIAG_KIND_FULL[kind] then
+	if SCHEMA[kind].full then
 		if not d.full then return nil end
 		return push(d, d.ring_full, kind, sev, code, delivery, train, station, station2, item, a, b)
 	end
@@ -370,10 +361,12 @@ local function matches(r, i, f)
 	if f.sev and sev > f.sev then return false end
 	if f.sevs and not f.sevs[sev] then return false end
 	if f.train and r.train[i] ~= f.train then return false end
-	if f.delivery and (r.delivery[i] ~= f.delivery or kind == DIAG_KIND_LINT) then return false end
+	if f.delivery and (r.delivery[i] ~= f.delivery or SCHEMA[kind].pass) then return false end
 	if f.item and r.item[i] ~= f.item then return false end
 	local st = f.station
-	if st and r.station[i] ~= st and not (STATION2_IS_STATION[kind] and r.station2[i] == st) then return false end
+	if st and r.station[i] ~= st and not (r.station2[i] == st and SCHEMA[kind].station2 == "station") then
+		return false
+	end
 	return true
 end
 diag.matches = matches
@@ -473,7 +466,6 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 	local seq_b, seq_f = rb.seq, rf.seq
 	local col_b, col_f = rb[key], rf[key]
 	local is_station = key == "station"
-	-- A lint row's delivery column holds its pass key, not a delivery.
 	local is_delivery = key == "delivery"
 	local st2_b, st2_f = rb.station2, rf.station2
 	local kind_b, kind_f = rb.kind, rf.kind
@@ -486,7 +478,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 			if examined >= budget then return examined, oldest, false end
 			examined = examined + 1
 			oldest = seq
-			if (col_b[ib] == id and not (is_delivery and kind_b[ib] == DIAG_KIND_LINT)) or (is_station and st2_b[ib] == id and STATION2_IS_STATION[kind_b[ib]]) then
+			if (col_b[ib] == id and not (is_delivery and SCHEMA[kind_b[ib]].pass)) or (is_station and st2_b[ib] == id and SCHEMA[kind_b[ib]].station2 == "station") then
 				found = found + 1
 				out[found] = row(rb, ib)
 			end
@@ -498,7 +490,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 			if examined >= budget then return examined, oldest, false end
 			examined = examined + 1
 			oldest = seq
-			if (col_f[iff] == id and not (is_delivery and kind_f[iff] == DIAG_KIND_LINT)) or (is_station and st2_f[iff] == id and STATION2_IS_STATION[kind_f[iff]]) then
+			if (col_f[iff] == id and not (is_delivery and SCHEMA[kind_f[iff]].pass)) or (is_station and st2_f[iff] == id and SCHEMA[kind_f[iff]].station2 == "station") then
 				found = found + 1
 				out[found] = row(rf, iff)
 			end
@@ -1214,14 +1206,14 @@ end
 --- The create_delivery exits that give up on a chosen train.
 --- @param code int DIAG_DISPATCH_*
 --- @param manifest Manifest? its first item fills the item column
---- @param state defines.train_state? stored as state + 1 in a (0 = not recorded)
+--- @param state defines.train_state? stored as state + DIAG_STATE_OFFSET in a (0 = not recorded)
 function diag.dispatch_failed(code, train_id, r_id, p_id, manifest, state)
 	local d = storage.diag
 	if not d then return end
 	local first = manifest and manifest[1]
 	local item = first and intern(d, hash_item(first.name, first.quality)) or 0
 	diag.event(d, DIAG_KIND_DISPATCH_FAILED, DIAG_DISPATCH_SEVERITY[code] or DIAG_SEV_ERROR, code, 0, train_id, r_id,
-		p_id, item, state and state + 1 or 0, 0)
+		p_id, item, state and state + DIAG_STATE_OFFSET or 0, 0)
 end
 
 --- on_failed_delivery: a delivery ended without being completed.
@@ -1532,32 +1524,13 @@ end
 
 local HEADER = "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
 
-local STATE_NAMES = {}
-for name, v in pairs(defines.train_state) do STATE_NAMES[v] = name end
-
---- Name of the event's code column: a reason, an alert, a dispatch or delivery failure, a train state or a number.
+--- Name of the event's code column, or the number where its kind names none.
 --- @param kind int
 --- @param code int
 --- @return string
 local function code_name(kind, code)
-	if kind == DIAG_KIND_UNSERVED_REASON or kind == DIAG_KIND_SERVED or kind == DIAG_KIND_FLAPPING then
-		return REASON_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_ALERT then
-		return DIAG_ALERT_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_DISPATCH_FAILED then
-		return DIAG_DISPATCH_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_DELIVERY_FAILED then
-		return DIAG_FAIL_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_ACKNOWLEDGED or kind == DIAG_KIND_UNACKNOWLEDGED then
-		return DIAG_ACK_KINDS[code] or tostring(code)
-	elseif kind == DIAG_KIND_TRAIN_STATE then
-		return STATE_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_LINT then
-		return code == DIAG_LINT_APPEARED and "appeared" or "cleared"
-	elseif kind == DIAG_KIND_MANUAL_ACTION then
-		return ACTION_NAMES[code] or tostring(code)
-	end
-	return tostring(code)
+	local names = SCHEMA[kind].code_names
+	return names and names[code] or tostring(code)
 end
 
 diag.code_name = code_name
@@ -1596,7 +1569,7 @@ function diag.export(player_index, filter)
 		local kind = ev.kind
 		parts[#parts + 1] = string.format(LINE, ev.seq, ev.tick, DIAG_KIND_NAMES[kind] or tostring(kind),
 			DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev), code_name(kind, ev.code),
-			kind == DIAG_KIND_LINT and 0 or ev.delivery, ev.train, ev.station, ev.station2, csv_item(item_hash, ev.item),
+			SCHEMA[kind].pass and 0 or ev.delivery, ev.train, ev.station, ev.station2, csv_item(item_hash, ev.item),
 			ev.a, ev.b)
 	end
 	helpers.write_file(path, table.concat(parts), false, player_index or 0)

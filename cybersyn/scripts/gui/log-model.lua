@@ -27,7 +27,7 @@ model.WINDOWS = { 36000, 216000, false }
 model.DEFAULT_WINDOW = 3
 
 local at, first_after = diag.ring_at, diag.first_after
-local STATION2_IS_STATION = diag.STATION2_IS_STATION
+local SCHEMA = DIAG_KIND_SCHEMA
 local KIND_ALERT = DIAG_KIND_ALERT
 local KIND_LINT = DIAG_KIND_LINT
 
@@ -178,7 +178,9 @@ local function match(r, i, cf)
 	local item = cf.item
 	if item and r.item[i] ~= item then return false end
 	local st = cf.station
-	if st and r.station[i] ~= st and not (STATION2_IS_STATION[kind] and r.station2[i] == st) then return false end
+	if st and r.station[i] ~= st and not (r.station2[i] == st and SCHEMA[kind].station2 == "station") then
+		return false
+	end
 	return true
 end
 model.match = match
@@ -350,8 +352,8 @@ model.epoch = epoch
 --- @field seqs uint[]? lint rows: the seqs of the pass's rows, newest first (at most PAGE)
 --- @field row LogDisplayRow? its row in model.display, kept with it
 
---- The pass a lint row belongs to: diag.lint writes the pass's start tick + 1 in the delivery column; rows written
---- outside a pass (or before that column was used) group by their tick.
+--- The pass a lint row belongs to: the delivery column of a lint row holds the pass key (DIAG_KIND_SCHEMA `pass`);
+--- rows written outside a pass group by their tick.
 --- @param r DiagRing
 --- @param i int
 --- @return number
@@ -420,21 +422,16 @@ local function pass_index(groups)
 	return ix
 end
 
--- Kinds whose `a` (and `b`) name what the event is about rather than measure it: a lint finding's check and subject,
--- a manual action and its target, the player who edited a schedule. Two such events differ when those differ.
-local A_NAMES = { [DIAG_KIND_LINT] = true, [DIAG_KIND_MANUAL_ACTION] = true, [DIAG_KIND_SCHEDULE_EDITED] = true }
-local B_NAMES = { [DIAG_KIND_LINT] = true, [DIAG_KIND_MANUAL_ACTION] = true }
-model.A_NAMES, model.B_NAMES = A_NAMES, B_NAMES
-
 --- Lint rows are not compared: they join their pass's row (pass_add).
 --- @param g LogGroup
 --- @return boolean
 local function identical(g, r, i)
 	local kind = g.kind
 	if kind == KIND_LINT then return false end
+	local schema = SCHEMA[kind]
 	return kind == r.kind[i] and g.sev == r.sev[i] and g.code == r.code[i] and g.train == r.train[i]
 		and g.station == r.station[i] and g.station2 == r.station2[i] and g.item == r.item[i]
-		and (not A_NAMES[kind] or g.a == r.a[i]) and (not B_NAMES[kind] or g.b == r.b[i])
+		and (not schema.a_named or g.a == r.a[i]) and (not schema.b_named or g.b == r.b[i])
 end
 model.identical = identical
 
@@ -1049,8 +1046,7 @@ function model.age_tooltip(g, long)
 	return { "cybersyn-gui.log-age-tooltip", tostring(g.tick), long(g.tick) }
 end
 
-local STATE_NAMES = {}
-for name, v in pairs(defines.train_state) do STATE_NAMES[v] = name end
+local STATE_NAMES = DIAG_TRAIN_STATE_NAMES
 
 --- @class LogTextContext name lookups the message needs; all pure reads
 --- @field station fun(id: uint): string? a station's (or depot's) name
@@ -1159,7 +1155,7 @@ function model.dispatch_tooltip(g)
 	local name = DIAG_DISPATCH_NAMES[g.code]
 	if not name then return nil end
 	local key = string.gsub(name, "_", "-")
-	local state_name = (g.a or 0) > 0 and STATE_NAMES[g.a - 1]
+	local state_name = (g.a or 0) > 0 and STATE_NAMES[g.a - DIAG_STATE_OFFSET]
 	local state = state_name and logic.state_chip(state_name).caption or { "cybersyn-diag.dispatch-state-unknown" }
 	local train = (g.train or 0) ~= 0 and tostring(g.train) or "–"
 	return { "", { "cybersyn-gui.unserved-why", { "cybersyn-diag.dispatch-why-" .. key, train, state } }, "\n",

@@ -614,7 +614,7 @@ local function write_cells(cells, g, m, now, key, expanded, child)
 	-- station: lead icons · text · tail icons through name_cell, rewritten only when the name or the target changed
 	local view = station_view(g.station)
 	-- The other station of the event (the provider, the other end of a delivery) is named in this cell's tooltip.
-	local other = diag.STATION2_IS_STATION[g.kind] and g.station2 ~= 0 and station_view(g.station2) or nil
+	local other = DIAG_KIND_SCHEMA[g.kind].station2 == "station" and g.station2 ~= 0 and station_view(g.station2) or nil
 	local ssig = g.station .. "|" .. (view and view.name or "") .. "|" .. (other and other.name or "")
 	if m.st ~= ssig then
 		local width = r_widths and r_widths.station or W.station
