@@ -573,6 +573,9 @@ local function row_cells(elem, m)
 	return cells
 end
 
+-- The render's context in upvalues set by render_rows, so a render allocates no closures.
+local r_memo, r_widths, r_now
+
 --- Writes a row's cells, each only when what it shows changed since `m` (what the element shows now; empty for a
 --- new row). A row whose event, count and numbers are unchanged is not looked at until the name refresh.
 --- @param cells LuaGuiElement[]
@@ -735,9 +738,6 @@ local function build_row(parent, index, widths)
 		tooltip = { "cybersyn-gui.log-print-tooltip" }, raise_hover_events = true, tags = t.print })
 	return row
 end
-
--- The render's context in upvalues set by render_rows, so a render allocates no closures.
-local r_memo, r_widths, r_now
 
 --- Brings one row element to `entry` (a LogDisplayRow, or a placeholder without a group): its memo says what the
 --- element shows, so only what changed is written; the age only when `age` is set (the viewport and its slice).
