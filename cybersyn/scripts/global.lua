@@ -151,7 +151,7 @@
 ---@field public se_awaiting_rename any? --se only
 ---@field public skip_path_checks_until int?
 ---@field public stuck_departure true?
----@field public in_interrupt boolean? current schedule record was inserted by an interrupt; kept by on_train_schedule_changed, read by tick_dispatch
+---@field public in_interrupt boolean? a schedule record was inserted by an interrupt; kept by on_train_schedule_changed, read by tick_dispatch
 ---@field public last_state defines.train_state? LuaTrain.state at the last on_train_changed_state
 ---@field public state_tick uint? when last_state began (the load tick for trains that predate the field)
 ---@field public delivery_id uint? id of the current delivery in the full diagnostics log

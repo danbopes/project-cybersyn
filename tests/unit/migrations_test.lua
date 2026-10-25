@@ -162,13 +162,15 @@ test("refresh_train_interrupts recomputes the flag from the live schedule", func
 	local inserted = { created_by_interrupt = true }
 	storage.trains = {
 		[1] = { entity = train_entity(1, 0, { normal, inserted }, 2), in_interrupt = false },
-		[2] = { entity = train_entity(2, 0, { normal, inserted }, 1), in_interrupt = true },
+		[2] = { entity = train_entity(2, 0, { normal, inserted }, 1), in_interrupt = false },
 		[3] = { entity = train_entity(3, 0, {}), in_interrupt = true },
 		[4] = { entity = { valid = false }, in_interrupt = true },
+		[5] = { entity = train_entity(5, 0, { normal, normal }, 2), in_interrupt = true },
 	}
 	refresh_train_interrupts(storage)
 	assert_true(storage.trains[1].in_interrupt)
-	assert_false(storage.trains[2].in_interrupt)
+	assert_true(storage.trains[2].in_interrupt, "an interrupt record counts while current still points elsewhere")
 	assert_false(storage.trains[3].in_interrupt, "an empty schedule is no interrupt")
 	assert_true(storage.trains[4].in_interrupt, "an invalid train is left for its removal handler")
+	assert_false(storage.trains[5].in_interrupt, "no interrupt record")
 end)
