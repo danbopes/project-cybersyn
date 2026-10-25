@@ -464,9 +464,11 @@ function ScheduleBuilder:add_refuel_order(f_stop)
 end
 
 ---@param train LuaTrain
----@param probe boolean? on a failure, ask once more ignoring the chain-signal start rule, to name the cause
+---@param probe boolean? on a failure, ask once more ignoring the chain-signal start rule, to name the cause; this
+---costs a second pathfinder search, since the engine's result carries no reason for a failure
 ---@return boolean found
----@return boolean? blocked with probe and not found: a route exists, its start cannot be reserved now
+---@return boolean? blocked with probe and not found: a route exists, its start cannot be reserved now. A heuristic:
+---the looser search succeeding suggests the chain-signal start is the obstacle, it does not prove it
 function ScheduleBuilder:is_path_available(train, probe)
 	---@type TrainPathFinderGoal?
 	local goal = nil
