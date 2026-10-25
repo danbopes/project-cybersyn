@@ -223,7 +223,8 @@ end
 
 -- ---------------------------------------------------------------- stop panel on narrow screens
 
--- The vanilla train-stop window and the 300 px panel beside it, in logical px.
+-- The vanilla train-stop window and the 300 px panel beside it, in logical px. Factorio exposes no anchored window's
+-- size, so the 1067 is measured (Factorio 2.1.23, UI scale 1); re-measure when the vanilla train-stop window changes.
 logic.STOP_WINDOW_WIDTH = 1067
 logic.STOP_PANEL_WIDTH = 300
 
@@ -238,7 +239,8 @@ end
 
 -- ---------------------------------------------------------------- train panel beside the docked locomotive pane
 
--- The remote view's docked locomotive pane (measured with connected clients): its top is below the 40 px "Remote
+-- The remote view's docked locomotive pane (measured on Factorio 2.1.23 with connected clients; re-measure when the
+-- vanilla pane changes): its top is below the 40 px "Remote
 -- view" title bar; its right edge is at 452 logical px while its Fuel tab is disabled ("Locomotive is out of reach":
 -- the window opened from the character), and further right when the Fuel tab is enabled (opened while already in
 -- remote view) and its "Ghost cursor selection" needs more room: one 71 px tab per item group with an item unlocked
