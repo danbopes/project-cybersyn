@@ -895,13 +895,8 @@ end
 --- Progress of the first lint pass in percent while there is no result yet, nil once there is one.
 --- @return int?
 local function lint_pending()
-	local s = storage.manager.lint
-	if s and (s.pass or 0) > 0 then return nil end
-	local job = s and s.job
-	if not job then return 0 end
-	local n = #(job.sids or {}) + #(job.dids or {}) + #(job.fids or {}) + #(job.tids or {})
-	local done = (job.i or 0) + (job.ti or 0)
-	return math.floor(100 * done / math.max(n, 1))
+	local p = lint.progress()
+	return p and math.floor(100 * p)
 end
 
 --- @param a DiagAck

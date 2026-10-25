@@ -10,6 +10,7 @@ local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
+local lint = require("scripts.lint")
 local text = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
 local explain = require("scripts.gui.explain")
@@ -561,19 +562,6 @@ local function failing_model(player_data, snapshot, f)
 	}
 end
 
---- The first setup lint pass: nil once one completed, else its progress (0..1), 0 while none runs yet. Before it
---- every station reads clean, so the Overview says "–" rather than a confident 0.
---- @return number?
-local function lint_pending()
-	local s = storage.manager.lint
-	if s and s.tick then return nil end
-	local job = s and s.job
-	if not job then return 0 end
-	local n = #(job.sids or {}) + #(job.dids or {}) + #(job.fids or {}) + #(job.tids or {})
-	local done = (job.i or 0) + (job.ti or 0)
-	return math.min(done / math.max(n, 1), 1)
-end
-
 --- Fleet headroom: the network whose fewest available trains over the period is lowest, or the filtered network
 --- (counts are kept per network name only: network ID and surface do not apply). "Now" is the HUD's free trains: the
 --- fewest available on any network right now (extras-logic hud_values), or the filtered network's.
@@ -645,7 +633,7 @@ function overview_tab.model(player_data)
 		item = item,
 		filters = f,
 		filtered = util.place_filters_active(f),
-		lint_pending = lint_pending(),
+		lint_pending = lint.progress(),
 		period = period,
 		minutes = minutes,
 		rows = rows,

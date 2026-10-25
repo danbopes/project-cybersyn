@@ -995,6 +995,19 @@ function lint.step(records, trains)
 	return false
 end
 
+--- Progress of the first pass: nil once a pass completed, else 0..1 (0 while none runs yet). Until then every station
+--- reads clean, so the tabs show progress rather than a confident 0.
+--- @return number?
+function lint.progress()
+	local s = storage.manager.lint
+	if s and s.tick then return nil end
+	local job = s and s.job
+	if not job then return 0 end
+	local n = #(job.sids or {}) + #(job.dids or {}) + #(job.fids or {}) + #(job.tids or {})
+	local done = (job.i or 0) + (job.ti or 0)
+	return math.min(done / math.max(n, 1), 1)
+end
+
 -- lint.findings' last merge, by the identity of its two inputs (both are replaced, never edited, when they change);
 -- a joining client starts with none and merges the same lists.
 local merged = { pass = nil, registry = nil, list = nil }
