@@ -115,24 +115,10 @@ function util.signalid_from_hash(hash)
 	return util.signalid_from_name(name, quality)
 end
 
---- Formats a tick count as "1h 2m 3s", "2m 3s" or "3s".
---- @param ticks number
---- @return string
-function util.format_duration(ticks)
-	local seconds = math.floor(math.max(ticks or 0, 0) / 60)
-	local minutes = math.floor(seconds / 60)
-	local hours = math.floor(minutes / 60)
-	if hours > 0 then
-		return string.format("%dh %dm %ds", hours, minutes % 60, seconds % 60)
-	elseif minutes > 0 then
-		return string.format("%dm %ds", minutes, seconds % 60)
-	end
-	return string.format("%ds", seconds)
-end
-
 --- Two units at most ("42s", "3m 05s", "1h 05m", "2d 03h"), so one duration reads the same in every tab;
 --- util.format_duration has the full precision for tooltips.
 util.short_duration = logic.short_duration
+util.format_duration = logic.format_duration
 
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
 local rank_cache = {}
@@ -250,6 +236,23 @@ function util.sort_by(rows, key_fn, ascending, tiebreak_fn, tiebreak2_fn)
 		rows[i] = decorated[i][4]
 	end
 	return rows
+end
+
+--- Writes caption (and tooltip, when given) only when `sig` changed since the last write. LocalisedString captions
+--- cannot be compared with the element's, so the last plain-string signature is kept in `cache`, keyed by the
+--- element's name: two elements of one name must not share a cache, or one of them stops updating.
+--- @param cache table
+--- @param elem LuaGuiElement?
+--- @param sig string
+--- @param caption LocalisedString
+--- @param tooltip LocalisedString?
+function util.set_if_changed(cache, elem, sig, caption, tooltip)
+	if not (elem and elem.valid) then return end
+	local key = elem.name
+	if cache[key] == sig then return end
+	cache[key] = sig
+	elem.caption = caption
+	if tooltip ~= nil then elem.tooltip = tooltip end
 end
 
 --- Per-player render state for a container, created on demand.
@@ -431,6 +434,10 @@ local function sync_moved(parent, entries, keys, old, elems, state, sigs, opts)
 	return "rebuilt"
 end
 
+--- Invariants: keys are unique within one call; with `movable`, `update` applies everything that depends on the
+--- child's index unless `moved_keeps_sig` is set; a budget defers work only by keeping the old sig and setting
+--- `deferred`, so the next call picks it up. Tests: the "sync_children" ones in
+--- tests/unit/util_test.lua.
 --- Reconciles `parent`'s children with `entries`, an ordered array of
 --- `{key=, build=fun(entry): GuiElemDef, update=fun(elem, entry, index)?, sig=string|number?}` (build, built and reuse
 --- also get the entry, so one function can serve every row).
@@ -560,23 +567,14 @@ function util.stop_record(id)
 	return nil, nil, nil
 end
 
+--- Every GUI handler's form: `handler(player, player_data, refs, e)`. Panels outside the manager window can fire
+--- before `storage.manager` exists.
 --- @param e {player_index: uint}
 function util.wrapper(e, handler)
 	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	if not (player and player_data) then return end
 	handler(player, player_data, player_data.refs, e)
-end
-
---- The three-argument form for panels that live outside the manager window, so they can fire before
---- `storage.manager` exists.
---- @param e {player_index: uint}
-function util.wrapper_pd(e, handler)
-	local player = game.get_player(e.player_index)
-	local pd = storage.manager and storage.manager.players[e.player_index]
-	if not (player and pd) then return end
-	handler(player, pd, e)
 end
 
 --- @param player_data PlayerData
@@ -584,12 +582,7 @@ end
 function util.handle.hover_enter(player, player_data, refs, e)
 	local elem = e.element
 	if not elem or not elem.valid then return end
-	local scope = elem.tags.hover_scope
-	if not scope then
-		local parent = elem.parent
-		scope = parent and parent.name or nil
-	end
-	player_data.hover = { tick = game.tick, scope = scope, index = elem.index }
+	player_data.hover = { tick = game.tick, scope = elem.tags.hover_scope, index = elem.index }
 	-- A pointer that arrives after a row-changing click in the same tick holds the rows it now rests on.
 	player_data.hold_released_tick = nil
 end
@@ -637,7 +630,10 @@ function util.hoverable(def, scope)
 	return def
 end
 
---- True while the cursor is over an element of `scope`, with a timeout in case a leave event is lost.
+--- True while the cursor is over an element of `scope`. The API cannot report the cursor position, so three patches
+--- keep the recorded hover honest: HOVER_HOLD_TICKS ends a hold whose leave never arrives (a destroyed or rebuilt element
+--- raises no on_gui_leave); release_hold lifts it for the rest of the tick of a row-changing click, until the next
+--- hover_enter; touch_hover restarts the timeout on clicks, so repeated clicks on one element keep the hold.
 --- @param player_data PlayerData
 --- @param scope string
 --- @return boolean
@@ -693,6 +689,8 @@ local switching = {}
 
 --- Runs `move`, which changes what player.opened is (a link opening an entity, the action dialog, show on map), so
 --- that the manager's on_gui_closed and on_gui_opened handlers know the switch is the mod's and not the player's.
+--- Desync-safe: the flag is set and cleared within one call on every peer. Only the mod's own moves that the close and
+--- open handlers must ignore go through here; those handlers' own re-takes of player.opened stay outside it.
 --- @param player LuaPlayer
 --- @param move fun()
 function util.switch_opened(player, move)
@@ -1246,8 +1244,8 @@ end
 --- @param e EventData.on_gui_click
 --- @param hash string
 function util.item_button_click(player, player_data, e, hash)
-	local tags = e.element and e.element.tags
-	local station = tags and tags.station
+	local tags = e.element.tags
+	local station = tags.station
 	if e.button == defines.mouse_button_type.right then
 		-- A stop panel shows no filter, so its slots have nothing to clear.
 		if station then return end
@@ -1516,7 +1514,8 @@ function util.set_refresh_toggles(fn)
 	refresh_toggles_fn = fn
 end
 
--- The zoom a click on a vanilla map pin lands on (measured): show on map lands in the same view.
+-- The zoom a click on a vanilla map pin lands on, measured: re-measure if the pin's zoom changes. It must be written
+-- after centered_on, which enters remote view and resets the zoom.
 local SHOW_ZOOM = 1.5
 
 --- Shift-click on a link: the view a click on the target's map pin gives (remote view following the target at the
@@ -1569,13 +1568,11 @@ function util.set_pin(fn)
 end
 
 --- Whether a click came from inside the open manager window, not from a stop or train panel beside a game window.
---- Synthetic events (the Log rows) carry a plain table for an element and come from the window.
 --- @param player_data PlayerData
---- @param element LuaGuiElement|table?
+--- @param element LuaGuiElement
 --- @return boolean
 local function in_manager(player_data, element)
 	if not player_data.is_manager_open then return false end
-	if not (element and element.object_name == "LuaGuiElement") then return true end
 	local window = player_data.refs and player_data.refs.manager_window
 	if not (window and window.valid) then return false end
 	local index = window.index

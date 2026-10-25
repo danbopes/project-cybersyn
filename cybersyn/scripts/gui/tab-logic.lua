@@ -109,6 +109,7 @@ logic.GROUP_NAME_MAX = 200
 local ROW_PADDING, COLUMN_GAP = 20, 8
 
 --- The Trains table's columns in display order: {key, width, min = shrinkable down to}; the status takes the rest.
+--- Widths are fixed because a Factorio table sizes columns to content and cannot fit a width and hide the overflow.
 logic.TRAIN_WIDTHS = {
 	{ "train_id", 52 },
 	{ "train_status", 0 },
@@ -254,6 +255,21 @@ function logic.short_duration(ticks)
 	local h = math.floor(m / 60)
 	if h < 24 then return string.format("%dh %02dm", h, m % 60) end
 	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
+end
+
+--- Full precision for tooltips: "1h 2m 3s", "2m 3s" or "3s". util re-exports it too.
+--- @param ticks number
+--- @return string
+function logic.format_duration(ticks)
+	local seconds = math.floor(math.max(ticks or 0, 0) / 60)
+	local minutes = math.floor(seconds / 60)
+	local hours = math.floor(minutes / 60)
+	if hours > 0 then
+		return string.format("%dh %dm %ds", hours, minutes % 60, seconds % 60)
+	elseif minutes > 0 then
+		return string.format("%dm %ds", minutes, seconds % 60)
+	end
+	return string.format("%ds", seconds)
 end
 
 --- @class StateChip

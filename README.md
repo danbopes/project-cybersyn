@@ -227,7 +227,7 @@ A locomotive gets the same treatment: a panel beside the vanilla train window th
 
 Station, train and item names in every table are buttons. Click to open, Shift to show on the map, Ctrl for the station's combinator, Alt for its station control combinator, Ctrl+Shift to drop a map pin. Show on map closes the manager window; **Locate** in the Trains pane, and beside a train waiting at a signal, shows it on the map and keeps the window, with a **Back** button.
 
-The title bar holds search (Ctrl+F; space-separated words, case-insensitive), the filter row (item, network, network ID and surface; closing the row clears them), **Pause** and the pin. A pinned window stays open while you interact with the world. E and Escape close the top layer first (search, Explain, the train pane) and then the window, as in the game's own windows; a pinned window ignores them. `/cybersyn-reset-gui` centers the window, sizes it for your screen again and closes the filter row.
+The title bar holds search (Ctrl+F; space-separated words, case-insensitive), the filter row (item, network, network ID and surface; closing the row clears them), **Pause** and the pin. A pinned window stays open while you interact with the world. Ctrl+F does not reach a pinned window: the key goes to the GUI in front of it, or to the map search; click the search button instead. E and Escape close the top layer first (search, Explain, the train pane) and then the window, as in the game's own windows; a pinned window ignores them. `/cybersyn-reset-gui` centers the window, sizes it for your screen again and closes the filter row.
 
 ### Unserved line on screen
 

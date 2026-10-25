@@ -2,6 +2,8 @@
 -- fixed chrome plus whole rows, so no tab ever shows half a row. Pure arithmetic in logical pixels (physical pixels
 -- divided by the UI scale); the GUI applies the result as style sizes, which the engine scales back up.
 
+local metrics = require("scripts.gui.metrics")
+
 local sizing = {}
 
 sizing.MAX_WIDTH = 1440
@@ -17,24 +19,26 @@ sizing.OUTER_HEIGHT = 126
 -- Frame border and the tab pane's side padding: the tab content is this much narrower than the window.
 sizing.OUTER_WIDTH = 48
 -- Optional strips: the filter row above the tabs, the dispatch-paused banner at the top of every tab.
-sizing.FILTER_ROW_HEIGHT = 36
-sizing.BANNER_HEIGHT = 36
+sizing.FILTER_ROW_HEIGHT = metrics.SUBHEADER_HEIGHT
+sizing.BANNER_HEIGHT = metrics.SUBHEADER_HEIGHT
+
+local STRIP, BORDER, GAP, COLUMN_HEADER = metrics.SUBHEADER_HEIGHT, metrics.FRAME_BORDER, 12, 20
 
 -- Fixed part of each tab's content, rows excluded.
 sizing.TAB_CHROME = {
-	-- subheader 36, gap 12, tiles 108, gap 12, table caption 36, column header 20
-	overview_tab = 224,
-	-- subheader 36, column header 36, subfooter 36, frame borders
-	stations_tab = 112,
-	trains_tab = 112,
-	-- subheader 36, gap 12, grid subheader 36, grid frame borders 8
-	inventory_tab = 92,
-	-- subheader 36, gap 12, caption strip 36, frame borders 4
-	log_tab = 88,
-	-- The item drill-down (scripts/gui/item.lua) in place of a tab's content: subheader 36, then three tables of
-	-- gap 12, caption strip 36, column header 20, frame borders 4; plus the 4 px border of the deep frame that hosts
-	-- it on Stations and Trains.
-	item_tab = 256,
+	-- subheader, gap, tiles, gap, table caption, column header: 224
+	overview_tab = STRIP + GAP + metrics.TILE_HEIGHT + GAP + STRIP + COLUMN_HEADER,
+	-- subheader, column header, subfooter, frame borders: 112
+	stations_tab = 3 * STRIP + BORDER,
+	trains_tab = 3 * STRIP + BORDER,
+	-- subheader, gap, grid subheader, grid frame borders: 92
+	inventory_tab = STRIP + GAP + STRIP + 2 * BORDER,
+	-- subheader, gap, caption strip, frame borders: 88
+	log_tab = STRIP + GAP + STRIP + BORDER,
+	-- The item drill-down (scripts/gui/item.lua) in place of a tab's content: subheader, then three tables of gap,
+	-- caption strip, column header and frame borders; plus the border of the deep frame that hosts it on Stations and
+	-- Trains: 256.
+	item_tab = STRIP + 3 * (GAP + STRIP + COLUMN_HEADER + BORDER) + BORDER,
 }
 
 -- Row height per tab: every row of a list tab has a fixed height (Stations 32, Trains 36, including the

@@ -949,12 +949,13 @@ function update_inv_display(map_data, station, unit)
 	end
 end
 
+--- The mode is the combinator's operation with the display variants of the primary and the secondary inventory
+--- folded into their mode.
 ---@param comb LuaEntity
 function get_comb_gui_settings(comb)
 	local params = get_comb_params(comb)
 	local op = params.operation
 
-	local selected_index = 0
 	local switch_state = "none"
 	local bits = params.second_constant or 0
 	local is_pr_state = bit_extract(bits, 0, 2)
@@ -966,20 +967,13 @@ function get_comb_gui_settings(comb)
 		switch_state = "right"
 	end
 
-	if op == MODE_PRIMARY_IO or op == MODE_PRIMARY_IO_ACTIVE or op == MODE_PRIMARY_IO_FAILED_REQUEST then
-		selected_index = 1
-	elseif op == MODE_DEPOT then
-		selected_index = 2
-	elseif op == MODE_REFUELER then
-		selected_index = 3
-	elseif op == MODE_SECONDARY_IO then
-		selected_index = 4
+	local mode = op
+	if op == MODE_PRIMARY_IO_ACTIVE or op == MODE_PRIMARY_IO_FAILED_REQUEST then
+		mode = MODE_PRIMARY_IO
 	elseif is_secondary_inventory_op(op) then
-		selected_index = 5
-	elseif op == MODE_WAGON then
-		selected_index = 6
+		mode = MODE_SECONDARY_INVENTORY
 	end
-	return selected_index --[[@as uint]], params.first_signal, switch_state, bits
+	return mode, params.first_signal, switch_state, bits
 end
 ---@param comb LuaEntity
 ---@param is_pr_state 0|1|2

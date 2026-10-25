@@ -492,15 +492,14 @@ end)
 
 test("age: two units in the column, the absolute tick in the tooltip, the range for a collapsed row", function()
 	setup()
-	local util = H.load("scripts.gui.util")
 	local one, four = { tick = 60, first_tick = 60, n = 1 }, { tick = 120, first_tick = 60, n = 4 }
 	assert_eq(model.age_caption(7260, one), "2m 00s")
 	assert_eq(model.age_caption(60, one), "0s")
 	assert_eq(model.age_caption(60 + 59 * 60, one), "59s")
 	assert_eq(model.age_caption(60 + 3 * 86400 * 60, one), "3d 00h")
-	assert_eq(model.age_tooltip(one, util.format_duration), { "cybersyn-gui.log-age-tooltip", "60", "1s" })
+	assert_eq(model.age_tooltip(one), { "cybersyn-gui.log-age-tooltip", "60", "1s" })
 	assert_eq(model.age_caption(216000 + 120, four), "1h 00m")
-	assert_eq(model.age_tooltip(four, util.format_duration),
+	assert_eq(model.age_tooltip(four),
 		{ "cybersyn-gui.log-age-range-tooltip", "60", "120", "1s", "2s", "4" })
 end)
 
@@ -508,7 +507,6 @@ test("message: cargo reads loaded 18k of 24k, edits name the player, acknowledge
 	setup()
 	local ctx = {
 		player = function(i) return ({ "Daniel", "Ozzy" })[i] end,
-		duration = function(t) return tostring(t / 60) .. "s" end,
 		stock = function(reason, a, b) return a .. "/" .. b end,
 		chip = function(reason) return { "chip", reason } end,
 	}
@@ -526,7 +524,7 @@ test("message: cargo reads loaded 18k of 24k, edits name the player, acknowledge
 	assert_eq(model.message(g(DIAG_KIND_SCHEDULE_EDITED, { a = 1, b = 5 }), ctx),
 		{ "cybersyn-diag.msg-schedule-edited-group", "Daniel", "5" })
 	assert_eq(model.message(g(DIAG_KIND_ACKNOWLEDGED, { code = DIAG_ACK_REQUEST, station2 = 1, a = 600 + 3600 }), ctx),
-		{ "cybersyn-diag.msg-acknowledged", { "cybersyn-diag.ack-kind-request" }, "Daniel", "60s" })
+		{ "cybersyn-diag.msg-acknowledged", { "cybersyn-diag.ack-kind-request" }, "Daniel", "1m 0s" })
 	assert_eq(model.message(g(DIAG_KIND_ACKNOWLEDGED, { code = DIAG_ACK_LINT, station2 = 2, a = 0 }), ctx),
 		{ "cybersyn-diag.msg-acknowledged-reason", { "cybersyn-diag.ack-kind-lint" }, "Ozzy" })
 	assert_eq(model.message(g(DIAG_KIND_UNSERVED_REASON, { code = REASON_P_BELOW_THRESHOLD, a = 5, b = 9 }), ctx),
@@ -583,7 +581,6 @@ test("locale: every key the Log builds resolves in every locale", function()
 	local used = {}
 	local ctx = {
 		player = function() return "p" end,
-		duration = function() return "1s" end,
 		stock = function(reason) return reason == REASON_NO_PROVIDER and "–" or "1/2" end,
 		chip = function() return "chip" end,
 	}
@@ -737,7 +734,7 @@ end)
 
 test("lint passes: the caption counts the pass; a pass of one row reads as that finding", function()
 	setup()
-	local ctx = { player = function() return "p" end, duration = function() return "1s" end,
+	local ctx = { player = function() return "p" end,
 		stock = function() return "1/2" end, chip = function() return "chip" end }
 	local g = { kind = DIAG_KIND_LINT, code = DIAG_LINT_APPEARED, a = 3, b = 0, tick = 0, n = 3, pass = 1,
 		lint = { 25, 6, 0, 2 } }

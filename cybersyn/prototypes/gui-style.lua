@@ -1,6 +1,7 @@
 local constants = require("constants")
 
 local data_util = require("__flib__.data-util")
+local M = require("scripts.gui.metrics")
 
 local util = {}
 
@@ -353,14 +354,13 @@ data:extend({
 styles.cybersyn_tab_subheader = {
 	type = "frame_style",
 	parent = "subheader_frame",
-	-- Fixed: sizing.TAB_CHROME counts each strip at this height when it works out the rows a tab fits.
-	height = 36,
+	height = M.SUBHEADER_HEIGHT,
 	horizontally_stretchable = "on",
-	left_padding = 8,
-	right_padding = 8,
+	left_padding = M.SUBHEADER_PADDING,
+	right_padding = M.SUBHEADER_PADDING,
 	horizontal_flow_style = {
 		type = "horizontal_flow_style",
-		horizontal_spacing = 8,
+		horizontal_spacing = M.SUBHEADER_SPACING,
 		vertical_align = "center",
 	},
 }
@@ -375,16 +375,18 @@ styles.cybersyn_filter_row = {
 	},
 }
 
--- The red of the negative subheader, without its negative margin.
+-- The red of the negative subheader, without its negative margin; laid out as cybersyn_tab_subheader.
 styles.cybersyn_banner_frame = {
 	type = "frame_style",
-	parent = "cybersyn_tab_subheader",
-	graphical_set = {
-		base = {
-			center = { position = { 411, 25 }, size = { 1, 1 } },
-			bottom = { position = { 411, 26 }, size = { 1, 8 } },
-		},
-		shadow = bottom_shadow,
+	parent = "negative_subheader_frame",
+	bottom_margin = 0,
+	height = M.SUBHEADER_HEIGHT,
+	left_padding = M.SUBHEADER_PADDING,
+	right_padding = M.SUBHEADER_PADDING,
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = M.SUBHEADER_SPACING,
+		vertical_align = "center",
 	},
 }
 
@@ -402,7 +404,7 @@ styles.cybersyn_subheader_note = {
 
 styles.cybersyn_search_field = {
 	type = "textbox_style",
-	width = 200,
+	width = M.SEARCH_FIELD_WIDTH,
 }
 
 -- Item filter chip: "[icon] Filtered: Iron plate ×".
@@ -412,6 +414,8 @@ styles.cybersyn_item_chip_icon = {
 	size = 28,
 }
 
+-- The chips copy vanilla `button`'s atlas positions: a tint needs a graphical_set of its own, which replaces the
+-- parent's whole set.
 styles.cybersyn_item_chip = {
 	type = "button_style",
 	parent = "button",
@@ -532,7 +536,7 @@ local shallow_base = {
 styles.cybersyn_overview_tile = {
 	type = "button_style",
 	parent = "button",
-	height = 108,
+	height = M.TILE_HEIGHT,
 	padding = 0,
 	minimal_width = 0,
 	default_graphical_set = { base = shallow_base, shadow = default_inner_shadow },
@@ -546,8 +550,8 @@ styles.cybersyn_overview_tile = {
 styles.cybersyn_overview_tile_body = {
 	type = "vertical_flow_style",
 	vertical_spacing = 0,
-	top_padding = 4,
-	bottom_padding = 4,
+	top_padding = M.TILE_PADDING,
+	bottom_padding = M.TILE_PADDING,
 	left_padding = 10,
 	right_padding = 10,
 }
@@ -581,7 +585,7 @@ styles.cybersyn_overview_line_flow = {
 	type = "horizontal_flow_style",
 	vertical_align = "center",
 	horizontal_spacing = 8,
-	height = 18,
+	height = M.TILE_LINE_HEIGHT,
 }
 
 styles.cybersyn_overview_line_label = {
@@ -604,7 +608,7 @@ styles.cybersyn_overview_line_link = {
 	parent = "cybersyn_link_button",
 	font = "default",
 	default_font_color = { 0.85, 0.85, 0.85 },
-	height = 18,
+	height = M.TILE_LINE_HEIGHT,
 	padding = 0,
 }
 
@@ -645,13 +649,14 @@ styles.cybersyn_unserved_count_button = {
 	font = "default-bold",
 }
 
+-- The row tint copies vanilla `removed_content_table`'s: parenting it would bring that table's column widths.
 styles.cybersyn_unserved_table = {
 	type = "table_style",
 	parent = "table",
-	horizontal_spacing = 8,
+	horizontal_spacing = M.TABLE_SPACING,
 	vertical_spacing = 0,
-	left_padding = 4,
-	right_padding = 10,
+	left_padding = M.TABLE_LEFT_PADDING,
+	right_padding = M.TABLE_RIGHT_PADDING,
 	odd_row_graphical_set = {
 		filename = "__core__/graphics/gui-new.png",
 		position = { 472, 25 },
@@ -776,14 +781,14 @@ local function list_row(height, light)
 		parent = light and "ltnm_table_row_frame_light" or "ltnm_table_row_frame_dark",
 		top_padding = 0,
 		bottom_padding = 0,
-		left_padding = 4,
-		right_padding = 4,
+		left_padding = M.LIST_ROW_PADDING,
+		right_padding = M.LIST_ROW_PADDING,
 		height = height,
 		horizontally_stretchable = "on",
 		horizontal_flow_style = {
 			type = "horizontal_flow_style",
 			vertical_align = "center",
-			horizontal_spacing = 8,
+			horizontal_spacing = M.LIST_SPACING,
 		},
 	}
 end
@@ -819,14 +824,14 @@ styles.cybersyn_group_row = {
 styles.cybersyn_list_header = {
 	type = "frame_style",
 	parent = "subheader_frame",
-	height = 36,
+	height = M.SUBHEADER_HEIGHT,
 	-- As the rows' padding, so a header cell starts where its column's cells do.
-	left_padding = 4,
-	right_padding = 4,
+	left_padding = M.LIST_ROW_PADDING,
+	right_padding = M.LIST_ROW_PADDING,
 	horizontally_stretchable = "on",
 	horizontal_flow_style = {
 		type = "horizontal_flow_style",
-		horizontal_spacing = 8,
+		horizontal_spacing = M.LIST_SPACING,
 		vertical_align = "center",
 	},
 }
@@ -834,7 +839,7 @@ styles.cybersyn_list_header = {
 styles.cybersyn_list_subfooter = {
 	type = "frame_style",
 	parent = "ltnm_subfooter_frame",
-	height = 36,
+	height = M.SUBHEADER_HEIGHT,
 }
 
 styles.cybersyn_list_rows = {
@@ -907,7 +912,7 @@ styles.cybersyn_inventory_grid_frame = {
 styles.cybersyn_inventory_grid_header = {
 	type = "frame_style",
 	parent = "subheader_frame",
-	height = 36,
+	height = M.SUBHEADER_HEIGHT,
 	horizontally_stretchable = "on",
 	left_padding = 8,
 	right_padding = 4,
@@ -991,15 +996,15 @@ styles.cybersyn_reason_label_acked = reason_label({ 0.5, 0.5, 0.5 })
 styles.cybersyn_log_row = {
 	type = "frame_style",
 	padding = 0,
-	left_padding = 4,
-	right_padding = 8,
+	left_padding = M.LOG_ROW_LEFT_PADDING,
+	right_padding = M.LOG_ROW_RIGHT_PADDING,
 	height = 28,
 	horizontally_stretchable = "on",
 	graphical_set = {},
 	horizontal_flow_style = {
 		type = "horizontal_flow_style",
 		vertical_align = "center",
-		horizontal_spacing = 8,
+		horizontal_spacing = M.LOG_SPACING,
 	},
 }
 
@@ -1082,18 +1087,18 @@ styles.cybersyn_log_sev_button = {
 styles.cybersyn_log_kind_dropdown = {
 	type = "dropdown_style",
 	parent = "dropdown",
-	width = 190,
+	width = M.LOG_KIND_DROPDOWN_WIDTH,
 }
 
 styles.cybersyn_log_window_dropdown = {
 	type = "dropdown_style",
 	parent = "dropdown",
-	width = 160,
+	width = M.LOG_WINDOW_DROPDOWN_WIDTH,
 }
 
 styles.cybersyn_log_train_field = {
 	type = "textbox_style",
-	width = 72,
+	width = M.LOG_TRAIN_FIELD_WIDTH,
 }
 
 styles.cybersyn_log_summary_frame = {

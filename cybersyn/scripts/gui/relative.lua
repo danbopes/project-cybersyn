@@ -1161,7 +1161,7 @@ local function unserved_texts(m, r, now, inherit_before)
 		inherited = inherited,
 		n = e.n,
 		surface_name = util.surface_name,
-	}, util.format_duration)
+	})
 	local stock = utext.stock_caption(e.reason, e.a, e.b)
 	return tip, stock ~= utext.NO_VALUE and stock or "", utext.wait_caption(wait, inherited)
 end
@@ -1987,7 +1987,7 @@ local function render_caption(state, panel, m, pd)
 	local sig = utext.read_step(age) .. (m.source or "")
 	if state.sigs.caption ~= sig then
 		state.sigs.caption = sig
-		panel.subheader.caption_label.tooltip = { "", utext.read_ago(age, util.format_duration),
+		panel.subheader.caption_label.tooltip = { "", utext.read_ago(age),
 			m.source == "live" and { "cybersyn-gui.relative-source-live" } or "" }
 	end
 	local open = pd.relative_effective_open == true
@@ -2573,7 +2573,7 @@ end
 
 -- ---------------------------------------------------------------- handlers
 
-relative.wrapper = util.wrapper_pd
+relative.wrapper = util.wrapper
 
 --- The state of the panel a click came from: the one mounted in the manager (relative.mount) or the one beside the
 --- vanilla window.
@@ -2642,12 +2642,12 @@ function relative.open_manager(player, pd, state)
 	end
 end
 
-function relative.handle.relative_open_manager(player, pd, e)
+function relative.handle.relative_open_manager(player, pd, refs, e)
 	relative.open_manager(player, pd, state_of(pd, e))
 end
 
 --- comb1 / comb2 tool buttons: the station's (or depot's, refueler's) combinators.
-function relative.handle.relative_comb(player, pd, e)
+function relative.handle.relative_comb(player, pd, refs, e)
 	local state = state_of(pd, e)
 	if not state or state.kind ~= "stop" then return end
 	local which = e.element.name
@@ -2666,7 +2666,7 @@ function relative.handle.relative_comb(player, pd, e)
 	end
 end
 
-function relative.handle.relative_locate_train(player, pd, e)
+function relative.handle.relative_locate_train(player, pd, refs, e)
 	local state = state_of(pd, e)
 	local train = state and state.kind == "train" and storage.trains[state.id]
 	local entity = train and train.entity
@@ -2674,7 +2674,7 @@ function relative.handle.relative_locate_train(player, pd, e)
 	if front then util.show_on_map(player, pd, front, front) end
 end
 
-function relative.handle.relative_locate_signal(player, pd, e)
+function relative.handle.relative_locate_signal(player, pd, refs, e)
 	local state = state_of(pd, e)
 	local train = state and state.kind == "train" and storage.trains[state.id]
 	local entity = train and train.entity

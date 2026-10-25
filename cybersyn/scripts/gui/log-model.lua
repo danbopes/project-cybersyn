@@ -1037,9 +1037,9 @@ end
 
 --- The age column's tooltip: the absolute tick and the game time it was written at (a range for a collapsed row).
 --- @param g LogGroup
---- @param long fun(ticks: number): string util.format_duration
 --- @return LocalisedString
-function model.age_tooltip(g, long)
+function model.age_tooltip(g)
+	local long = logic.format_duration
 	if g.n > 1 then
 		return { "cybersyn-gui.log-age-range-tooltip", tostring(g.first_tick), tostring(g.tick), long(g.first_tick),
 			long(g.tick), format.number(g.n) }
@@ -1052,7 +1052,6 @@ local STATE_NAMES = DIAG_TRAIN_STATE_NAMES
 --- @class LogTextContext name lookups the message needs; all pure reads
 --- @field station fun(id: uint): string? a station's (or depot's) name
 --- @field player fun(index: uint): string?
---- @field duration fun(ticks: number): string util.format_duration
 --- @field stock fun(reason: int, a: int, b: int): LocalisedString unserved-text stock caption
 --- @field chip fun(reason: int): LocalisedString unserved-text chip caption
 
@@ -1084,7 +1083,7 @@ function model.message(g, ctx, expanded)
 		return { msg, ctx.chip(code), stock }
 	elseif kind == DIAG_KIND_SERVED then
 		-- The plural takes the plain number: a grouped one ("8,646") is not a number to the locale engine.
-		return { msg, ctx.duration(a), format.number(b), ctx.chip(code), tostring(b) }
+		return { msg, logic.format_duration(a), format.number(b), ctx.chip(code), tostring(b) }
 	elseif kind == DIAG_KIND_FLAPPING then
 		return { msg, format.number(b), ctx.chip(code) }
 	elseif kind == DIAG_KIND_DISPATCH_FAILED then
@@ -1119,7 +1118,7 @@ function model.message(g, ctx, expanded)
 		local what = { "cybersyn-diag.ack-kind-" .. (DIAG_ACK_KINDS[code] or "request") }
 		local who = ctx.player(g.station2) or "-"
 		if a == 0 then return { msg .. "-reason", what, who } end
-		return { msg, what, who, ctx.duration(a - g.tick) }
+		return { msg, what, who, logic.format_duration(a - g.tick) }
 	elseif kind == DIAG_KIND_UNACKNOWLEDGED then
 		local what = { "cybersyn-diag.ack-kind-" .. (DIAG_ACK_KINDS[code] or "request") }
 		local cause = ACK_END[b] or "expired"
@@ -1137,10 +1136,10 @@ function model.message(g, ctx, expanded)
 	elseif kind == DIAG_KIND_ARRIVE_P or kind == DIAG_KIND_LEAVE_P or kind == DIAG_KIND_ARRIVE_R then
 		return { msg, amount(a) }
 	elseif kind == DIAG_KIND_SLOW_DELIVERY then
-		return { msg, ctx.duration(a), b > 0 and string.format("%.1f", a / b) or "–", ctx.duration(b) }
+		return { msg, logic.format_duration(a), b > 0 and string.format("%.1f", a / b) or "–", logic.format_duration(b) }
 	elseif kind == DIAG_KIND_TRAIN_STATE then
 		if code == defines.train_state.wait_signal then
-			return { msg .. "-wait-signal", ctx.duration(a) }
+			return { msg .. "-wait-signal", logic.format_duration(a) }
 		end
 		local state = STATE_NAMES[code]
 		return { msg, state and logic.state_chip(state).caption or tostring(code) }

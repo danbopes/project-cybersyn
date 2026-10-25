@@ -229,7 +229,7 @@ function extras.tools_sig(pd, kind, id)
 	return ""
 end
 
-function extras.handle.extras_path_trace(player, pd, e)
+function extras.handle.extras_path_trace(player, pd, refs, e)
 	local kind, id = extras.panel_subject(e.element)
 	if kind ~= "train" then return end
 	extras.toggle_path_trace(player, pd, id)
@@ -237,7 +237,7 @@ function extras.handle.extras_path_trace(player, pd, e)
 	if extras.on_change then extras.on_change(player, pd) end
 end
 
-function extras.handle.extras_pin(player, pd, e)
+function extras.handle.extras_pin(player, pd, refs, e)
 	local kind, id = extras.panel_subject(e.element)
 	if not kind then return end
 	extras.add_pin(player, kind == "train" and "train" or "stop", id)
@@ -388,7 +388,7 @@ function extras.hud_setting_changed(player, pd)
 	extras.hud_refresh(player, pd)
 end
 
-function extras.handle.extras_hud_moved(player, pd, e)
+function extras.handle.extras_hud_moved(player, pd, refs, e)
 	local loc = e.element.location
 	if loc then pd.hud_location = { x = loc.x, y = loc.y } end
 end
@@ -419,7 +419,7 @@ function extras.reset(player, pd)
 	pd.hud_on = nil
 end
 
-extras.wrapper = util.wrapper_pd
+extras.wrapper = util.wrapper
 
 gui.add_handlers(extras.handle, extras.wrapper, "cybersyn_extras")
 util.set_pin(extras.add_pin)

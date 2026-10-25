@@ -8,6 +8,7 @@ local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
 local rich_text = require("scripts.gui.rich-text")
+local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
@@ -47,9 +48,9 @@ local W = { item = 32, why = 176, provider = 272, stock = 110, lost = 96, wait =
 local CHIP_W = 132
 local BASE_CONTENT_WIDTH = 1392
 local REQUESTER_MIN, PROVIDER_MIN = 160, 120
-local TABLE_PADDING = 4 + 10
-local TABLE_SPACING = 8
-local FRAME_BORDER = 4
+local TABLE_PADDING = metrics.TABLE_LEFT_PADDING + metrics.TABLE_RIGHT_PADDING
+local TABLE_SPACING = metrics.TABLE_SPACING
+local FRAME_BORDER = metrics.FRAME_BORDER
 -- The Why cell's "Setup" marker beside the reason chip.
 local MARKER_W = 40
 local ROW_H = 32
@@ -77,9 +78,9 @@ local UNSERVED_MINUTES = 5
 
 --- Stations failing's Misconfigured line jumps on its own: to the Stations tab's Problems chip.
 local LINK_LINES = { failing4 = true }
-local TILE_H = 108
--- The link line overlays the button's last line slot: an 18 px line and the body's 4 px bottom padding.
-local LINK_H = 22
+local TILE_H = metrics.TILE_HEIGHT
+-- The link line overlays the button's last line slot: one line and the body's bottom padding.
+local LINK_H = metrics.TILE_LINE_HEIGHT + metrics.TILE_PADDING
 
 local function line_def(tile, i)
 	local base = "overview_" .. tile.name .. "_line" .. i
@@ -146,7 +147,7 @@ local function tile_def(tile)
 	-- A button's ignored body cannot hold a clickable child, so the line that jumps on its own is a sibling laid over
 	-- the full-height button's last line slot by a negative margin (the later sibling draws on top and takes the
 	-- input). The wrapper draws nothing, so the tile's chrome and hover glow stay the button's own, like the others.
-	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4, top_margin = -LINK_H }
+	link.style_mods = { left_padding = 10, right_padding = 10, height = metrics.TILE_LINE_HEIGHT, top_margin = -LINK_H }
 	return {
 		type = "frame",
 		name = "overview_tile_" .. tile.name .. "_frame",
@@ -659,19 +660,7 @@ end
 
 -- ---------------------------------------------------------------- render: tiles
 
---- LocalisedString captions cannot be compared with the element's, so the last plain-string signature written is
---- kept per player and element.
---- @param cache table
---- @param elem LuaGuiElement?
---- @param sig string
---- @param caption LocalisedString
-local function set_caption(cache, elem, sig, caption)
-	if not (elem and elem.valid) then return end
-	local key = elem.name
-	if cache[key] == sig then return end
-	cache[key] = sig
-	elem.caption = caption
-end
+local set_caption = util.set_if_changed
 
 --- Whether set_tooltip would write `sig` (so the tooltip is built only then).
 --- @param cache table
@@ -1145,7 +1134,7 @@ local function row_entry(row, acked, ctx)
 			until_text ~= nil
 	end
 	local function tooltips(clocks_only)
-		local read = read_age and text.read_ago(read_age, util.format_duration) or nil
+		local read = read_age and text.read_ago(read_age) or nil
 		local chip = text.chip_tooltip({
 			item = item_tooltip,
 			requested = requested,
@@ -1160,7 +1149,7 @@ local function row_entry(row, acked, ctx)
 			n = e.n,
 			read_age = read_age,
 			surface_name = surface_name,
-		}, util.format_duration)
+		})
 		chip[#chip + 1] = "\n"
 		chip[#chip + 1] = { "cybersyn-gui.unserved-explain-hint" }
 		local r_tip = station_tooltip(requester, read)
@@ -1371,7 +1360,6 @@ local function render_table(player_data, model)
 			content_sigs = {}
 			state.content_sigs = content_sigs
 		end
-		local state = util.gui_state(player_data, TABLE)
 		local hide = state.hide or { stock = false, lost = false }
 		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths,
 			content_sigs = content_sigs, setup = setup_index(), hide = hide }
@@ -1502,6 +1490,7 @@ end
 local UNSERVED_SORT = { tab = "stations_tab", column = "wait", ascending = false }
 local FAILING_SORT = { tab = "stations_tab", column = "station_status", ascending = true }
 local FLEET_SORT = { tab = "trains_tab", column = "train_status", ascending = true }
+local THROUGHPUT_SORT = { tab = "inventory_tab", column = "amount", ascending = false }
 
 --- Every tile jumps to the tab that lists what it counts.
 --- @param e EventData.on_gui_click
@@ -1518,13 +1507,8 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 	elseif tile == "failing" then
 		jump_stations(player, player_data, "failing", FAILING_SORT)
 	elseif tile == "throughput" then
-		util.set_sort(player_data, "inventory_tab", "amount", false)
-		-- Every grid by amount: the grids' own sort buttons give way to the tab's sort.
-		player_data.inventory_sorts = nil
-		-- The jump is to the grids, which an item filter replaces with its drill-down.
-		util.set_item_filter(player_data, nil)
-		util.select_tab(player_data, "inventory_tab")
-		util.rerender(player, player_data)
+		overview_tab.manager.focus(player, player_data, "inventory_tab", { keep_row = true, grids = true,
+			sort = THROUGHPUT_SORT })
 	end
 end
 

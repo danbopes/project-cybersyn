@@ -23,8 +23,6 @@ local DEFAULT_TAB = "overview_tab"
 -- Tabs whose content gets the banner and subheader, in pane order.
 local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab",
 	"utilization_tab", "delivery_breakdown_tab" }
--- Tabs that ignore the item filter, so they never show its chip.
-local NO_ITEM_CHIP = {}
 -- Tabs that show the station chip but do not apply it: its tooltip says so.
 local STATION_CHIP_IGNORED = { overview_tab = true, utilization_tab = true, delivery_breakdown_tab = true }
 -- Tabs the station-name search applies to.
@@ -260,6 +258,8 @@ end
 --- @field reveal {train: uint?, group: string?, all: true?}? grouped Trains: expand the group holding this train, or
 --- this group, or (all) every group holding a train that passes the filters
 --- @field sort {tab: string, column: string, ascending: boolean}?
+--- @field grids true? the Inventory's grids under the focus sort: the item filter (its drill-down replaces the grids)
+--- and the grids' own sort buttons go
 
 --- @class PlayerData
 --- @field focus_open true? the next manager_open comes from manager.focus: it keeps the focus's filters (no surface default)
@@ -289,6 +289,10 @@ function manager.focus(player, player_data, tab, focus)
 	end
 	util.set_search_query(player_data, focus.query)
 	if focus.query then player_data.search_open = true end
+	if focus.grids then
+		util.set_item_filter(player_data, nil)
+		player_data.inventory_sorts = nil
+	end
 	if focus.item then util.set_item_filter(player_data, focus.item) end
 	if focus.station then util.set_station_filter(player_data, focus.station) end
 	if focus.network then player_data.search_network_name = focus.network end
@@ -359,6 +363,7 @@ function manager.apply_layout(player, player_data)
 end
 
 --- Restores the stored position, or centres the window when there is none or it would be off the screen.
+--- player_data.location duplicates the engine's own only so the position survives reset_player's rebuilds.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.place_window(player, player_data)
@@ -389,6 +394,7 @@ function manager.relayout(player, player_data)
 	-- A hidden window is placed when it opens; centring it now would use a stale size.
 	if player_data.is_manager_open then
 		manager.place_window(player, player_data)
+		explain.place(player, player_data)
 		manager.render(player, player_data)
 	end
 end
@@ -493,7 +499,7 @@ function manager.refresh_chips(player_data)
 	if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
 	for _, tab in ipairs(HEADER_TABS) do
-		local flow = not NO_ITEM_CHIP[tab] and refs[tab .. "_chip_flow"]
+		local flow = refs[tab .. "_chip_flow"]
 		if flow and flow.valid then
 			flow.visible = shown
 			if shown then
@@ -641,7 +647,6 @@ function manager.rebuild_surface_dropdown(player_data)
 	dropdown.items = items
 	dropdown.selected_index = selected
 	player_data.surface_dropdown_ids = ids
-	player_data.surface_count = #game.surfaces
 end
 
 --- Writes the stored filters into the filter row, the search fields and the chips; done on open and after a
@@ -873,6 +878,7 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 	if not player_data.is_manager_open or player_data.pinning or util.switching(player.index) then return end
 	if peel_overlay(player, player_data) then
 		manager.render(player, player_data)
+		-- The API has a single opened slot and no overlay stack, so layered Escape re-takes it inside the close event.
 		player.opened = refs.manager_window
 		return
 	end
@@ -969,6 +975,7 @@ function manager.handle.manager_location_changed(player, player_data, refs, e)
 	if window and window.valid and window == refs.manager_window and window.visible and player_data.is_manager_open then
 		local loc = window.location
 		player_data.location = { x = loc.x, y = loc.y }
+		explain.place(player, player_data)
 	end
 end
 

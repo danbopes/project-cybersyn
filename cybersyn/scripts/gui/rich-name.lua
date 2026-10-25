@@ -8,12 +8,19 @@ local rich_name = {}
 --- version, with an icon table per icon, cost ~1.45 KB per station (2.9 MB on a 2,030-station save).
 rich_name.MAX_ICONS = 3
 
---- Rich-text tag types that name a sprite, mapped to their sprite path prefix.
+--- Rich-text tag types that name a sprite, mapped to their sprite path prefix (SpritePath); `img` already holds one.
 local SPRITE_TYPES = {
 	item = "item",
 	fluid = "fluid",
 	["virtual-signal"] = "virtual-signal",
 	entity = "entity",
+	recipe = "recipe",
+	tile = "tile",
+	technology = "technology",
+	["space-location"] = "space-location",
+	planet = "space-location",
+	quality = "quality",
+	img = "",
 }
 
 --- @class RichNameIcon
@@ -47,7 +54,7 @@ local function icon_at(name, pos)
 		quality = string.match(rest, "^,%s*quality%s*=%s*([^,%s]+)%s*$")
 		if not quality then return nil end
 	end
-	return { sprite = prefix .. "/" .. id, quality = quality }, e + 1
+	return { sprite = prefix == "" and id or prefix .. "/" .. id, quality = quality }, e + 1
 end
 
 --- Every icon tag in `name`, each with its byte span, in order.

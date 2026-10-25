@@ -233,7 +233,6 @@ end
 test("shift-click on a link inside the window shows the stop and closes the window", function()
 	local u, pd, calls, player, window, shown = shift_setup(true)
 	local cell = window.add({ type = "flow" }).add({ type = "button" })
-	cell.object_name = "LuaGuiElement"
 	shift_click(u, player, pd, cell)
 	assert_eq(calls, { "close-window" })
 	assert_eq(#shown, 1)
@@ -243,16 +242,8 @@ test("shift-click on a stop panel's link leaves the window alone", function()
 	local u, pd, calls, player, _, shown = shift_setup(true)
 	local panel = H.element({ name = "cybersyn_relative", index = 71 })
 	local cell = panel.add({ type = "button" })
-	cell.object_name = "LuaGuiElement"
 	shift_click(u, player, pd, cell)
 	assert_eq(calls, {})
-	assert_eq(#shown, 1)
-end)
-
-test("a synthetic click (Log row) counts as inside the window", function()
-	local u, pd, calls, player, _, shown = shift_setup(true)
-	shift_click(u, player, pd, {})
-	assert_eq(calls, { "close-window" })
 	assert_eq(#shown, 1)
 end)
 
