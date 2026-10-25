@@ -255,6 +255,7 @@ local function finite_limit(st)
 	return limit < UNLIMITED and limit or nil
 end
 
+-- Shifts a signed 32-bit mask to a non-negative 10-digit number so its zero-padded string sorts in signed order.
 local OFFSET = 2147483648
 
 -- Natural sort keys of station names ("stn-2" before "stn-10"): a pure function of the name, so a cache that differs
