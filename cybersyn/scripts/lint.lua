@@ -39,14 +39,7 @@ local UNLIMITED = TRAIN_LIMIT_UNLIMITED
 local DEFAULT_PRIORITY = 50
 
 -- Checks only the registry finds; their acknowledgements end when the registry drops them, not with a pass.
-local REGISTRY_CHECKS = {
-	[LINT_DERELICT_COMB] = true,
-	[LINT_GHOST_COMB] = true,
-	[LINT_NO_COMB] = true,
-	[LINT_WRONG_SIDE] = true,
-	[LINT_DOUBLE_COMB] = true,
-	[LINT_NAME_OVERLAP] = true,
-}
+local REGISTRY_CHECKS = LINT_REGISTRY_CHECKS
 lint.REGISTRY_CHECKS = REGISTRY_CHECKS
 
 lint.RECORDS_PER_UPDATE = RECORDS_PER_UPDATE
@@ -95,8 +88,8 @@ lint.REFUEL_GRACE = REFUEL_GRACE_TICKS
 --- @field bits {[uint]: int} stop unit number -> mask of the last completed check
 --- @field train_bits {[uint]: int}
 --- @field findings LintFinding[] the last complete pass
---- @field train_live {[uint]: {missing: int?, items: int, fluid: int?}} per train, what its schedule and wagons said
----   when last read between deliveries
+--- @field train_live {[uint]: {missing: int?, items: int, fluid: int?, dirty: true?}} per train, what its schedule and
+---   wagons said when last read between deliveries; dirty after a player's schedule edit, to read it again on a trip
 --- @field pass int completed passes
 --- @field tick uint? when the last pass completed
 --- @field updates int updates the last pass took
@@ -175,9 +168,7 @@ local stack_of = {}
 local function stack_size(hash)
 	local v = stack_of[hash]
 	if v == nil then
-		local bar = string.find(hash, "|", 1, true)
-		local name = bar and string.sub(hash, 1, bar - 1) or hash
-		v = get_stack_size(nil, name) or false
+		v = get_stack_size(nil, (unhash_signal(hash))) or false
 		stack_of[hash] = v
 	end
 	return v
@@ -528,10 +519,48 @@ local function start_job(s, snap)
 	return job
 end
 
+--- Every stop at a non-default priority that shares a name with a Cybersyn station, depot or refueler, its own
+--- included: a vanilla stop of that name pulls in Cybersyn's trains too.
+--- @param force LuaForce?
+--- @return LuaEntity[]
+local function off_priority_stops(force)
+	local seen, names = {}, {}
+	for _, records in ipairs({ storage.stations, storage.depots, storage.refuelers }) do
+		for _, rec in pairs(records) do
+			local stop = rec.entity_stop
+			local name = stop and stop.valid and stop.backer_name
+			if name and not seen[name] then
+				seen[name] = true
+				names[#names + 1] = name
+			end
+		end
+	end
+	local out = {}
+	if not names[1] then return out end
+	for _, stop in pairs(game.train_manager.get_train_stops({ station_name = names, force = force })) do
+		if stop.train_stop_priority ~= DEFAULT_PRIORITY then out[#out + 1] = stop end
+	end
+	return out
+end
+
+--- The priority to report for a Cybersyn stop: that of an off-priority stop of its name and force seen when the
+--- pass started (read live), else its own.
+--- @param job LintJob
+--- @param stop LuaEntity
+--- @return int
+local function stop_priority(job, stop)
+	local other = job.off_priority[stop.backer_name]
+	if other and other.valid and other.force == stop.force then return other.train_stop_priority end
+	return stop.train_stop_priority
+end
+
 --- @param job LintJob
 --- @param snap Snapshot
 local function setup_job(job, snap)
 	if job.setup == 1 then
+		local off = {}
+		for _, stop in ipairs(off_priority_stops()) do off[stop.backer_name] = stop end
+		job.off_priority = off
 		job.dids = snap.depot_ids or keys_into(storage.depots, {})
 		job.fids = keys_into(storage.refuelers, {})
 		job.tids = keys_into(storage.trains, {})
@@ -603,13 +632,7 @@ end
 local function live_refueler(refueler)
 	local comb = refueler.entity_comb
 	if not (comb and comb.valid) or refueler.network_name == NETWORK_EACH then return refueler end
-	local signal = get_comb_params(comb).first_signal
-	local name = signal and signal.name
-	local mask = mod_settings.network_mask or 1
-	local signals = comb.get_signals(defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green)
-	for _, v in pairs(signals or {}) do
-		if v.signal.name == name then mask = v.count end
-	end
+	local name, mask = read_refueler_network(comb, get_comb_params(comb), mod_settings)
 	return { network_name = name, network_mask = mask }
 end
 
@@ -697,7 +720,7 @@ local function check_record(s, job, snap, k, cycle_ticks)
 			deliveries = station.deliveries_total or 0
 		end
 		live.limit = stop.trains_limit
-		live.priority = stop.train_stop_priority
+		live.priority = stop_priority(job, stop)
 		live.count = count
 		live.occupancy = occupancy
 		-- Only more trains than Cybersyn sent count: one it sent is routed through a rail record first and is not
@@ -730,12 +753,12 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		local stop = depot and depot.entity_stop
 		if not (stop and stop.valid) then return end
 		mask = lint.check_depot(out, id, stop.trains_limit, (snap.depots_by_name or NO_LAYOUTS)[stop.backer_name],
-			stop.train_stop_priority)
+			stop_priority(job, stop))
 	else
 		local refueler = storage.refuelers[id]
 		local stop = refueler and refueler.entity_stop
 		if not (stop and stop.valid) then return end
-		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet, stop.train_stop_priority)
+		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet, stop_priority(job, stop))
 	end
 	local logged = s.logged
 	local old = logged and logged[id] or s.bits[id] or 0
@@ -744,22 +767,6 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		note_logged(s, "logged", id, mask)
 	end
 	if mask ~= 0 then job.bits[id] = mask end
-end
-
---- Live capacity of a train's wagons, as set_train_layout computes it (fluid capacity per wagon quality).
---- @param entity LuaTrain
---- @return int items
---- @return int fluid
-local function live_capacity(entity)
-	local items, fluid = 0, 0
-	for _, wagon in pairs(entity.cargo_wagons) do
-		local inv = wagon.get_inventory(defines.inventory.cargo_wagon)
-		if inv then items = items + #inv end
-	end
-	for _, wagon in pairs(entity.fluid_wagons) do
-		fluid = fluid + math.floor(wagon.prototype.get_fluid_capacity(wagon.quality))
-	end
-	return items, fluid
 end
 
 -- Reused for every train of a pass, as `live` is for stations.
@@ -800,7 +807,7 @@ local function check_train(s, job, snap, id)
 	local entity = train and train.entity
 	if not (entity and entity.valid) then return end
 	local seen = s.train_live[id]
-	if not ON_TRIP[train.status] then
+	if not ON_TRIP[train.status] or seen and seen.dirty then
 		local missing
 		local records = entity.get_schedule().get_records()
 		local force
@@ -815,12 +822,12 @@ local function check_train(s, job, snap, id)
 				break
 			end
 		end
-		local items, fluid = live_capacity(entity)
+		local items, fluid = train_capacity(entity)
 		if not seen then
 			seen = {}
 			s.train_live[id] = seen
 		end
-		seen.missing, seen.items, seen.fluid = missing, items, fluid
+		seen.missing, seen.items, seen.fluid, seen.dirty = missing, items, fluid, nil
 	end
 	local never, tracked
 	if not train.refuel_tick then
@@ -1029,20 +1036,7 @@ end
 --- @field msgs {[string]: true} [cybersyn-problems] keys, each one finding
 --- @field stop LuaEntity? wrong side: the stop the combinator stands next to
 
-local MESSAGE_CHECK = {
-	["double-station"] = LINT_DOUBLE_COMB,
-	["double-station-control"] = LINT_DOUBLE_COMB,
-	["double-depot"] = LINT_DOUBLE_COMB,
-	["double-refueler"] = LINT_DOUBLE_COMB,
-	["station-and-depot"] = LINT_DOUBLE_COMB,
-	["station-and-refueler"] = LINT_DOUBLE_COMB,
-	["depot-and-refueler"] = LINT_DOUBLE_COMB,
-	["ghost-combinator"] = LINT_GHOST_COMB,
-	["stop-no-combinator"] = LINT_NO_COMB,
-	["name-overlap-with-depot"] = LINT_NAME_OVERLAP,
-	["derelict-combinator"] = LINT_DERELICT_COMB,
-	["wrong-side-combinator"] = LINT_WRONG_SIDE,
-}
+local MESSAGE_CHECK = LINT_MESSAGE_CHECK
 lint.MESSAGE_CHECK = MESSAGE_CHECK
 
 -- What one evaluation decides: eval_stop the combinator facts of a stop, eval_name the name overlap (per name, so
@@ -1120,6 +1114,8 @@ local function set(entity, subject, owned, found, stop)
 		if not (found and next(found)) then return end
 		entry = { entity = entity, subject = subject, msgs = {} }
 		reg.entries[unit] = entry
+		-- Covers what no removal handler sees: a script's destroy without raise_destroy, a deleted surface.
+		script.register_on_object_destroyed(entity)
 	end
 	local msgs = entry.msgs
 	local dirty, gone = false, nil
@@ -1363,15 +1359,16 @@ function lint.on_depot_changed(stop)
 	if stop and stop.valid then eval_name(stop.backer_name, stop.force) end
 end
 
---- A surface is being deleted or cleared: its stops and combinators leave without events of their own.
---- @param surface_index uint
-function lint.on_surface_removed(surface_index)
-	local reg = storage.lint_registry
-	if not reg then return end
-	for unit, entry in pairs(reg.entries) do
-		local e = entry.entity
-		if not e.valid or e.surface_index == surface_index then drop(unit) end
-	end
+--- @param e EventData.on_train_schedule_changed
+function lint.on_train_schedule_changed(e)
+	local s = e.player_index and storage.manager.lint
+	local seen = s and e.train.valid and s.train_live[e.train.id]
+	if seen then seen.dirty = true end
+end
+
+--- @param e EventData.on_object_destroyed
+function lint.on_object_destroyed(e)
+	if e.type == defines.target_type.entity then drop(e.useful_id) end
 end
 
 --- Ends the acknowledgements of registry checks the registry no longer has (after a seed).
@@ -1462,7 +1459,7 @@ function lint.registry_findings()
 	if not reg then return NO_LAYOUTS end
 	local list = reg.findings
 	if list then
-		-- A stop or combinator can leave without an event (a script's destroy without raise_destroy).
+		-- A removed entity's entry stays until on_object_destroyed, at the end of this tick or the next.
 		for _, f in ipairs(list) do
 			if not f.entity.valid then
 				list = nil
@@ -1471,18 +1468,9 @@ function lint.registry_findings()
 		end
 		if list then return list end
 	end
-	local units, gone = {}, nil
+	local units = {}
 	for unit, entry in pairs(reg.entries) do
-		if entry.entity.valid then
-			units[#units + 1] = unit
-		else
-			gone = gone or {}
-			gone[#gone + 1] = unit
-		end
-	end
-	-- drop ends the acknowledgements and moves the version, as the event paths do.
-	if gone then
-		for _, unit in ipairs(gone) do drop(unit) end
+		if entry.entity.valid then units[#units + 1] = unit end
 	end
 	table.sort(units)
 	list = {}
@@ -1500,21 +1488,21 @@ function lint.registry_findings()
 	return list
 end
 
---- The registry's stop or combinator with this unit number (most entities cannot be looked up by unit number, so
---- the `entity` links of unregistered ones resolve here).
+--- The stop or combinator with this unit number: a stop from the registry, since the base train stop cannot be
+--- looked up by unit number; a combinator from the game, registered or not.
 --- @param unit uint
 --- @return LuaEntity?
 function lint.registry_entity(unit)
 	local reg = storage.lint_registry
 	local entry = reg and reg.entries[unit]
-	local e = entry and entry.entity
+	local e = entry and entry.entity or game.get_entity_by_unit_number(unit)
 	if e and e.valid then return e end
 	return nil
 end
 
 --- Prints the registry the way /cybersyn-find-problems always has: one line per problem with a link to the stop or
---- the combinator's position, then the registered stops at a non-default priority (read now: no event reports a
---- priority change), or the all-clear line.
+--- the combinator's position, then the stops sharing a Cybersyn stop's name at a non-default priority (read now: no
+--- event reports a priority change), or the all-clear line.
 --- @param player LuaPlayer?
 --- @return int lines
 function lint.report(player)
@@ -1534,14 +1522,7 @@ function lint.report(player)
 			line(f.message == "wrong-side-combinator" and f.stop or f.entity, f.message)
 		end
 	end
-	for _, records in ipairs({ storage.stations, storage.depots, storage.refuelers }) do
-		for _, rec in pairs(records) do
-			local stop = rec.entity_stop
-			if stop and stop.valid and stop.train_stop_priority ~= DEFAULT_PRIORITY and (not force or stop.force == force) then
-				line(stop, "non-default-priority")
-			end
-		end
-	end
+	for _, stop in ipairs(off_priority_stops(force)) do line(stop, "non-default-priority") end
 	if n == 0 then say({ "cybersyn-problems.no-problems-found" }) end
 	return n
 end

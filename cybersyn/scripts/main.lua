@@ -878,11 +878,11 @@ local function on_surface_removed(event)
 			end
 		end
 	end
-	lint.on_surface_removed(event.surface_index)
 end
 
 local function on_object_destroyed(event)
 	Elevators.on_object_destroyed(event)
+	lint.on_object_destroyed(event)
 end
 
 local function on_paste(event)
@@ -1055,6 +1055,7 @@ local function main()
 	script.on_event(defines.events.on_train_schedule_changed, function(e)
 		on_train_schedule_changed(e)
 		manager.on_train_schedule_changed(e)
+		lint.on_train_schedule_changed(e)
 	end)
 
 	script.on_event(defines.events.on_entity_renamed, on_rename)

@@ -45,6 +45,17 @@ test("init: a save without stats starts a full table with the available trains c
 	storage.available_trains = nil
 end)
 
+test("init: a drifted available counter is corrected and logged", function()
+	at(0)
+	storage.available_trains = { ["signal-A"] = { [1] = true } }
+	stats.get().available_count = { ["signal-A"] = 3, ["signal-B"] = 1 }
+	local logged = #H.logged
+	stats.init()
+	assert_eq(stats.get().available_count, { ["signal-A"] = 1, ["signal-B"] = 0 })
+	assert_eq(#H.logged - logged, 2)
+	storage.available_trains = nil
+end)
+
 test("record_dispatch: bucket index and start from the tick", function()
 	local train = {}
 	at(61 * MIN + 5)
@@ -146,45 +157,48 @@ local function window_scenario()
 	at(10 * MIN + 200)
 end
 
-test("window: counts the current partial minute and the minutes before it", function()
+local function sums(minutes)
+	local out = stats.aggregate(minutes)
+	return { out.deliveries, out.dispatches }
+end
+
+test("aggregate: counts the current partial minute and the minutes before it", function()
 	window_scenario()
-	assert_eq({ stats.window(1) }, { 1, 1 })
-	assert_eq({ stats.window(2) }, { 2, 1 })
-	assert_eq({ stats.window(10) }, { 3, 1 })
-	assert_eq({ stats.window(11) }, { 4, 1 })
-	local d, p, items = stats.window(10, true)
-	assert_eq({ d, p }, { 3, 1 })
-	assert_eq(items, { coal = 10, stone = 4 })
-	assert_eq(select(3, stats.window(60, true)), { coal = 11, stone = 4 })
+	assert_eq(sums(1), { 1, 1 })
+	assert_eq(sums(2), { 2, 1 })
+	assert_eq(sums(10), { 3, 1 })
+	assert_eq(sums(11), { 4, 1 })
+	assert_eq(stats.aggregate(10).items, { coal = 10, stone = 4 })
+	assert_eq(stats.aggregate(60).items, { coal = 11, stone = 4 })
 end)
 
-test("cycle_average: mean over timed deliveries in the window", function()
+test("aggregate: cycle_avg is the mean over timed deliveries in the window", function()
 	window_scenario()
-	assert_eq({ stats.cycle_average(1) }, { nil, 0 })
+	assert_nil(stats.aggregate(1).cycle_avg)
 	-- Minute 9: (9*MIN+100 - (9*MIN-1100)) / 60 = 20 s; minute 5: 100/60 s.
-	assert_eq({ stats.cycle_average(2) }, { 20, 1 })
-	local avg, n = stats.cycle_average(10)
-	assert_eq(n, 2)
-	assert_near(avg, (20 + 100 / 60) / 2)
+	assert_eq(stats.aggregate(2).cycle_avg, 20)
+	local out = stats.aggregate(10)
+	assert_eq(out.cycle_n, 2)
+	assert_near(out.cycle_avg, (20 + 100 / 60) / 2)
 	at(0)
 	storage.stats = nil
-	assert_eq({ stats.cycle_average(60) }, { nil, 0 })
+	assert_nil(stats.aggregate(60).cycle_avg)
 end)
 
-test("day_deliveries: 24 hourly buckets incl. the current one", function()
+test("aggregate: a day is 24 hourly buckets incl. the current one", function()
 	at(0)
 	stats.get()
 	deliver(10, nil)
 	deliver(HOUR + 10, nil)
 	deliver(23 * HOUR + 10, nil)
 	at(23 * HOUR + 20)
-	assert_eq(stats.day_deliveries(), 3)
+	assert_eq(stats.aggregate(1440).deliveries, 3)
 	deliver(24 * HOUR + 10, nil)
 	at(24 * HOUR + 20)
 	-- Hour 0 fell out of the window (and its slot was reused by hour 24).
-	assert_eq(stats.day_deliveries(), 3)
+	assert_eq(stats.aggregate(1440).deliveries, 3)
 	at(25 * HOUR)
-	assert_eq(stats.day_deliveries(), 2)
+	assert_eq(stats.aggregate(1440).deliveries, 2)
 end)
 
 local function wait_scenario()
@@ -352,7 +366,9 @@ test("aggregate: min_available_by_network and no_train_failures", function()
 	at(0)
 	local out = stats.aggregate(60)
 	assert_eq(out.min_available_by_network, {})
-	assert_eq(out.no_train_failures, 0)
+	assert_nil(out.no_train_failures)
+	storage.diag = {}
+	assert_eq(stats.aggregate(60).no_train_failures, 0)
 end)
 
 test("aggregate: longer periods cover only the last 24 hours, stale ring slots excluded", function()
@@ -382,12 +398,12 @@ test("aggregate: recording that started exactly at the oldest bucket is not part
 	assert_true(stats.aggregate(10).partial)
 end)
 
-test("cycle_average: ignores a minute slot that starts after the current tick", function()
+test("aggregate: ignores a minute slot that starts after the current tick", function()
 	at(0)
 	stats.get()
 	at(3 * MIN + 10)
 	stats.get().minute[6] = { start_tick = 5 * MIN, deliveries = 1, dispatches = 0, items = {}, cycle_sum = 100, cycle_n = 1 }
-	assert_eq({ stats.cycle_average(10) }, { nil, 0 })
+	assert_nil(stats.aggregate(10).cycle_avg)
 end)
 
 -- aggregate caches the closed buckets' per-item amounts per period until the current bucket rolls over.

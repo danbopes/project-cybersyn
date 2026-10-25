@@ -1624,13 +1624,7 @@ function util.handle_link_click(player, player_data, e, kind, id)
 	end
 	if kind == "entity" then
 		local entity = lint.registry_entity(id)
-		if not entity and type(id) == "number" then
-			-- A Stations row's inventory marker: a combinator Cybersyn registered, which the lint registry does not
-			-- hold (game.get_entity_by_unit_number needs a prototype flag the combinator does not set).
-			local to_comb = storage.to_comb
-			entity = to_comb and to_comb[id] or nil
-		end
-		if not (entity and entity.valid) then
+		if not entity then
 			util.error_flying_text(player, { "cybersyn-message.error-station-is-invalid" })
 		elseif e.shift then
 			show_from_link(player, player_data, e, entity)

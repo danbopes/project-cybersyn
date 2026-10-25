@@ -100,17 +100,19 @@ local function purge_invalid_hashes(s)
 	end
 end
 
---- Recounts the available-train counters from the planner's own table, so a save from before them (or a change the
---- O(1) updates could not see) starts exact.
+--- Recounts the available-train counters from the planner's own table, so a save from before them starts exact. A
+--- counter that disagrees means a writer of storage.available_trains skipped stats.available_changed: logged as the
+--- bug it is.
 --- @param s Stats
 local function recount_available(s)
 	local counts = s.available_count
-	for name in pairs(counts) do counts[name] = 0 end
-	for name, ids in pairs(storage.available_trains or {}) do
-		local n = 0
-		for _ in pairs(ids) do n = n + 1 end
-		counts[name] = n
+	local trains = storage.available_trains or {}
+	for name, n in pairs(counts) do
+		local actual = trains[name] and table_size(trains[name]) or 0
+		if n ~= actual then log("Cybersyn: " .. name .. " counted " .. n .. " available trains, has " .. actual) end
+		counts[name] = actual
 	end
+	for name, ids in pairs(trains) do counts[name] = table_size(ids) end
 end
 
 function stats.init()
@@ -364,67 +366,6 @@ function stats.record_delivery_complete(train)
 	train.dispatch_tick = nil
 end
 
---- Sums the minute buckets of the last `minutes` minutes, the current partial minute included.
---- @param minutes int 1..60
---- @param want_items boolean? also sum delivered amounts per item
---- @return int deliveries
---- @return int dispatches
---- @return {[string]: int}? items
-function stats.window(minutes, want_items)
-	local s = get()
-	local tick = game.tick
-	local oldest = tick - tick % MINUTE - (minutes - 1) * MINUTE
-	local deliveries, dispatches = 0, 0
-	local items = want_items and {} or nil
-	for _, b in pairs(s.minute) do
-		if b.start_tick >= oldest and b.start_tick <= tick then
-			deliveries = deliveries + b.deliveries
-			dispatches = dispatches + b.dispatches
-			if items then
-				for hash, count in pairs(b.items) do
-					items[hash] = (items[hash] or 0) + count
-				end
-			end
-		end
-	end
-	return deliveries, dispatches, items
-end
-
---- Deliveries over the last 24 hourly buckets, the current partial hour included.
---- @return int
-function stats.day_deliveries()
-	local s = get()
-	local tick = game.tick
-	local oldest = tick - tick % HOUR - (HOUR_SLOTS - 1) * HOUR
-	local n = 0
-	for _, b in pairs(s.hour) do
-		if b.start_tick >= oldest and b.start_tick <= tick then
-			n = n + b.deliveries
-		end
-	end
-	return n
-end
-
---- Mean dispatch-to-unloaded time over the deliveries completed in the last `minutes` minute buckets,
---- the current partial minute included.
---- @param minutes int 1..60
---- @return number? seconds nil when no timed delivery completed in the window
---- @return int deliveries that were timed
-function stats.cycle_average(minutes)
-	local s = get()
-	local tick = game.tick
-	local oldest = tick - tick % MINUTE - (minutes - 1) * MINUTE
-	local sum, n = 0, 0
-	for _, b in pairs(s.minute) do
-		if b.cycle_n and b.start_tick >= oldest and b.start_tick <= tick then
-			sum = sum + b.cycle_sum
-			n = n + b.cycle_n
-		end
-	end
-	if n == 0 then return nil, 0 end
-	return sum / n, n
-end
-
 --- @class StatsWindow
 --- @field minutes int
 --- @field span_ticks uint time the buckets cover so far, for rates
@@ -441,7 +382,8 @@ end
 --- @field slowest StatsBucket[] buckets with a fulfilled request, as they are; read only
 --- @field slowest_minutes {[StatsBucket]: true} entries of `slowest` that are minute buckets in an hour-bucket period
 --- @field min_available_by_network {[string]: int} fewest available trains per network during the period
---- @field no_train_failures int requests that turned unserved for want of a train during the period
+--- @field no_train_failures int? requests that turned unserved for want of a train during the period; nil while
+---   diagnostics are off, since only diagnostics count them
 
 -- Merged per-item amounts of the closed buckets of a period, per period. Closed buckets never change (records go to
 -- the current bucket), so this is valid until the current bucket rolls over. A pure function of storage.stats and the
@@ -513,7 +455,7 @@ function stats.aggregate(minutes, summary)
 		wait_n = 0,
 		slowest = {},
 		slowest_minutes = {},
-		no_train_failures = 0,
+		no_train_failures = storage.diag and 0 or nil,
 	}
 	local items = out.items
 	-- The Overview reads the sums only: no per-item map and no slowest list for it (`summary`).
@@ -527,7 +469,7 @@ function stats.aggregate(minutes, summary)
 		if b.start_tick >= oldest and b.start_tick <= tick then
 			out.deliveries = out.deliveries + b.deliveries
 			out.dispatches = out.dispatches + b.dispatches
-			if b.no_train_failures then out.no_train_failures = out.no_train_failures + b.no_train_failures end
+			if b.no_train_failures and out.no_train_failures then out.no_train_failures = out.no_train_failures + b.no_train_failures end
 			local live = not summary and b.start_tick >= current
 			for hash, n in pairs(b.items) do
 				if live then items[hash] = (items[hash] or 0) + n end

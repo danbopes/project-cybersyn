@@ -276,78 +276,54 @@ DIAG_ACK_END_MANUAL = 4
 -- renumbered. The combinator and stop-name checks (derelict, ghost, no combinator, wrong side, double, name overlap)
 -- come from the setup registry the build handlers keep; the others from the chunked job over storage and the
 -- snapshot. LINT_MASK is "no network bit" (mask 0 on a network that has trains).
-LINT_CAPACITY = 1
-LINT_LAYOUT = 2
-LINT_MASK = 3
-LINT_NO_PROVIDER = 4
-LINT_LIMIT_ZERO = 5
-LINT_SAME_ITEM = 6
-LINT_OCCUPANCY = 7
-LINT_PHANTOM = 8
-LINT_DEPOT_LIMIT = 9
-LINT_DEPOT_SHARED_NAME = 10
-LINT_REFUELER_MASK = 11
-LINT_NEVER_REFUELLED = 12
-LINT_IN_GROUP = 13
-LINT_MISSING_STOP = 14
-LINT_CAPACITY_DRIFT = 15
-LINT_DERELICT_COMB = 16
-LINT_GHOST_COMB = 17
-LINT_NO_COMB = 18
-LINT_WRONG_SIDE = 19
-LINT_DOUBLE_COMB = 20
-LINT_PRIORITY = 21
-LINT_NAME_OVERLAP = 22
-LINT_TRAIN_MASK = 23
-LINT_NO_TRAIN = 24
-LINT_COUNT = 24
-LINT_NAMES = {
-	"capacity", "layout", "mask", "no_provider", "limit_zero", "same_item", "occupancy", "phantom", "depot_limit",
-	"depot_shared_name", "refueler_mask", "never_refuelled", "in_group", "missing_stop", "capacity_drift",
-	"derelict_comb", "ghost_comb", "no_comb", "wrong_side", "double_comb", "priority", "name_overlap", "train_mask",
-	"no_train",
+-- One row per check, in index order: name (LINT_<NAME> is its index; LINT_KEYS its locale suffix), DIAG_SEV_*
+-- (errors guarantee a request is never served), the reason code it predicts on a requester and, where it differs,
+-- on a provider (lint.predicts), and the [cybersyn-problems] messages of a registry check.
+LINT_CHECKS = {
+	{ "capacity", DIAG_SEV_ERROR, REASON_CAPACITY },
+	{ "layout", DIAG_SEV_ERROR, REASON_R_LAYOUT, REASON_P_LAYOUT },
+	{ "mask", DIAG_SEV_WARNING, REASON_MASK_MISMATCH },
+	{ "no_provider", DIAG_SEV_ERROR, REASON_NO_PROVIDER },
+	{ "limit_zero", DIAG_SEV_WARNING, REASON_R_DISABLED, REASON_P_AT_LIMIT },
+	{ "same_item", DIAG_SEV_WARNING, REASON_R_IS_PROVIDING, REASON_P_IS_REQUESTING },
+	{ "occupancy", DIAG_SEV_WARNING },
+	{ "phantom", DIAG_SEV_ERROR, REASON_R_AT_LIMIT, REASON_P_AT_LIMIT },
+	{ "depot_limit", DIAG_SEV_WARNING },
+	{ "depot_shared_name", DIAG_SEV_WARNING },
+	{ "refueler_mask", DIAG_SEV_WARNING },
+	{ "never_refuelled", DIAG_SEV_INFO },
+	{ "in_group", DIAG_SEV_WARNING },
+	{ "missing_stop", DIAG_SEV_WARNING },
+	{ "capacity_drift", DIAG_SEV_WARNING, REASON_CAPACITY },
+	{ "derelict_comb", DIAG_SEV_WARNING, registry = { "derelict-combinator" } },
+	{ "ghost_comb", DIAG_SEV_WARNING, registry = { "ghost-combinator" } },
+	{ "no_comb", DIAG_SEV_WARNING, registry = { "stop-no-combinator" } },
+	{ "wrong_side", DIAG_SEV_WARNING, registry = { "wrong-side-combinator" } },
+	{ "double_comb", DIAG_SEV_ERROR, registry = { "double-station", "double-station-control", "double-depot",
+		"double-refueler", "station-and-depot", "station-and-refueler", "depot-and-refueler" } },
+	{ "priority", DIAG_SEV_ERROR },
+	{ "name_overlap", DIAG_SEV_WARNING, registry = { "name-overlap-with-depot" } },
+	{ "train_mask", DIAG_SEV_ERROR, REASON_TRAIN_FILTERED },
+	{ "no_train", DIAG_SEV_ERROR, REASON_NO_TRAINS_ON_NETWORK },
 }
-LINT_BY_NAME = {}
---- Locale key suffix per check: [cybersyn-diag] lint-<key> (caption) and lint-fix-<key> (fix line).
-LINT_KEYS = {}
-LINT_BIT = {}
-for check, name in ipairs(LINT_NAMES) do
+LINT_COUNT = #LINT_CHECKS
+LINT_NAMES, LINT_BY_NAME, LINT_KEYS, LINT_BIT = {}, {}, {}, {}
+LINT_SEVERITY, LINT_PREDICTS, LINT_PREDICTS_P = {}, {}, {}
+--- Registry checks, and the check each registry message belongs to.
+LINT_REGISTRY_CHECKS, LINT_MESSAGE_CHECK = {}, {}
+for check, c in ipairs(LINT_CHECKS) do
+	local name = c[1]
+	_G["LINT_" .. string.upper(name)] = check
+	LINT_NAMES[check] = name
 	LINT_BY_NAME[name] = check
 	LINT_KEYS[check] = string.gsub(name, "_", "-")
 	LINT_BIT[check] = 2 ^ (check - 1)
+	LINT_SEVERITY[check], LINT_PREDICTS[check], LINT_PREDICTS_P[check] = c[2], c[3], c[4]
+	for _, m in ipairs(c.registry or {}) do
+		LINT_REGISTRY_CHECKS[check] = true
+		LINT_MESSAGE_CHECK[m] = check
+	end
 end
---- The reason code a check predicts on a requester; nil for checks about setups the dispatcher has no
---- reason for. LINT_PREDICTS_P holds the provider's where it differs (lint.predicts).
-LINT_PREDICTS = {
-	[LINT_CAPACITY] = REASON_CAPACITY,
-	[LINT_LAYOUT] = REASON_R_LAYOUT,
-	[LINT_MASK] = REASON_MASK_MISMATCH,
-	[LINT_TRAIN_MASK] = REASON_TRAIN_FILTERED,
-	[LINT_NO_TRAIN] = REASON_NO_TRAINS_ON_NETWORK,
-	[LINT_NO_PROVIDER] = REASON_NO_PROVIDER,
-	[LINT_LIMIT_ZERO] = REASON_R_DISABLED,
-	[LINT_SAME_ITEM] = REASON_R_IS_PROVIDING,
-	[LINT_PHANTOM] = REASON_R_AT_LIMIT,
-	[LINT_CAPACITY_DRIFT] = REASON_CAPACITY,
-}
-LINT_PREDICTS_P = {
-	[LINT_LAYOUT] = REASON_P_LAYOUT,
-	[LINT_LIMIT_ZERO] = REASON_P_AT_LIMIT,
-	[LINT_SAME_ITEM] = REASON_P_IS_REQUESTING,
-	[LINT_PHANTOM] = REASON_P_AT_LIMIT,
-}
---- DIAG_SEV_* per check: the ones that guarantee a request is never served are errors.
-LINT_SEVERITY = {}
-for check = 1, LINT_COUNT do LINT_SEVERITY[check] = DIAG_SEV_WARNING end
-LINT_SEVERITY[LINT_CAPACITY] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_LAYOUT] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_TRAIN_MASK] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_NO_TRAIN] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_NO_PROVIDER] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_PHANTOM] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_NEVER_REFUELLED] = DIAG_SEV_INFO
-LINT_SEVERITY[LINT_PRIORITY] = DIAG_SEV_ERROR
-LINT_SEVERITY[LINT_DOUBLE_COMB] = DIAG_SEV_ERROR
 LINT_SUBJECT_STATION = 1
 LINT_SUBJECT_DEPOT = 2
 LINT_SUBJECT_REFUELER = 3

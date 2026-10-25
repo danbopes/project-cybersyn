@@ -174,3 +174,23 @@ test("refresh_train_interrupts recomputes the flag from the live schedule", func
 	assert_true(storage.trains[4].in_interrupt, "an invalid train is left for its removal handler")
 	assert_false(storage.trains[5].in_interrupt, "no interrupt record")
 end)
+
+test("sanitize_economy_names carries renamed items and qualities into deliveries, stats and acks", function()
+	local ack = { tick = 5 }
+	storage = {
+		stations = { [7] = { deliveries = { coal = 5, ["iron-plate|rare"] = 3, stone = 1 } } },
+		trains = {},
+		stats = {
+			minute = { [1] = { items = { coal = 2, water = 4 } } },
+			hour = { [1] = { items = { ["iron-plate|rare"] = 6 } } },
+			trip_ema = { coal = { avg = 60, n = 2 } },
+		},
+		acks = { request = { [7] = { ["iron-plate|rare"] = ack, stone = { tick = 1 } } } },
+	}
+	sanitize_economy_names({ migrations = { item = { coal = "coke", stone = "" }, quality = { rare = "epic" } } })
+	assert_eq(storage.stations[7].deliveries, { coke = 5, ["iron-plate|epic"] = 3 })
+	assert_eq(storage.stats.minute[1].items, { coke = 2, water = 4 })
+	assert_eq(storage.stats.hour[1].items, { ["iron-plate|epic"] = 6 })
+	assert_eq(storage.stats.trip_ema, { coke = { avg = 60, n = 2 } })
+	assert_eq(storage.acks.request[7], { ["iron-plate|epic"] = ack })
+end)
