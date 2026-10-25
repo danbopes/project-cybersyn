@@ -287,6 +287,13 @@ function collector.changed_since(epoch, pos)
 	return log.ids, pos - log.base + 1, n
 end
 
+--- Stations the running pass refilled since the last completed pass, nil before the log exists.
+--- @return uint[]? ids
+function collector.changed_this_pass()
+	local log = storage.manager.collect_log
+	return log and log.ids
+end
+
 --- @return int epoch
 --- @return int pos
 function collector.log_position()

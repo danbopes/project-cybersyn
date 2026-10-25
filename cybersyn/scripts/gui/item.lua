@@ -876,8 +876,7 @@ local function get_cache(player_data, hash)
 	} or nil
 	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
 	-- does not (the Stations tab, filtered to the item, reads those records too).
-	local log = storage.manager.collect_log
-	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep, collector.inventories)
+	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, collector.changed_this_pass(), keep, collector.inventories)
 	m.empty_suffix = util.empty_filter_suffix(f)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
