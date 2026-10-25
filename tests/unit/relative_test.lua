@@ -185,6 +185,14 @@ local function seqs(rows)
 	return out
 end
 
+--- The reference result of the backward scans: the newest `n` events about one subject, newest first, from an
+--- unbounded diag.events.
+local function last_for(kind, id, n)
+	local rows, out = diag.events({ [kind] = id }, nil, n, math.huge), {}
+	for i = #rows, 1, -1 do out[#out + 1] = rows[i] end
+	return out
+end
+
 --- `n` events about `station` (basic and full rings alternating) among `filler` others each.
 local function fill(d, station, n, filler)
 	for _ = 1, n do
@@ -194,11 +202,11 @@ local function fill(d, station, n, filler)
 	end
 end
 
-test("last_for_step: equals last_for once done, with at most the budget examined per call", function()
+test("last_for_step: equals an unbounded scan once done, with at most the budget examined per call", function()
 	game.tick = 10
 	local d = setup("full")
 	fill(d, 7, 6, 500)
-	local want = seqs(diag.last_for("station", 7, 10))
+	local want = seqs(last_for("station", 7, 10))
 	assert_eq(#want, 10)
 	local c = diag.scan_cursor("station", 7, 10)
 	local calls = 0
@@ -222,7 +230,7 @@ test("last_for_step: rows written since the last call come first, without a resc
 	fill(d, 7, 1, 20)
 	diag.last_for_step(c)
 	assert_eq(c.examined, 22, "only the new rows")
-	assert_eq(seqs(c.rows), seqs(diag.last_for("station", 7, 10)))
+	assert_eq(seqs(c.rows), seqs(last_for("station", 7, 10)))
 end)
 
 test("last_for_step: fewer matches than n is done at the end of the log; a new state starts over", function()
@@ -252,7 +260,7 @@ test("last_for_step: more new rows than the budget start over from the newest", 
 	diag.last_for_step(c, 100)
 	assert_eq(c.rows[1].seq, d.seq)
 	repeat diag.last_for_step(c, 100) until c.done
-	assert_eq(seqs(c.rows), seqs(diag.last_for("station", 7, 10)))
+	assert_eq(seqs(c.rows), seqs(last_for("station", 7, 10)))
 end)
 
 -- ---------------------------------------------------------------- inventory rows

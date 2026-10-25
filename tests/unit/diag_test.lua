@@ -25,6 +25,14 @@ local function kinds(rows)
 	return out
 end
 
+--- The reference result of the backward scans: the newest `n` events about one subject, newest first, from an
+--- unbounded diag.events.
+local function last_for(kind, id, n)
+	local rows, out = diag.events({ [kind] = id }, nil, n, math.huge), {}
+	for i = #rows, 1, -1 do out[#out + 1] = rows[i] end
+	return out
+end
+
 --- Walk of the live entries by confirmed reason, to check the incremental counts against.
 local function tally(d)
 	local out = {}
@@ -439,8 +447,8 @@ test("rings: basic kinds and full kinds go to their own ring; full kinds only in
 	assert_eq(kinds(diag.events(nil, nil, 2)), { "served", "arrive_p" }, "nil from_seq = the newest, oldest first")
 	assert_eq(kinds(diag.events({ kind = DIAG_KIND_SERVED }, 0, 10)), { "served" })
 	assert_eq(kinds(diag.events({ station = 4 }, 0, 10)), { "dispatched", "served" })
-	assert_eq(kinds(diag.last_for("train", 2, 10)), { "arrive_p", "served", "dispatched" })
-	assert_eq(kinds(diag.last_for("delivery", 1, 1)), { "arrive_p" })
+	assert_eq(kinds(last_for("train", 2, 10)), { "arrive_p", "served", "dispatched" })
+	assert_eq(kinds(last_for("delivery", 1, 1)), { "arrive_p" })
 	local oldest, span = diag.horizon()
 	assert_eq({ oldest, span }, { 7, 0 })
 end)

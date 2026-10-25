@@ -452,32 +452,6 @@ function diag.events(filter, from_seq, limit, max_scan)
 	return out, (kb < rb.count or kf < rf.count) and reached or nil
 end
 
---- The last `n` events about one train, station or delivery, newest first (a backward scan of both rings).
---- @param kind "train"|"station"|"delivery"
---- @param id uint
---- @param n int
---- @return table[]
-function diag.last_for(kind, id, n)
-	local f = { [kind] = id }
-	local d = storage.diag
-	if not d then return {} end
-	local out = {}
-	local rb, rf = d.ring_basic, d.ring_full
-	local kb, kf = rb.count - 1, rf.count - 1
-	while #out < n and (kb >= 0 or kf >= 0) do
-		local ib = kb >= 0 and at(rb, kb) or nil
-		local iff = kf >= 0 and at(rf, kf) or nil
-		local r, i
-		if ib and (not iff or rb.seq[ib] > rf.seq[iff]) then
-			r, i, kb = rb, ib, kb - 1
-		else
-			r, i, kf = rf, iff, kf - 1
-		end
-		if matches(r, i, f) then out[#out + 1] = row(r, i) end
-	end
-	return out
-end
-
 -- Rows one diag.last_for_step call examines at most. A rare entity's last rows can sit 70,000 rows back in a full
 -- ring, which a panel refreshed every update cannot scan in one go. Measured on a 2,000-station base with both rings full: about
 -- 0.31 µs per row inside the real tick, so a 4,096-row call is about 1.3 ms; panels pass a smaller budget after their
@@ -538,7 +512,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 	return examined, oldest, false
 end
 
---- @class DiagScanCursor diag.last_for as a resumable scan; plain data, kept per panel in storage
+--- @class DiagScanCursor a resumable backward scan for one subject; plain data, kept per panel in storage
 --- @field kind "train"|"station"|"delivery"
 --- @field id uint
 --- @field n int
@@ -557,9 +531,9 @@ function diag.scan_cursor(kind, id, n)
 	return { kind = kind, id = id, n = n, rows = {}, top = 0, low = 1, done = false, loaded_tick = -1, examined = 0 }
 end
 
---- The last `n` events about one train, station or delivery, newest first, as diag.last_for returns them, but
---- examining at most `budget` rows (diag.SCAN_ROWS) per call: rows written since the previous call first, then the
---- backward scan continues where it stopped. The result is complete once `cursor.done` is true.
+--- The last `n` events about one train, station or delivery, newest first, examining at most `budget` rows
+--- (diag.SCAN_ROWS) per call: rows written since the previous call first, then the backward scan continues where it
+--- stopped. The result is complete once `cursor.done` is true.
 --- @param cursor DiagScanCursor
 --- @param budget int?
 --- @return table[] rows
