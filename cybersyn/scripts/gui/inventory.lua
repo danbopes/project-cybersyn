@@ -1,3 +1,7 @@
+-- Inventory: the provided, in-transit and requested grids, aggregated from the collector's snapshot. On a large base a
+-- completed pass reaches the grid over a few renders (the totals wait one render, then the buttons change a budget
+-- per render), so for those renders the grid mixes old and new counts.
+
 local gui = require("__flib__.gui")
 
 local util = require("scripts.gui.util")
