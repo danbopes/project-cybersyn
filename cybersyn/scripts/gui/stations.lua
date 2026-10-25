@@ -192,7 +192,6 @@ function stations_tab.create()
 			name = "manager_stations_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.stations" },
-			handler = stations_tab.handle.on_stations_tab_selected,
 		},
 		content = {
 			name = "manager_stations_content_frame",
@@ -2278,12 +2277,6 @@ function stations_tab.set_chip(player_data, chip)
 	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
 	player_data.stations_chip = chip
 	util.reset_page(player_data, TAB)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
-function stations_tab.handle.on_stations_tab_selected(player, player_data)
-	player_data.selected_tab = "stations_tab"
 end
 
 ---@param player LuaPlayer

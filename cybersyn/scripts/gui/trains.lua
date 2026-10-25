@@ -149,7 +149,6 @@ function trains_tab.create()
 			name = "manager_trains_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.trains" },
-			handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_tab_selected },
 		},
 		content = {
 			name = CONTENT,
@@ -2298,12 +2297,6 @@ function trains_tab.handle.on_group_toggle(player, player_data, refs, e)
 	expanded[name] = not expanded[name] or nil
 	player_data.expanded_depots = expanded
 	util.rerender(player, player_data)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
-function trains_tab.handle.on_trains_tab_selected(player, player_data)
-	player_data.selected_tab = TAB
 end
 
 ---@param player LuaPlayer

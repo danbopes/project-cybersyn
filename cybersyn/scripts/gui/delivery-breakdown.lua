@@ -297,7 +297,6 @@ function delivery_breakdown_tab.create()
 			type = "tab",
 			caption = { "cybersyn-gui.delivery-breakdown-tab" },
 			ref = { "delivery_breakdown", "tab" },
-			handler = delivery_breakdown_tab.handle.on_breakdown_tab_selected,
 		},
 		content = {
 			name = "manager_delivery_breakdown_content_frame",
@@ -856,12 +855,6 @@ end
 delivery_breakdown_tab.handle = {}
 
 delivery_breakdown_tab.wrapper = util.wrapper
-
----@param player LuaPlayer
----@param player_data PlayerData
-function delivery_breakdown_tab.handle.on_breakdown_tab_selected(player, player_data)
-	player_data.selected_tab = "delivery_breakdown_tab"
-end
 
 ---@param player LuaPlayer
 ---@param player_data PlayerData
