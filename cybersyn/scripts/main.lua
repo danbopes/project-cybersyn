@@ -878,11 +878,11 @@ local function on_surface_removed(event)
 			end
 		end
 	end
-	lint.on_surface_removed(event.surface_index)
 end
 
 local function on_object_destroyed(event)
 	Elevators.on_object_destroyed(event)
+	lint.on_object_destroyed(event)
 end
 
 local function on_paste(event)

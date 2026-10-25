@@ -1135,6 +1135,8 @@ local function set(entity, subject, owned, found, stop)
 		if not (found and next(found)) then return end
 		entry = { entity = entity, subject = subject, msgs = {} }
 		reg.entries[unit] = entry
+		-- Covers what no removal handler sees: a script's destroy without raise_destroy, a deleted surface.
+		script.register_on_object_destroyed(entity)
 	end
 	local msgs = entry.msgs
 	local dirty, gone = false, nil
@@ -1378,15 +1380,9 @@ function lint.on_depot_changed(stop)
 	if stop and stop.valid then eval_name(stop.backer_name, stop.force) end
 end
 
---- A surface is being deleted or cleared: its stops and combinators leave without events of their own.
---- @param surface_index uint
-function lint.on_surface_removed(surface_index)
-	local reg = storage.lint_registry
-	if not reg then return end
-	for unit, entry in pairs(reg.entries) do
-		local e = entry.entity
-		if not e.valid or e.surface_index == surface_index then drop(unit) end
-	end
+--- @param e EventData.on_object_destroyed
+function lint.on_object_destroyed(e)
+	if e.type == defines.target_type.entity then drop(e.useful_id) end
 end
 
 --- Ends the acknowledgements of registry checks the registry no longer has (after a seed).
@@ -1477,7 +1473,7 @@ function lint.registry_findings()
 	if not reg then return NO_LAYOUTS end
 	local list = reg.findings
 	if list then
-		-- A stop or combinator can leave without an event (a script's destroy without raise_destroy).
+		-- A removed entity's entry stays until on_object_destroyed, at the end of this tick or the next.
 		for _, f in ipairs(list) do
 			if not f.entity.valid then
 				list = nil
@@ -1486,18 +1482,9 @@ function lint.registry_findings()
 		end
 		if list then return list end
 	end
-	local units, gone = {}, nil
+	local units = {}
 	for unit, entry in pairs(reg.entries) do
-		if entry.entity.valid then
-			units[#units + 1] = unit
-		else
-			gone = gone or {}
-			gone[#gone + 1] = unit
-		end
-	end
-	-- drop ends the acknowledgements and moves the version, as the event paths do.
-	if gone then
-		for _, unit in ipairs(gone) do drop(unit) end
+		if entry.entity.valid then units[#units + 1] = unit end
 	end
 	table.sort(units)
 	list = {}
