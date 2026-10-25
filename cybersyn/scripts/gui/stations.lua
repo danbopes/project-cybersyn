@@ -177,7 +177,7 @@ local function header_cell(column, width, selected)
 		type = "flow",
 		direction = "horizontal",
 		style_mods = { width = width, horizontal_align = RIGHT[column] and "right" or "left", vertical_align = "center" },
-		templates.sort_checkbox(column, caption, tooltip, selected, stations_tab.handle.on_sort_checkbox_changed),
+		templates.sort_checkbox(TAB, column, caption, tooltip, selected, util.handle.sort_click),
 	}
 end
 
@@ -2277,19 +2277,6 @@ function stations_tab.set_chip(player_data, chip)
 	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
 	player_data.stations_chip = chip
 	util.reset_page(player_data, TAB)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
----@param refs table<string, LuaGuiElement>
----@param e EventData.on_gui_checked_state_changed
-function stations_tab.handle.on_sort_checkbox_changed(player, player_data, refs, e)
-	local element = e.element
-	if not element or not element.tags then return end
-	local column = element.tags.column
-	if not column then return end
-	util.set_sort(player_data, TAB, column)
-	util.rerender(player, player_data)
 end
 
 gui.add_handlers(stations_tab.handle, stations_tab.wrapper)

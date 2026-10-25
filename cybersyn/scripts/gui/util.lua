@@ -1122,6 +1122,15 @@ function util.handle.pager_click(player, player_data, refs, e)
 	util.rerender(player, player_data)
 end
 
+--- A templates.sort_checkbox header: sorts its tab by that column.
+--- @param e EventData.on_gui_checked_state_changed
+function util.handle.sort_click(player, player_data, refs, e)
+	local tags = e.element.tags
+	if not (tags.sort_tab and tags.column) then return end
+	util.set_sort(player_data, tags.sort_tab, tags.column)
+	util.rerender(player, player_data)
+end
+
 local rerender_fn
 
 --- Lets manager.lua provide the immediate re-render without a require cycle.

@@ -129,9 +129,8 @@ function trains_tab.create()
 		local locale = string.gsub(column, "_", "-")
 		local inner
 		if SORTABLE[column] then
-			inner = templates.sort_checkbox(column, { "cybersyn-gui.trains-col-" .. locale },
-				{ "cybersyn-gui.trains-sort-" .. locale }, column == DEFAULT_COLUMN,
-				trains_tab.handle.on_trains_sort_checkbox_changed)
+			inner = templates.sort_checkbox(TAB, column, { "cybersyn-gui.trains-col-" .. locale },
+				{ "cybersyn-gui.trains-sort-" .. locale }, column == DEFAULT_COLUMN, util.handle.sort_click)
 		else
 			inner = templates.column_label({ "cybersyn-gui.trains-col-" .. locale },
 				{ "cybersyn-gui.trains-col-" .. locale .. "-tooltip" })
@@ -2296,19 +2295,6 @@ function trains_tab.handle.on_group_toggle(player, player_data, refs, e)
 	local expanded = player_data.expanded_depots or {}
 	expanded[name] = not expanded[name] or nil
 	player_data.expanded_depots = expanded
-	util.rerender(player, player_data)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
----@param refs table<string, LuaGuiElement>
----@param e EventData.on_gui_checked_state_changed
-function trains_tab.handle.on_trains_sort_checkbox_changed(player, player_data, refs, e)
-	local element = e.element
-	if not element or not element.tags then return end
-	local column = element.tags.column
-	if not column then return end
-	util.set_sort(player_data, TAB, column)
 	util.rerender(player, player_data)
 end
 

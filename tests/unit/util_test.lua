@@ -1051,6 +1051,20 @@ test("pager_click: steps, shift steps of 10, clamps at 1, last and first", funct
 	assert_eq(calls, 7)
 end)
 
+test("sort_click: sorts the tagged tab by the tagged column, toggling on a repeat", function()
+	local u = util()
+	local calls = 0
+	u.set_rerender(function() calls = calls + 1 end)
+	local pd = {}
+	local function click(tags) u.handle.sort_click(nil, pd, nil, { element = { tags = tags } }) end
+	click({ sort_tab = "trains_tab", column = "name" })
+	assert_eq(pd.sort.trains_tab, { column = "name", ascending = true })
+	click({ sort_tab = "trains_tab", column = "name" })
+	assert_eq(pd.sort.trains_tab, { column = "name", ascending = false })
+	click({ column = "name" })
+	assert_eq(calls, 2)
+end)
+
 test("sync_sort_header: active column selected with the stored direction, others at their default", function()
 	local u = util()
 	local cell = H.element({ name = "cell" })
