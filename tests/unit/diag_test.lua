@@ -52,7 +52,6 @@ test("apply: off is nil, basic and full create the state, the full ring follows 
 	assert_false(d.full)
 	assert_eq(d.ring_basic.size, diag.BASIC_RING)
 	assert_eq(d.ring_full.size, 2048)
-	assert_eq(d.loaded_tick, 100)
 	local same = setup("full", 4096)
 	assert_same(same, d)
 	assert_true(d.full)

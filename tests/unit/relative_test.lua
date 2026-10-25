@@ -243,10 +243,16 @@ test("last_for_step: fewer matches than n is done at the end of the log; a new s
 	assert_eq(#c.rows, 2, "basic keeps only the limit rows")
 	setup("off")
 	assert_eq(diag.last_for_step(c), {})
-	game.tick = 20
 	d = setup("basic")
 	fill(d, 7, 1, 0)
 	assert_eq(#diag.last_for_step(c), 1)
+	-- Off and on again within one tick, the new state already past the old one's seq: still a new state.
+	diag.last_for_step(c)
+	setup("off")
+	d = setup("basic")
+	fill(d, 9, 3, 0)
+	fill(d, 7, 1, 0)
+	assert_eq(seqs(diag.last_for_step(c)), { d.seq })
 end)
 
 test("last_for_step: more new rows than the budget start over from the newest", function()

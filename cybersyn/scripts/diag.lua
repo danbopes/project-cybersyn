@@ -139,7 +139,6 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field item_served {[int]: uint} item index -> tick create_delivery last served a requester of it
 --- @field next_delivery uint
 --- @field id int which state this is (seqs restart in a new one)
---- @field loaded_tick uint when this state was created
 --- @field inherit_cycles int? planner cycle starts seen since creation, while the inherited window is open
 --- @field inherit_until uint? start of the second planner cycle after creation; see diag.inherit_threshold
 
@@ -207,7 +206,6 @@ local function new_state()
 		cycles = 0,
 		item_served = {},
 		next_delivery = 0,
-		loaded_tick = game.tick,
 		inherit_cycles = 0,
 	}
 end
@@ -520,7 +518,7 @@ end
 --- @field top uint every row with seq in (low, top] has been examined
 --- @field low uint
 --- @field done boolean rows holds the newest n matches of the whole log (or all of them)
---- @field loaded_tick uint the diagnostics state the cursor read (a new state starts over)
+--- @field state_id int? DiagState.id of the state the cursor read (a new state starts over)
 --- @field examined int rows examined by the last call
 
 --- @param kind "train"|"station"|"delivery"
@@ -528,7 +526,7 @@ end
 --- @param n int
 --- @return DiagScanCursor
 function diag.scan_cursor(kind, id, n)
-	return { kind = kind, id = id, n = n, rows = {}, top = 0, low = 1, done = false, loaded_tick = -1, examined = 0 }
+	return { kind = kind, id = id, n = n, rows = {}, top = 0, low = 1, done = false, examined = 0 }
 end
 
 --- The last `n` events about one train, station or delivery, newest first, examining at most `budget` rows
@@ -541,15 +539,15 @@ function diag.last_for_step(cursor, budget)
 	local d = storage.diag
 	cursor.examined = 0
 	if not d then
-		cursor.rows, cursor.done, cursor.loaded_tick = {}, true, -1
+		cursor.rows, cursor.done, cursor.state_id = {}, true, nil
 		return cursor.rows
 	end
-	if cursor.done and cursor.top == d.seq and cursor.loaded_tick == d.loaded_tick then return cursor.rows end
+	if cursor.done and cursor.top == d.seq and cursor.state_id == d.id then return cursor.rows end
 	budget = budget or diag.SCAN_ROWS
 	local n = cursor.n
 	local f = { [cursor.kind] = cursor.id }
-	if cursor.loaded_tick ~= d.loaded_tick or d.seq < cursor.top then
-		cursor.rows, cursor.top, cursor.low, cursor.done, cursor.loaded_tick = {}, d.seq, d.seq + 1, false, d.loaded_tick
+	if cursor.state_id ~= d.id then
+		cursor.rows, cursor.top, cursor.low, cursor.done, cursor.state_id = {}, d.seq, d.seq + 1, false, d.id
 	end
 	if d.seq > cursor.top then
 		if d.seq - cursor.top > budget then
