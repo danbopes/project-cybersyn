@@ -10,6 +10,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
 local diag = require("scripts.diag")
 local pm = require("scripts.gui.problems-model")
@@ -61,7 +62,7 @@ local MAX_ROWS = 200
 local FILL_ROWS = 16
 local HEADER = 20
 -- The scroll panes reserve their bar's width, so the rows' width does not change with their number.
-local SCROLLBAR = 12
+local SCROLLBAR = metrics.SCROLLBAR
 -- Signing a row costs about 8 µs on a 2,000-station base: between passes Requesters below the viewport are signed
 -- CHECK_ROWS per update in turn (23 rows in 4 updates, a 200-row table in about a pass and a half), and at most
 -- WINDOW_WRITES of them are rewritten.
@@ -90,11 +91,11 @@ local STATUS_COLOR, status_key = logic.STATUS_COLOR, logic.status_key
 -- column for its name.
 local TAG_W = 120
 local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train = 72, train_status = 150 }
-local FRAME_BORDER = 4
-local TABLE_PADDING = 4 + 10
-local TABLE_SPACING = 8
--- Slack kept from when Stations and Trains hosted the drill-down inside a deep frame: the columns keep their widths.
-local HOST_INSET = 8
+local FRAME_BORDER = metrics.FRAME_BORDER
+local TABLE_PADDING = metrics.TABLE_LEFT_PADDING + metrics.TABLE_RIGHT_PADDING
+local TABLE_SPACING = metrics.TABLE_SPACING
+-- Width the tables leave unused: the flexible columns are this much narrower than the sum allows.
+local SLACK = 8
 
 --- @class ItemColumn
 --- @field kind "station"|"train"|"value"|"text"|"chip"|"status"
@@ -142,7 +143,7 @@ local function flex_widths(content_width)
 	for t, cols in pairs(COLUMNS) do
 		local fixed = 0
 		for _, c in ipairs(cols) do fixed = fixed + (c.width or 0) end
-		out[t] = content_width - HOST_INSET - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
+		out[t] = content_width - SLACK - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
 	end
 	return out
 end

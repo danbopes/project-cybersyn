@@ -10,6 +10,7 @@ local format = require("__flib__.format")
 local util = require("scripts.gui.util")
 local collector = require("scripts.gui.collector")
 local sizing = require("scripts.gui.sizing")
+local metrics = require("scripts.gui.metrics")
 local logic = require("scripts.gui.tab-logic")
 local name_cell = require("scripts.gui.name-cell")
 local text = require("scripts.gui.unserved-text")
@@ -99,12 +100,12 @@ local PROBLEMS_DL_SLOTS = 2
 --- @param hide_wait boolean?
 --- @return table
 local function column_widths(cw, problems, hide_wait)
-	-- Row padding, frame borders and seven gaps of 8 between eight columns (one fewer with Wait hidden).
-	local avail = cw - 80
+	-- Row padding, 16 px of frame borders and seven gaps between eight columns (one fewer with Wait hidden).
+	local avail = cw - 2 * metrics.LIST_ROW_PADDING - 16 - 7 * metrics.LIST_SPACING
 	local wait = W.wait
 	if hide_wait then
 		wait = 0
-		avail = avail + 8
+		avail = avail + metrics.LIST_SPACING
 	end
 	local fixed = W.station_status + W.network + W.priority + W.dl_count + 4 + wait + W.last_delivery
 	local rest = avail - fixed
@@ -1845,7 +1846,8 @@ function stations_tab.chip_space(player_data, tab)
 		local e = refs[tab .. name]
 		return e and e.valid and e.visible
 	end
-	if shown("_search_field") then space = space - 208 end
+	-- The item chip and the collecting note size to localised text: their figures are English estimates.
+	if shown("_search_field") then space = space - metrics.SEARCH_FIELD_WIDTH - metrics.SUBHEADER_SPACING end
 	if shown("_chip_flow") then space = space - 260 end
 	if shown("_collecting") then space = space - 160 end
 	return space

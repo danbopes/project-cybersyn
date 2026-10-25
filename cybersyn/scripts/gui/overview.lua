@@ -7,6 +7,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
@@ -48,9 +49,9 @@ local W = { item = 32, why = 176, provider = 272, stock = 110, lost = 96, wait =
 local CHIP_W = 132
 local BASE_CONTENT_WIDTH = 1392
 local REQUESTER_MIN, PROVIDER_MIN = 160, 120
-local TABLE_PADDING = 4 + 10
-local TABLE_SPACING = 8
-local FRAME_BORDER = 4
+local TABLE_PADDING = metrics.TABLE_LEFT_PADDING + metrics.TABLE_RIGHT_PADDING
+local TABLE_SPACING = metrics.TABLE_SPACING
+local FRAME_BORDER = metrics.FRAME_BORDER
 -- The Why cell's "Setup" marker beside the reason chip.
 local MARKER_W = 40
 local ROW_H = 32
@@ -78,9 +79,9 @@ local UNSERVED_MINUTES = 5
 
 --- Stations failing's Misconfigured line jumps on its own: to the Stations tab's Problems chip.
 local LINK_LINES = { failing4 = true }
-local TILE_H = 108
--- The link line overlays the button's last line slot: an 18 px line and the body's 4 px bottom padding.
-local LINK_H = 22
+local TILE_H = metrics.TILE_HEIGHT
+-- The link line overlays the button's last line slot: one line and the body's bottom padding.
+local LINK_H = metrics.TILE_LINE_HEIGHT + metrics.TILE_PADDING
 
 local function line_def(tile, i)
 	local base = "overview_" .. tile.name .. "_line" .. i
@@ -147,7 +148,7 @@ local function tile_def(tile)
 	-- A button's ignored body cannot hold a clickable child, so the line that jumps on its own is a sibling laid over
 	-- the full-height button's last line slot by a negative margin (the later sibling draws on top and takes the
 	-- input). The wrapper draws nothing, so the tile's chrome and hover glow stay the button's own, like the others.
-	link.style_mods = { left_padding = 10, right_padding = 10, height = LINK_H - 4, top_margin = -LINK_H }
+	link.style_mods = { left_padding = 10, right_padding = 10, height = metrics.TILE_LINE_HEIGHT, top_margin = -LINK_H }
 	return {
 		type = "frame",
 		name = "overview_tile_" .. tile.name .. "_frame",

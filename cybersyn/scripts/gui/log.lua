@@ -14,6 +14,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
 local diag = require("scripts.diag")
 local model = require("scripts.gui.log-model")
@@ -41,7 +42,7 @@ local ROWS = "log_rows"
 local ROW_HEIGHT = 28
 local PAGE = model.PAGE
 -- The scroll pane always shows its vertical bar, so the rows' width does not change with their number.
-local SCROLLBAR = 12
+local SCROLLBAR = metrics.SCROLLBAR
 -- The pointer resting on the rows holds Follow this long without a new hover event (a lost leave event cannot hold it
 -- for ever).
 local HOLD_TICKS = 3600
@@ -62,26 +63,26 @@ local AGE_TICKS = 120
 -- A lint pass's own rows are indented under its row by this many px (the row's left padding; the message cell gives
 -- the room back, so the row keeps its width and its height).
 local CHILD_INDENT = 20
--- cybersyn_log_row's own left padding.
-local ROW_LEFT_PADDING = 4
+local ROW_LEFT_PADDING = metrics.LOG_ROW_LEFT_PADDING
 -- Logical px at the 1,392 px content width of a 1,440 px window; the message takes the rest.
 local W = { age = 60, dot = 16, kind = 20, train = 56, station = 300, item = 28, count = 44, print = 28 }
 local BASE_CONTENT_WIDTH = 1392
 local CELLS = 9
-local SPACING = 8
-local ROW_PADDING = 4 + 8
-local FRAME_BORDER = 4
+local SPACING = metrics.LOG_SPACING
+local ROW_PADDING = metrics.LOG_ROW_LEFT_PADDING + metrics.LOG_ROW_RIGHT_PADDING
+local FRAME_BORDER = metrics.FRAME_BORDER
 -- Ring rows examined per update by the rows, the Summary and the counts together, in that order (about 1 µs a row on a
 -- 2,030-station base with a full ring of 16,384 rows): what the rows leave goes to the Summary, then to the counts.
 local SCAN_BUDGET = 640
 -- The badge scans on every tab's render, so it gets a budget of its own.
 local BADGE_BUDGET = 1024
 -- Subheader controls on the right of a fixed width (logical px), and the spacing of the subheader flow; the item chip
--- takes what is left of the content width.
+-- takes what is left of the content width. 40 estimates the English "Train" caption, 28 is each icon button.
 local SEV_BUTTON_WIDTH = 84
 local FOLLOW_WIDTH = 84
-local SUBHEADER_FIXED = 3 * SEV_BUTTON_WIDTH + 190 + 40 + 72 + 140 + FOLLOW_WIDTH + 2 * 28 + 9 * 8
-local SUBHEADER_PADDING = 16
+local SUBHEADER_FIXED = 3 * SEV_BUTTON_WIDTH + metrics.LOG_KIND_DROPDOWN_WIDTH + 40 + metrics.LOG_TRAIN_FIELD_WIDTH
+	+ metrics.LOG_WINDOW_DROPDOWN_WIDTH + FOLLOW_WIDTH + 2 * 28 + 9 * metrics.SUBHEADER_SPACING
+local SUBHEADER_PADDING = 2 * metrics.SUBHEADER_PADDING
 local CHIP_MAX = 240
 local SEV_SPRITES = { "flib_indicator_red", "flib_indicator_orange", "flib_indicator_white" }
 local SUMMARY_SPRITE = "utility/list_view"
