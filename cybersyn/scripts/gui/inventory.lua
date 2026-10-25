@@ -515,19 +515,6 @@ local function key_fn(column, grid, bucket, has_wait, inv)
 	return "item_order", util.item_rank
 end
 
--- Equal keys fall back to crafting-menu order rather than the hash's alphabetical order; the fixed-width rank keeps
--- the string comparison numeric, and the hash suffix keeps it unique. Memoised like util.item_rank: a pure function
--- of the loaded prototypes, so a cold cache on a joining client cannot change the result.
-local tiebreak_cache = {}
-local function item_order_tiebreak(hash)
-	local key = tiebreak_cache[hash]
-	if not key then
-		key = string.format("%016.5f|%s", util.item_rank(hash), hash)
-		tiebreak_cache[hash] = key
-	end
-	return key
-end
-
 --- Display order, memoised in the cache because it only changes with the aggregate or the sort.
 --- @param cache table
 --- @param grid string
@@ -545,7 +532,8 @@ local function ordered_hashes(cache, grid, column, ascending)
 	end
 	local used, fn = key_fn(column, grid, bucket, cache.has_wait, cache.inv)
 	if used ~= column then ascending = true end
-	util.sort_by(list, fn, ascending, item_order_tiebreak)
+	-- Equal keys fall back to crafting-menu order, then the hash, so the order is total.
+	util.sort_by(list, fn, ascending, util.item_rank, function(h) return h end)
 	cache.order[order_key] = list
 	return list
 end
