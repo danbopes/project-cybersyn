@@ -37,7 +37,6 @@ local CHIPS = "manager_stations_status_flow"
 local CHIP_ROW = "manager_stations_chip_row"
 local CHIPS2 = "manager_stations_chip_flow2"
 local UNLIMITED = collector.UNLIMITED
-local ROW_HEIGHT = sizing.ROW_HEIGHT[TAB]
 local SLOT = 32
 -- Banner, subheader, column header and subfooter (styles cybersyn_tab_subheader, cybersyn_list_header,
 -- cybersyn_list_subfooter).
@@ -1737,7 +1736,6 @@ local function row_def(inv, m, color, item, w)
 	return util.hoverable({
 		type = "frame",
 		style = "cybersyn_station_row_" .. color,
-		style_mods = { height = ROW_HEIGHT },
 		direction = "horizontal",
 		tags = { station_id = inv and inv.st.id or nil, unit = inv and inv.unit or nil, registry = m.registry and m.key or nil },
 		name,
@@ -2103,9 +2101,7 @@ function stations_tab.build(map_data, player_data)
 			update = function(elem)
 				local cell = old_cells[key] or {}
 				if cell.color ~= color then
-					-- Assigning a style drops style_mods: the fixed height is written again.
 					elem.style = "cybersyn_station_row_" .. color
-					elem.style.height = ROW_HEIGHT
 					cell.color = color
 				end
 				update_row(elem, inv, m, cell, item, hold, minute, inv and slot_sigs(inv, item, minute) or NO_SLOTS, w)

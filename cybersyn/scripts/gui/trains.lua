@@ -1189,9 +1189,7 @@ local function update_row(row, view, m, color, w, budget)
 	if m.color ~= color then
 		local style = "cybersyn_train_row_" .. color
 		if row.style.name ~= style then
-			-- Assigning a style drops style_mods: the fixed height is written again.
 			row.style = style
-			row.style.height = ROW_HEIGHT
 		end
 		m.color = color
 	end
