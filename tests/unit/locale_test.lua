@@ -13,6 +13,35 @@ test("H.locale: en's text unless the locale has its own, keys from both", functi
 	assert_true(H.locale_text("de"):find("\ntrains-summary=" .. en["trains-summary"] .. "\n", 1, true) ~= nil)
 end)
 
+-- A key the code names and en lacks shows as "Unknown key" in game. Literals ending in "-" are prefixes the code
+-- completes.
+test("every cybersyn locale key literal under scripts exists in en", function()
+	local cfgs = { H.read_cfg("en/manager.cfg"), H.read_cfg("en/base.cfg") }
+	local function known(group, key)
+		for _, cfg in ipairs(cfgs) do
+			if cfg[group] and cfg[group][key] then return true end
+		end
+		return false
+	end
+	local files = assert(io.popen('find "' .. H.mod_root .. '/scripts" -name "*.lua"'))
+	local missing, n = {}, 0
+	for path in files:lines() do
+		local f = assert(io.open(path, "r"))
+		local code = f:read("*a")
+		f:close()
+		for group, key in code:gmatch('"(cybersyn%-[%a%-]+)%.([%w_%-]+)"') do
+			if key:sub(-1) ~= "-" then
+				n = n + 1
+				if not known(group, key) then missing[#missing + 1] = path .. " " .. group .. "." .. key end
+			end
+		end
+	end
+	files:close()
+	assert_true(n > 500, "found the keys")
+	table.sort(missing)
+	assert_eq(missing, {})
+end)
+
 -- A copy of an English value would keep showing the old English after en changes.
 test("no locale repeats an en value: a key it does not translate is left to the fallback", function()
 	local copies = {}

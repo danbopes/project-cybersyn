@@ -361,17 +361,8 @@ test("build without place filters: every row, totals from inventory_all", functi
 		in_transit = 40, in_transit_stations = 1 })
 end)
 
-test("locale: every key the drill-down uses, in every locale with the en fallback", function()
-	local function read(path)
-		local f = assert(io.open(H.mod_root .. "/" .. path, "r"))
-		local text = f:read("*a")
-		f:close()
-		return text
-	end
-	local src = read("scripts/gui/item.lua")
+test("locale: every key the drill-down builds from parts, in every locale with the en fallback", function()
 	local keys = {}
-	for k in src:gmatch('"cybersyn%-gui%.(item%-[%w%-]+)"') do keys[k] = true end
-	-- Keys built from parts.
 	for _, t in ipairs({ "providers", "requesters", "trains" }) do
 		keys["item-" .. t] = true
 		keys["item-empty-" .. t] = true
@@ -386,14 +377,6 @@ test("locale: every key the drill-down uses, in every locale with the en fallbac
 	end
 	for _, p in ipairs({ 10, 60, 1440 }) do keys["item-period-" .. p] = true end
 	for _, k in ipairs({ "item-provided", "item-in-transit", "item-requested", "item-click-hint" }) do keys[k] = true end
-	keys["item-"] = nil
-	keys["item-col-"] = nil
-	keys["item-empty-"] = nil
-	keys["item-group-"] = nil
-	keys["item-period-"] = nil
-	local n = 0
-	for _ in pairs(keys) do n = n + 1 end
-	assert_true(n > 40, "found the keys")
 	for _, loc in ipairs(H.LOCALES) do
 		local text = H.locale_text(loc)
 		for k in pairs(keys) do
