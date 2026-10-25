@@ -678,7 +678,7 @@ local function requester_entry(r, ctx, i)
 					inherited = inherited,
 					n = e.n,
 					surface_name = ctx.surface_name,
-				}, util.format_duration),
+				}),
 			}
 			if lost then
 				local tip = chip.tooltip

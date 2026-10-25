@@ -257,6 +257,21 @@ function logic.short_duration(ticks)
 	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
 end
 
+--- Full precision for tooltips: "1h 2m 3s", "2m 3s" or "3s". util re-exports it too.
+--- @param ticks number
+--- @return string
+function logic.format_duration(ticks)
+	local seconds = math.floor(math.max(ticks or 0, 0) / 60)
+	local minutes = math.floor(seconds / 60)
+	local hours = math.floor(minutes / 60)
+	if hours > 0 then
+		return string.format("%dh %dm %ds", hours, minutes % 60, seconds % 60)
+	elseif minutes > 0 then
+		return string.format("%dm %ds", minutes, seconds % 60)
+	end
+	return string.format("%ds", seconds)
+end
+
 --- @class StateChip
 --- @field key string the state name, "residue", "refuel" or "unknown"
 --- @field sprite string the state's icon (STATE_SPRITE)

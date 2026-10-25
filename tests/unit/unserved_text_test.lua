@@ -6,7 +6,6 @@ local function text()
 	return H.load("scripts.gui.unserved-text")
 end
 
-local function dur(ticks) return tostring(math.floor(ticks / 60)) .. "s" end
 
 test("chip_style: red, orange, grey by severity; unknown reads grey", function()
 	local t = text()
@@ -62,12 +61,12 @@ test("chip_tooltip: four lines, asked / why / fix / since, with the since-load w
 	local tip = t.chip_tooltip({
 		item = "[item=coal] Coal", requested = 400, requester = "Req", reason = REASON_NO_PROVIDER, a = 0, b = 0,
 		network = "A", wait = 7 * 3600 + 40 * 60, inherited = true, n = 41,
-	}, dur)
+	})
 	assert_eq(tip[2], { "cybersyn-gui.unserved-asked", "[item=coal] Coal", "400", "Req" })
 	assert_eq(tip[3], "\n")
 	assert_eq(tip[4], { "cybersyn-gui.unserved-why", { "cybersyn-diag.why-no-provider", "0", "0", "A", "0", "0", "0" } })
 	assert_eq(tip[6], { "cybersyn-gui.unserved-fix", { "cybersyn-diag.fix-no-provider", "A" } })
-	assert_eq(tip[8], { "cybersyn-gui.unserved-since-load", "460s", "41" })
+	assert_eq(tip[8], { "cybersyn-gui.unserved-since-load", "7m 40s", "41" })
 	assert_eq(#tip, 8)
 end)
 
@@ -76,7 +75,7 @@ test("chip_tooltip: no amount when the snapshot does not know it; read age appen
 	local tip = t.chip_tooltip({
 		item = "I", requester = "R", reason = REASON_P_RESERVED, a = 300, b = 400, wait = 120, inherited = false, n = 2,
 		read_age = 1300,
-	}, dur)
+	})
 	assert_eq(tip[2], { "cybersyn-gui.unserved-asked-no-amount", "I", "R" })
 	assert_eq(tip[4][2][1], "cybersyn-diag.why-p-reserved")
 	assert_eq(tip[8], { "", { "cybersyn-gui.unserved-since", "2s", "2" }, " · ", { "cybersyn-gui.read-ago", "20s" } })
@@ -84,8 +83,8 @@ end)
 
 test("read_ago and read_step: rounded down to 10 s so tooltips are not rebuilt every update", function()
 	local t = text()
-	assert_eq(t.read_ago(30, dur), { "cybersyn-gui.read-just-now" })
-	assert_eq(t.read_ago(1199, dur), { "cybersyn-gui.read-ago", "10s" })
+	assert_eq(t.read_ago(30), { "cybersyn-gui.read-just-now" })
+	assert_eq(t.read_ago(1199), { "cybersyn-gui.read-ago", "10s" })
 	assert_eq(t.read_step(599), 0)
 	assert_eq(t.read_step(600), 1)
 	assert_eq(t.read_step(nil), -1)

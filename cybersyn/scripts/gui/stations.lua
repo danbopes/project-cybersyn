@@ -1313,7 +1313,7 @@ local function row_model(row, ctx)
 		end
 		if read_age then
 			tip[#tip + 1] = "\n"
-			tip[#tip + 1] = text.read_ago(read_age, util.format_duration)
+			tip[#tip + 1] = text.read_ago(read_age)
 		end
 		tip[#tip + 1] = "\n"
 		tip[#tip + 1] = util.LINK_FOOTER

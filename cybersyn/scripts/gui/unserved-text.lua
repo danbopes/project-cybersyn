@@ -132,9 +132,8 @@ end
 
 --- The four lines of a reason chip: what is asked, why it is not served, what to do, and how long.
 --- @param args UnservedTipArgs
---- @param duration fun(ticks: number): string util.format_duration
 --- @return LocalisedString
-function text.chip_tooltip(args, duration)
+function text.chip_tooltip(args)
 	local asked
 	if args.requested then
 		asked = { "cybersyn-gui.unserved-asked", args.item, format.number(args.requested), args.requester }
@@ -142,9 +141,9 @@ function text.chip_tooltip(args, duration)
 		asked = { "cybersyn-gui.unserved-asked-no-amount", args.item, args.requester }
 	end
 	local since_key = args.inherited and "cybersyn-gui.unserved-since-load" or "cybersyn-gui.unserved-since"
-	local since = { since_key, duration(args.wait), tostring(args.n or 0) }
+	local since = { since_key, logic.format_duration(args.wait), tostring(args.n or 0) }
 	if args.read_age then
-		since = { "", since, " · ", text.read_ago(args.read_age, duration) }
+		since = { "", since, " · ", text.read_ago(args.read_age) }
 	end
 	return {
 		"", asked,
@@ -159,11 +158,10 @@ text.READ_STEP = 600
 
 --- "read 20s ago", rounded down to text.READ_STEP.
 --- @param ticks number
---- @param duration fun(ticks: number): string
 --- @return LocalisedString
-function text.read_ago(ticks, duration)
+function text.read_ago(ticks)
 	if ticks < text.READ_STEP then return { "cybersyn-gui.read-just-now" } end
-	return { "cybersyn-gui.read-ago", duration(ticks - ticks % text.READ_STEP) }
+	return { "cybersyn-gui.read-ago", logic.format_duration(ticks - ticks % text.READ_STEP) }
 end
 
 --- Rounded age for a sig, matching text.read_ago.

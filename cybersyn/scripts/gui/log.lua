@@ -247,7 +247,6 @@ end
 --- @type LogTextContext
 local TEXT_CTX = {
 	player = player_name,
-	duration = util.format_duration,
 	stock = text.stock_caption,
 	chip = text.chip_caption,
 }
@@ -576,7 +575,7 @@ local function write_cells(cells, g, m, now, key, expanded, child)
 	m.seq, m.n_, m.a_, m.b_, m.epoch, m.x_ = g.seq, g.n, g.a, g.b, name_epoch(key, now), expanded
 	local tsig = g.first_tick .. "|" .. g.tick .. "|" .. g.n
 	if m.t ~= tsig then
-		cells[1].tooltip = model.age_tooltip(g, util.format_duration)
+		cells[1].tooltip = model.age_tooltip(g)
 		m.t = tsig
 	end
 	if m.sev ~= g.sev then

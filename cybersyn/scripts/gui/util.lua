@@ -126,24 +126,10 @@ function util.signalid_from_hash(hash)
 	return util.signalid_from_name(name, quality)
 end
 
---- Formats a tick count as "1h 2m 3s", "2m 3s" or "3s".
---- @param ticks number
---- @return string
-function util.format_duration(ticks)
-	local seconds = math.floor(math.max(ticks or 0, 0) / 60)
-	local minutes = math.floor(seconds / 60)
-	local hours = math.floor(minutes / 60)
-	if hours > 0 then
-		return string.format("%dh %dm %ds", hours, minutes % 60, seconds % 60)
-	elseif minutes > 0 then
-		return string.format("%dm %ds", minutes, seconds % 60)
-	end
-	return string.format("%ds", seconds)
-end
-
 --- Two units at most ("42s", "3m 05s", "1h 05m", "2d 03h"), so one duration reads the same in every tab;
 --- util.format_duration has the full precision for tooltips.
 util.short_duration = logic.short_duration
+util.format_duration = logic.format_duration
 
 -- Pure functions of the loaded prototypes, so caching them per Lua state cannot desync.
 local rank_cache = {}

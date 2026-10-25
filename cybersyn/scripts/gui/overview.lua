@@ -1146,7 +1146,7 @@ local function row_entry(row, acked, ctx)
 			until_text ~= nil
 	end
 	local function tooltips(clocks_only)
-		local read = read_age and text.read_ago(read_age, util.format_duration) or nil
+		local read = read_age and text.read_ago(read_age) or nil
 		local chip = text.chip_tooltip({
 			item = item_tooltip,
 			requested = requested,
@@ -1161,7 +1161,7 @@ local function row_entry(row, acked, ctx)
 			n = e.n,
 			read_age = read_age,
 			surface_name = surface_name,
-		}, util.format_duration)
+		})
 		chip[#chip + 1] = "\n"
 		chip[#chip + 1] = { "cybersyn-gui.unserved-explain-hint" }
 		local r_tip = station_tooltip(requester, read)
