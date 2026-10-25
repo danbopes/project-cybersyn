@@ -337,6 +337,20 @@ local function on_train_arrives_refueler(map_data, refueler, train_id, train)
 end
 
 ---@param map_data MapData
+---@param train_id uint
+---@param train Train
+---@param old_status uint
+---@param status uint? STATUS_TO_D (the default) or STATUS_TO_D_BYPASS
+function send_train_to_depot(map_data, train_id, train, old_status, status)
+	train.status = status or STATUS_TO_D
+	if not train.use_any_depot then
+		-- train using same depot, coord. station was inserted -> we need to color
+		color_train_by_stop(train.entity, map_data.depots[train.depot_id].entity_stop)
+	end
+	interface_raise_train_status_changed(train_id, old_status, train.status)
+end
+
+---@param map_data MapData
 ---@param mod_settings CybersynModSettings
 ---@param train_id uint
 ---@param train Train
@@ -523,12 +537,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 			end
 		end
 		--the train has not qualified for depot bypass nor refueling
-		train.status = STATUS_TO_D
-		if not train.use_any_depot then
-			-- train using same depot, coord. station was inserted -> we need to color
-			color_train_by_stop(train.entity, map_data.depots[train.depot_id].entity_stop)
-		end
-		interface_raise_train_status_changed(train_id, STATUS_R, STATUS_TO_D)
+		send_train_to_depot(map_data, train_id, train, STATUS_R)
 	elseif train.status == STATUS_F then
 		local refueler = map_data.refuelers[train.refueler_id]
 		train.refueler_id = nil
@@ -543,11 +552,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		else
 			train.status = STATUS_TO_D
 		end
-		if not train.use_any_depot then
-			-- train using same depot, coord. station was inserted -> we need to color
-			color_train_by_stop(train.entity, map_data.depots[train.depot_id].entity_stop)
-		end
-		interface_raise_train_status_changed(train_id, STATUS_F, train.status)
+		send_train_to_depot(map_data, train_id, train, STATUS_F, train.status)
 	elseif train.status == STATUS_D then
 		--The train is leaving the depot without a manifest, the player likely intervened
 		remove_train(map_data, train_id, train)

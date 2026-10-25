@@ -79,8 +79,7 @@ function repair.fail_delivery(train_id)
 	local old_status = train.status
 	on_failed_delivery(storage, train_id, train, DIAG_FAIL_MANUAL)
 	set_depot_schedule(train.entity, depot_stop.backer_name)
-	train.status = STATUS_TO_D
-	interface_raise_train_status_changed(train_id, old_status, STATUS_TO_D)
+	send_train_to_depot(storage, train_id, train, old_status)
 	return true
 end
 
