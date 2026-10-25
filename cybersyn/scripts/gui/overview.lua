@@ -672,19 +672,7 @@ end
 
 -- ---------------------------------------------------------------- render: tiles
 
---- LocalisedString captions cannot be compared with the element's, so the last plain-string signature written is
---- kept per player and element.
---- @param cache table
---- @param elem LuaGuiElement?
---- @param sig string
---- @param caption LocalisedString
-local function set_caption(cache, elem, sig, caption)
-	if not (elem and elem.valid) then return end
-	local key = elem.name
-	if cache[key] == sig then return end
-	cache[key] = sig
-	elem.caption = caption
-end
+local set_caption = util.set_if_changed
 
 --- Whether set_tooltip would write `sig` (so the tooltip is built only then).
 --- @param cache table

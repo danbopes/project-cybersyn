@@ -263,6 +263,23 @@ function util.sort_by(rows, key_fn, ascending, tiebreak_fn, tiebreak2_fn)
 	return rows
 end
 
+--- Writes caption (and tooltip, when given) only when `sig` changed since the last write. LocalisedString captions
+--- cannot be compared with the element's, so the last plain-string signature is kept in `cache`, keyed by the
+--- element's name: two elements of one name must not share a cache, or one of them stops updating.
+--- @param cache table
+--- @param elem LuaGuiElement?
+--- @param sig string
+--- @param caption LocalisedString
+--- @param tooltip LocalisedString?
+function util.set_if_changed(cache, elem, sig, caption, tooltip)
+	if not (elem and elem.valid) then return end
+	local key = elem.name
+	if cache[key] == sig then return end
+	cache[key] = sig
+	elem.caption = caption
+	if tooltip ~= nil then elem.tooltip = tooltip end
+end
+
 --- Per-player render state for a container, created on demand.
 --- @param player_data PlayerData
 --- @param name string

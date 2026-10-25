@@ -222,16 +222,6 @@ local function caps(player_data)
 	return c
 end
 
---- Writes caption (and tooltip) only when `sig` changed since the last write to that element.
-local function set_caption(player_data, elem, sig, caption, tooltip)
-	if not (elem and elem.valid) then return end
-	local c = caps(player_data)
-	local name = elem.name
-	if c[name] == sig then return end
-	c[name] = sig
-	elem.caption = caption
-	if tooltip ~= nil then elem.tooltip = tooltip end
-end
 
 -- ---------------------------------------------------------------- names
 
@@ -1128,7 +1118,7 @@ function log_tab.refresh_export_note(player_data)
 	end
 	local shown = sig ~= ""
 	if note.visible ~= shown then note.visible = shown end
-	if shown then set_caption(player_data, note, sig, caption, tooltip) end
+	if shown then util.set_if_changed(caps(player_data), note, sig, caption, tooltip) end
 end
 
 --- @param player_data PlayerData
@@ -1364,11 +1354,11 @@ function log_tab.build(map_data, player_data)
 
 	local show_empty = empty_caption ~= nil
 	if empty_flow.visible ~= show_empty then empty_flow.visible = show_empty end
-	if show_empty then set_caption(player_data, refs.log_empty, empty_sig, empty_caption) end
-	set_caption(player_data, refs.log_status, status_sig, status)
+	if show_empty then util.set_if_changed(caps(player_data), refs.log_empty, empty_sig, empty_caption) end
+	util.set_if_changed(caps(player_data), refs.log_status, status_sig, status)
 
 	local header, header_sig = header_line(d)
-	set_caption(player_data, refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
+	util.set_if_changed(caps(player_data), refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
 	log_tab.refresh_export_note(player_data)
 	if seen then log_tab.mark_seen(player_data, seen) end
 end

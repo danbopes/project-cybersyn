@@ -22,6 +22,18 @@ test("valid_sprite: the path when drawable, else the fallback, and each path ask
 	assert_eq(calls, 1)
 end)
 
+test("set_if_changed: writes caption and tooltip only when the sig changes", function()
+	local u = util()
+	local cache, elem = {}, H.element({ name = "label" })
+	u.set_if_changed(cache, elem, "a", { "x" }, { "tip" })
+	assert_eq({ elem.caption, elem.tooltip, cache.label }, { { "x" }, { "tip" }, "a" })
+	elem.caption, elem.tooltip = "changed", "changed"
+	u.set_if_changed(cache, elem, "a", { "y" }, { "tip2" })
+	assert_eq({ elem.caption, elem.tooltip }, { "changed", "changed" })
+	u.set_if_changed(cache, elem, "b", { "y" })
+	assert_eq({ elem.caption, elem.tooltip }, { { "y" }, "changed" })
+end)
+
 -- ------------------------------------------------------------------ durations
 
 test("format_duration: below a second, nil and negative read 0s", function()
