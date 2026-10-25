@@ -677,9 +677,7 @@ local function read_fuel(train_entity)
 				local best
 				local burning = burner.currently_burning
 				if burning then
-					local name = burning.name
-					if type(name) ~= "string" then name = name and name.name end
-					best = name and fuel_of(name)
+					best = fuel_of(burning.name.name)
 				end
 				local inv = burner.inventory
 				for _, item in pairs(inv.get_contents()) do
