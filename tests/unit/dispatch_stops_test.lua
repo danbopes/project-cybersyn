@@ -196,3 +196,13 @@ test("tick_init: a station built while warm-ups finish keeps its own warm-up", f
 	end)
 	assert_eq({ map_data.active_station_ids, st.is_warming_up, map_data.warmup_station_cycles }, { { 100 }, nil, { [500] = 0 } })
 end)
+
+test("a network's last stale available train takes its table with it", function()
+	H.fresh()
+	local req = station(100, { list = { NET, sig("iron-plate", -3000) } }, nil, { is_p = false })
+	local prov = station(300, { list = { NET, sig("iron-plate", 9000) } }, nil, { is_r = false })
+	local map_data = world({ req, prov })
+	map_data.available_trains["signal-A"] = { [99] = true }
+	with_globals(ANY_ROUTE, function() pass(map_data) end)
+	assert_nil(map_data.available_trains["signal-A"])
+end)
