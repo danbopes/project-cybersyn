@@ -924,7 +924,17 @@ local function grab_all_settings()
 end
 local function register_tick()
 	script.on_nth_tick(nil)
-	-- One handler per nth: a second on_nth_tick for the same nth replaces the first.
+	-- One handler per nth: a second on_nth_tick for the same nth replaces the first, so cadences that land on one nth
+	-- share a handler and run in the order added. The cadences:
+	--   planner          ceil(60 / tps)          setting, absent at 0
+	--   analytics        analytics.SAMPLE_TICKS  6
+	--   manager update   ceil(60 / manager_ups)  setting, absent at 0
+	--   repair job       REPAIR_JOB_NTH          10
+	--   HUD line         HUD_TICKS               301
+	--   manager boost    1                       every tick, added last
+	-- The two settings can make the planner and the manager update land on the nth of each other, of analytics (at 10
+	-- per second), of the repair job (at 6) or of the boost (at 60). Different nths get separate handlers, whose order
+	-- on a tick they share the engine decides.
 	local by_nth, order = {}, {}
 	local function add(nth, fn)
 		local list = by_nth[nth]
