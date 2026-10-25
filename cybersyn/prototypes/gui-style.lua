@@ -375,16 +375,18 @@ styles.cybersyn_filter_row = {
 	},
 }
 
--- The red of the negative subheader, without its negative margin.
+-- The red of the negative subheader, without its negative margin; laid out as cybersyn_tab_subheader.
 styles.cybersyn_banner_frame = {
 	type = "frame_style",
-	parent = "cybersyn_tab_subheader",
-	graphical_set = {
-		base = {
-			center = { position = { 411, 25 }, size = { 1, 1 } },
-			bottom = { position = { 411, 26 }, size = { 1, 8 } },
-		},
-		shadow = bottom_shadow,
+	parent = "negative_subheader_frame",
+	bottom_margin = 0,
+	height = 36,
+	left_padding = 8,
+	right_padding = 8,
+	horizontal_flow_style = {
+		type = "horizontal_flow_style",
+		horizontal_spacing = 8,
+		vertical_align = "center",
 	},
 }
 
@@ -412,6 +414,8 @@ styles.cybersyn_item_chip_icon = {
 	size = 28,
 }
 
+-- The chips copy vanilla `button`'s atlas positions: a tint needs a graphical_set of its own, which replaces the
+-- parent's whole set.
 styles.cybersyn_item_chip = {
 	type = "button_style",
 	parent = "button",
@@ -645,6 +649,7 @@ styles.cybersyn_unserved_count_button = {
 	font = "default-bold",
 }
 
+-- The row tint copies vanilla `removed_content_table`'s: parenting it would bring that table's column widths.
 styles.cybersyn_unserved_table = {
 	type = "table_style",
 	parent = "table",
