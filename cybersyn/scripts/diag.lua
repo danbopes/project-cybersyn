@@ -23,8 +23,9 @@ local FLAP_WINDOW = 36000
 -- wait_signal flaps against on_the_path in normal traffic; only a wait this long is worth a log row.
 local WAIT_SIGNAL_MIN = 600
 -- The dispatcher re-sends its merged no-train alerts every planner cycle, its other requester alerts on every failing
--- evaluation and the stuck-train alert on every visit; the log keeps one row per entity and alert until the alert
--- changes or this long has passed.
+-- evaluation and the stuck-train alert on every visit. The log keeps one row per entity and alert per this long, so a
+-- row says the alert was being sent from then on, not that it had just appeared: one that clears and comes back
+-- within the window writes no new row.
 local ALERT_REPEAT = 36000
 -- The unserved sweep runs on every SWEEP_EVERY-th planner cycle: an entry then lives up to that many cycles longer,
 -- and the walk over every entry (about 60 µs per cycle on a 2,030-station base) costs that much less per tick.
