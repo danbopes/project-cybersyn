@@ -27,14 +27,21 @@ function text.chip_caption(reason)
 	return { "cybersyn-diag.chip-" .. key }
 end
 
---- Counts in the Overview tiles: exact below 10,000, then "12.3k", so a number is never cut to "…";
---- the tile's tooltip carries the exact figure.
+local COUNT_SUFFIXES = { { 1e9, "G" }, { 1e6, "M" }, { 1e3, "k" } }
+
+--- Counts in the Overview tiles: exact below 10,000, then "12.3k" (one decimal, rounded down, none when it is 0), so
+--- a number is never cut to "…"; the tile's tooltip carries the exact figure.
 --- @param n number?
 --- @return string
 function text.count(n)
 	if n == nil then return text.NO_VALUE end
 	if math.abs(n) < 10000 then return format.number(n) end
-	return (string.gsub(format.number(n, true), " ", ""))
+	for _, s in ipairs(COUNT_SUFFIXES) do
+		if math.abs(n) >= s[1] then
+			local v = math.floor(n / s[1] * 10) / 10
+			return string.format(v % 1 == 0 and "%d%s" or "%.1f%s", v, s[2])
+		end
+	end
 end
 
 --- "1.2k / 2.0k" for stock against what is needed; train counts for the train-side reasons.
