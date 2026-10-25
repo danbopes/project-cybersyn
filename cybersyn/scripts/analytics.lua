@@ -73,15 +73,6 @@ analytics.BREAKDOWN_RANGES = {
 	{ key = "50h", ticks = 10800000 },
 }
 
---- Ticks a range key names ("10m" = 36,000), nil for anything else.
---- @param key string
---- @return uint?
-function analytics.range_ticks(key)
-	local n, unit = string.match(key, "^(%d+)([mh])$")
-	if not n then return nil end
-	return tonumber(n) * (unit == "m" and 3600 or 216000)
-end
-
 local SURFACE_NAME = "cybersyn_analytics"
 
 ---@return table[] intervals the Utilization chart's interval set, empty

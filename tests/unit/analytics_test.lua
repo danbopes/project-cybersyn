@@ -4,14 +4,21 @@ local H = require("harness")
 local analytics = loadfile("cybersyn/scripts/analytics.lua")()
 local utilization = require("scripts.gui.utilization")
 
+--- Ticks a range key names ("10m" = 36,000), nil for anything else.
+local function range_ticks(key)
+	local n, unit = string.match(key, "^(%d+)([mh])$")
+	if not n then return nil end
+	return tonumber(n) * (unit == "m" and 3600 or 216000)
+end
+
 test("breakdown ranges: every button covers exactly the span its caption names", function()
 	local keys = {}
 	for i, r in ipairs(analytics.BREAKDOWN_RANGES) do
 		keys[i] = r.key
-		assert_eq(r.ticks, analytics.range_ticks(r.key), r.key)
+		assert_eq(r.ticks, range_ticks(r.key), r.key)
 	end
 	assert_eq(keys, { "1m", "10m", "1h", "10h", "50h" })
-	assert_eq({ analytics.range_ticks("1m"), analytics.range_ticks("10h"), analytics.range_ticks("5s") }, { 3600, 2160000, nil })
+	assert_eq({ range_ticks("1m"), range_ticks("10h"), range_ticks("5s") }, { 3600, 2160000, nil })
 end)
 
 test("breakdown ranges: each range has its caption and tooltip in every locale", function()
@@ -72,7 +79,7 @@ test("utilization: a range button per interval, each interval spanning exactly t
 	assert_eq(analytics.SAMPLE_TICKS, defs[1].ticks)
 	for i, def in ipairs(defs) do
 		assert_eq(def.name, utilization.INTERVAL_NAMES[i])
-		assert_eq(def.ticks * def.length, analytics.range_ticks(def.name), def.name)
+		assert_eq(def.ticks * def.length, range_ticks(def.name), def.name)
 		-- Each cascade step of one interval is exactly one sample of the next.
 		if defs[i + 1] then assert_eq(def.ticks * def.steps, defs[i + 1].ticks, def.name) else assert_eq(def.steps, nil) end
 	end
