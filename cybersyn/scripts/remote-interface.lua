@@ -1,4 +1,5 @@
 --By Mami
+local manager_gui = require("gui.main")
 local raise_event = script.raise_event
 local script_generate_event_name = script.generate_event_name
 
@@ -7,6 +8,8 @@ local script_generate_event_name = script.generate_event_name
 ------------------------------------------------------------------
 --NOTE: events only start to be raised when a mod has called its associated "get" function
 --NOTE: if there is a useful event missing you may submit a request for it to be added on the mod portal.
+--NOTE: rotating a combinator so it reaches another stop rebuilds it, so the station, depot or refueler at the old
+--stop raises its removed event and the one at the new stop its created event.
 
 local on_combinator_changed = nil
 local on_station_created = nil
@@ -386,7 +389,7 @@ end
 ---@param player_index uint
 ---@return boolean open after the call
 function interface.toggle_gui(player_index)
-	if cybersyn_manager_toggle then cybersyn_manager_toggle(player_index) end
+	manager_gui.toggle(player_index)
 	return interface.is_gui_open(player_index)
 end
 
@@ -401,7 +404,7 @@ remote.add_interface("cybersyn", interface)
 local query_diag = require("scripts.diag")
 local query_stats = require("scripts.stats")
 local query_lint = require("scripts.lint")
-local query_extras = require("scripts.gui.extras")
+local query_hud = require("scripts.gui.extras-logic")
 
 local QUERY_STATUS = {
 	[STATUS_D] = "depot", [STATUS_TO_P] = "to_provider", [STATUS_P] = "at_provider", [STATUS_TO_R] = "to_requester",
@@ -419,9 +422,7 @@ end
 local function query_network(name, mask)
 	if name == NETWORK_EACH then
 		local out = {}
-		if type(mask) == "table" then
-			for n, m in pairs(mask) do out[n] = m end
-		end
+		each_network(name, mask, function(n, m) out[n] = m end)
 		return { each = true, masks = out }
 	end
 	return { name = name, mask = type(mask) == "number" and mask or nil }
@@ -478,14 +479,15 @@ end
 function query.query_counts()
 	local d = storage.diag
 	local by_reason, total = {}, 0
-	for code, n in pairs(query_diag.counts_by_reason()) do
+	local counts = query_diag.counts_by_reason()
+	for code, n in pairs(counts) do
 		by_reason[REASON_NAMES[code] or tostring(code)] = n
 		total = total + n
 	end
 	local s = query_stats.get()
 	local available = {}
-	for name, n in pairs(s and s.available_count or {}) do available[name] = n end
-	local _, _, v = query_extras.hud_text(false)
+	for name, n in pairs(s.available_count) do available[name] = n end
+	local v = query_hud.hud_values(counts, s.available_count, s.trains_by_network)
 	return {
 		diagnostics = d and d.mode or "off",
 		unserved = total,

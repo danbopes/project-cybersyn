@@ -370,24 +370,31 @@ test("station_removed: entries, counters and acknowledgements of the station go"
 	assert_nil(storage.acks.request[4])
 end)
 
-test("fleet_size: every Cybersyn train per network, each-network masks too, once per cycle", function()
+test("fleet_size: every Cybersyn train per network, each-network masks too, exact under add, change and remove", function()
 	at(0)
-	local d = setup()
-	storage.trains = {
-		{ network_name = "signal-A" },
-		{ network_name = "signal-A" },
-		{ network_name = NETWORK_EACH, network_mask = { ["signal-A"] = 1, ["signal-B"] = 2 } },
-		{ network_name = nil },
-	}
-	diag.cycle()
-	assert_eq(diag.fleet_size(d, "signal-A"), 3)
-	assert_eq(diag.fleet_size(d, "signal-B"), 1)
-	assert_eq(diag.fleet_size(d, "signal-C"), 0)
-	storage.trains[5] = { network_name = "signal-B" }
-	assert_eq(diag.fleet_size(d, "signal-B"), 1, "cached for the cycle")
-	at(40)
-	diag.cycle()
-	assert_eq(diag.fleet_size(d, "signal-B"), 2)
+	setup()
+	local a = { network_name = "signal-A" }
+	local each = { network_name = NETWORK_EACH, network_mask = { ["signal-A"] = 1, ["signal-B"] = 2 } }
+	storage.trains = { a, { network_name = "signal-A" }, each, { network_name = nil } }
+	stats.init()
+	assert_eq(diag.fleet_size("signal-A"), 3)
+	assert_eq(diag.fleet_size("signal-B"), 1)
+	assert_eq(diag.fleet_size("signal-C"), 0)
+	local b = { network_name = "signal-B" }
+	storage.trains[5] = b
+	stats.train_networks_changed(b, 1)
+	assert_eq(diag.fleet_size("signal-B"), 2)
+	stats.train_networks_changed(a, -1)
+	a.network_name = "signal-C"
+	stats.train_networks_changed(a, 1)
+	stats.train_networks_changed(each, -1)
+	storage.trains[3] = nil
+	assert_eq(stats.get().trains_by_network, { ["signal-A"] = 1, ["signal-B"] = 1, ["signal-C"] = 1 })
+	stats.train_networks_changed(b, -1)
+	storage.trains[5] = nil
+	assert_nil(stats.get().trains_by_network["signal-B"], "a network without trains has no key")
+	stats.init()
+	assert_eq(stats.get().trains_by_network, { ["signal-A"] = 1, ["signal-C"] = 1 }, "the recount agrees")
 end)
 
 test("unserved_summary and unserved_rows: worst reason, oldest wait, top-k by wait", function()

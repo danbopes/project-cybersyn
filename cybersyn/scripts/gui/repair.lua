@@ -115,7 +115,7 @@ function repair.start_allow_job(player)
 	storage.manager.repair_job = { ids = ids, i = 0, player_index = player and player.index or 0, refreshed = 0 }
 end
 
---- One chunk of the Refresh allow-lists job (manager tick, or its own nth handler while manager updates are off).
+--- One chunk of the Refresh allow-lists job (manager_gui.repair_tick).
 function repair.job_tick()
 	local m = storage.manager
 	local job = m and m.repair_job
@@ -305,16 +305,9 @@ end
 
 -- ---------------------------------------------------------------- tick, wiring
 
---- Manager tick: armed buttons expire (the panels re-render on the same tick), and the allow-list job advances.
---- @param manager_data Manager
-function repair.tick(manager_data)
-	repair.expire(manager_data)
-	repair.job_tick()
-end
-
---- Redraws expired confirm buttons, and drops their state once the click grace (logic.CONFIRM_GRACE) is over too. Also
---- called on the fixed export tick, so a "Confirm?" goes back within a few ticks of its expiry whatever the manager's
---- update rate (with updates at 0 too); free while no player has a button armed.
+--- Redraws expired confirm buttons, and drops their state once the click grace (logic.CONFIRM_GRACE) is over too. On a
+--- fixed nth (manager_gui.repair_tick), so a "Confirm?" goes back within a few ticks of its expiry whatever the
+--- manager's update rate; free while no player has a button armed.
 --- @param manager_data Manager
 function repair.expire(manager_data)
 	if not manager_data.confirm_any then return end

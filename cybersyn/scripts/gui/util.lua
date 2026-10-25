@@ -7,6 +7,7 @@ local lint = require("scripts.lint")
 local diag = require("scripts.diag")
 local logic = require("scripts.gui.tab-logic")
 local pm = require("scripts.gui.problems-model")
+local rich_text = require("scripts.gui.rich-text")
 
 local util = {}
 
@@ -24,7 +25,7 @@ end
 --- @return LocalisedString
 function util.network_caption(network_name)
 	if network_name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
-	return network_icon(network_name)
+	return rich_text.network_icon(network_name)
 end
 
 --- @param index uint
@@ -58,18 +59,6 @@ function util.generate_item_references(item)
 		item_name = proto and proto.localised_name or item
 	end
 	return sprite, image_path, item_name
-end
-
---- Turns SignalID into a valid rich-text definition of the signal icon.
---- @param signal SignalID
---- @return string
-function util.rich_text_from_signal(signal)
-	local quality = signal.quality or ""
-	local type = signal.type or "item" -- if type is nil, it is item
-	if type == "virtual" then
-		type = "virtual-signal" -- rich text needs 'virtual-signal'
-	end
-	return "[" .. type .. "=" .. signal.name .. ",quality=" .. quality .. "]"
 end
 
 --- Returns a prototype based on an item name.
@@ -216,7 +205,7 @@ function util.item_sprite_and_tooltip(hash)
 			cached = {
 				sprite = sprite,
 				quality = quality,
-				tooltip = { "", util.rich_text_from_signal(signal), " ", proto and proto.localised_name or name },
+				tooltip = { "", rich_text.signal(signal), " ", proto and proto.localised_name or name },
 				signal = signal,
 			}
 		else

@@ -623,10 +623,8 @@ test("signalid_from_name / signalid_from_hash: type by prototype group", functio
 	assert_eq(u.signalid_from_hash("crude-oil"), { type = "fluid", name = "crude-oil" })
 end)
 
-test("rich_text_from_signal and item_sprite_and_tooltip", function()
+test("item_sprite_and_tooltip", function()
 	local u = util()
-	assert_eq(u.rich_text_from_signal({ name = "iron-plate" }), "[item=iron-plate,quality=]")
-	assert_eq(u.rich_text_from_signal({ type = "virtual", name = "signal-A", quality = "rare" }), "[virtual-signal=signal-A,quality=rare]")
 	local sprite, quality, tooltip, signal = u.item_sprite_and_tooltip("iron-plate|rare")
 	assert_eq(sprite, "item/iron-plate")
 	assert_eq(quality, "rare")

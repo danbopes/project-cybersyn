@@ -1,5 +1,6 @@
 --By Mami
 local area = require("__flib__.bounding-box")
+local stats = require("scripts.stats")
 local abs = math.abs
 local floor = math.floor
 local ceil = math.ceil
@@ -86,6 +87,7 @@ function remove_train(map_data, train_id, train)
 		storage.layout_train_count[layout_id] = count - 1
 	end
 
+	stats.train_networks_changed(train, -1)
 	map_data.trains[train_id] = nil
 	interface_raise_train_removed(train_id, train)
 end

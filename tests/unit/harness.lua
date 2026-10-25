@@ -406,11 +406,16 @@ package.preload["__flib__.train"] = function()
 		end,
 	}
 end
+-- scripts/gui.lua's entity GUI handlers, which the manager's on_gui_opened and on_gui_closed run first.
+function on_entity_gui_opened_closed() return false end
+function on_entity_gui_closed() end
 -- lib.lua requires the core util but never calls it.
 package.preload["__core__.lualib.util"] = function() return {} end
 -- central-planning.lua is loaded for hash_item/hash_signal/unhash_signal; analytics is only touched by the
 -- dispatcher functions, which the unit layer never calls.
 package.preload["scripts.analytics"] = function() return {} end
+-- The manager GUI is engine-only; the remote interface only hands toggle_gui to it.
+package.preload["gui.main"] = function() return {} end
 
 harness.flib_gui = flib_gui
 

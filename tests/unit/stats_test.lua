@@ -24,11 +24,11 @@ end)
 test("get: creates the table with since_tick = game.tick", function()
 	at(500)
 	local s = stats.get()
-	-- Per-network available counters, the planner-cycle figures with their running counters and the tick refuel
-	-- tracking starts from.
+	-- Per-network available and train counters, the planner-cycle figures with their running counters and the tick
+	-- refuel tracking starts from.
 	assert_eq(s, { minute = {}, hour = {}, totals = { deliveries = 0, dispatches = 0, items = 0, since_tick = 500 },
 		cycle = { ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 },
-		available_count = {}, refuel_since = 500 })
+		available_count = {}, trains_by_network = {}, refuel_since = 500 })
 	assert_same(storage.stats, s)
 	assert_same(stats.get(), s)
 end)

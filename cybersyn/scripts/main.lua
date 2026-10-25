@@ -7,7 +7,8 @@ local diag = require("scripts.diag")
 local stats = require("scripts.stats")
 local lint = require("scripts.lint")
 
--- Ticks between chunks of the Refresh allow-lists job while manager updates are off.
+-- Ticks between chunks of the Refresh allow-lists job and confirm-button expiry checks, whatever the manager's
+-- update rate (updates at 0 too).
 local REPAIR_JOB_NTH = 10
 
 local ceil = math.ceil
@@ -923,7 +924,17 @@ local function grab_all_settings()
 end
 local function register_tick()
 	script.on_nth_tick(nil)
-	-- One handler per nth: a second on_nth_tick for the same nth replaces the first.
+	-- One handler per nth: a second on_nth_tick for the same nth replaces the first, so cadences that land on one nth
+	-- share a handler and run in the order added. The cadences:
+	--   planner          ceil(60 / tps)          setting, absent at 0
+	--   analytics        analytics.SAMPLE_TICKS  6
+	--   manager update   ceil(60 / manager_ups)  setting, absent at 0
+	--   repair job       REPAIR_JOB_NTH          10
+	--   HUD line         HUD_TICKS               301
+	--   manager boost    1                       every tick, added last
+	-- The two settings can make the planner and the manager update land on the nth of each other, of analytics (at 10
+	-- per second), of the repair job (at 6) or of the boost (at 60). Different nths get separate handlers, whose order
+	-- on a tick they share the engine decides.
 	local by_nth, order = {}, {}
 	local function add(nth, fn)
 		local list = by_nth[nth]
@@ -950,13 +961,8 @@ local function register_tick()
 		add(manager_nth, function()
 			manager.tick(storage)
 		end)
-	else
-		-- Without manager updates the Refresh allow-lists job still runs in chunks, on a handler of its own.
-		add(REPAIR_JOB_NTH, function()
-			local m = storage.manager
-			if m and m.repair_job then manager.job_tick() end
-		end)
 	end
+	add(REPAIR_JOB_NTH, manager.repair_tick)
 	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
 	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
 	-- tick is a manager tick.
@@ -1099,45 +1105,39 @@ local function main()
 		utilization_tab.on_load()
 	end)
 
-	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
+	-- Every GUI event is registered here and only here: on_event keeps one handler per event, so each entry is the
+	-- whole chain for its event.
 	local flib_gui = require("__flib__.gui")
 	local manager_util = require("scripts.gui.util")
-	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, function(e)
+	local function hover(e)
 		if not utilization_tab.forward_hover(e) then flib_gui.dispatch(e) end
-	end)
-	script.on_event({
-		defines.events.on_gui_elem_changed,
-		defines.events.on_gui_selected_tab_changed,
-		defines.events.on_gui_checked_state_changed,
-		defines.events.on_gui_selection_state_changed,
-		defines.events.on_gui_switch_state_changed,
-		defines.events.on_gui_value_changed,
-		defines.events.on_gui_text_changed,
-		defines.events.on_gui_confirmed,
-	}, flib_gui.dispatch)
-	script.on_event(defines.events.on_gui_click, function(e)
-		manager_util.touch_hover(e)
-		if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
-	end)
+	end
+	local gui_events = {
+		[defines.events.on_gui_opened] = manager.on_gui_opened,
+		[defines.events.on_gui_closed] = manager.on_gui_closed,
+		[defines.events.on_gui_click] = function(e)
+			manager_util.touch_hover(e)
+			if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
+		end,
+		[defines.events.on_gui_hover] = hover,
+		[defines.events.on_gui_leave] = hover,
+		[defines.events.on_gui_elem_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_selected_tab_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_checked_state_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_selection_state_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_switch_state_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_value_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_text_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_confirmed] = flib_gui.dispatch,
+		[defines.events.on_gui_location_changed] = flib_gui.dispatch,
+	}
+	for id, handler in pairs(gui_events) do script.on_event(id, handler) end
 
 	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)
 
 	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
 	script.on_event(defines.events.on_player_created, manager.on_player_created)
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
-	-- The manager's handlers run after the entity GUI handlers register_gui_actions installed: on_event keeps one
-	-- handler per event, so registering the manager's alone would drop those (the elevator panel, the combinator
-	-- window's close).
-	local entity_gui_opened = script.get_event_handler(defines.events.on_gui_opened)
-	script.on_event(defines.events.on_gui_opened, function(e)
-		if entity_gui_opened then entity_gui_opened(e) end
-		manager.on_gui_opened(e)
-	end)
-	local entity_gui_closed = script.get_event_handler(defines.events.on_gui_closed)
-	script.on_event(defines.events.on_gui_closed, function(e)
-		if entity_gui_closed then entity_gui_closed(e) end
-		manager.on_gui_closed(e)
-	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)
 	script.on_event({
@@ -1145,7 +1145,6 @@ local function main()
 		defines.events.on_player_display_scale_changed,
 	}, manager.on_display_changed)
 	script.on_event(defines.events.on_player_controller_changed, manager.on_controller_changed)
-	script.on_event(defines.events.on_gui_location_changed, flib_gui.dispatch)
 
 	register_tick()
 end

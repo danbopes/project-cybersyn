@@ -7,7 +7,7 @@ Date: 2026-10-23
     - Each combinator mode has a short description under the Mode drop-down
     - New map setting "Reserve locked slots per item type" (off by default): when on, a provider's locked slots are reserved once for each item type in the manifest, so a multi-item delivery keeps room for every item; fluids do not count
     - Optional alert when a train leaves a provider carrying an item type its manifest did not name (map setting "Alert for unexpected cargo pickup", off by default)
-    - New command /cybersyn-refresh-allow-lists re-reads the layout of every train, up to 50 trains per manager update (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow list knows them
+    - New command /cybersyn-refresh-allow-lists re-reads the layout of every train, up to 50 trains every 10 ticks (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow list knows them
     - New command /cybersyn-reset-gui centers the manager window, sizes it for your screen again and closes the filter row
     - (Manager) Rebuilt Cybersyn Manager for large bases: Overview, Inventory, Stations, Trains and Log tabs, each list paged to fit the window, with data gathered a few stations per update and only while a window is open
     - (Manager) Overview tab, shown first: four tiles (Unserved stations, Fleet headroom, Stations failing, Throughput) above an Unserved requests table that lists each waiting request with its reason, best provider, stock against what it needs, the requester it lost to and how long it has waited; each tile opens the list it counts; period selector Last 10 min / Last hour / Last 24 h
@@ -35,9 +35,10 @@ Date: 2026-10-23
     - Removed the "Max entities displayed on GUI pages" setting: the window pages by what fits on screen, because the limit cut the list before sorting
     - (Manager) Removed the Alerts, Depots and History tabs: the Overview and the Log cover alerts and past deliveries, and the Trains tab groups trains by depot
     - (Manager) Removed the filter history bar and the subscription to other mods' interop events
-    - Missing-train alerts are merged into one per item and network, placed on the longest-waiting requester's stop
+    - Missing-train alerts are merged into one per item and network, placed on the longest-waiting requester's stop; the other requesters starved of the same item no longer get an alert of their own
     - When the network has trains but none can serve a request (network mask, manual mode, schedule or surface), the alert says so instead of reporting that no train exists
     - Each warming-up station finishes on its own timer instead of queueing behind the oldest one, and a station stays in warm-up until its stop has connected rail
+    - Rotating a combinator so it reaches another stop rebuilds it, as building it there would: deliveries in flight to that station fail
     - The two stations of a new delivery now move to the end of the polling queue; the code for this was there but never ran
     - /cybersyn-find-problems reads the setup registry kept by the build handlers instead of scanning every surface, also reports combinators that are still ghosts, combinators on the wrong side of their stop and stops whose combinators make no station, depot or refueler, prints only to the player who ran it (their force only), and checks only Cybersyn's own stops for a non-default train stop priority
     - /cybersyn-recalculate-train-size also drops the layouts no train has any more, together with their allow-list entries

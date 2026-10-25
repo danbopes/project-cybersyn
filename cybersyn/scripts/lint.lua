@@ -174,21 +174,6 @@ local function stack_size(hash)
 	return v
 end
 
---- Networks of a station, refueler or train as (name, mask) pairs.
---- @param network_name string?
---- @param network_mask int|{[string]: int}?
---- @param fn fun(name: string, mask: int)
-local function each_network(network_name, network_mask, fn)
-	if network_name == NETWORK_EACH then
-		if type(network_mask) == "table" then
-			for name, mask in pairs(network_mask) do fn(name, mask) end
-		end
-	elseif network_name then
-		fn(network_name, type(network_mask) == "number" and network_mask or 0)
-	end
-end
-lint.each_network = each_network
-
 --- What the fleet offers a stop on one network: trains whose mask shares a bit with the stop's, the layouts among
 --- them the stop accepts, and the largest capacities of those and of all of them. The dispatcher tests capacity
 --- before layout, so a train the stop rejects still decides whether the failure is capacity or layout.

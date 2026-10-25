@@ -94,7 +94,7 @@ manager_gui.open_manager_on = open_manager_on
 
 --- The remote interface's toggle_gui (scripts/remote-interface.lua), the same as the shortcut.
 --- @param player_index uint
-function cybersyn_manager_toggle(player_index)
+function manager_gui.toggle(player_index)
 	if not game.get_player(player_index) then return end
 	local pd = storage.manager and storage.manager.players[player_index]
 	if not pd then return end
@@ -125,22 +125,30 @@ function manager_gui.on_lua_shortcut(e)
 	end
 end
 
---- Registered for every on_gui_closed (scripts/main.lua), so no registration depends on game state.
+--- Every on_gui_closed (scripts/main.lua); the engine keeps one handler per event, so its consumers run from here.
 --- @param e EventData.on_gui_closed
 function manager_gui.on_gui_closed(e)
-	-- First: the combinator handler below destroys its frame, which may be the GUI a manager link opened.
+	-- The combinator window and the elevator panel close as they would without the manager.
+	on_entity_gui_closed(e)
+	-- Before the close path below: it destroys the combinator frame, which may be the GUI a manager link opened.
 	manager.on_linked_gui_closed(e)
+	-- Any entity GUI closing hides the panels beside it.
 	relative.on_gui_closed(e)
+	-- The manager window's own close, and a combinator frame whose combinator is gone.
 	manager_gui.on_lua_shortcut(e)
 end
 
 --- on_gui_click that no element handler took (scripts/main.lua): a click on a Trains row selects its train.
 manager_gui.on_unhandled_click = trains_tab.on_row_click
 
---- Registered for every on_gui_opened (scripts/main.lua), after the entity GUI handlers of scripts/gui.lua.
+--- Every on_gui_opened (scripts/main.lua); the engine keeps one handler per event, so its consumers run from here.
 --- @param e EventData.on_gui_opened
 function manager_gui.on_gui_opened(e)
+	-- The combinator window and the elevator panel open as they would without the manager.
+	on_entity_gui_opened_closed(e)
+	-- Another GUI taking player.opened closes an unpinned manager, as the game's windows do.
 	manager.on_other_gui_opened(e)
+	-- A stop or train window gets its panels.
 	relative.on_gui_opened(e)
 end
 
@@ -394,7 +402,6 @@ local function update(manager_data)
 		end
 	end
 	extras.tick(manager_data)
-	repair.tick(manager_data)
 	explain.tick(manager_data)
 	relative.tick(manager_data)
 	return ran
@@ -448,13 +455,17 @@ end
 manager_gui.hud_tick = extras.hud_tick
 manager_gui.HUD_TICKS = extras.HUD_TICKS
 
---- The Refresh allow-lists job while manager updates are off (scripts/main.lua's REPAIR_JOB_NTH handler).
-manager_gui.job_tick = repair.job_tick
+--- Armed confirm buttons expire and the Refresh allow-lists job advances, every REPAIR_JOB_NTH (scripts/main.lua).
+function manager_gui.repair_tick()
+	local m = storage.manager
+	if not m then return end
+	repair.expire(m)
+	repair.job_tick()
+end
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
 	manager.log_tab.export_tick()
-	if storage.manager then repair.expire(storage.manager) end
 end
 
 --- on_player_display_resolution_changed / on_player_display_scale_changed.

@@ -8,6 +8,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local rich_text = require("scripts.gui.rich-text")
 local collector = require("scripts.gui.collector")
 local sizing = require("scripts.gui.sizing")
 local logic = require("scripts.gui.tab-logic")
@@ -1159,12 +1160,12 @@ local function network_model(m, row)
 			local lines = { "" }
 			for i, n in ipairs(names) do
 				if i > 20 then break end
-				lines[#lines + 1] = (i > 1 and "\n" or "") .. network_icon(n) .. " " .. nets[n]
+				lines[#lines + 1] = (i > 1 and "\n" or "") .. rich_text.network_icon(n) .. " " .. nets[n]
 			end
 			return "virtual-signal/" .. NETWORK_EACH, { "cybersyn-gui.network-each-count", #names }, lines
 		end
 		local sprite = util.network_sprite(network_name)
-		return sprite or "utility/close_black", tostring(mask), { "", network_icon(network_name), " ",
+		return sprite or "utility/close_black", tostring(mask), { "", rich_text.network_icon(network_name), " ",
 			{ "cybersyn-gui.station-network-mask", mask, network_text(mask) } }
 	end
 end
@@ -1212,7 +1213,7 @@ local function marker_network(row)
 	local name = row.network_name
 	if not name then return { "cybersyn-gui.station-no-network" } end
 	if row.mask == nil or name == NETWORK_EACH then return { SILENT_MARKER[rtext.silent_reason(row)] } end
-	return { "cybersyn-gui.stations-inventory-network", network_icon(name), tostring(row.mask) }
+	return { "cybersyn-gui.stations-inventory-network", rich_text.network_icon(name), tostring(row.mask) }
 end
 
 --- The marker of an inventory row, nil on the station combinator's row.
@@ -1331,7 +1332,7 @@ local function row_model(row, ctx)
 		if hashes then
 			local icons = {}
 			for i = 1, math.min(#hashes, 10) do
-				icons[i] = util.rich_text_from_signal(util.signalid_from_hash(hashes[i]))
+				icons[i] = rich_text.of_hash(hashes[i])
 			end
 			tooltip[#tooltip + 1] = "\n" .. table.concat(icons, " ")
 		end

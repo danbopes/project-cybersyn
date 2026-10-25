@@ -45,12 +45,6 @@ local function create_combinator_display(filename, x, y)
 	}
 end
 
--- cybernetic-displays.png: 30x22 cells addressed (column, row), the operation each one stands for in brackets.
---   (0,0) D depot [+]   (1,0) W wagon [-]   (2,0) S station [/]   (3,0) C control [%]
---   (0,1) red S, the station's request went unserved [^]   (1,1) green S, unused: the base game's green is drawn for [<<]
---   (2,1) R refueler [>>]   (3,1) I inventory [AND]
---   (0,2) red I, that inventory's own request went unserved [OR]: (3,1) recoloured the way (2,0) became (0,1)
--- The red I has a row of its own rather than (1,1), so the unused green S art stays in the sheet.
 local CYBERSYN_DISPLAYS = "__cybersyn__/graphics/combinator/cybernetic-displays.png"
 local FACTORIO_DISPLAYS = "__base__/graphics/entity/combinator/combinator-displays.png"
 

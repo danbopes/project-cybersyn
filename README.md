@@ -237,7 +237,7 @@ Turn on "Manager: Unserved line on screen" in your per-player settings for a sma
 
 Actions that change the game state sit where they apply: **Send home** on the train panel and the Trains pane, **Recount deliveries** on the stop panel. They and the console commands `/cybersyn-fix-priorities`, `/cybersyn-abolish-same-depot`, `/cybersyn-recalculate-train-size` and `/cybersyn-refresh-allow-lists` are allowed for the players chosen by the map setting "Manager actions allowed for": Admins by default, Everyone or Nobody. Single player is always allowed. Every action is printed to the force and written to the log.
 
-`/cybersyn-refresh-allow-lists` re-reads the layout of every train, up to 50 trains per manager update (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow-list knows them. `/cybersyn-find-problems` and `/cybersyn-reset-gui` change no game state, and are open to everyone.
+`/cybersyn-refresh-allow-lists` re-reads the layout of every train, up to 50 trains every 10 ticks (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow-list knows them. `/cybersyn-find-problems` and `/cybersyn-reset-gui` change no game state, and are open to everyone.
 
 Other mods can read the same data through the read-only remote interface `cybersyn-query` (`query_unserved`, `query_counts`, `query_station`, `query_train`), which returns plain tables for HUDs and overlays. Each `query_unserved` call without a `requester` walks the whole diagnostics table, so poll it on a timer of a second or more, not every tick.
 
@@ -272,3 +272,15 @@ Measured on a Pyanodons save with 2,082 stations, 522 depots and 553 trains, Fac
 | Whole game tick with the manager closed and Diagnostics Basic (default), against Project Cybersyn 2.1.2 (`--benchmark`, 1,800 ticks, 3 interleaved runs each) | 5.51 ms vs 5.50 ms (-0.01 ms) |
 | Manager tick with every window closed | 0.0002 ms per game tick at 1 update/s |
 | Diagnostics recording hooks, Basic (default) / Full | 0.0067 / 0.0087 ms per game tick |
+
+## Development
+
+Host unit tests run without Factorio, under plain Lua 5.2 (`lua5.2` on the path):
+
+```
+tests/unit/run.sh
+```
+
+It runs from any directory, prints one line per failure and a final `PASS n FAIL m` (555 tests in under a second), and exits non-zero on any failure. Set `CYBERSYN_ROOT` to test a mod directory other than `cybersyn/`.
+
+`tests/unit/harness.lua` stands in for just enough of the runtime (`storage`, `prototypes`, `game`, flib's gui and format) to load the pure modules. The tests cover the manager's view models and text (`scripts/gui/*-model.lua`, `*-text.lua`, `tab-logic.lua` and the like), the diagnostics and statistics bookkeeping, the setup checks, the planner's matching through `planner_fixtures.lua`, and the 2.2.0 save migration. Anything that needs the real engine (entities, the circuit network, train pathing, rendering, GUI layout) stays out of them and needs a test in game.

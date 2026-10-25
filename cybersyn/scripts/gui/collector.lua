@@ -495,23 +495,17 @@ local nets = {}
 local net_masks = {}
 local nets_n = 0
 
+local function push_network(name, mask)
+	nets_n = nets_n + 1
+	nets[nets_n] = name
+	net_masks[nets_n] = mask
+end
+
 --- @param network_name string?
 --- @param network_mask any
 local function set_networks(network_name, network_mask)
 	nets_n = 0
-	if network_name == NETWORK_EACH then
-		if type(network_mask) == "table" then
-			for name, mask in pairs(network_mask) do
-				nets_n = nets_n + 1
-				nets[nets_n] = name
-				net_masks[nets_n] = mask
-			end
-		end
-	elseif network_name then
-		nets_n = 1
-		nets[1] = network_name
-		net_masks[1] = type(network_mask) == "number" and network_mask or 0
-	end
+	each_network(network_name, network_mask, push_network)
 end
 
 local function has_active_request(st)
@@ -802,15 +796,7 @@ local function summarize_trains(b)
 			tr.refuel_tick = refuel_tick
 			local refuel_from = lint.refuel_from(train)
 			tr.refuel_from = refuel_from
-			local network = train.network_name
-			if network == NETWORK_EACH then
-				if type(train.network_mask) == "table" then
-					for name, m in pairs(train.network_mask) do add_capability(fleet, name, m, train) end
-				end
-			elseif network then
-				local m = train.network_mask
-				add_capability(fleet, network, type(m) == "number" and m or 0, train)
-			end
+			each_network(train.network_name, train.network_mask, function(name, m) add_capability(fleet, name, m, train) end)
 			if depot_name ~= "" then
 				local g = by_name[depot_name]
 				if not g then

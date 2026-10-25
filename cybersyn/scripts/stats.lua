@@ -48,6 +48,8 @@ stats.HOUR = HOUR
 --- @field refuel_since uint tick from which Train.refuel_tick is recorded (older saves did not track refuelling)
 --- @field available_count {[string]: int} available trains per network, kept equal to the sizes of
 ---   storage.available_trains by add_available_train / remove_available_train
+--- @field trains_by_network {[string]: int} Cybersyn trains per network whatever their state, each-network masks
+---   expanded; a network without trains has no key. Kept by stats.train_networks_changed
 --- @field trip_ema {[string]: {avg: number, n: int}}? per item hash (the manifest's first item), the moving average
 ---   of dispatch-to-unloaded ticks and the deliveries behind it; the slow-delivery baseline. Analytics keeps a
 ---   similar average, but only with factorio-charts and its setting on, and without the sample count the baseline
@@ -61,6 +63,7 @@ local function new_stats()
 		totals = { deliveries = 0, dispatches = 0, items = 0, since_tick = game and game.tick or 0 },
 		cycle = { ema_seconds = nil, ticks_last = 0, dispatches_last = 0, calls_last = 0, dispatches_run = 0, calls_run = 0 },
 		available_count = {},
+		trains_by_network = {},
 		refuel_since = game and game.tick or 0,
 	}
 end
@@ -115,10 +118,23 @@ local function recount_available(s)
 	for name, ids in pairs(trains) do counts[name] = table_size(ids) end
 end
 
+--- @param counts {[string]: int}
+--- @param train Train
+--- @param delta 1|-1
+local function count_train(counts, train, delta)
+	each_network(train.network_name, train.network_mask, function(name)
+		local n = (counts[name] or 0) + delta
+		counts[name] = n > 0 and n or nil
+	end)
+end
+
 function stats.init()
 	local s = get()
 	purge_invalid_hashes(s)
 	recount_available(s)
+	local counts = {}
+	for _, train in pairs(storage.trains or {}) do count_train(counts, train, 1) end
+	s.trains_by_network = counts
 end
 
 --- @return Stats
@@ -177,6 +193,14 @@ function stats.available_changed(name, delta)
 	local tick = game.tick
 	note_available(s.minute, MINUTE_SLOTS, MINUTE, tick, name, old, new)
 	note_available(s.hour, HOUR_SLOTS, HOUR, tick, name, old, new)
+end
+
+--- A train joined (1) or left (-1) the networks it is on now: call it on both sides of a network change and when the
+--- train is removed.
+--- @param train Train
+--- @param delta 1|-1
+function stats.train_networks_changed(train, delta)
+	count_train(get().trains_by_network, train, delta)
 end
 
 --- A request turned unserved for want of a train (from diagnostics transitions).
