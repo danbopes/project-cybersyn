@@ -652,10 +652,11 @@ end
 --- True while the cursor is over an element of `scope`, with a timeout in case a leave event is lost.
 --- @param player_data PlayerData
 --- @param scope string
+--- @param ticks uint? the timeout, util.HOVER_HOLD_TICKS by default
 --- @return boolean
-function util.hold_active(player_data, scope)
+function util.hold_active(player_data, scope, ticks)
 	local hover = player_data.hover
-	return hover ~= nil and hover.scope == scope and game.tick - hover.tick < util.HOVER_HOLD_TICKS
+	return hover ~= nil and hover.scope == scope and game.tick - hover.tick < (ticks or util.HOVER_HOLD_TICKS)
 		and player_data.hold_released_tick ~= game.tick
 end
 

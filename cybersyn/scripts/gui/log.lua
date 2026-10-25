@@ -43,7 +43,8 @@ local PAGE = model.PAGE
 -- The scroll pane always shows its vertical bar, so the rows' width does not change with their number.
 local SCROLLBAR = 12
 -- The pointer resting on the rows holds Follow this long without a new hover event (a lost leave event cannot hold it
--- for ever).
+-- for ever). Longer than util.HOVER_HOLD_TICKS: hover fires only on entering a row, and a reader rests on one row
+-- while reading it.
 local HOLD_TICKS = 3600
 -- Rows built in the first update of an empty page (that one update may take up to 6 ms; a row costs about
 -- 50-70 µs to build and write), then per update until the page is full, inside the Log's 1 ms. The prewarm builds
@@ -530,9 +531,7 @@ end
 --- @param player_data PlayerData
 --- @return boolean
 function log_tab.held(player_data)
-	if player_data.paused then return true end
-	local hover = player_data.hover
-	return hover ~= nil and hover.scope == ROWS and game.tick - hover.tick < HOLD_TICKS
+	return player_data.paused or util.hold_active(player_data, ROWS, HOLD_TICKS)
 end
 
 
