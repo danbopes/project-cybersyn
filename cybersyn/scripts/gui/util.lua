@@ -1234,8 +1234,8 @@ end
 --- @param e EventData.on_gui_click
 --- @param hash string
 function util.item_button_click(player, player_data, e, hash)
-	local tags = e.element and e.element.tags
-	local station = tags and tags.station
+	local tags = e.element.tags
+	local station = tags.station
 	if e.button == defines.mouse_button_type.right then
 		-- A stop panel shows no filter, so its slots have nothing to clear.
 		if station then return end
@@ -1549,13 +1549,11 @@ function util.set_pin(fn)
 end
 
 --- Whether a click came from inside the open manager window, not from a stop or train panel beside a game window.
---- Synthetic events (the Log rows) carry a plain table for an element and come from the window.
 --- @param player_data PlayerData
---- @param element LuaGuiElement|table?
+--- @param element LuaGuiElement
 --- @return boolean
 local function in_manager(player_data, element)
 	if not player_data.is_manager_open then return false end
-	if not (element and element.object_name == "LuaGuiElement") then return true end
 	local window = player_data.refs and player_data.refs.manager_window
 	if not (window and window.valid) then return false end
 	local index = window.index

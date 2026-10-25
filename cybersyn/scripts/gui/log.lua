@@ -1584,10 +1584,7 @@ function log_tab.handle.log_link_click(player, player_data, refs, e)
 	if not g then return end
 	local kind, id = cell_target(g, e.element.tags.cell)
 	if not kind then return end
-	util.handle_link_click(player, player_data, {
-		element = { tags = { kind = kind, id = id } },
-		button = e.button, shift = e.shift, control = e.control, alt = e.alt, player_index = e.player_index,
-	})
+	util.handle_link_click(player, player_data, e, kind, id)
 end
 
 --- @param e EventData.on_gui_click
