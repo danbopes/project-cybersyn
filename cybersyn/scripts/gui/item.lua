@@ -93,8 +93,6 @@ local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train
 local FRAME_BORDER = 4
 local TABLE_PADDING = 4 + 10
 local TABLE_SPACING = 8
--- Slack kept from when Stations and Trains hosted the drill-down inside a deep frame: the columns keep their widths.
-local HOST_INSET = 8
 
 --- @class ItemColumn
 --- @field kind "station"|"train"|"value"|"text"|"chip"|"status"
@@ -142,7 +140,7 @@ local function flex_widths(content_width)
 	for t, cols in pairs(COLUMNS) do
 		local fixed = 0
 		for _, c in ipairs(cols) do fixed = fixed + (c.width or 0) end
-		out[t] = content_width - HOST_INSET - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
+		out[t] = content_width - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
 	end
 	return out
 end
