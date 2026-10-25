@@ -258,6 +258,8 @@ end
 --- @field reveal {train: uint?, group: string?, all: true?}? grouped Trains: expand the group holding this train, or
 --- this group, or (all) every group holding a train that passes the filters
 --- @field sort {tab: string, column: string, ascending: boolean}?
+--- @field grids true? the Inventory's grids under the focus sort: the item filter (its drill-down replaces the grids)
+--- and the grids' own sort buttons go
 
 --- @class PlayerData
 --- @field focus_open true? the next manager_open comes from manager.focus: it keeps the focus's filters (no surface default)
@@ -287,6 +289,10 @@ function manager.focus(player, player_data, tab, focus)
 	end
 	util.set_search_query(player_data, focus.query)
 	if focus.query then player_data.search_open = true end
+	if focus.grids then
+		util.set_item_filter(player_data, nil)
+		player_data.inventory_sorts = nil
+	end
 	if focus.item then util.set_item_filter(player_data, focus.item) end
 	if focus.station then util.set_station_filter(player_data, focus.station) end
 	if focus.network then player_data.search_network_name = focus.network end

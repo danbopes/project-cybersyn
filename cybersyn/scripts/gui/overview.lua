@@ -1502,6 +1502,7 @@ end
 local UNSERVED_SORT = { tab = "stations_tab", column = "wait", ascending = false }
 local FAILING_SORT = { tab = "stations_tab", column = "station_status", ascending = true }
 local FLEET_SORT = { tab = "trains_tab", column = "train_status", ascending = true }
+local THROUGHPUT_SORT = { tab = "inventory_tab", column = "amount", ascending = false }
 
 --- Every tile jumps to the tab that lists what it counts.
 --- @param e EventData.on_gui_click
@@ -1518,13 +1519,8 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 	elseif tile == "failing" then
 		jump_stations(player, player_data, "failing", FAILING_SORT)
 	elseif tile == "throughput" then
-		util.set_sort(player_data, "inventory_tab", "amount", false)
-		-- Every grid by amount: the grids' own sort buttons give way to the tab's sort.
-		player_data.inventory_sorts = nil
-		-- The jump is to the grids, which an item filter replaces with its drill-down.
-		util.set_item_filter(player_data, nil)
-		util.select_tab(player_data, "inventory_tab")
-		util.rerender(player, player_data)
+		overview_tab.manager.focus(player, player_data, "inventory_tab", { keep_row = true, grids = true,
+			sort = THROUGHPUT_SORT })
 	end
 end
 
