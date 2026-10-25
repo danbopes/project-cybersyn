@@ -176,9 +176,7 @@ local stack_of = {}
 local function stack_size(hash)
 	local v = stack_of[hash]
 	if v == nil then
-		local bar = string.find(hash, "|", 1, true)
-		local name = bar and string.sub(hash, 1, bar - 1) or hash
-		v = get_stack_size(nil, name) or false
+		v = get_stack_size(nil, (unhash_signal(hash))) or false
 		stack_of[hash] = v
 	end
 	return v
