@@ -360,8 +360,11 @@ function add_entity_closed_handler(entity_name, handler)
 	table.insert(event_handlers, handler)
 end
 
+--- The entity GUI handlers of the combinator and the elevator; the manager's on_gui_opened and on_gui_closed run
+--- them first (scripts/gui/main.lua).
 ---@param event EventData.on_gui_opened|EventData.on_gui_closed
-local function on_entity_gui_opened_closed(event)
+---@return boolean entity whether the event was for an entity GUI
+function on_entity_gui_opened_closed(event)
 	local entity = event.entity
 	if not (event.gui_type == defines.gui_type.entity and entity and entity.valid) then
 		return false
@@ -385,7 +388,7 @@ local function on_entity_gui_opened_closed(event)
 end
 
 ---@param e EventData.on_gui_closed
-local function on_gui_closed(e)
+function on_entity_gui_closed(e)
 	if not on_entity_gui_opened_closed(e) and e.gui_type == defines.gui_type.custom then
 		flib_gui.dispatch(e)
 	end
@@ -406,9 +409,6 @@ function register_gui_actions()
 		["comb_setting"] = handle_setting,
 		["comb_setting_flip"] = handle_setting_flip,
 	})
-	flib_gui.handle_events()
-	script.on_event(defines.events.on_gui_opened, on_entity_gui_opened_closed)
-	script.on_event(defines.events.on_gui_closed, on_gui_closed)
 end
 
 ---@param event EventData.on_gui_opened

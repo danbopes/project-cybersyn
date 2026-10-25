@@ -1094,45 +1094,39 @@ local function main()
 		utilization_tab.on_load()
 	end)
 
-	-- flib's handle_events skips events that already have a handler; hover-hold and tab sync must not hinge on that.
+	-- Every GUI event is registered here and only here: on_event keeps one handler per event, so each entry is the
+	-- whole chain for its event.
 	local flib_gui = require("__flib__.gui")
 	local manager_util = require("scripts.gui.util")
-	script.on_event({ defines.events.on_gui_hover, defines.events.on_gui_leave }, function(e)
+	local function hover(e)
 		if not utilization_tab.forward_hover(e) then flib_gui.dispatch(e) end
-	end)
-	script.on_event({
-		defines.events.on_gui_elem_changed,
-		defines.events.on_gui_selected_tab_changed,
-		defines.events.on_gui_checked_state_changed,
-		defines.events.on_gui_selection_state_changed,
-		defines.events.on_gui_switch_state_changed,
-		defines.events.on_gui_value_changed,
-		defines.events.on_gui_text_changed,
-		defines.events.on_gui_confirmed,
-	}, flib_gui.dispatch)
-	script.on_event(defines.events.on_gui_click, function(e)
-		manager_util.touch_hover(e)
-		if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
-	end)
+	end
+	local gui_events = {
+		[defines.events.on_gui_opened] = manager.on_gui_opened,
+		[defines.events.on_gui_closed] = manager.on_gui_closed,
+		[defines.events.on_gui_click] = function(e)
+			manager_util.touch_hover(e)
+			if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
+		end,
+		[defines.events.on_gui_hover] = hover,
+		[defines.events.on_gui_leave] = hover,
+		[defines.events.on_gui_elem_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_selected_tab_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_checked_state_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_selection_state_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_switch_state_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_value_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_text_changed] = flib_gui.dispatch,
+		[defines.events.on_gui_confirmed] = flib_gui.dispatch,
+		[defines.events.on_gui_location_changed] = flib_gui.dispatch,
+	}
+	for id, handler in pairs(gui_events) do script.on_event(id, handler) end
 
 	script.on_event(defines.events.on_player_left_game, manager.on_player_left_game)
 
 	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
 	script.on_event(defines.events.on_player_created, manager.on_player_created)
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
-	-- The manager's handlers run after the entity GUI handlers register_gui_actions installed: on_event keeps one
-	-- handler per event, so registering the manager's alone would drop those (the elevator panel, the combinator
-	-- window's close).
-	local entity_gui_opened = script.get_event_handler(defines.events.on_gui_opened)
-	script.on_event(defines.events.on_gui_opened, function(e)
-		if entity_gui_opened then entity_gui_opened(e) end
-		manager.on_gui_opened(e)
-	end)
-	local entity_gui_closed = script.get_event_handler(defines.events.on_gui_closed)
-	script.on_event(defines.events.on_gui_closed, function(e)
-		if entity_gui_closed then entity_gui_closed(e) end
-		manager.on_gui_closed(e)
-	end)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)
 	script.on_event({
@@ -1140,7 +1134,6 @@ local function main()
 		defines.events.on_player_display_scale_changed,
 	}, manager.on_display_changed)
 	script.on_event(defines.events.on_player_controller_changed, manager.on_controller_changed)
-	script.on_event(defines.events.on_gui_location_changed, flib_gui.dispatch)
 
 	register_tick()
 end

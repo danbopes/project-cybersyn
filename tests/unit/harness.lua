@@ -406,6 +406,9 @@ package.preload["__flib__.train"] = function()
 		end,
 	}
 end
+-- scripts/gui.lua's entity GUI handlers, which the manager's on_gui_opened and on_gui_closed run first.
+function on_entity_gui_opened_closed() return false end
+function on_entity_gui_closed() end
 -- lib.lua requires the core util but never calls it.
 package.preload["__core__.lualib.util"] = function() return {} end
 -- central-planning.lua is loaded for hash_item/hash_signal/unhash_signal; analytics is only touched by the

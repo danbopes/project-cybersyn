@@ -125,22 +125,30 @@ function manager_gui.on_lua_shortcut(e)
 	end
 end
 
---- Registered for every on_gui_closed (scripts/main.lua), so no registration depends on game state.
+--- Every on_gui_closed (scripts/main.lua); the engine keeps one handler per event, so its consumers run from here.
 --- @param e EventData.on_gui_closed
 function manager_gui.on_gui_closed(e)
-	-- First: the combinator handler below destroys its frame, which may be the GUI a manager link opened.
+	-- The combinator window and the elevator panel close as they would without the manager.
+	on_entity_gui_closed(e)
+	-- Before the close path below: it destroys the combinator frame, which may be the GUI a manager link opened.
 	manager.on_linked_gui_closed(e)
+	-- Any entity GUI closing hides the panels beside it.
 	relative.on_gui_closed(e)
+	-- The manager window's own close, and a combinator frame whose combinator is gone.
 	manager_gui.on_lua_shortcut(e)
 end
 
 --- on_gui_click that no element handler took (scripts/main.lua): a click on a Trains row selects its train.
 manager_gui.on_unhandled_click = trains_tab.on_row_click
 
---- Registered for every on_gui_opened (scripts/main.lua), after the entity GUI handlers of scripts/gui.lua.
+--- Every on_gui_opened (scripts/main.lua); the engine keeps one handler per event, so its consumers run from here.
 --- @param e EventData.on_gui_opened
 function manager_gui.on_gui_opened(e)
+	-- The combinator window and the elevator panel open as they would without the manager.
+	on_entity_gui_opened_closed(e)
+	-- Another GUI taking player.opened closes an unpinned manager, as the game's windows do.
 	manager.on_other_gui_opened(e)
+	-- A stop or train window gets its panels.
 	relative.on_gui_opened(e)
 end
 
