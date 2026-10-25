@@ -34,8 +34,7 @@ local LOOKUPS_PER_UPDATE = 2
 -- Station names for the schedule check, read from the snapshot before the train checks start: looking a name up
 -- (get_train_stops by name) costs tens of µs on a big base, reading it from a record a fraction of one.
 local SEED_PER_UPDATE = 300
--- Unset train limits read back as uint max.
-local UNLIMITED = 2100000000
+local UNLIMITED = TRAIN_LIMIT_UNLIMITED
 -- Vanilla's own; any other value misroutes trains Cybersyn sends to stops of the same name.
 local DEFAULT_PRIORITY = 50
 

@@ -11,8 +11,7 @@ local bor = bit32.bor
 local text = {}
 
 text.NO_VALUE = "–"
--- Train limits read back as uint max when unset.
-text.UNLIMITED = 2100000000
+text.UNLIMITED = TRAIN_LIMIT_UNLIMITED
 -- Ages and durations shown in the panel are rounded down to this many ticks, so a panel left open is rebuilt at most
 -- once per step instead of every update.
 text.AGE_STEP = 600

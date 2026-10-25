@@ -33,8 +33,7 @@ collector.NOTE_TICKS = 30
 -- (classify, sort, rows), the Trains first page two.
 local SETTLE_RENDERS = 4
 local IDLE_TICKS = 30 * 60 * 60
--- Unset train stop limits read back as uint max; the planner treats anything this large as unlimited.
-local UNLIMITED = 2100000000
+local UNLIMITED = TRAIN_LIMIT_UNLIMITED
 
 local WAIT_SIGNAL = defines.train_state.wait_signal
 local bor = bit32.bor
