@@ -496,6 +496,29 @@ local migrations_table = {
 	end,
 }
 
+--- Moves each item-hash key of `t` to its migrated name and quality; drops the keys whose name or quality was removed.
+---@param t {[string]: any}?
+---@param migrations {[string]: {[string]: string}}
+---@param removed {[string]: true}? collects the removed names
+local function rename_keys(t, migrations, removed)
+	if not t then return end
+	local moved = {}
+	for hash, v in pairs(t) do
+		local name, quality = unhash_signal(hash)
+		local new_name = migrations.item[name] or migrations.fluid[name]
+		local new_quality = quality and migrations.quality[quality]
+		if new_name == "" or new_quality == "" then
+			t[hash] = nil
+			if removed then removed[name] = true end
+		elseif new_name or new_quality then
+			moved[hash_item(new_name or name, new_quality or quality)] = v
+			t[hash] = nil
+		end
+	end
+	-- Added after the walk: a key inserted during `pairs` makes the traversal undefined.
+	for hash, v in pairs(moved) do t[hash] = v end
+end
+
 ---@param config_change_data ConfigurationChangedData
 function sanitize_economy_names(config_change_data)
 	local migrations = config_change_data.migrations --[[@as {[string]: {[string]: string}}]]
@@ -513,26 +536,22 @@ function sanitize_economy_names(config_change_data)
 	-- no need to migrate map_data.economy, on_config_changed() sets map_data.tick_state = STATE_INIT which will wipe it
 
 	for _, station in pairs(map_data.stations) do
-		local deliveries = station.deliveries
-		if deliveries then
-			for item_hash, count in pairs(deliveries) do
-				local item_name, quality = unhash_signal(item_hash)
-				local new_name = migrations.item[item_name] or migrations.fluid[item_name]
-				local new_quality = quality and migrations.quality[quality]
-				if new_name == "" or new_quality == "" then
-					deliveries[item_hash] = nil
-					removed[item_name] = true
-				elseif new_name or new_quality then
-					local new_hash = hash_item(new_name or item_name, new_quality or quality)
-					deliveries[new_hash] = count
-					deliveries[item_hash] = nil
-				end
-			end
-		end
+		rename_keys(station.deliveries, migrations, removed)
 	end
 
 	if next(removed) then
 		log("Migrated names removed from economy: "..serpent.block(removed, {sortkeys = true}))
+	end
+
+	local stats = map_data.stats
+	if stats then
+		for _, ring in pairs({ stats.minute, stats.hour }) do
+			for _, b in pairs(ring) do rename_keys(b.items, migrations) end
+		end
+		rename_keys(stats.trip_ema, migrations)
+	end
+	for _, by_hash in pairs(map_data.acks and map_data.acks.request or {}) do
+		rename_keys(by_hash, migrations)
 	end
 
 	for train_id, train in pairs(map_data.trains) do
