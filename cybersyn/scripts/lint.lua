@@ -96,8 +96,8 @@ lint.REFUEL_GRACE = REFUEL_GRACE_TICKS
 --- @field bits {[uint]: int} stop unit number -> mask of the last completed check
 --- @field train_bits {[uint]: int}
 --- @field findings LintFinding[] the last complete pass
---- @field train_live {[uint]: {missing: int?, items: int, fluid: int?}} per train, what its schedule and wagons said
----   when last read between deliveries
+--- @field train_live {[uint]: {missing: int?, items: int, fluid: int?, dirty: true?}} per train, what its schedule and
+---   wagons said when last read between deliveries; dirty after a player's schedule edit, to read it again on a trip
 --- @field pass int completed passes
 --- @field tick uint? when the last pass completed
 --- @field updates int updates the last pass took
@@ -815,7 +815,7 @@ local function check_train(s, job, snap, id)
 	local entity = train and train.entity
 	if not (entity and entity.valid) then return end
 	local seen = s.train_live[id]
-	if not ON_TRIP[train.status] then
+	if not ON_TRIP[train.status] or seen and seen.dirty then
 		local missing
 		local records = entity.get_schedule().get_records()
 		local force
@@ -835,7 +835,7 @@ local function check_train(s, job, snap, id)
 			seen = {}
 			s.train_live[id] = seen
 		end
-		seen.missing, seen.items, seen.fluid = missing, items, fluid
+		seen.missing, seen.items, seen.fluid, seen.dirty = missing, items, fluid, nil
 	end
 	local never, tracked
 	if not train.refuel_tick then
@@ -1378,6 +1378,13 @@ end
 --- @param stop LuaEntity?
 function lint.on_depot_changed(stop)
 	if stop and stop.valid then eval_name(stop.backer_name, stop.force) end
+end
+
+--- @param e EventData.on_train_schedule_changed
+function lint.on_train_schedule_changed(e)
+	local s = e.player_index and storage.manager.lint
+	local seen = s and e.train.valid and s.train_live[e.train.id]
+	if seen then seen.dirty = true end
 end
 
 --- @param e EventData.on_object_destroyed

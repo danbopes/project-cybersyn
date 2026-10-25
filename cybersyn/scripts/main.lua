@@ -1055,6 +1055,7 @@ local function main()
 	script.on_event(defines.events.on_train_schedule_changed, function(e)
 		on_train_schedule_changed(e)
 		manager.on_train_schedule_changed(e)
+		lint.on_train_schedule_changed(e)
 	end)
 
 	script.on_event(defines.events.on_entity_renamed, on_rename)
