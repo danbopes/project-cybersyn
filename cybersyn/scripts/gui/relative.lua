@@ -1666,18 +1666,11 @@ local function train_model(pd, state)
 	local entity = train and train.entity
 	if not (entity and entity.valid) then return nil end
 	local state_now = entity.state
-	-- The current record moves when the train leaves a stop, i.e. with a state change; a schedule edit or an
-	-- interrupt raises on_train_schedule_changed, which drops state.schedule. Anything else reads nothing.
-	if not state.schedule then
-		read_schedule(state, entity)
-		state.current = nil
-	end
-	if state.current == nil or state.current_state ~= state_now then
-		state.current = entity.get_schedule().current
-		state.current_state = state_now
-	end
+	-- A schedule edit or an interrupt raises on_train_schedule_changed, which drops state.schedule. The current record
+	-- is read every render: go_to_station moves it with no event and, on a moving train, no state change (2.1.23).
+	if not state.schedule then read_schedule(state, entity) end
 	local now = game.tick
-	local current = state.current
+	local current = entity.get_schedule().current
 	local m = {
 		kind = "train",
 		id = state.id,
