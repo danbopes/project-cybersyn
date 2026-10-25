@@ -7,6 +7,8 @@ local script_generate_event_name = script.generate_event_name
 ------------------------------------------------------------------
 --NOTE: events only start to be raised when a mod has called its associated "get" function
 --NOTE: if there is a useful event missing you may submit a request for it to be added on the mod portal.
+--NOTE: rotating a combinator so it reaches another stop rebuilds it, so the station, depot or refueler at the old
+--stop raises its removed event and the one at the new stop its created event.
 
 local on_combinator_changed = nil
 local on_station_created = nil
