@@ -2392,7 +2392,7 @@ function relative.on_gui_opened(e)
 	if not (pd and player) then return end
 	local kind, id, cybersyn = subject_of(entity)
 	if not kind then return end
-	if not cybersyn then
+	if not (cybersyn and settings.get_player_settings(player)["cybersyn-manager-panels"].value) then
 		relative.close(player, pd)
 		return
 	end
