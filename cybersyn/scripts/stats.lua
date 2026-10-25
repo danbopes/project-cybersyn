@@ -100,17 +100,19 @@ local function purge_invalid_hashes(s)
 	end
 end
 
---- Recounts the available-train counters from the planner's own table, so a save from before them (or a change the
---- O(1) updates could not see) starts exact.
+--- Recounts the available-train counters from the planner's own table, so a save from before them starts exact. A
+--- counter that disagrees means a writer of storage.available_trains skipped stats.available_changed: logged as the
+--- bug it is.
 --- @param s Stats
 local function recount_available(s)
 	local counts = s.available_count
-	for name in pairs(counts) do counts[name] = 0 end
-	for name, ids in pairs(storage.available_trains or {}) do
-		local n = 0
-		for _ in pairs(ids) do n = n + 1 end
-		counts[name] = n
+	local trains = storage.available_trains or {}
+	for name, n in pairs(counts) do
+		local actual = trains[name] and table_size(trains[name]) or 0
+		if n ~= actual then log("Cybersyn: " .. name .. " counted " .. n .. " available trains, has " .. actual) end
+		counts[name] = actual
 	end
+	for name, ids in pairs(trains) do counts[name] = table_size(ids) end
 end
 
 function stats.init()

@@ -45,6 +45,17 @@ test("init: a save without stats starts a full table with the available trains c
 	storage.available_trains = nil
 end)
 
+test("init: a drifted available counter is corrected and logged", function()
+	at(0)
+	storage.available_trains = { ["signal-A"] = { [1] = true } }
+	stats.get().available_count = { ["signal-A"] = 3, ["signal-B"] = 1 }
+	local logged = #H.logged
+	stats.init()
+	assert_eq(stats.get().available_count, { ["signal-A"] = 1, ["signal-B"] = 0 })
+	assert_eq(#H.logged - logged, 2)
+	storage.available_trains = nil
+end)
+
 test("record_dispatch: bucket index and start from the tick", function()
 	local train = {}
 	at(61 * MIN + 5)
