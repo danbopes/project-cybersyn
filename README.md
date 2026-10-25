@@ -272,3 +272,15 @@ Measured on a Pyanodons save with 2,082 stations, 522 depots and 553 trains, Fac
 | Whole game tick with the manager closed and Diagnostics Basic (default), against Project Cybersyn 2.1.2 (`--benchmark`, 1,800 ticks, 3 interleaved runs each) | 5.51 ms vs 5.50 ms (-0.01 ms) |
 | Manager tick with every window closed | 0.0002 ms per game tick at 1 update/s |
 | Diagnostics recording hooks, Basic (default) / Full | 0.0067 / 0.0087 ms per game tick |
+
+## Development
+
+Host unit tests run without Factorio, under plain Lua 5.2 (`lua5.2` on the path):
+
+```
+tests/unit/run.sh
+```
+
+It runs from any directory, prints one line per failure and a final `PASS n FAIL m` (555 tests in under a second), and exits non-zero on any failure. Set `CYBERSYN_ROOT` to test a mod directory other than `cybersyn/`.
+
+`tests/unit/harness.lua` stands in for just enough of the runtime (`storage`, `prototypes`, `game`, flib's gui and format) to load the pure modules. The tests cover the manager's view models and text (`scripts/gui/*-model.lua`, `*-text.lua`, `tab-logic.lua` and the like), the diagnostics and statistics bookkeeping, the setup checks, the planner's matching through `planner_fixtures.lua`, and the 2.2.0 save migration. Anything that needs the real engine (entities, the circuit network, train pathing, rendering, GUI layout) stays out of them and needs a test in game.
