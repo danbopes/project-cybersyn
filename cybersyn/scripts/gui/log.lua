@@ -545,7 +545,8 @@ end
 local station_tooltip = name_cell.station_tooltip
 
 -- Station names and train validity are read again at most this often for a row whose event did not change; each row
--- at its own phase (by its key), so the rows are not all rewritten in one update.
+-- at its own phase (by its key), so the rows are not all rewritten in one update. A poll rather than a names version:
+-- renames, station removals and train invalidation each come from their own handler, and a row would need all three.
 local NAME_REFRESH = 600
 
 --- @param key uint
