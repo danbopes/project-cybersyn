@@ -37,16 +37,37 @@ local function setting_flip(bits, n)
 	return bit_extract(bits, n) == 0
 end
 
+-- The drop-down's modes in order: its caption, the mode-description-<key> locale key, and whether the mode takes a
+-- network and an allow-list.
+local MODES = {
+	{ op = MODE_PRIMARY_IO, caption = "comb1", key = "station", network = true, allow_list = true },
+	{ op = MODE_DEPOT, caption = "depot", key = "depot", network = true },
+	{ op = MODE_REFUELER, caption = "refueler", key = "refueler", network = true, allow_list = true },
+	{ op = MODE_SECONDARY_IO, caption = "comb2", key = "station-control" },
+	{ op = MODE_SECONDARY_INVENTORY, caption = "secondary-inventory", key = "secondary-inventory", network = true },
+	{ op = MODE_WAGON, caption = "wagon-manifest", key = "wagon-manifest" },
+}
+local MODE_INDEX = {}
+local MODE_ITEMS = {}
+for i, mode in ipairs(MODES) do
+	MODE_INDEX[mode.op] = i
+	MODE_ITEMS[i] = { "cybersyn-gui." .. mode.caption }
+end
+
+--- @param mode string? get_comb_gui_settings' mode
+local function uses_allow_list(mode)
+	local m = MODES[MODE_INDEX[mode]]
+	return m ~= nil and m.allow_list == true
+end
 
 ---@param main_window LuaGuiElement
 ---@param selected_index int
 local function set_visibility(main_window, selected_index)
-	local is_station = selected_index == 1
-	local is_depot = selected_index == 2
-	local is_wagon = selected_index == 6
-	local is_secondary_inventory = selected_index == 5
-	local uses_network = is_station or is_depot or selected_index == 3 or is_secondary_inventory
-	local uses_allow_list = is_station or selected_index == 3
+	local mode = MODES[selected_index]
+	local op = mode and mode.op
+	local is_station = op == MODE_PRIMARY_IO
+	local is_secondary_inventory = op == MODE_SECONDARY_INVENTORY
+	local uses_network = mode ~= nil and mode.network == true
 
 	local vflow = main_window.frame.vflow --[[@as LuaGuiElement]]
 	local top_flow = vflow.top --[[@as LuaGuiElement]]
@@ -57,21 +78,21 @@ local function set_visibility(main_window, selected_index)
 	local depot_settings = bottom_flow.depot --[[@as LuaGuiElement]]
 
 	top_flow.is_pr_switch.visible = is_station
-	vflow.mode_description.caption = selected_index >= 1 and { "cybersyn-gui.mode-description-" .. selected_index } or ""
+	vflow.mode_description.caption = mode and { "cybersyn-gui.mode-description-" .. mode.key } or ""
 	vflow.network_label.visible = uses_network
 	-- The planner always puts an inventory combinator on its station's network, so a picker here would do nothing.
 	vflow.network_inherited.visible = is_secondary_inventory
 	bottom_flow.network.visible = uses_network and not is_secondary_inventory
-	first_settings.allow_list.visible = uses_allow_list
+	first_settings.allow_list.visible = mode ~= nil and mode.allow_list == true
 	first_settings.is_stack.visible = is_station
 	second_settings.enable_inactive.visible = is_station
 	second_settings.enable_circuit_condition.visible = is_station
 	second_settings.disable_manifest_condition.visible = is_station
-	mode_settings_flow.enable_slot_barring.visible = is_wagon
-	mode_settings_flow.enable_train_count.visible = (selected_index == 4)
-	mode_settings_flow.enable_manual_inventory.visible = (selected_index == 4)
+	mode_settings_flow.enable_slot_barring.visible = op == MODE_WAGON
+	mode_settings_flow.enable_train_count.visible = op == MODE_SECONDARY_IO
+	mode_settings_flow.enable_manual_inventory.visible = op == MODE_SECONDARY_IO
 
-	depot_settings.visible = is_depot
+	depot_settings.visible = op == MODE_DEPOT
 end
 
 
@@ -253,9 +274,8 @@ end
 local function update_allow_list_section(player_index, comb_unit_number)
 	local layoutSection = get_allow_list_section(player_index)
 	if not layoutSection then return end
-	local selected_index, signal, switch_state, bits = get_comb_gui_settings(storage.to_comb[comb_unit_number])
-	--only for Station (1) and Refueler (3)
-	if ((selected_index == 1 or selected_index == 3) and setting_flip(bits, SETTING_DISABLE_ALLOW_LIST)) then
+	local mode, signal, switch_state, bits = get_comb_gui_settings(storage.to_comb[comb_unit_number])
+	if uses_allow_list(mode) and setting_flip(bits, SETTING_DISABLE_ALLOW_LIST) then
 		layoutSection.visible = true
 		-- layoutSection.allow_list_label.caption = generate_stop_layout(comb_unit_number)
 		local flow = layoutSection.allow_list_items
@@ -279,21 +299,9 @@ local function handle_drop_down(e)
 
 	set_visibility(element.parent.parent.parent.parent, element.selected_index)
 
-	if element.selected_index == 1 then
-		set_comb_operation(comb, MODE_PRIMARY_IO)
-	elseif element.selected_index == 2 then
-		set_comb_operation(comb, MODE_DEPOT)
-	elseif element.selected_index == 3 then
-		set_comb_operation(comb, MODE_REFUELER)
-	elseif element.selected_index == 4 then
-		set_comb_operation(comb, MODE_SECONDARY_IO)
-	elseif element.selected_index == 5 then
-		set_comb_operation(comb, MODE_SECONDARY_INVENTORY)
-	elseif element.selected_index == 6 then
-		set_comb_operation(comb, MODE_WAGON)
-	else
-		return
-	end
+	local mode = MODES[element.selected_index]
+	if not mode then return end
+	set_comb_operation(comb, mode.op)
 
 	combinator_update(storage, comb)
 
@@ -419,13 +427,13 @@ function gui_opened(event, player, comb, is_ghost)
 	combinator_update(storage, comb, true)
 
 	local rootgui = player.gui.screen
-	local selected_index, signal, switch_state, bits = get_comb_gui_settings(comb)
+	local mode, signal, switch_state, bits = get_comb_gui_settings(comb)
+	local selected_index = MODE_INDEX[mode] or 0
 
 	local showLayout = false
 	local layoutItems = {}
 	local layoutTooltip = nil
-	--only for Station (1) and Refueler (3)
-	if ((selected_index == 1 or selected_index == 3) and setting_flip(bits, SETTING_DISABLE_ALLOW_LIST)) then
+	if uses_allow_list(mode) and setting_flip(bits, SETTING_DISABLE_ALLOW_LIST) then
 		showLayout = true
 		layoutItems = generate_stop_layout_items(comb.unit_number)
 		layoutTooltip = generate_stop_layout_text(comb.unit_number)
@@ -536,14 +544,7 @@ function gui_opened(event, player, comb, is_ghost)
 											handler = handle_drop_down,
 											tags = { id = comb.unit_number },
 											selected_index = selected_index,
-											items = {
-												{ "cybersyn-gui.comb1" },
-												{ "cybersyn-gui.depot" },
-												{ "cybersyn-gui.refueler" },
-												{ "cybersyn-gui.comb2" },
-												{ "cybersyn-gui.secondary-inventory" },
-												{ "cybersyn-gui.wagon-manifest" },
-											},
+											items = MODE_ITEMS,
 										},
 										{
 											type = "switch",

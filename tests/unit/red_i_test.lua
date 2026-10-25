@@ -14,6 +14,12 @@ test("is_secondary_inventory_op: AND and OR are one mode, nothing else is", func
 	assert_eq(MODE_SECONDARY_INVENTORY_FAILED, "OR")
 end)
 
+test("get_comb_gui_settings: the red S and red I variants read as their mode", function()
+	local function mode(o) return (get_comb_gui_settings(F.comb(1, o, { list = {} }))) end
+	assert_eq({ mode(MODE_PRIMARY_IO_FAILED_REQUEST), mode(MODE_PRIMARY_IO_ACTIVE), mode(MODE_SECONDARY_INVENTORY_FAILED),
+		mode(MODE_DEPOT) }, { MODE_PRIMARY_IO, MODE_PRIMARY_IO, MODE_SECONDARY_INVENTORY, MODE_DEPOT })
+end)
+
 test("no provider: only the inventory that requests shows the red I; the station shows the red S as before", function()
 	H.fresh()
 	local inv = { list = { sig("iron-plate", -5000) } }
