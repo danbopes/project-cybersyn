@@ -595,12 +595,7 @@ end
 function util.handle.hover_enter(player, player_data, refs, e)
 	local elem = e.element
 	if not elem or not elem.valid then return end
-	local scope = elem.tags.hover_scope
-	if not scope then
-		local parent = elem.parent
-		scope = parent and parent.name or nil
-	end
-	player_data.hover = { tick = game.tick, scope = scope, index = elem.index }
+	player_data.hover = { tick = game.tick, scope = elem.tags.hover_scope, index = elem.index }
 	-- A pointer that arrives after a row-changing click in the same tick holds the rows it now rests on.
 	player_data.hold_released_tick = nil
 end
@@ -646,7 +641,10 @@ function util.hoverable(def, scope)
 	return def
 end
 
---- True while the cursor is over an element of `scope`, with a timeout in case a leave event is lost.
+--- True while the cursor is over an element of `scope`. The API cannot report the cursor position, so three patches
+--- keep the recorded hover honest: HOVER_HOLD_TICKS ends a hold whose leave never arrives (a destroyed or rebuilt element
+--- raises no on_gui_leave); release_hold lifts it for the rest of the tick of a row-changing click, until the next
+--- hover_enter; touch_hover restarts the timeout on clicks, so repeated clicks on one element keep the hold.
 --- @param player_data PlayerData
 --- @param scope string
 --- @return boolean

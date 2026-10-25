@@ -528,7 +528,7 @@ test("hover_enter/hover_leave/touch_hover keep one hover record per player", fun
 	local u = util()
 	game.tick = 70
 	local parent = H.element({ name = "rows" })
-	local elem = parent.add({ type = "button" })
+	local elem = parent.add({ type = "button", tags = { hover_scope = "rows" } })
 	local pd = {}
 	u.handle.hover_enter(nil, pd, nil, { element = elem })
 	assert_eq(pd.hover, { tick = 70, scope = "rows", index = 1 })
@@ -546,7 +546,8 @@ test("hover_enter/hover_leave/touch_hover keep one hover record per player", fun
 	game.tick = 90
 	u.touch_hover({ element = tagged, player_index = 1 })
 	assert_eq(pd.hover.tick, 90)
-	u.touch_hover({ element = elem, player_index = 1 })
+	local untagged = parent.add({ type = "button" })
+	u.touch_hover({ element = untagged, player_index = 1 })
 	assert_eq(pd.hover.tick, 90)
 end)
 
