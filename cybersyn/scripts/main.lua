@@ -7,7 +7,8 @@ local diag = require("scripts.diag")
 local stats = require("scripts.stats")
 local lint = require("scripts.lint")
 
--- Ticks between chunks of the Refresh allow-lists job while manager updates are off.
+-- Ticks between chunks of the Refresh allow-lists job and confirm-button expiry checks, whatever the manager's
+-- update rate (updates at 0 too).
 local REPAIR_JOB_NTH = 10
 
 local ceil = math.ceil
@@ -950,13 +951,8 @@ local function register_tick()
 		add(manager_nth, function()
 			manager.tick(storage)
 		end)
-	else
-		-- Without manager updates the Refresh allow-lists job still runs in chunks, on a handler of its own.
-		add(REPAIR_JOB_NTH, function()
-			local m = storage.manager
-			if m and m.repair_job then manager.job_tick() end
-		end)
 	end
+	add(REPAIR_JOB_NTH, manager.repair_tick)
 	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
 	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
 	-- tick is a manager tick.

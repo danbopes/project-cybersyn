@@ -394,7 +394,6 @@ local function update(manager_data)
 		end
 	end
 	extras.tick(manager_data)
-	repair.tick(manager_data)
 	explain.tick(manager_data)
 	relative.tick(manager_data)
 	return ran
@@ -448,13 +447,17 @@ end
 manager_gui.hud_tick = extras.hud_tick
 manager_gui.HUD_TICKS = extras.HUD_TICKS
 
---- The Refresh allow-lists job while manager updates are off (scripts/main.lua's REPAIR_JOB_NTH handler).
-manager_gui.job_tick = repair.job_tick
+--- Armed confirm buttons expire and the Refresh allow-lists job advances, every REPAIR_JOB_NTH (scripts/main.lua).
+function manager_gui.repair_tick()
+	local m = storage.manager
+	if not m then return end
+	repair.expire(m)
+	repair.job_tick()
+end
 
 --- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
 function manager_gui.export_tick()
 	manager.log_tab.export_tick()
-	if storage.manager then repair.expire(storage.manager) end
 end
 
 --- on_player_display_resolution_changed / on_player_display_scale_changed.

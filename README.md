@@ -237,7 +237,7 @@ Turn on "Manager: Unserved line on screen" in your per-player settings for a sma
 
 Actions that change the game state sit where they apply: **Send home** on the train panel and the Trains pane, **Recount deliveries** on the stop panel. They and the console commands `/cybersyn-fix-priorities`, `/cybersyn-abolish-same-depot`, `/cybersyn-recalculate-train-size` and `/cybersyn-refresh-allow-lists` are allowed for the players chosen by the map setting "Manager actions allowed for": Admins by default, Everyone or Nobody. Single player is always allowed. Every action is printed to the force and written to the log.
 
-`/cybersyn-refresh-allow-lists` re-reads the layout of every train, up to 50 trains per manager update (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow-list knows them. `/cybersyn-find-problems` and `/cybersyn-reset-gui` change no game state, and are open to everyone.
+`/cybersyn-refresh-allow-lists` re-reads the layout of every train, up to 50 trains every 10 ticks (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow-list knows them. `/cybersyn-find-problems` and `/cybersyn-reset-gui` change no game state, and are open to everyone.
 
 Other mods can read the same data through the read-only remote interface `cybersyn-query` (`query_unserved`, `query_counts`, `query_station`, `query_train`), which returns plain tables for HUDs and overlays. Each `query_unserved` call without a `requester` walks the whole diagnostics table, so poll it on a timer of a second or more, not every tick.
 

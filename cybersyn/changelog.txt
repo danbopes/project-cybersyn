@@ -7,7 +7,7 @@ Date: 2026-10-23
     - Each combinator mode has a short description under the Mode drop-down
     - New map setting "Reserve locked slots per item type" (off by default): when on, a provider's locked slots are reserved once for each item type in the manifest, so a multi-item delivery keeps room for every item; fluids do not count
     - Optional alert when a train leaves a provider carrying an item type its manifest did not name (map setting "Alert for unexpected cargo pickup", off by default)
-    - New command /cybersyn-refresh-allow-lists re-reads the layout of every train, up to 50 trains per manager update (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow list knows them
+    - New command /cybersyn-refresh-allow-lists re-reads the layout of every train, up to 50 trains every 10 ticks (fewer on large bases, where a train with a unique layout is checked against every station), so every station's allow list knows them
     - New command /cybersyn-reset-gui centers the manager window, sizes it for your screen again and closes the filter row
     - (Manager) Rebuilt Cybersyn Manager for large bases: Overview, Inventory, Stations, Trains and Log tabs, each list paged to fit the window, with data gathered a few stations per update and only while a window is open
     - (Manager) Overview tab, shown first: four tiles (Unserved stations, Fleet headroom, Stations failing, Throughput) above an Unserved requests table that lists each waiting request with its reason, best provider, stock against what it needs, the requester it lost to and how long it has waited; each tile opens the list it counts; period selector Last 10 min / Last hour / Last 24 h
