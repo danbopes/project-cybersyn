@@ -128,7 +128,6 @@ function inventory_tab.create()
 			name = "manager_inventory_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.inventory" },
-			handler = { [defines.events.on_gui_click] = inventory_tab.handle.on_inventory_tab_selected },
 		},
 		content = {
 			name = "manager_inventory_content_frame",
@@ -940,12 +939,6 @@ end
 inventory_tab.handle = {}
 
 inventory_tab.wrapper = util.wrapper
-
----@param player LuaPlayer
----@param player_data PlayerData
-function inventory_tab.handle.on_inventory_tab_selected(player, player_data)
-	player_data.selected_tab = TAB
-end
 
 --- A grid's sort button: selects that column for the grid; the active one again goes back to item order.
 --- @param e EventData.on_gui_click

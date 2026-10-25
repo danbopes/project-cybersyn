@@ -380,3 +380,14 @@ test("subject_key and refuel_from: trains by negated id; tracking from first sig
 	storage.stats = nil
 	assert_eq(lint.refuel_from({ seen_tick = 5000 }), 5000)
 end)
+
+test("progress: 0 before a job, the job's share while it runs, nil once a pass completed", function()
+	local saved = storage.manager
+	storage.manager = {}
+	assert_eq(lint.progress(), 0)
+	storage.manager.lint = { job = { sids = { 1, 2, 3 }, tids = { 4 }, i = 2, ti = 1 } }
+	assert_eq(lint.progress(), 0.75)
+	storage.manager.lint.tick = 10
+	assert_nil(lint.progress())
+	storage.manager = saved
+end)

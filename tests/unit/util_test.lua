@@ -1049,6 +1049,20 @@ test("pager_click: steps, shift steps of 10, clamps at 1, last and first", funct
 	assert_eq(calls, 7)
 end)
 
+test("sort_click: sorts the tagged tab by the tagged column, toggling on a repeat", function()
+	local u = util()
+	local calls = 0
+	u.set_rerender(function() calls = calls + 1 end)
+	local pd = {}
+	local function click(tags) u.handle.sort_click(nil, pd, nil, { element = { tags = tags } }) end
+	click({ sort_tab = "trains_tab", column = "name" })
+	assert_eq(pd.sort.trains_tab, { column = "name", ascending = true })
+	click({ sort_tab = "trains_tab", column = "name" })
+	assert_eq(pd.sort.trains_tab, { column = "name", ascending = false })
+	click({ column = "name" })
+	assert_eq(calls, 2)
+end)
+
 test("sync_sort_header: active column selected with the stored direction, others at their default", function()
 	local u = util()
 	local cell = H.element({ name = "cell" })
@@ -1154,6 +1168,14 @@ test("slot_table_build_from_deliveries: incoming green, outgoing blue", function
 	assert_eq(defs[2].tooltip[4], { "cybersyn-gui.incoming" })
 end)
 
+test("slot builders: a look sets the slot and count styles and highlights its selected item", function()
+	local u = util()
+	local look = { prefix = "p_", selected_prefix = "s_", count = "c", selected = "coal" }
+	local defs = u.slot_table_build_from_deliveries(slot_station(), look)
+	assert_eq({ defs[1].style, defs[2].style, defs[2].children[1].style }, { "s_blue", "p_green", "c" })
+	assert_eq(u.slot_table_build_from_station(slot_station(), look)[2].style, "s_green")
+end)
+
 test("slot_table_build_from_control_signals: sorted virtual signals with a sprite, then thresholds", function()
 	local u = util()
 	local defs = u.slot_table_build_from_control_signals(slot_station())
@@ -1183,4 +1205,12 @@ test("natural_key: digit runs compare by value, leading zeros ignored", function
 	end)
 	assert_eq(names, { "a9b", "a10b", "stn", "stn-1", "stn-002", "stn-2", "stn-10", "x0" })
 	assert_eq(util.natural_key("000"), util.natural_key("0"))
+end)
+
+test("ack_until_tick: a day, an hour with shift, until clear with control", function()
+	local u = util()
+	game.tick = 100
+	assert_eq(u.ack_until_tick({}), 100 + 24 * 216000)
+	assert_eq(u.ack_until_tick({ shift = true }), 100 + 216000)
+	assert_nil(u.ack_until_tick({ control = true, shift = true }))
 end)

@@ -553,7 +553,9 @@ end
 
 --- Item maps fold into weighted sums for their signatures: each item weighs its crafting-order rank (distinct per
 --- item and quality), so a change of any count or of the item set changes the sums; building a string per item cost
---- a live read's refresh 20-40 µs on a 10-item requester.
+--- a live read's refresh 20-40 µs on a 10-item requester. A checksum, not an exact signature: different maps can
+--- collide (counts 1,3,1 and 2,1,2 on ranks 1,2,3; two items outside item_order, which share one rank, trading
+--- amounts) and leave a section stale until something else changes. Do not use it where an exact comparison matters.
 --- @return string
 local function content_sig(n, a, b, c)
 	return string.format("%d:%.17g:%.17g:%.17g", n, a, b, c)
@@ -1659,18 +1661,11 @@ local function train_model(pd, state)
 	local entity = train and train.entity
 	if not (entity and entity.valid) then return nil end
 	local state_now = entity.state
-	-- The current record moves when the train leaves a stop, i.e. with a state change; a schedule edit or an
-	-- interrupt raises on_train_schedule_changed, which drops state.schedule. Anything else reads nothing.
-	if not state.schedule then
-		read_schedule(state, entity)
-		state.current = nil
-	end
-	if state.current == nil or state.current_state ~= state_now then
-		state.current = entity.get_schedule().current
-		state.current_state = state_now
-	end
+	-- A schedule edit or an interrupt raises on_train_schedule_changed, which drops state.schedule. The current record
+	-- is read every render: go_to_station moves it with no event and, on a moving train, no state change (2.1.23).
+	if not state.schedule then read_schedule(state, entity) end
 	local now = game.tick
-	local current = state.current
+	local current = entity.get_schedule().current
 	local m = {
 		kind = "train",
 		id = state.id,
@@ -2056,7 +2051,7 @@ end
 -- top and bottom all land on the centre, over the train the view follows; there is no relative type for the docked
 -- pane), so the train panel is a screen frame placed flush right of that pane. The pane's width cannot be
 -- read: it is derived from how it was opened and the item groups with an item unlocked for the force (the Fuel tab's
--- ghost cursor selection; xlogic.train_pane_right).
+-- ghost cursor selection; xlogic.train_pane_right), with constants measured on Factorio 2.1.23.
 local ANCHORS = {
 	stop = { gui = defines.relative_gui_type.train_stop_gui, position = defines.relative_gui_position.right, type = "train-stop" },
 	-- A wagon opens its own window (in the middle of the screen), not the docked pane: the panel anchors to it.
@@ -2067,8 +2062,10 @@ local ANCHORS = {
 -- The mount for a rolling stock window of its own; anything else (a locomotive) uses the screen frame.
 local WAGON_MOUNT = { ["cargo-wagon"] = "cargo" }
 -- The stop panel's body height, in logical px: an anchored panel taller than the train-stop window (767 px at 1080p
--- scale 1) stretches that window up under the remote view's title bar. Body + subheader + footer + paddings stay below it.
+-- scale 1, measured on Factorio 2.1.23) stretches that window up under the remote view's title bar. Body + subheader +
+-- footer + paddings stay below it.
 local STOP_BODY_MAX = 600
+local STOP_BODY_MIN = 120
 local STOP_SCREEN_MARGIN = 300
 
 --- @param player LuaPlayer
@@ -2191,9 +2188,11 @@ end
 
 --- How the docked pane opening now for `entity` is laid out. Its Fuel tab shows the character's inventory while the
 --- character can reach the locomotive, and is disabled when this very tick switched the player from the character to
---- remote view (the game does that to open a train from the character): both fit the narrow pane. Otherwise it shows
---- the ghost cursor selection. Also returns the groups of that selection (0 without a burner, which has
---- no Fuel tab).
+--- remote view (the game does that to open a train from the character): both fit the narrow pane. That event order is
+--- observed engine timing (Factorio 2.1.23), not API: the remote_entered_tick stamp covers on_gui_opened arriving
+--- second and relative.on_controller_changed's re-place covers it arriving first, so neither can go alone. Otherwise
+--- it shows the ghost cursor selection. Also returns the groups of that selection (0 without a burner, which has no
+--- Fuel tab).
 --- @param player LuaPlayer
 --- @param pd PlayerData
 --- @param entity LuaEntity?
@@ -2228,7 +2227,7 @@ function relative.fit(player, panel)
 	local screen = math.floor(h / scale)
 	local height
 	if panel.tags.kind == "stop" then
-		height = math.min(STOP_BODY_MAX, screen - STOP_SCREEN_MARGIN)
+		height = math.max(STOP_BODY_MIN, math.min(STOP_BODY_MAX, screen - STOP_SCREEN_MARGIN))
 	else
 		height = xlogic.train_body_cap(h, scale, panel.banner.visible and xlogic.TRAIN_PANEL_BANNER or 0)
 	end
@@ -2381,7 +2380,7 @@ function relative.on_gui_opened(e)
 	if not (pd and player) then return end
 	local kind, id, cybersyn = subject_of(entity)
 	if not kind then return end
-	if not cybersyn then
+	if not (cybersyn and settings.get_player_settings(player)["cybersyn-manager-panels"].value) then
 		relative.close(player, pd)
 		return
 	end
@@ -2398,9 +2397,10 @@ function relative.on_gui_closed(e)
 	relative.close(game.get_player(e.player_index), pd)
 end
 
---- Whether the player still has the vanilla window of the panel's subject open. A window can close without an
---- on_gui_closed (a save loaded with it open opens no entity GUI), and the train panel is a screen frame nothing else
---- hides.
+--- Whether the player still has the vanilla window of the panel's subject open. on_gui_closed is the main path that
+--- closes a panel; this poll is the fallback for the cases no event reports: a save loaded with the window open opens
+--- no entity GUI, a wagon's train id changes (coupling or uncoupling) while its window stays open, and the train panel
+--- is a screen frame nothing else hides.
 --- @param player LuaPlayer
 --- @param open {kind: "stop"|"train", id: uint}
 --- @return boolean
@@ -2515,8 +2515,9 @@ function relative.on_display_changed(player, pd)
 end
 
 --- on_player_controller_changed: the game switches from the character to remote view to open a train from the
---- character, in the same tick as the locomotive's on_gui_opened (either order); a panel opened earlier in this tick
---- is placed again for the narrow pane.
+--- character, in the same tick as the locomotive's on_gui_opened (either order, observed on Factorio 2.1.23); a panel
+--- opened earlier in this tick is placed again for the narrow pane. The stamp and the re-place depend on each other
+--- (pane_for).
 --- @param player LuaPlayer
 --- @param pd PlayerData
 --- @param e EventData.on_player_controller_changed

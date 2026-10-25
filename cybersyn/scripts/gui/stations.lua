@@ -38,7 +38,6 @@ local CHIPS = "manager_stations_status_flow"
 local CHIP_ROW = "manager_stations_chip_row"
 local CHIPS2 = "manager_stations_chip_flow2"
 local UNLIMITED = collector.UNLIMITED
-local ROW_HEIGHT = sizing.ROW_HEIGHT[TAB]
 local SLOT = 32
 -- Banner, subheader, column header and subfooter (styles cybersyn_tab_subheader, cybersyn_list_header,
 -- cybersyn_list_subfooter).
@@ -179,7 +178,7 @@ local function header_cell(column, width, selected)
 		type = "flow",
 		direction = "horizontal",
 		style_mods = { width = width, horizontal_align = RIGHT[column] and "right" or "left", vertical_align = "center" },
-		templates.sort_checkbox(column, caption, tooltip, selected, stations_tab.handle.on_sort_checkbox_changed),
+		templates.sort_checkbox(TAB, column, caption, tooltip, selected, util.handle.sort_click),
 	}
 end
 
@@ -194,7 +193,6 @@ function stations_tab.create()
 			name = "manager_stations_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.stations" },
-			handler = stations_tab.handle.on_stations_tab_selected,
 		},
 		content = {
 			name = "manager_stations_content_frame",
@@ -256,6 +254,7 @@ local function finite_limit(st)
 	return limit < UNLIMITED and limit or nil
 end
 
+-- Shifts a signed 32-bit mask to a non-negative 10-digit number so its zero-padded string sorts in signed order.
 local OFFSET = 2147483648
 
 -- Natural sort keys of station names ("stn-2" before "stn-10"): a pure function of the name, so a cache that differs
@@ -838,8 +837,6 @@ local NONE_CAPTION = { "cybersyn-gui.none-short" }
 local NEVER_CAPTION = { "cybersyn-gui.never" }
 -- Findings a Problems cell's tooltip spells out; the rest are counted.
 local TOOLTIP_FINDINGS = 6
-local HOUR = 216000
-local DAY = 24 * HOUR
 -- Subjects that have a row of their own elsewhere (stations here, the rest on Trains); every other subject is a stop
 -- or combinator the registry reports, listed after the stations.
 local NOT_REGISTRY = {
@@ -897,13 +894,8 @@ end
 --- Progress of the first lint pass in percent while there is no result yet, nil once there is one.
 --- @return int?
 local function lint_pending()
-	local s = storage.manager.lint
-	if s and (s.pass or 0) > 0 then return nil end
-	local job = s and s.job
-	if not job then return 0 end
-	local n = #(job.sids or {}) + #(job.dids or {}) + #(job.fids or {}) + #(job.tids or {})
-	local done = (job.i or 0) + (job.ti or 0)
-	return math.floor(100 * done / math.max(n, 1))
+	local p = lint.progress()
+	return p and math.floor(100 * p)
 end
 
 --- @param a DiagAck
@@ -1035,21 +1027,24 @@ local function registry_rows(px, f)
 		-- The entity went without an event the registry hears (a script destroy that raised none): no row.
 		if gone and not gone.valid then goto continue end
 		local entity = entity_of(e.f)
-		local name
+		local name, parts
 		if entity then
 			if entity.type == "train-stop" then
 				name = entity.backer_name
 			else
 				local pos = entity.position
-				name = "[item=" .. COMBINATOR_NAME .. "] " .. math.floor(pos.x) .. ", " .. math.floor(pos.y)
+				parts = { lead = { "item/" .. COMBINATOR_NAME }, text = math.floor(pos.x) .. ", " .. math.floor(pos.y) }
+				name = "[item=" .. COMBINATOR_NAME .. "] " .. parts.text
 			end
 		else
 			name = "#" .. e.f.id
 		end
 		-- Without its entity a row cannot tell its surface: a surface filter hides it.
 		local pass = not (f.surface and (not entity or entity.surface_index ~= f.surface))
-		if pass and f.terms then pass = util.terms_match(helpers.multilingual_to_lower(name), f.terms) end
-		if pass then out[#out + 1] = { e = e, entity = entity, name = name } end
+		if pass and f.terms then
+			pass = util.terms_match(helpers.multilingual_to_lower(parts and parts.text or name), f.terms)
+		end
+		if pass then out[#out + 1] = { e = e, entity = entity, name = name, parts = parts } end
 		::continue::
 	end
 	return out
@@ -1064,7 +1059,7 @@ end
 --- A registry row in the shape of a station row (rows are reused across both): the stop's name or the combinator's
 --- position linked to the entity, "Train stop" or "Combinator" in the Status column, the finding in the Problems
 --- column, the other cells empty.
---- @param row {e: ProblemEntry, entity: LuaEntity?, name: string}
+--- @param row {e: ProblemEntry, entity: LuaEntity?, name: string, parts: RichNameParts?}
 --- @param ctx table
 --- @return table
 local function registry_model(row, ctx)
@@ -1079,7 +1074,7 @@ local function registry_model(row, ctx)
 		registry = true,
 		key = registry_key(f),
 		name = row.name,
-		parts = parse_name(row.name),
+		parts = row.parts or parse_name(row.name),
 		link = { kind = kind, id = f.id },
 		status_sig = "registry:" .. subject,
 		status_sprite = "flib_indicator_white",
@@ -1387,9 +1382,16 @@ local function last_tooltip(m)
 	return m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" }
 end
 
---- Slot buttons of the 32 px rows: clickable items with the standard item click semantics and hover-hold, the
---- filtered item highlighted rather than hidden.
-local function decorate_slots(defs, item)
+--- The 32 px rows' slots; the filtered item is highlighted rather than hidden.
+--- @param item string?
+--- @return SlotLook
+local function slot_look(item)
+	return { prefix = "cybersyn_slot_32_", selected_prefix = "cybersyn_selected_slot_32_", count = "cybersyn_slot_32_count",
+		selected = item }
+end
+
+--- Slot buttons of the 32 px rows: clickable items with the standard item click semantics and hover-hold.
+local function decorate_slots(defs)
 	for _, def in pairs(defs) do
 		local tags = def.tags
 		local hash = tags and tags.kind == "item" and tags.id or nil
@@ -1401,15 +1403,6 @@ local function decorate_slots(defs, item)
 			util.hoverable(def, SCROLL)
 			def.tooltip = { "", def.tooltip, "\n", { "cybersyn-gui.item-click-hint" } }
 		end
-		local count = def.children and def.children[1]
-		if count then count.style = "cybersyn_slot_32_count" end
-		local style = def.style
-		if hash and hash == item then
-			style = string.gsub(style, "^ltnm_small_slot_button_", "cybersyn_selected_slot_32_")
-		else
-			style = string.gsub(style, "^ltnm_small_slot_button_", "cybersyn_slot_32_")
-		end
-		def.style = style
 	end
 	return defs
 end
@@ -1495,12 +1488,13 @@ end
 local SLOT_TABLES = {
 	pr = function(row, item, w)
 		if not row then return {} end
-		local defs = util.slot_table_build_from_station({ provided = row.provided, requested = row.requested, wait = row.st.wait })
-		return fit_slots(decorate_slots(defs, item), w.pr_slots)
+		local defs = util.slot_table_build_from_station({ provided = row.provided, requested = row.requested, wait = row.st.wait },
+			slot_look(item))
+		return fit_slots(decorate_slots(defs), w.pr_slots)
 	end,
 	dl = function(row, item, w)
 		if not row or row.index ~= 0 then return {} end
-		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(row.st), item), w.dl_slots)
+		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(row.st, slot_look(item))), w.dl_slots)
 	end,
 }
 local NO_SLOTS = { pr = "", dl = "" }
@@ -1678,7 +1672,7 @@ local function update_row(row, inv, m, cell, item, hold, minute, sigs, w)
 		local sig = sigs[name]
 		if table_elem and sig_of[name] ~= sig then
 			local result = sync_slots(table_elem, build(inv, item, w), slot_state(slots, name), hold, minute)
-			-- A hold deferred a structural change, so the table is retried next update.
+			-- A hold deferred a structural change (util.hoverable), so the table is retried next update.
 			sig_of[name] = result ~= "held" and sig or nil
 		end
 	end
@@ -1737,7 +1731,6 @@ local function row_def(inv, m, color, item, w)
 	return util.hoverable({
 		type = "frame",
 		style = "cybersyn_station_row_" .. color,
-		style_mods = { height = ROW_HEIGHT },
 		direction = "horizontal",
 		tags = { station_id = inv and inv.st.id or nil, unit = inv and inv.unit or nil, registry = m.registry and m.key or nil },
 		name,
@@ -2103,9 +2096,7 @@ function stations_tab.build(map_data, player_data)
 			update = function(elem)
 				local cell = old_cells[key] or {}
 				if cell.color ~= color then
-					-- Assigning a style drops style_mods: the fixed height is written again.
 					elem.style = "cybersyn_station_row_" .. color
-					elem.style.height = ROW_HEIGHT
 					cell.color = color
 				end
 				update_row(elem, inv, m, cell, item, hold, minute, inv and slot_sigs(inv, item, minute) or NO_SLOTS, w)
@@ -2254,14 +2245,7 @@ function stations_tab.handle.on_lint_ack_click(player, player_data, refs, e)
 		if not t[3] then open = true end
 	end
 	if open then
-		local until_tick
-		if e.control then
-			until_tick = nil
-		elseif e.shift then
-			until_tick = game.tick + HOUR
-		else
-			until_tick = game.tick + DAY
-		end
+		local until_tick = util.ack_until_tick(e)
 		for _, t in ipairs(targets) do
 			if not t[3] then diag.ack("lint", t[1], t[2], player.index, until_tick) end
 		end
@@ -2282,25 +2266,6 @@ function stations_tab.set_chip(player_data, chip)
 	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
 	player_data.stations_chip = chip
 	util.reset_page(player_data, TAB)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
-function stations_tab.handle.on_stations_tab_selected(player, player_data)
-	player_data.selected_tab = "stations_tab"
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
----@param refs table<string, LuaGuiElement>
----@param e EventData.on_gui_checked_state_changed
-function stations_tab.handle.on_sort_checkbox_changed(player, player_data, refs, e)
-	local element = e.element
-	if not element or not element.tags then return end
-	local column = element.tags.column
-	if not column then return end
-	util.set_sort(player_data, TAB, column)
-	util.rerender(player, player_data)
 end
 
 gui.add_handlers(stations_tab.handle, stations_tab.wrapper)

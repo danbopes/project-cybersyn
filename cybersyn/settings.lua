@@ -166,4 +166,11 @@ data:extend({
 		setting_type = "runtime-per-user",
 		default_value = false,
 	},
+	{
+		type = "bool-setting",
+		name = "cybersyn-manager-panels",
+		order = "ae",
+		setting_type = "runtime-per-user",
+		default_value = true,
+	},
 })

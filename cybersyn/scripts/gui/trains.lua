@@ -130,9 +130,8 @@ function trains_tab.create()
 		local locale = string.gsub(column, "_", "-")
 		local inner
 		if SORTABLE[column] then
-			inner = templates.sort_checkbox(column, { "cybersyn-gui.trains-col-" .. locale },
-				{ "cybersyn-gui.trains-sort-" .. locale }, column == DEFAULT_COLUMN,
-				trains_tab.handle.on_trains_sort_checkbox_changed)
+			inner = templates.sort_checkbox(TAB, column, { "cybersyn-gui.trains-col-" .. locale },
+				{ "cybersyn-gui.trains-sort-" .. locale }, column == DEFAULT_COLUMN, util.handle.sort_click)
 		else
 			inner = templates.column_label({ "cybersyn-gui.trains-col-" .. locale },
 				{ "cybersyn-gui.trains-col-" .. locale .. "-tooltip" })
@@ -150,7 +149,6 @@ function trains_tab.create()
 			name = "manager_trains_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.trains" },
-			handler = { [defines.events.on_gui_click] = trains_tab.handle.on_trains_tab_selected },
 		},
 		content = {
 			name = CONTENT,
@@ -237,7 +235,7 @@ function trains_tab.create()
 	}
 end
 
---- Where the train is headed or parked, from its status; the STATUS_* globals are not yet defined at require time.
+--- Where the train is headed or parked, from its status.
 --- @param tr SnapshotTrain
 --- @return "station"|"refueler"|"depot"|nil kind
 --- @return uint? id
@@ -549,8 +547,8 @@ function trains_tab.query(map_data, player_data)
 	if not SORTABLE[column] then column = DEFAULT_COLUMN end
 	local names = new_name_cache(snapshot)
 	local qsig = table.concat({
-		tostring(snapshot.trains_version), tostring(snapshot.tick), f.terms and table.concat(f.terms, " ") or "",
-		f.item or "", f.network or "", f.mask, f.surface or "", f.station or "", column, ascending and "+" or "-",
+		tostring(snapshot.trains_version), tostring(snapshot.tick), util.filter_signature(f), column,
+		ascending and "+" or "-",
 	}, "\1")
 	local cache = player_data.trains_query
 	if not (cache and cache.sig == qsig) then
@@ -678,9 +676,7 @@ local function read_fuel(train_entity)
 				local best
 				local burning = burner.currently_burning
 				if burning then
-					local name = burning.name
-					if type(name) ~= "string" then name = name and name.name end
-					best = name and fuel_of(name)
+					best = fuel_of(burning.name.name)
 				end
 				local inv = burner.inventory
 				for _, item in pairs(inv.get_contents()) do
@@ -1192,9 +1188,7 @@ local function update_row(row, view, m, color, w, budget)
 	if m.color ~= color then
 		local style = "cybersyn_train_row_" .. color
 		if row.style.name ~= style then
-			-- Assigning a style drops style_mods: the fixed height is written again.
 			row.style = style
-			row.style.height = ROW_HEIGHT
 		end
 		m.color = color
 	end
@@ -2302,25 +2296,6 @@ function trains_tab.handle.on_group_toggle(player, player_data, refs, e)
 	local expanded = player_data.expanded_depots or {}
 	expanded[name] = not expanded[name] or nil
 	player_data.expanded_depots = expanded
-	util.rerender(player, player_data)
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
-function trains_tab.handle.on_trains_tab_selected(player, player_data)
-	player_data.selected_tab = TAB
-end
-
----@param player LuaPlayer
----@param player_data PlayerData
----@param refs table<string, LuaGuiElement>
----@param e EventData.on_gui_checked_state_changed
-function trains_tab.handle.on_trains_sort_checkbox_changed(player, player_data, refs, e)
-	local element = e.element
-	if not element or not element.tags then return end
-	local column = element.tags.column
-	if not column then return end
-	util.set_sort(player_data, TAB, column)
 	util.rerender(player, player_data)
 end
 

@@ -98,7 +98,6 @@ function utilization_tab.create()
 			name = "manager_utilization_tab",
 			type = "tab",
 			caption = { "cybersyn-gui.utilization-tab" },
-			handler = utilization_tab.handle.on_utilization_tab_selected,
 		},
 		content = {
 			name = "manager_utilization_content_frame",
@@ -449,12 +448,6 @@ end
 utilization_tab.handle = {}
 
 utilization_tab.wrapper = util.wrapper
-
----@param player LuaPlayer
----@param player_data PlayerData
-function utilization_tab.handle.on_utilization_tab_selected(player, player_data)
-	player_data.selected_tab = TAB
-end
 
 ---@param player LuaPlayer
 ---@param player_data PlayerData

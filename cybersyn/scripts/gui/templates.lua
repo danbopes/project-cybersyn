@@ -23,19 +23,20 @@ end
 
 --- A sortable column header. It starts unchecked (arrow down) on every column; util.sync_sort_header reads `column`
 --- and `default_state` from its tags to restyle it from the stored sort after the window is rebuilt.
+--- @param tab string canonical tab name, e.g. "stations_tab"
 --- @param column string
 --- @param caption LocalisedString
 --- @param tooltip LocalisedString
 --- @param selected boolean whether this is the default sort column
---- @param handler GuiElemHandler on_gui_checked_state_changed handler
-function templates.sort_checkbox(column, caption, tooltip, selected, handler)
+--- @param handler GuiElemHandler on_gui_checked_state_changed handler, normally util.handle.sort_click
+function templates.sort_checkbox(tab, column, caption, tooltip, selected, handler)
 	return {
 		type = "checkbox",
 		style = selected and "ltnm_selected_sort_checkbox" or "ltnm_sort_checkbox",
 		caption = caption,
 		tooltip = tooltip,
 		state = false,
-		tags = { column = column, default_state = false },
+		tags = { sort_tab = tab, column = column, default_state = false },
 		handler = { [defines.events.on_gui_checked_state_changed] = handler },
 	}
 end
