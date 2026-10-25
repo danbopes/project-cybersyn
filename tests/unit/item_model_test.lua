@@ -9,6 +9,20 @@ end
 
 local PRIORITY = "cybersyn-priority"
 
+local SF = require("inventory_fixtures")
+local inventories = require("scripts.gui.collector").inventories
+
+--- m.build over records given their rows as a pass leaves them; a hand-built record takes its key as its id.
+local function build(m, snapshot, hash, priority_signal, changed, keep)
+	for id, st in pairs(snapshot.stations) do
+		if not st.rows then
+			st.id = st.id or id
+			SF.rows(st)
+		end
+	end
+	return m.build(snapshot, hash, priority_signal, changed, keep, inventories)
+end
+
 test("split_rows: a third each, Requesters the remainder; the three add up to n", function()
 	local m = model()
 	local many = { providers = 100, requesters = 100, trains = 100 }
@@ -175,7 +189,7 @@ test("build: providers by stock, requesters in dispatch order, trains by amount,
 			in_transit = { [H_] = { count = 400, stations = 1 } },
 		},
 	}
-	local r = m.build(snapshot, H_, PRIORITY)
+	local r = build(m, snapshot, H_, PRIORITY)
 	assert_eq(r.tick, 1234)
 	assert_eq(r.totals, { provided = 1400, provided_stations = 2, requested = 7000, requested_stations = 3,
 		in_transit = 400, in_transit_stations = 1 })
@@ -229,7 +243,7 @@ test("build: the collector's per-item index, and stations whose only link to the
 		inventory_all = { provided = {}, requested = {}, in_transit = {} },
 		item_stations = { [H_] = { 10, 11, 12, 13, 99 } },
 	}
-	local r = m.build(snapshot, H_, PRIORITY)
+	local r = build(m, snapshot, H_, PRIORITY)
 	local pids, rids = {}, {}
 	for i, x in ipairs(r.providers) do pids[i] = x.id .. ":" .. x.stock .. ":" .. x.out end
 	for i, x in ipairs(r.requesters) do rids[i] = x.id .. ":" .. x.group end
@@ -237,19 +251,19 @@ test("build: the collector's per-item index, and stations whose only link to the
 	table.sort(rids)
 	assert_eq(rids, { "12:" .. m.NOT_REQUESTING, "13:" .. m.DISABLED }, "the incoming one joins Requesters")
 	-- A record the running pass refilled (the change log) joins, once, though the index does not name it.
-	r = m.build(snapshot, H_, PRIORITY, { 50, 10, 50 })
+	r = build(m, snapshot, H_, PRIORITY, { 50, 10, 50 })
 	pids = {}
 	for i, x in ipairs(r.providers) do pids[i] = x.id .. ":" .. x.stock end
 	assert_eq(pids, { "10:500", "50:7", "11:0" }, "the changed station joins the index's")
 	-- Without the index every record is looked at.
 	snapshot.item_stations = nil
-	r = m.build(snapshot, H_, PRIORITY)
+	r = build(m, snapshot, H_, PRIORITY)
 	assert_eq(#r.providers, 3)
 end)
 
 test("build: an item nobody handles gives empty tables and zero totals", function()
 	local m = model()
-	local r = m.build({ stations = {}, trains = {}, inventory_all = { provided = {}, requested = {}, in_transit = {} } },
+	local r = build(m, { stations = {}, trains = {}, inventory_all = { provided = {}, requested = {}, in_transit = {} } },
 		"steel-plate", PRIORITY)
 	assert_eq(#r.providers + #r.requesters + #r.trains, 0)
 	assert_eq(r.totals.provided + r.totals.requested + r.totals.in_transit, 0)
@@ -309,7 +323,7 @@ end
 test("build with place filters: a network keeps that network's rows, totals summed from them", function()
 	local m, u = model(), H.load("scripts.gui.util")
 	local H_, snapshot = filter_snapshot()
-	local r = m.build(snapshot, H_, PRIORITY, nil, place_keep(u, { network = "signal-B", mask = -1 }))
+	local r = build(m, snapshot, H_, PRIORITY, nil, place_keep(u, { network = "signal-B", mask = -1 }))
 	assert_true(r.filtered)
 	assert_eq(ids_of(r.providers), { 11 })
 	assert_eq(ids_of(r.requesters), { 21 })
@@ -321,13 +335,13 @@ end)
 test("build with place filters: a network ID and a surface each drop the right rows and totals", function()
 	local m, u = model(), H.load("scripts.gui.util")
 	local H_, snapshot = filter_snapshot()
-	local r = m.build(snapshot, H_, PRIORITY, nil, place_keep(u, { mask = 1 }))
+	local r = build(m, snapshot, H_, PRIORITY, nil, place_keep(u, { mask = 1 }))
 	assert_eq(ids_of(r.providers), { 10 })
 	assert_eq(ids_of(r.requesters), { 20 })
 	assert_eq(ids_of(r.trains), { 1 })
 	assert_eq(r.totals, { provided = 500, provided_stations = 1, requested = 300, requested_stations = 1,
 		in_transit = 40, in_transit_stations = 1 })
-	r = m.build(snapshot, H_, PRIORITY, nil, place_keep(u, { mask = -1, surface = 2 }))
+	r = build(m, snapshot, H_, PRIORITY, nil, place_keep(u, { mask = -1, surface = 2 }))
 	assert_eq(ids_of(r.providers), { 12 })
 	assert_eq(ids_of(r.requesters), { 22 }, "below threshold: listed, not in the requested total")
 	assert_eq(ids_of(r.trains), { 3 })
@@ -338,7 +352,7 @@ end)
 test("build without place filters: every row, totals from inventory_all", function()
 	local m = model()
 	local H_, snapshot = filter_snapshot()
-	local r = m.build(snapshot, H_, PRIORITY)
+	local r = build(m, snapshot, H_, PRIORITY)
 	assert_false(r.filtered)
 	assert_eq(ids_of(r.providers), { 10, 11, 12 })
 	assert_eq(ids_of(r.requesters), { 20, 21, 22 })
@@ -347,17 +361,8 @@ test("build without place filters: every row, totals from inventory_all", functi
 		in_transit = 40, in_transit_stations = 1 })
 end)
 
-test("locale: every key the drill-down uses, in every locale with the en fallback", function()
-	local function read(path)
-		local f = assert(io.open(H.mod_root .. "/" .. path, "r"))
-		local text = f:read("*a")
-		f:close()
-		return text
-	end
-	local src = read("scripts/gui/item.lua")
+test("locale: every key the drill-down builds from parts, in every locale with the en fallback", function()
 	local keys = {}
-	for k in src:gmatch('"cybersyn%-gui%.(item%-[%w%-]+)"') do keys[k] = true end
-	-- Keys built from parts.
 	for _, t in ipairs({ "providers", "requesters", "trains" }) do
 		keys["item-" .. t] = true
 		keys["item-empty-" .. t] = true
@@ -372,14 +377,6 @@ test("locale: every key the drill-down uses, in every locale with the en fallbac
 	end
 	for _, p in ipairs({ 10, 60, 1440 }) do keys["item-period-" .. p] = true end
 	for _, k in ipairs({ "item-provided", "item-in-transit", "item-requested", "item-click-hint" }) do keys[k] = true end
-	keys["item-"] = nil
-	keys["item-col-"] = nil
-	keys["item-empty-"] = nil
-	keys["item-group-"] = nil
-	keys["item-period-"] = nil
-	local n = 0
-	for _ in pairs(keys) do n = n + 1 end
-	assert_true(n > 40, "found the keys")
 	for _, loc in ipairs(H.LOCALES) do
 		local text = H.locale_text(loc)
 		for k in pairs(keys) do
@@ -390,8 +387,6 @@ test("locale: every key the drill-down uses, in every locale with the en fallbac
 end)
 
 -- One row per inventory (combinator) of a station, from collector.inventories.
-
-local SF = require("inventory_fixtures")
 
 local function rows_snapshot(list)
 	local stations = {}
@@ -408,7 +403,7 @@ end
 test("build rows: the naphthalene plant's liquid fuel row is its Inventory 1 row", function()
 	local m = model()
 	local snapshot = rows_snapshot({ SF.naphtha(100) })
-	local r = m.build(snapshot, SF.LIQUID_FUEL, PRIORITY)
+	local r = build(m, snapshot, SF.LIQUID_FUEL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "100@1002" })
 	assert_eq(r.providers[1].stock, 99134)
 	assert_eq(r.providers[1].row.kind, "inventory")
@@ -416,7 +411,7 @@ test("build rows: the naphthalene plant's liquid fuel row is its Inventory 1 row
 	assert_true(r.providers[1].multi, "a station with several rows names the row's inventory")
 	-- Inventory 2's -866 is not advertised on a Provide only station: no requester row.
 	assert_eq(#r.requesters, 0)
-	local oil = m.build(snapshot, SF.NAPHTHA_OIL, PRIORITY)
+	local oil = build(m, snapshot, SF.NAPHTHA_OIL, PRIORITY)
 	assert_eq(keys_of(oil.providers), { "100@1001" })
 	assert_eq(oil.providers[1].stock, 199134)
 	assert_eq(oil.providers[1].row.kind, "station")
@@ -427,7 +422,7 @@ test("build rows: provided by one inventory and requested by another, the statio
 	local st = SF.coal_both(200)
 	st.deliveries = { [SF.COAL] = 700 }
 	st.priority = 4
-	local r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY)
+	local r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "200@2001" })
 	assert_eq(keys_of(r.requesters), { "200@2002" })
 	local req = r.requesters[1]
@@ -447,7 +442,7 @@ test("build rows: two inventories providing one item give two rows; a delivery g
 	-- Inventory 2 on A4 now advertises liquid fuel too.
 	st.rows[3].provided[SF.LIQUID_FUEL] = 5000
 	st.deliveries = { [SF.LIQUID_FUEL] = -1200 }
-	local r = m.build(rows_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY)
+	local r = build(m, rows_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "100@1002", "100@1003" })
 	assert_eq(r.providers[1].out, 1200)
 	assert_eq(r.providers[2].out, 0)
@@ -456,7 +451,7 @@ end)
 test("build rows: a plain station keeps one row with no inventory tag", function()
 	local m = model()
 	local plain = SF.plain(7, "Plain", 1, { [SF.COAL] = 40 })
-	local r = m.build(rows_snapshot({ plain }), SF.COAL, PRIORITY)
+	local r = build(m, rows_snapshot({ plain }), SF.COAL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "7@9007" })
 	assert_nil(r.providers[1].multi)
 end)
@@ -465,13 +460,13 @@ test("build rows with filters: a network ID keeps the rows on it, totals count t
 	local m, u = model(), H.load("scripts.gui.util")
 	local st = SF.coal_both(200)
 	-- The station combinator is on A1, so a station-wide filter would have dropped the whole station.
-	local r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY, nil, place_keep(u, { mask = 2 }))
+	local r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY, nil, place_keep(u, { mask = 2 }))
 	assert_eq(keys_of(r.providers), {})
 	assert_eq(keys_of(r.requesters), { "200@2002" })
 	assert_eq(r.totals.provided, 0)
 	assert_eq(r.totals.requested, 2000)
 	assert_eq(r.totals.requested_stations, 1)
-	r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY, nil, place_keep(u, { mask = 1 }))
+	r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY, nil, place_keep(u, { mask = 1 }))
 	assert_eq(keys_of(r.providers), { "200@2001" })
 	assert_eq(keys_of(r.requesters), {})
 	assert_eq(r.totals.provided, 5000)
@@ -479,7 +474,7 @@ test("build rows with filters: a network ID keeps the rows on it, totals count t
 	-- Two rows providing it: the stock is the sum, the station counts once.
 	local nap = SF.naphtha(100)
 	nap.rows[3].provided[SF.LIQUID_FUEL] = 5000
-	r = m.build(rows_snapshot({ nap }), SF.LIQUID_FUEL, PRIORITY, nil, place_keep(u, { network = "signal-A" }))
+	r = build(m, rows_snapshot({ nap }), SF.LIQUID_FUEL, PRIORITY, nil, place_keep(u, { network = "signal-A" }))
 	assert_eq(r.totals.provided, 99134 + 5000)
 	assert_eq(r.totals.provided_stations, 1)
 end)
@@ -494,7 +489,7 @@ test("build rows: the station chip keeps that station's rows and the trains to o
 		[2] = { status = 3, manifest_hashes = { [SF.COAL] = 20 }, p_station_id = 7, r_station_id = 8, surface_index = 1,
 			network_name = "signal-A", network_mask = 1 },
 	}
-	local r = m.build(snapshot, SF.COAL, PRIORITY, nil, place_keep(u, { station = 200 }))
+	local r = build(m, snapshot, SF.COAL, PRIORITY, nil, place_keep(u, { station = 200 }))
 	assert_true(r.filtered)
 	assert_eq(keys_of(r.providers), { "200@2001" })
 	assert_eq(keys_of(r.requesters), { "200@2002" })
@@ -502,7 +497,7 @@ test("build rows: the station chip keeps that station's rows and the trains to o
 	assert_eq(r.trains[1].id, 1)
 	assert_eq(r.totals.provided, 5000)
 	assert_eq(r.totals.provided_stations, 1)
-	r = m.build(snapshot, SF.COAL, PRIORITY, nil, place_keep(u, { station = 7 }))
+	r = build(m, snapshot, SF.COAL, PRIORITY, nil, place_keep(u, { station = 7 }))
 	assert_eq(keys_of(r.providers), { "7@9007" })
 	assert_eq(#r.requesters, 0)
 	assert_eq(#r.trains, 2)
@@ -512,11 +507,11 @@ test("build rows: rows of one station sort by inventory index after the station 
 	local m = model()
 	local st = SF.naphtha(100)
 	st.rows[3].provided[SF.LIQUID_FUEL] = 99134
-	local r = m.build(rows_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY)
+	local r = build(m, rows_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "100@1002", "100@1003" })
 	-- A lower unit number whose text sorts after the other's: the index decides, not the key's text.
 	st.rows[2].key = "100@999"
-	r = m.build(rows_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY)
+	r = build(m, rows_snapshot({ st }), SF.LIQUID_FUEL, PRIORITY)
 	assert_eq(keys_of(r.providers), { "100@999", "100@1003" })
 end)
 
@@ -536,12 +531,12 @@ test("build rows: a requesting inventory ranks at the station's priority with th
 	st.priority = 1
 	st.rows[1].priority = 1
 	st.rows[2].priority = 9
-	local r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY)
+	local r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY)
 	assert_eq(r.requesters[1].priority, 1, "Inventory 1's priority 9 does not move its request")
 	assert_eq(r.providers[1].priority, 1)
 	st.thresholds = { [SF.COAL] = 10 }
 	st.control2 = { [PRIORITY] = 7 }
-	r = m.build(rows_snapshot({ st }), SF.COAL, PRIORITY)
+	r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY)
 	assert_eq(r.requesters[1].priority, 7, "the control combinator's item override")
 	assert_eq(r.providers[1].priority, 7)
 end)

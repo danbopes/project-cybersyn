@@ -179,6 +179,7 @@ end
 --- @return string? quality
 --- @return LocalisedString? name_tooltip "[img] Localised name"
 --- @return SignalID? signal
+--- @return LocalisedString? name the localised name alone
 function util.item_sprite_and_tooltip(hash)
 	local cached = sprite_cache[hash]
 	if cached == nil then
@@ -188,11 +189,13 @@ function util.item_sprite_and_tooltip(hash)
 		-- A quality removed by a mod change still lingers in persisted hashes, and gui.add throws on it.
 		if helpers.is_valid_sprite_path(sprite) and not (quality and not prototypes.quality[quality]) then
 			local proto = util.prototype_from_name(name)
+			local localised = proto and proto.localised_name or name
 			cached = {
 				sprite = sprite,
 				quality = quality,
-				tooltip = { "", rich_text.signal(signal), " ", proto and proto.localised_name or name },
+				tooltip = { "", rich_text.signal(signal), " ", localised },
 				signal = signal,
+				name = localised,
 			}
 		else
 			cached = false
@@ -200,7 +203,7 @@ function util.item_sprite_and_tooltip(hash)
 		sprite_cache[hash] = cached
 	end
 	if not cached then return nil end
-	return cached.sprite, cached.quality, cached.tooltip, cached.signal
+	return cached.sprite, cached.quality, cached.tooltip, cached.signal, cached.name
 end
 
 --- Decorate-sort-undecorate. `key_fn` runs once per row; the comparator touches no API.
@@ -636,10 +639,11 @@ end
 --- hover_enter; touch_hover restarts the timeout on clicks, so repeated clicks on one element keep the hold.
 --- @param player_data PlayerData
 --- @param scope string
+--- @param ticks uint? the timeout, util.HOVER_HOLD_TICKS by default
 --- @return boolean
-function util.hold_active(player_data, scope)
+function util.hold_active(player_data, scope, ticks)
 	local hover = player_data.hover
-	return hover ~= nil and hover.scope == scope and game.tick - hover.tick < util.HOVER_HOLD_TICKS
+	return hover ~= nil and hover.scope == scope and game.tick - hover.tick < (ticks or util.HOVER_HOLD_TICKS)
 		and player_data.hold_released_tick ~= game.tick
 end
 

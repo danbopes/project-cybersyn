@@ -125,7 +125,7 @@
 ---@field public entity LuaTrain --should only be invalid if se_is_being_teleported is true
 ---@field public layout_id uint
 ---@field public dispatch_tick uint? game tick of the last dispatch, for the Overview cycle time and the trip average
----   (analytics.delivery_starts holds the same tick, but only while analytics is enabled)
+---   (analytics.delivery_phases[train_id].dispatch_tick holds the same tick, but only while analytics is enabled)
 ---@field public item_slot_capacity int
 ---@field public fluid_capacity int
 ---@field public status uint
@@ -189,7 +189,6 @@
 ---@field public train_utilization Cybersyn.AnalyticsInterval[] 7 intervals (1m..1000h) for the utilization graph
 ---@field public train_status_ticks {[uint]: {[uint]: uint}} layout_id -> {status -> ticks}
 ---@field public train_status_totals {[uint]: uint} layout_id -> total ticks
----@field public delivery_starts {[uint]: {item_hash: string}} train_id -> info
 ---@field public chunk_freelist table[] Reusable chunk coordinates
 ---@field public next_chunk_x uint
 ---@field public next_chunk_y uint

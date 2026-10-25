@@ -36,6 +36,7 @@ local item_model = require("scripts.gui.item-model")
 --- @class PlayerData
 --- @field item_view ItemView? the drill-down's elements exist in the Inventory's content
 --- @field item_cache ItemCache? its model and render caches; dropped on close
+--- @field item_refs {[string]: LuaGuiElement}? the drill-down's named elements; dropped on close
 --- @field delivered_items {minute: int, by_period: {[int]: {[string]: int}}}? util.delivered_items' per-minute cache
 --- @field item_widths {[string]: int}? flexible column widths for the current layout
 
@@ -95,8 +96,6 @@ local W = { value = 96, status = 150, priority = 64, wait = 80, why = 132, train
 local FRAME_BORDER = metrics.FRAME_BORDER
 local TABLE_PADDING = metrics.TABLE_LEFT_PADDING + metrics.TABLE_RIGHT_PADDING
 local TABLE_SPACING = metrics.TABLE_SPACING
--- Width the tables leave unused: the flexible columns are this much narrower than the sum allows.
-local SLACK = 8
 
 --- @class ItemColumn
 --- @field kind "station"|"train"|"value"|"text"|"chip"|"status"
@@ -144,7 +143,7 @@ local function flex_widths(content_width)
 	for t, cols in pairs(COLUMNS) do
 		local fixed = 0
 		for _, c in ipairs(cols) do fixed = fixed + (c.width or 0) end
-		out[t] = content_width - SLACK - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
+		out[t] = content_width - FRAME_BORDER - TABLE_PADDING - (#cols - 1) * TABLE_SPACING - fixed - SCROLLBAR
 	end
 	return out
 end
@@ -314,20 +313,11 @@ end
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
 function item.close(player, player_data)
-	local view = player_data.item_view
-	local refs = player_data.refs
+	local frame = player_data.item_refs and player_data.item_refs[VIEW]
+	if frame and frame.valid then frame.destroy() end
 	player_data.item_view = nil
 	player_data.item_cache = nil
-	if view and refs then
-		local frame = refs[VIEW]
-		if frame and frame.valid then frame.destroy() end
-	end
-	if refs then
-		for name, elem in pairs(refs) do
-			if string.sub(name, 1, 5) == "item_" and type(elem) == "userdata" then refs[name] = nil end
-		end
-		refs[VIEW] = nil
-	end
+	player_data.item_refs = nil
 	local states = player_data.gui_state
 	if states then
 		for _, t in ipairs(item_model.TABLES) do states[table_name(t)] = nil end
@@ -339,9 +329,8 @@ end
 --- @param hash string
 --- @return boolean ready
 local function ensure_view(player_data, hash)
-	local refs = player_data.refs
 	local view = player_data.item_view
-	local frame = refs[VIEW]
+	local frame = player_data.item_refs and player_data.item_refs[VIEW]
 	if view and frame and frame.valid then
 		if view.hash ~= hash then
 			view.hash = hash
@@ -359,9 +348,11 @@ local function ensure_view(player_data, hash)
 	end
 	item.close(nil, player_data)
 	local layout = player_data.layout
-	local content = refs[HOST_CONTENT]
+	local content = player_data.refs[HOST_CONTENT]
 	if not (layout and content and content.valid) then return false end
+	local refs = {}
 	gui.add(content, view_def(layout), refs)
+	player_data.item_refs = refs
 	player_data.item_view = { hash = hash }
 	return true
 end
@@ -771,7 +762,7 @@ end
 --- @param player_data PlayerData
 --- @param cache ItemCache
 local function render_header(player_data, cache)
-	local refs = player_data.refs
+	local refs = player_data.item_refs
 	local m = cache.model
 	local hash = m.hash
 	local period = get_period(player_data)
@@ -803,7 +794,7 @@ local function render_header(player_data, cache)
 			refs.item_station_chip_icon.tooltip = { "cybersyn-gui.station-chip-tooltip" }
 		end
 	end
-	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
+	local sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash)
 	local icon = refs.item_icon
 	if icon and icon.valid then
 		icon.sprite = sprite
@@ -814,7 +805,7 @@ local function render_header(player_data, cache)
 		tags.kind, tags.id = "item", hash
 		icon.tags = tags
 	end
-	set_caption(refs.item_name, name_tooltip and name_tooltip[4] or hash)
+	set_caption(refs.item_name, item_name or hash)
 	local function total(name, key, value, stations, tooltip_key, note)
 		local elem = refs["item_total_" .. name]
 		if not (elem and elem.valid) then return end
@@ -887,8 +878,7 @@ local function get_cache(player_data, hash)
 	} or nil
 	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
 	-- does not (the Stations tab, filtered to the item, reads those records too).
-	local log = storage.manager.collect_log
-	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, log and log.ids, keep, collector.inventories)
+	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, collector.changed_this_pass(), keep, collector.inventories)
 	m.empty_suffix = util.empty_filter_suffix(f)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
@@ -908,18 +898,14 @@ end
 function item.build(map_data, player_data, hash)
 	if not ensure_view(player_data, hash) then return false end
 	local view = player_data.item_view
-	local refs = player_data.refs
+	local refs = player_data.item_refs
 	local cache, refreshed = get_cache(player_data, view.hash)
 	local m = cache.model
 	-- A new pass rebuilds the model in this update and rewrites the rows in the next ones, so neither update pays
 	-- for both (budget: 2 ms per update). The header's totals follow with the rows, so header and rows always
 	-- show the same pass (only a drill-down that never showed a header gets it at once).
 	if not refreshed or not cache.header_sig then render_header(player_data, cache) end
-	if refreshed then
-		cache.rows_pending = true
-		return true
-	end
-	cache.rows_pending = nil
+	if refreshed then return true end
 	local layout = player_data.layout
 	local total = layout.rows_by_tab[TAB]
 
@@ -1119,8 +1105,8 @@ function item.apply_layout(player_data, layout)
 	player_data.item_widths = widths
 	local cache = player_data.item_cache
 	if cache then cache.alloc_sig = nil end
-	if old and old.providers == widths.providers then return end
-	local refs = player_data.refs
+	local refs = player_data.item_refs
+	if not refs or (old and old.providers == widths.providers) then return end
 	for _, t in ipairs(item_model.TABLES) do
 		local tbl = refs[table_name(t)]
 		if tbl and tbl.valid then tbl.clear() end

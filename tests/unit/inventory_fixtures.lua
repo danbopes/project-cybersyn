@@ -20,18 +20,37 @@ function F.source_label(src)
 	return { "cybersyn-gui.source-inventory", src.index }
 end
 
---- st.rows from st.sources, as collector.inventories builds them.
-local function rows(st)
-	local out = {}
-	for i, src in ipairs(st.sources) do
-		out[i] = { key = st.id .. "@" .. src.unit, st = st, src = src, index = src.index, unit = src.unit, kind = src.kind,
-			priority = src.priority, ok = src.ok, read = src.read ~= false, network_name = src.network_name,
-			mask = src.mask, networks = src.networks, provided = src.provided, requested = src.requested,
-			ignored = src.ignored, starved = src.starved, label = F.source_label(src) }
+--- Gives a hand-built record st.rows through the collector's own fill, as a pass leaves them: one row per source, or
+--- one station row on the record's own lists without sources. A source without a network takes the record's.
+--- @return table st
+function F.rows(st)
+	local sources = st.sources
+	if not (sources and sources[1]) then
+		sources = { { kind = "station", index = 0, unit = 0, ok = st.comb_ok ~= false, priority = st.priority or 0 } }
 	end
-	st.rows = out
+	for _, src in ipairs(sources) do
+		if src.network_name == nil and src.read ~= false then
+			local mask = src.network_mask or (src.index == 0 and st.network_mask or nil)
+			src.network_name = st.network_name
+			if st.network_name == NETWORK_EACH then
+				src.networks = type(mask) == "table" and mask or nil
+			elseif st.network_name then
+				src.mask = type(mask) == "number" and mask or (mask ~= nil and 0 or nil)
+			end
+		end
+		if not src.provided then
+			if src.index == 0 and st.provided then
+				src.provided, src.requested, src.ignored = st.provided, st.requested or {}, st.ignored or {}
+			else
+				src.provided, src.requested, src.ignored = {}, {}, {}
+			end
+		end
+	end
+	st.rows = {}
+	require("scripts.gui.collector").fill_rows(st, sources)
 	return st
 end
+local rows = F.rows
 
 local function base(t)
 	t.deliveries = t.deliveries or {}

@@ -185,7 +185,7 @@ test("rows: while paused, 'n newer' counts only the newer events the filter show
 	at(1000)
 	local d = setup()
 	for s = 1, 4 do ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = s }) end
-	local only_7 = model.compile(filter({ subject = { kind = "station", id = 7 } }), 1000)
+	local only_7 = model.compile(filter({}), 1000, nil, 7)
 	local rs = {}
 	model.update_rows(rs, d, only_7, 4, false, 100)
 	assert_eq({ model.newer(rs, d) }, { 0, true })
@@ -215,7 +215,7 @@ test("rows: a row whose events its ring has overwritten leaves; the other ring's
 	-- An old basic row of station 7, then four full rows of station 7, then 1,100 full rows elsewhere.
 	ev(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, { station = 7 })
 	for _ = 1, 4 do ev(d, DIAG_KIND_ARRIVE_R, DIAG_SEV_INFO, { station = 7, train = 3 }) end
-	local only_7 = model.compile(filter({ subject = { kind = "station", id = 7 } }), 1000)
+	local only_7 = model.compile(filter({}), 1000, nil, 7)
 	local rs = {}
 	model.update_rows(rs, d, only_7, 4, true, 10000)
 	assert_eq(#rs.groups, 2, "the four identical arrivals collapse into one row above the basic row")
@@ -301,13 +301,13 @@ test("counts: equal a brute-force count through eviction, a moving window and a 
 	assert_true(used <= 300)
 	while model.update_counts(cs, d, cf, 300) do end
 	assert_eq(cs.total, oracle_counts(d, cf))
-	-- Everything kept, with a station subject: still the brute force.
-	local all = model.compile(filter({ subject = { kind = "station", id = 3 } }), game.tick)
+	-- Everything kept, with a station chip: still the brute force.
+	local all = model.compile(filter({}), game.tick, nil, 3)
 	local cs2 = {}
 	while model.update_counts(cs2, d, all, 500) do end
 	assert_eq(cs2.total, oracle_counts(d, all))
 	burst(1500, 1)
-	all = model.compile(filter({ subject = { kind = "station", id = 3 } }), game.tick)
+	all = model.compile(filter({}), game.tick, nil, 3)
 	while model.update_counts(cs2, d, all, 500) do end
 	assert_eq(cs2.total, oracle_counts(d, all))
 end)
@@ -454,12 +454,9 @@ test("compile and export_filter: groups take their alerts by code; train field a
 	assert_true(cf.kinds[DIAG_KIND_SERVED])
 	assert_true(cf.alerts[DIAG_ALERT_MISSING_TRAIN])
 	assert_nil(cf.alerts[DIAG_ALERT_STUCK])
-	local ex = model.export_filter(model.compile(filter({ sev = { true, false, true }, train = 4,
-		subject = { kind = "train", id = 4 } }), 100))
+	local ex = model.export_filter(model.compile(filter({ sev = { true, false, true }, train = 4 }), 100))
 	assert_eq({ ex.sevs, ex.train, ex.min_tick }, { { [1] = true, [3] = true }, 4, nil })
-	ex = model.export_filter(model.compile(filter({ train = 4, subject = { kind = "train", id = 5 } }), 100))
-	assert_eq(ex.train, -1)
-	ex = model.export_filter(model.compile(filter({ window = 2, subject = { kind = "station", id = 9 } }), 300000, 3))
+	ex = model.export_filter(model.compile(filter({ window = 2 }), 300000, 3, 9))
 	assert_eq({ ex.station, ex.min_tick, ex.item, ex.sevs }, { 9, 300000 - 216000, 3, nil })
 	-- Every kind is in exactly one group, except alerts, which belong to a group by their code.
 	local seen = {}

@@ -4,14 +4,21 @@ local H = require("harness")
 local analytics = loadfile("cybersyn/scripts/analytics.lua")()
 local utilization = require("scripts.gui.utilization")
 
+--- Ticks a range key names ("10m" = 36,000), nil for anything else.
+local function range_ticks(key)
+	local n, unit = string.match(key, "^(%d+)([mh])$")
+	if not n then return nil end
+	return tonumber(n) * (unit == "m" and 3600 or 216000)
+end
+
 test("breakdown ranges: every button covers exactly the span its caption names", function()
 	local keys = {}
 	for i, r in ipairs(analytics.BREAKDOWN_RANGES) do
 		keys[i] = r.key
-		assert_eq(r.ticks, analytics.range_ticks(r.key), r.key)
+		assert_eq(r.ticks, range_ticks(r.key), r.key)
 	end
 	assert_eq(keys, { "1m", "10m", "1h", "10h", "50h" })
-	assert_eq({ analytics.range_ticks("1m"), analytics.range_ticks("10h"), analytics.range_ticks("5s") }, { 3600, 2160000, nil })
+	assert_eq({ range_ticks("1m"), range_ticks("10h"), range_ticks("5s") }, { 3600, 2160000, nil })
 end)
 
 test("breakdown ranges: each range has its caption and tooltip in every locale", function()
@@ -72,7 +79,7 @@ test("utilization: a range button per interval, each interval spanning exactly t
 	assert_eq(analytics.SAMPLE_TICKS, defs[1].ticks)
 	for i, def in ipairs(defs) do
 		assert_eq(def.name, utilization.INTERVAL_NAMES[i])
-		assert_eq(def.ticks * def.length, analytics.range_ticks(def.name), def.name)
+		assert_eq(def.ticks * def.length, range_ticks(def.name), def.name)
 		-- Each cascade step of one interval is exactly one sample of the next.
 		if defs[i + 1] then assert_eq(def.ticks * def.steps, defs[i + 1].ticks, def.name) else assert_eq(def.steps, nil) end
 	end
@@ -122,7 +129,7 @@ local function with_charts(fn)
 	if not ok then error(err, 0) end
 end
 
-test("init: a series of another shape drops every chart and restarts chunk allocation", function()
+test("migrate: a series of another shape drops every chart and restarts chunk allocation", function()
 	H.fresh()
 	with_charts(function(a, destroyed, created)
 		local old_cursor = { surface = { valid = true }, chunk_freelist = {}, next_chunk_x = 1, next_chunk_y = 0 }
@@ -135,8 +142,7 @@ test("init: a series of another shape drops every chart and restarts chunk alloc
 			fulfillment_ema = {}, total_time_ema = {}, delivery_counts = {},
 			delivery_starts = {},
 		}
-		storage.manager = { players = { [1] = { breakdown_registered = true } } }
-		a.init(storage)
+		a.migrate(storage)
 		local data = storage.analytics
 		table.sort(destroyed)
 		assert_eq(destroyed, { "b1", "f1", "t1", "u1" })
@@ -144,7 +150,6 @@ test("init: a series of another shape drops every chart and restarts chunk alloc
 		assert_true(data.surface_data ~= old_cursor, "a fresh allocation cursor")
 		assert_eq(data.surface_data.next_chunk_x, 0)
 		assert_nil(data.breakdown_interval)
-		assert_nil(storage.manager.players[1].breakdown_registered)
 		assert_eq(#data.train_utilization, #a.UTILIZATION_INTERVALS)
 		for _, key in ipairs({ "fulfillment_times", "total_delivery_times", "fulfillment_ema", "total_time_ema",
 			"delivery_counts" }) do
@@ -153,7 +158,7 @@ test("init: a series of another shape drops every chart and restarts chunk alloc
 		-- The current shape keeps its charts and cursor.
 		local kept = data.surface_data
 		data.breakdown_interval = { line_ids = { "b2" } }
-		a.init(storage)
+		a.migrate(storage)
 		assert_eq(#destroyed, 4)
 		assert_true(storage.analytics.surface_data == kept)
 		assert_not_nil(storage.analytics.breakdown_interval)

@@ -1127,6 +1127,11 @@ local function main()
 
 	script.on_event(defines.events.on_player_removed, manager.on_player_removed)
 	script.on_event(defines.events.on_player_created, manager.on_player_created)
+	-- factorio-charts hides its surface only from the forces that exist when it creates it.
+	script.on_event(defines.events.on_force_created, function(e)
+		local data = storage.analytics
+		if data and data.surface and data.surface.valid then e.force.set_surface_hidden(data.surface, true) end
+	end)
 	script.on_event(defines.events.on_lua_shortcut, manager.on_lua_shortcut)
 	script.on_event("cybersyn-toggle-gui", manager.on_lua_shortcut)
 	script.on_event("cybersyn-manager-search", manager.on_search_input)

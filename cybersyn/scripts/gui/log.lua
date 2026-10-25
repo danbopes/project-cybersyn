@@ -43,7 +43,8 @@ local PAGE = model.PAGE
 -- The scroll pane always shows its vertical bar, so the rows' width does not change with their number.
 local SCROLLBAR = metrics.SCROLLBAR
 -- The pointer resting on the rows holds Follow this long without a new hover event (a lost leave event cannot hold it
--- for ever).
+-- for ever). Longer than util.HOVER_HOLD_TICKS: hover fires only on entering a row, and a reader rests on one row
+-- while reading it.
 local HOLD_TICKS = 3600
 -- Rows built in the first update of an empty page (that one update may take up to 6 ms; a row costs about
 -- 50-70 µs to build and write), then per update until the page is full, inside the Log's 1 ms. The prewarm builds
@@ -163,8 +164,6 @@ local function get_filter(player_data)
 		f = model.default_filter()
 		player_data.log_filter = f
 	end
-	-- No control sets or clears the "only this train/stop" filter, so a stored one would hide rows for good.
-	f.subject = nil
 	return f
 end
 log_tab.get_filter = get_filter
@@ -519,9 +518,7 @@ end
 --- @param player_data PlayerData
 --- @return boolean
 function log_tab.held(player_data)
-	if player_data.paused then return true end
-	local hover = player_data.hover
-	return hover ~= nil and hover.scope == ROWS and game.tick - hover.tick < HOLD_TICKS
+	return player_data.paused or util.hold_active(player_data, ROWS, HOLD_TICKS)
 end
 
 
@@ -535,7 +532,8 @@ end
 local station_tooltip = name_cell.station_tooltip
 
 -- Station names and train validity are read again at most this often for a row whose event did not change; each row
--- at its own phase (by its key), so the rows are not all rewritten in one update.
+-- at its own phase (by its key), so the rows are not all rewritten in one update. A poll rather than a names version:
+-- renames, station removals and train invalidation each come from their own handler, and a row would need all three.
 local NAME_REFRESH = 600
 
 --- @param key uint
@@ -559,6 +557,9 @@ local function row_cells(elem, m)
 	m.trs = m.trs or "cybersyn_log_link"
 	return cells
 end
+
+-- The render's context in upvalues set by render_rows, so a render allocates no closures.
+local r_memo, r_widths, r_now
 
 --- Writes a row's cells, each only when what it shows changed since `m` (what the element shows now; empty for a
 --- new row). A row whose event, count and numbers are unchanged is not looked at until the name refresh.
@@ -722,9 +723,6 @@ local function build_row(parent, index, widths)
 		tooltip = { "cybersyn-gui.log-print-tooltip" }, raise_hover_events = true, tags = t.print })
 	return row
 end
-
--- The render's context in upvalues set by render_rows, so a render allocates no closures.
-local r_memo, r_widths, r_now
 
 --- Brings one row element to `entry` (a LogDisplayRow, or a placeholder without a group): its memo says what the
 --- element shows, so only what changed is written; the age only when `age` is set (the viewport and its slice).
@@ -1003,8 +1001,8 @@ local function render_summary_table(player_data, tbl, list, is_item)
 			tooltip = { "cybersyn-diag.sev-" .. SEV_KEYS[e.sev] } })
 		if is_item then
 			local hash = d and d.item_hash[e.item]
-			local sprite, quality, tooltip = nil, nil, nil
-			if hash then sprite, quality, tooltip = util.item_sprite_and_tooltip(hash) end
+			local sprite, quality, _, item_name
+			if hash then sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash) end
 			gui.add(tbl, {
 				type = "flow",
 				direction = "horizontal",
@@ -1020,7 +1018,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 					handler = { [defines.events.on_gui_click] = util.handle.link_click },
 				},
 				{ type = "label", style = "cybersyn_log_message", style_mods = { width = name_width - 32 },
-					caption = tooltip and tooltip[4] or hash or "?" },
+					caption = item_name or hash or "?" },
 			})
 		else
 			local view = station_view(e.id)
@@ -1180,7 +1178,7 @@ local PREWARM_ROWS = 6
 --- render writes cells into existing rows instead of creating about 13 elements per row in one update.
 --- @param player_data PlayerData
 function log_tab.prewarm(player_data)
-	if player_data.selected_tab == TAB then return end
+	if not storage.diag or player_data.selected_tab == TAB then return end
 	local parent = player_data.refs[ROWS]
 	if not (parent and parent.valid and player_data.log_widths and collector.get().tick) then return end
 	local state = util.gui_state(player_data, ROWS)
@@ -1349,16 +1347,7 @@ local function find_group(player_data, seq)
 	for _, g in ipairs(rs and rs.groups or {}) do
 		if g.seq == seq or g.first == seq then return g end
 	end
-	local d = storage.diag
-	if not d then return nil end
-	for _, r in ipairs({ d.ring_basic, d.ring_full }) do
-		local k = diag.first_after(r, seq - 1)
-		if k < r.count then
-			local i = diag.ring_at(r, k)
-			if r.seq[i] == seq then return model.new_group(r, i) end
-		end
-	end
-	return nil
+	return find_ring_group(seq)
 end
 
 --- The chat line for a row: its age, kind, tags the chat makes clickable, and the message.

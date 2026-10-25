@@ -492,11 +492,7 @@ local migrations_table = {
 			pd.stations_sort, pd.trains_sort, pd.auto_refresh, pd.pinned = nil, nil, nil, nil
 			pd.recent_panel_dirty, pd.disable_top_left_button = nil, nil
 			pd.delivery_times_interval, pd.delivery_times_mode, pd.delivery_times_selected = nil, nil, nil
-		end
-
-		-- Reshapes the utilization series, moves every chart onto fresh chunks and drops the series no tab draws.
-		if map_data.analytics and analytics.is_library_available() then
-			analytics.init(map_data)
+			pd.breakdown_registered = nil
 		end
 	end,
 }
@@ -609,10 +605,11 @@ function on_config_changed(config_change_data)
 		sanitize_economy_names(config_change_data)
 	end
 
-	-- Also reshapes a table an older version left when factorio-charts was missing during the upgrade, so the samples
-	-- taken before a tab opens go into the current series.
-	if analytics.is_enabled() then
-		analytics.init(storage)
+	-- Reshapes the utilization series, moves every chart onto fresh chunks and drops the series no tab draws; on any
+	-- change, also for a table an older version left when factorio-charts was missing during the upgrade, so the
+	-- samples taken before a tab opens go into the current series.
+	if analytics.is_library_available() and (storage.analytics or analytics.is_enabled()) then
+		analytics.migrate(storage)
 	end
 
 	-- Ensure analytics surface is hidden from map view for all forces
@@ -620,7 +617,10 @@ function on_config_changed(config_change_data)
 		for _, force in pairs(game.forces) do
 			force.set_surface_hidden(storage.analytics.surface, true)
 		end
-		analytics.restyle_chunks(storage)
+		-- Only a factorio-charts update can leave chunks in an older library's style: a chunk allocated since is styled.
+		if config_change_data.mod_changes and config_change_data.mod_changes["factorio-charts"] then
+			analytics.restyle_chunks(storage)
+		end
 	end
 
 	retrigger_train_calculation(false)

@@ -89,7 +89,6 @@ end
 --- @field group int? index into model.GROUPS
 --- @field kind int? DIAG_KIND_*
 --- @field train uint? from the train-id field
---- @field subject {kind: string, id: uint}? one train or stop; no GUI sets it yet, it is reserved for a per-stop Log entry
 --- @field window int index into model.WINDOWS
 --- @field follow boolean
 --- @field summary boolean
@@ -104,8 +103,7 @@ end
 --- @field kinds {[int]: true}?
 --- @field alerts {[int]: true}?
 --- @field train uint?
---- @field station uint? subject station (station column, or station2 where it names a station)
---- @field subject_train uint?
+--- @field station uint? the station chip's station (station column, or station2 where it names a station)
 --- @field item int? item index (the manager's item filter); -1 = an item diagnostics never logged
 --- @field min_tick uint?
 --- @field any boolean some filter besides the severities and the window is set (else `match` is always true)
@@ -130,18 +128,6 @@ function model.compile(f, now, item, station)
 	elseif f.kind then
 		kinds = { [f.kind] = true }
 	end
-	local subject_train
-	local s = f.subject
-	if s then
-		if s.kind == "train" then
-			subject_train = s.id
-		elseif station and station ~= s.id then
-			-- Two different stations match nothing. Not 0: diag stores 0 for "no station", so 0 would match those rows.
-			station = -1
-		else
-			station = s.id
-		end
-	end
 	local window = model.WINDOWS[f.window or model.DEFAULT_WINDOW]
 	local sevs = { f.sev[1] == true, f.sev[2] == true, f.sev[3] == true }
 	return {
@@ -151,11 +137,10 @@ function model.compile(f, now, item, station)
 		train = f.train,
 		item = item,
 		station = station,
-		subject_train = subject_train,
 		min_tick = window and math.max(0, now - window) or nil,
-		any = kinds ~= nil or f.train ~= nil or item ~= nil or s ~= nil or station ~= nil,
-		sig = table.concat({ tostring(f.group), tostring(f.kind), tostring(f.train), s and s.kind or "", s and s.id or "",
-			tostring(f.window), tostring(item), tostring(station) }, "|"),
+		any = kinds ~= nil or f.train ~= nil or item ~= nil or station ~= nil,
+		sig = table.concat({ tostring(f.group), tostring(f.kind), tostring(f.train), tostring(f.window),
+			tostring(item), tostring(station) }, "|"),
 		sev_sig = (sevs[1] and "e" or "") .. (sevs[2] and "w" or "") .. (sevs[3] and "i" or ""),
 	}
 end
@@ -173,8 +158,6 @@ local function match(r, i, cf)
 		if not (alerts and kind == KIND_ALERT and alerts[r.code[i]]) then return false end
 	end
 	local train = cf.train
-	if train and r.train[i] ~= train then return false end
-	train = cf.subject_train
 	if train and r.train[i] ~= train then return false end
 	local item = cf.item
 	if item and r.item[i] ~= item then return false end
@@ -197,16 +180,11 @@ function model.export_filter(cf)
 			if cf.sevs[s] then sevs[s] = true end
 		end
 	end
-	local train = cf.train
-	if cf.subject_train then
-		-- Two different trains match nothing; -1 is no train id.
-		train = (train and train ~= cf.subject_train) and -1 or cf.subject_train
-	end
 	return {
 		kinds = cf.kinds,
 		alerts = cf.alerts,
 		sevs = sevs,
-		train = train,
+		train = cf.train,
 		item = cf.item,
 		station = cf.station,
 		min_tick = cf.min_tick,

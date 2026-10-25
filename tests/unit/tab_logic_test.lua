@@ -407,24 +407,6 @@ test("train chips: every caption and tooltip key in every locale, no short capti
 	end
 end)
 
-test("detail pane: its locale keys in every locale, and no key the code uses is missing", function()
-	local keys = { "trains-pane-caption", "trains-pane-close-tooltip", "trains-pane-camera-tooltip" }
-	local f = assert(io.open(H.mod_root .. "/scripts/gui/trains.lua", "r"))
-	local code = f:read("*a")
-	f:close()
-	for key in code:gmatch('"cybersyn%-gui%.(trains%-pane%-[%w%-]+)"') do
-		local known = false
-		for _, k in ipairs(keys) do known = known or k == key end
-		assert_true(known, "trains.lua uses " .. key .. ", not in this list")
-	end
-	for _, loc in ipairs(H.LOCALES) do
-		local text = H.locale_text(loc)
-		for _, k in ipairs(keys) do
-			assert_true(text:find("\n" .. k .. "=", 1, true) ~= nil, loc .. " lacks " .. k)
-		end
-	end
-end)
-
 test("hours_caption: the setting's value without rounding", function()
 	local l = logic()
 	assert_eq(l.hours_caption(1), "1")

@@ -62,6 +62,16 @@ function model.split_rows(n, counts)
 	return out
 end
 
+--- The control combinator's priority signal when the item has its own threshold on that combinator, else nil.
+--- @param st {thresholds: {[string]: int}?, control2: {[string]: int}?}
+--- @param hash string
+--- @param priority_signal string
+--- @return int?
+local function item_override(st, hash, priority_signal)
+	local thresholds, control2 = st.thresholds, st.control2
+	if thresholds and thresholds[hash] ~= nil and control2 then return control2[priority_signal] end
+end
+
 --- The priority the dispatcher compares for this item: the station's, or the control combinator's priority signal
 --- when the item has its own threshold on that combinator (tick_dispatch reads station.item_priority only then).
 --- @param st {priority: int?, thresholds: {[string]: int}?, control2: {[string]: int}?}
@@ -69,11 +79,8 @@ end
 --- @param priority_signal string the priority signal's name (SIGNAL_PRIORITY)
 --- @return int
 function model.effective_priority(st, hash, priority_signal)
-	local thresholds, control2 = st.thresholds, st.control2
-	if thresholds and thresholds[hash] ~= nil and control2 then
-		local item_prior = control2[priority_signal]
-		if item_prior ~= nil then return item_prior end
-	end
+	local override = item_override(st, hash, priority_signal)
+	if override ~= nil then return override end
 	return st.priority or 0
 end
 
@@ -131,30 +138,14 @@ end
 --- @return int
 function model.provider_priority(st, row, hash, priority_signal)
 	if row.index == 0 or row.priority == nil then return model.effective_priority(st, hash, priority_signal) end
-	local thresholds, control2 = st.thresholds, st.control2
-	if thresholds and thresholds[hash] ~= nil and control2 then
-		local item_prior = control2[priority_signal]
-		if item_prior ~= nil then return item_prior end
-	end
+	local override = item_override(st, hash, priority_signal)
+	if override ~= nil then return override end
 	return row.priority
-end
-
---- A record without inventory rows (built by hand, or from before rows existed) is one station row on its own lists.
---- @param st table
---- @param id uint
---- @return table[]
-local function own_rows(st, id)
-	local mask = st.network_mask
-	return { {
-		st = st, key = id .. "@0", index = 0, unit = 0, kind = "station", priority = st.priority or 0, read = true,
-		network_name = st.network_name, mask = type(mask) == "number" and mask or nil,
-		networks = type(mask) == "table" and mask or nil, provided = st.provided or {}, requested = st.requested or {},
-	} }
 end
 
 --- @class ItemProviderRow
 --- @field id uint
---- @field key string the inventory row's key (collector.row_key, "id@unit"; "id@0" for a record without rows)
+--- @field key string the inventory row's key (collector.row_key, "id@unit")
 --- @field index int the row's inventory index: 0 = station combinator, 1.. = secondary inventories
 --- @field row SnapshotInventory the inventory row it shows
 --- @field multi boolean? the station has more than one inventory row, so the row names its inventory
@@ -213,7 +204,7 @@ end
 --- @param changed uint[]? stations whose records changed since the index was built (the collector's change log)
 --- @param keep ItemKeep? the manager's filters; with them the totals are summed from the rows kept (a station counted
 --- once per side), since the snapshot's totals count every network, surface and station
---- @param rows_of (fun(st: table): table[])? collector.inventories; without it a record's own st.rows
+--- @param rows_of fun(st: table): table[] collector.inventories
 --- @return ItemModel
 function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 	local providers, requesters, trains = {}, {}, {}
@@ -245,7 +236,7 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 	for _, id in ipairs(ids or list) do
 		local st = stations[id]
 		if st then
-			local rows = rows_of and rows_of(st) or st.rows or own_rows(st, id)
+			local rows = rows_of(st)
 			local multi = #rows > 1 or nil
 			local d = st.deliveries and st.deliveries[hash] or 0
 			local first, p_rows, r_rows, p_active, r_active = nil, 0, 0, false, false

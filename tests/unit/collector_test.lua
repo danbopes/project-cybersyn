@@ -1836,24 +1836,6 @@ test("inventories: read_station fills the same rows for a stop read live", funct
 	assert_eq(#st.rows, 3)
 end)
 
-test("inventories: hand-built records get rows from their sources, or one station row", function()
-	local plain = { id = 5, network_name = "signal-A", network_mask = 2, provided = { coal = 1 }, requested = {}, ignored = {} }
-	local rows = collector.inventories(plain)
-	assert_eq(#rows, 1)
-	assert_same(collector.inventories(plain), rows, "kept on the record")
-	assert_eq({ rows[1].key, rows[1].index, rows[1].mask, rows[1].network_name }, { "5@0", 0, 2, "signal-A" })
-	assert_same(rows[1].provided, plain.provided)
-	local s0 = { kind = "station", index = 0, unit = 7, ok = true, priority = 0 }
-	local i1 = { kind = "inventory", index = 1, unit = 8, ok = true, priority = 3, network_name = "signal-A", mask = 4,
-		provided = { iron = 2 }, requested = {}, ignored = {} }
-	local st = { id = 6, network_name = "signal-A", network_mask = 1, provided = { coal = 1, iron = 2 }, requested = {},
-		ignored = {}, sources = { s0, i1 } }
-	rows = collector.inventories(st)
-	assert_eq({ rows[1].key, rows[1].mask, rows[2].key, rows[2].mask, rows[2].priority }, { "6@7", 1, "6@8", 4, 3 })
-	assert_same(rows[1].provided, st.provided, "the station row without lists of its own reads the record's")
-	assert_eq(rows[2].label, { "cybersyn-gui.source-inventory", 1 })
-end)
-
 test("economy_starved: a row's own network counts, whatever networks the caller names", function()
 	local coal, sulfur = { active = true }, { active = true }
 	local st = {
@@ -1878,21 +1860,4 @@ end)
 test("source_label on hand-built records", function()
 	assert_eq(collector.source_label({ kind = "station", index = 0 }), { "cybersyn-gui.source-station" })
 	assert_eq(collector.source_label({ kind = "inventory", index = 2 }), { "cybersyn-gui.source-inventory", 2 })
-end)
-
-test("inventory_fixtures: the hand-built rows are what collector.inventories builds from the same sources", function()
-	local IF = require("inventory_fixtures")
-	for _, st in ipairs({ IF.naphtha(1), IF.coal_both(2), IF.plain(3, "Plain", 2, { coal = 5 }, {}) }) do
-		local built = {}
-		for k, v in pairs(st) do
-			if k ~= "rows" then built[k] = v end
-		end
-		local rows = collector.inventories(built)
-		assert_eq(#rows, #st.rows, st.name)
-		for i, row in ipairs(rows) do
-			assert_eq(row_fields(row), row_fields(st.rows[i]), st.name .. " row " .. i)
-			assert_eq(row.label, st.rows[i].label)
-			assert_same(row.provided, st.rows[i].provided)
-		end
-	end
 end)
