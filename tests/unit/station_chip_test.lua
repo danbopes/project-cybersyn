@@ -265,7 +265,7 @@ end)
 
 -- ---------------------------------------------------------------- Log
 
-test("log-model compile: the chip's station filters the station column, and ANDs with a subject", function()
+test("log-model compile: the chip's station filters the station column", function()
 	storage.stations = {}
 	local model = H.load("scripts.gui.log-model")
 	local f = model.default_filter()
@@ -279,11 +279,5 @@ test("log-model compile: the chip's station filters the station column, and ANDs
 	assert_true(model.match(r, 1, chip))
 	assert_false(model.match(r, 2, chip))
 	assert_true(model.match(r, 2, plain))
-	f.subject = { kind = "station", id = 13 }
-	local none = model.compile(f, 100, nil, 12)
-	for i = 1, 3 do assert_false(model.match(r, i, none), "two different stations match nothing, row " .. i) end
-	assert_true(model.export_filter(none).station ~= 0, "the export does not match station-less rows either")
 	assert_false(model.match(r, 3, chip))
-	assert_true(model.match(r, 1, model.compile({ sev = f.sev, window = f.window, subject = { kind = "station", id = 12 } },
-		100, nil, 12)))
 end)

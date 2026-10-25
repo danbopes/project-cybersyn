@@ -163,8 +163,6 @@ local function get_filter(player_data)
 		f = model.default_filter()
 		player_data.log_filter = f
 	end
-	-- No control sets or clears the "only this train/stop" filter, so a stored one would hide rows for good.
-	f.subject = nil
 	return f
 end
 log_tab.get_filter = get_filter
