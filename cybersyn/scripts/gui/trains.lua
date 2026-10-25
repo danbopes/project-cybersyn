@@ -236,7 +236,7 @@ function trains_tab.create()
 	}
 end
 
---- Where the train is headed or parked, from its status; the STATUS_* globals are not yet defined at require time.
+--- Where the train is headed or parked, from its status.
 --- @param tr SnapshotTrain
 --- @return "station"|"refueler"|"depot"|nil kind
 --- @return uint? id
