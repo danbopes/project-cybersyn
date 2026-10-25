@@ -661,6 +661,16 @@ end
 --- @class PlayerData
 --- @field hold_released_tick uint? the tick in which a row-changing click lifted the hover hold (util.release_hold)
 
+local ACK_HOUR = 216000
+
+--- How long an acknowledge click holds: a day, an hour with shift, until the finding clears with control (nil).
+--- @param e EventData.on_gui_click
+--- @return uint?
+function util.ack_until_tick(e)
+	if e.control then return nil end
+	return game.tick + (e.shift and ACK_HOUR or 24 * ACK_HOUR)
+end
+
 --- A click whose purpose is to change the rows (an acknowledgement, a show/hide toggle) renders them in its own event.
 --- The hover stays recorded: the pointer is still on the table, so the hold protects the rows that slid under it from
 --- the next tick on.

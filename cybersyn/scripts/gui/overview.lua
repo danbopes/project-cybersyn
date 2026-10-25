@@ -36,8 +36,6 @@ local TAB = "overview_tab"
 local TABLE = "overview_unserved_table"
 local PERIODS, DEFAULT_PERIOD = logic.PERIODS, logic.DEFAULT_PERIOD
 local NO_VALUE = text.NO_VALUE
-local HOUR = 216000
-local DAY = 24 * HOUR
 -- Tile 1's body: line 1 the requests older than N minutes, then two reasons and a third line (the third reason or
 -- the rest summed).
 local TOP_REASONS = 2
@@ -1560,15 +1558,7 @@ function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
 	if diag.is_acked("request", r_id, hash) then
 		diag.unack("request", r_id, hash, player.index)
 	else
-		local until_tick
-		if e.control then
-			until_tick = nil
-		elseif e.shift then
-			until_tick = game.tick + HOUR
-		else
-			until_tick = game.tick + DAY
-		end
-		diag.ack("request", r_id, hash, player.index, until_tick)
+		diag.ack("request", r_id, hash, player.index, util.ack_until_tick(e))
 	end
 	util.release_hold(player_data)
 	util.rerender(player, player_data)

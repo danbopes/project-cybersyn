@@ -836,8 +836,6 @@ local NONE_CAPTION = { "cybersyn-gui.none-short" }
 local NEVER_CAPTION = { "cybersyn-gui.never" }
 -- Findings a Problems cell's tooltip spells out; the rest are counted.
 local TOOLTIP_FINDINGS = 6
-local HOUR = 216000
-local DAY = 24 * HOUR
 -- Subjects that have a row of their own elsewhere (stations here, the rest on Trains); every other subject is a stop
 -- or combinator the registry reports, listed after the stations.
 local NOT_REGISTRY = {
@@ -2244,14 +2242,7 @@ function stations_tab.handle.on_lint_ack_click(player, player_data, refs, e)
 		if not t[3] then open = true end
 	end
 	if open then
-		local until_tick
-		if e.control then
-			until_tick = nil
-		elseif e.shift then
-			until_tick = game.tick + HOUR
-		else
-			until_tick = game.tick + DAY
-		end
+		local until_tick = util.ack_until_tick(e)
 		for _, t in ipairs(targets) do
 			if not t[3] then diag.ack("lint", t[1], t[2], player.index, until_tick) end
 		end

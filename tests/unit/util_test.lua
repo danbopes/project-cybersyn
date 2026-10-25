@@ -1200,3 +1200,11 @@ test("natural_key: digit runs compare by value, leading zeros ignored", function
 	assert_eq(names, { "a9b", "a10b", "stn", "stn-1", "stn-002", "stn-2", "stn-10", "x0" })
 	assert_eq(util.natural_key("000"), util.natural_key("0"))
 end)
+
+test("ack_until_tick: a day, an hour with shift, until clear with control", function()
+	local u = util()
+	game.tick = 100
+	assert_eq(u.ack_until_tick({}), 100 + 24 * 216000)
+	assert_eq(u.ack_until_tick({ shift = true }), 100 + 216000)
+	assert_nil(u.ack_until_tick({ control = true, shift = true }))
+end)
