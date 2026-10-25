@@ -21,7 +21,9 @@ MODE_PRIMARY_IO_FAILED_REQUEST = "^"
 MODE_PRIMARY_IO_ACTIVE = "<<"
 MODE_SECONDARY_IO = "%"
 MODE_SECONDARY_INVENTORY = "AND"
--- The display of an inventory combinator whose own request went unserved; stored and blueprinted as AND.
+-- Not a mode: the red I an inventory combinator shows while its own request goes unserved, the same display trick
+-- as the red S (MODE_PRIMARY_IO_FAILED_REQUEST). A blueprint taken while it is red captures OR, which
+-- combinator_build_init turns back into AND, and every operation comparison goes through is_secondary_inventory_op.
 MODE_SECONDARY_INVENTORY_FAILED = "OR"
 MODE_DEPOT = "+"
 MODE_WAGON = "-"
