@@ -290,32 +290,6 @@ local function hud_wanted(player, pd)
 	return pd.hud_on
 end
 
---- Networks that have Cybersyn trains, at most a minute old: the available-train counters only know networks that
---- had a train available since the load, and a network whose trains were never free has 0 free trains, not none.
---- The HUD tick and the Overview's Fleet tile write the cache (in storage, so a joining peer reads the same set); the
---- read-only query interface reads it or scans.
---- @param keep boolean write the scan into the cache
---- @return {[string]: true}
-function extras.train_networks(keep)
-	local m = storage.manager
-	local cached = m and m.hud_networks
-	if cached and game.tick - cached.tick < 3600 then return cached.set end
-	local set = {}
-	for _, train in pairs(storage.trains) do
-		local net = train.network_name
-		if net == NETWORK_EACH then
-			local mask = train.network_mask
-			if type(mask) == "table" then
-				for n in pairs(mask) do set[n] = true end
-			end
-		elseif net then
-			set[net] = true
-		end
-	end
-	if keep and m then m.hud_networks = { tick = game.tick, set = set } end
-	return set
-end
-
 --- The HUD's two labelled numbers. The keys are bare labels, not "label __1__" templates, because the Overview's Fleet
 --- headroom tile sets its "Now" line as a separate label and value: it uses `hud-headroom-now` as that label, so the
 --- tile and the HUD say one thing in the same words.
@@ -326,16 +300,14 @@ function extras.hud_line(unserved, free)
 	return { "", { "cybersyn-gui.hud-unserved" }, " ", unserved, " · ", { "cybersyn-gui.hud-headroom-now" }, " ", free }
 end
 
---- The HUD's two captions, from diag.counts_by_reason(), the available-train counters and the cached network set;
---- nothing here wakes the collector.
---- @param keep boolean? cache the network scan (the HUD tick only)
+--- The HUD's two captions, from diag.counts_by_reason() and the per-network train counters; nothing here wakes the
+--- collector.
 --- @return LocalisedString line1
 --- @return LocalisedString line2
---- @return table values
-function extras.hud_text(keep)
+function extras.hud_text()
 	local d = storage.diag
 	local s = stats.get()
-	local v = logic.hud_values(diag.counts_by_reason(), s and s.available_count or {}, extras.train_networks(keep == true))
+	local v = logic.hud_values(diag.counts_by_reason(), s.available_count, s.trains_by_network)
 	local headroom = v.headroom and format.number(v.headroom) or utext.NO_VALUE
 	local line2
 	if not d then
@@ -345,7 +317,7 @@ function extras.hud_text(keep)
 	else
 		line2 = { "cybersyn-gui.hud-top", utext.chip_caption(v.top_reason), format.number(v.top_count) }
 	end
-	return extras.hud_line(d and format.number(v.unserved) or utext.NO_VALUE, headroom), line2, v
+	return extras.hud_line(d and format.number(v.unserved) or utext.NO_VALUE, headroom), line2
 end
 
 --- @param player LuaPlayer
@@ -393,7 +365,7 @@ function extras.hud_refresh(player, pd)
 		return
 	end
 	local frame = hud_frame(player, pd)
-	local l1, l2 = extras.hud_text(true)
+	local l1, l2 = extras.hud_text()
 	frame.lines.line1.caption = l1
 	frame.lines.line2.caption = l2
 end

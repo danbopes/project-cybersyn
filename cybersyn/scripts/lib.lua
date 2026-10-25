@@ -158,6 +158,20 @@ function network_text(network_id)
 	return string.format("0x%08X", bit32.band(network_id)) -- band ensures 32bits (the parameter might have more)
 end
 
+--- Networks of a station, refueler or train as (name, mask) pairs.
+--- @param network_name string?
+--- @param network_mask int|{[string]: int}?
+--- @param fn fun(name: string, mask: int)
+function each_network(network_name, network_mask, fn)
+	if network_name == NETWORK_EACH then
+		if type(network_mask) == "table" then
+			for name, mask in pairs(network_mask) do fn(name, mask) end
+		end
+	elseif network_name then
+		fn(network_name, type(network_mask) == "number" and network_mask or 0)
+	end
+end
+
 
 -------------------------------------------------- simple class system ------------------------------------------------------
 -- Adapted from "Programming in Lua" (PIL 16.2).

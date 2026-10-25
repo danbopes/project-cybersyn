@@ -157,14 +157,8 @@ end
 --- Networks of a station or refueler as {name, mask} pairs, in a stable order.
 local function networks_of(network_name, network_mask)
 	local out = {}
-	if network_name == NETWORK_EACH then
-		if type(network_mask) == "table" then
-			for name, mask in pairs(network_mask) do out[#out + 1] = { name = name, mask = mask } end
-			table.sort(out, function(a, b) return a.name < b.name end)
-		end
-	elseif network_name then
-		out[1] = { name = network_name, mask = type(network_mask) == "number" and network_mask or 0 }
-	end
+	each_network(network_name, network_mask, function(name, mask) out[#out + 1] = { name = name, mask = mask } end)
+	table.sort(out, function(a, b) return a.name < b.name end)
 	return out
 end
 

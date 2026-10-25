@@ -14,7 +14,6 @@ local diag = require("scripts.diag")
 local text = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
 local explain = require("scripts.gui.explain")
-local extras = require("scripts.gui.extras")
 local extras_logic = require("scripts.gui.extras-logic")
 local name_cell = require("scripts.gui.name-cell")
 local logic = require("scripts.gui.tab-logic")
@@ -583,10 +582,11 @@ end
 --- @return table
 local function fleet_model(window, network)
 	local mins = window.min_available_by_network
-	local now = stats.get().available_count
+	local s = stats.get()
+	local now = s.available_count
 	-- The counters only know networks that had a train available at some point; a network whose trains are all
 	-- busy or stuck since the load is the worst of all, at 0.
-	local seen = extras.train_networks(true)
+	local seen = s.trains_by_network
 	for name in pairs(seen) do
 		if mins[name] == nil then mins[name] = 0 end
 	end

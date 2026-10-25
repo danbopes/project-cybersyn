@@ -184,7 +184,9 @@ end
 function add_available_train_to_depot(map_data, mod_settings, train_id, train, depot_id, depot)
 	local comb = depot.entity_comb
 	if comb.valid then
+		stats.train_networks_changed(train, -1)
 		set_train_from_comb(mod_settings, train, comb)
+		stats.train_networks_changed(train, 1)
 	end
 	depot.available_train_id = train_id
 	train.depot_id = depot_id

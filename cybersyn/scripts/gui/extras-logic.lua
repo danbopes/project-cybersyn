@@ -151,7 +151,7 @@ end
 --- counter and counts as 0. nil without any network.
 --- @param counts {[int]: int} diag.counts_by_reason()
 --- @param available {[string]: int} stats available_count
---- @param networks {[string]: true}? networks that have Cybersyn trains
+--- @param networks {[string]: int}? Cybersyn trains per network (stats trains_by_network)
 --- @return {unserved: int, headroom: int?, network: string?, top_reason: int?, top_count: int}
 function logic.hud_values(counts, available, networks)
 	local total, top, top_n = 0, nil, 0

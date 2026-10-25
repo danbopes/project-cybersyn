@@ -136,8 +136,6 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field cycle_start int tick of the latest planner cycle start (tick_init)
 --- @field cycle_prev int?
 --- @field cycle_prev2 int?
---- @field fleet {[string]: int} Cybersyn trains per network, recounted at most once per cycle
---- @field fleet_tick int
 --- @field unpowered {[uint]: true} stations whose combinator was not working at their last poll
 --- @field alert_last {[int]: uint} (stop unit number, or -train id) * 32 + alert code -> tick it was last logged
 --- @field alert_sweep uint? next tick alert_last is pruned
@@ -207,8 +205,6 @@ local function new_state()
 		item_ix = {},
 		item_hash = {},
 		cycle_start = -1,
-		fleet = {},
-		fleet_tick = -2,
 		unpowered = {},
 		alert_last = {},
 		cycles = 0,
@@ -1031,29 +1027,11 @@ function diag.skipped(d, r_id, station, hash)
 	end
 end
 
---- Cybersyn trains per network (every train whose depot serves it, available or not), counted at most once per
---- planner cycle and only when a NO_TRAINS_ON_NETWORK evaluation asks.
---- @param d DiagState
+--- Cybersyn trains per network (every train whose depot serves it, available or not).
 --- @param network_name string
 --- @return int
-function diag.fleet_size(d, network_name)
-	local f = d.fleet
-	if d.fleet_tick ~= d.cycle_start then
-		for k in pairs(f) do f[k] = nil end
-		for _, train in pairs(storage.trains) do
-			local net = train.network_name
-			if net == NETWORK_EACH then
-				local mask = train.network_mask
-				if type(mask) == "table" then
-					for n in pairs(mask) do f[n] = (f[n] or 0) + 1 end
-				end
-			elseif net then
-				f[net] = (f[net] or 0) + 1
-			end
-		end
-		d.fleet_tick = d.cycle_start
-	end
-	return f[network_name] or 0
+function diag.fleet_size(network_name)
+	return stats.get().trains_by_network[network_name] or 0
 end
 
 --- create_delivery served the key: the wait goes to the log and the entry goes away.

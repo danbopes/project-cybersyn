@@ -404,7 +404,7 @@ remote.add_interface("cybersyn", interface)
 local query_diag = require("scripts.diag")
 local query_stats = require("scripts.stats")
 local query_lint = require("scripts.lint")
-local query_extras = require("scripts.gui.extras")
+local query_hud = require("scripts.gui.extras-logic")
 
 local QUERY_STATUS = {
 	[STATUS_D] = "depot", [STATUS_TO_P] = "to_provider", [STATUS_P] = "at_provider", [STATUS_TO_R] = "to_requester",
@@ -422,9 +422,7 @@ end
 local function query_network(name, mask)
 	if name == NETWORK_EACH then
 		local out = {}
-		if type(mask) == "table" then
-			for n, m in pairs(mask) do out[n] = m end
-		end
+		each_network(name, mask, function(n, m) out[n] = m end)
 		return { each = true, masks = out }
 	end
 	return { name = name, mask = type(mask) == "number" and mask or nil }
@@ -481,14 +479,15 @@ end
 function query.query_counts()
 	local d = storage.diag
 	local by_reason, total = {}, 0
-	for code, n in pairs(query_diag.counts_by_reason()) do
+	local counts = query_diag.counts_by_reason()
+	for code, n in pairs(counts) do
 		by_reason[REASON_NAMES[code] or tostring(code)] = n
 		total = total + n
 	end
 	local s = query_stats.get()
 	local available = {}
-	for name, n in pairs(s and s.available_count or {}) do available[name] = n end
-	local _, _, v = query_extras.hud_text(false)
+	for name, n in pairs(s.available_count) do available[name] = n end
+	local v = query_hud.hud_values(counts, s.available_count, s.trains_by_network)
 	return {
 		diagnostics = d and d.mode or "off",
 		unserved = total,

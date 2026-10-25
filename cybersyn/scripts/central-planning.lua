@@ -1079,7 +1079,7 @@ local function tick_dispatch(map_data, mod_settings)
 			analytics.record_failed_dispatch(map_data, r_station_id, item_hash, failure_reason, wait_so_far, closest_p_id, reason)
 			if d then
 				if reason == REASON_NO_TRAINS_ON_NETWORK then
-					b = diag.fleet_size(d, network_name)
+					b = diag.fleet_size(network_name)
 				elseif reason == REASON_TRAIN_FILTERED then
 					a = diag_rej[REJ_T_MASK] + diag_rej[REJ_T_MANUAL] + diag_rej[REJ_T_SURFACE]
 				elseif reason == REASON_CAPACITY then
@@ -1520,6 +1520,7 @@ function tick_poll_entities(map_data, mod_settings)
 				if (not train.entity or not train.entity.valid) then
 					game.print(
 						"Cybersyn: Lost track of invalid train after migration. You need to check for lost trains manually. You might get a few of these messages.")
+					stats.train_networks_changed(train, -1)
 					map_data.trains[train_id] = nil
 					return
 				end
