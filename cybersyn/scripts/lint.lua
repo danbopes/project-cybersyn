@@ -40,14 +40,7 @@ local UNLIMITED = 2100000000
 local DEFAULT_PRIORITY = 50
 
 -- Checks only the registry finds; their acknowledgements end when the registry drops them, not with a pass.
-local REGISTRY_CHECKS = {
-	[LINT_DERELICT_COMB] = true,
-	[LINT_GHOST_COMB] = true,
-	[LINT_NO_COMB] = true,
-	[LINT_WRONG_SIDE] = true,
-	[LINT_DOUBLE_COMB] = true,
-	[LINT_NAME_OVERLAP] = true,
-}
+local REGISTRY_CHECKS = LINT_REGISTRY_CHECKS
 lint.REGISTRY_CHECKS = REGISTRY_CHECKS
 
 lint.RECORDS_PER_UPDATE = RECORDS_PER_UPDATE
@@ -1044,20 +1037,7 @@ end
 --- @field msgs {[string]: true} [cybersyn-problems] keys, each one finding
 --- @field stop LuaEntity? wrong side: the stop the combinator stands next to
 
-local MESSAGE_CHECK = {
-	["double-station"] = LINT_DOUBLE_COMB,
-	["double-station-control"] = LINT_DOUBLE_COMB,
-	["double-depot"] = LINT_DOUBLE_COMB,
-	["double-refueler"] = LINT_DOUBLE_COMB,
-	["station-and-depot"] = LINT_DOUBLE_COMB,
-	["station-and-refueler"] = LINT_DOUBLE_COMB,
-	["depot-and-refueler"] = LINT_DOUBLE_COMB,
-	["ghost-combinator"] = LINT_GHOST_COMB,
-	["stop-no-combinator"] = LINT_NO_COMB,
-	["name-overlap-with-depot"] = LINT_NAME_OVERLAP,
-	["derelict-combinator"] = LINT_DERELICT_COMB,
-	["wrong-side-combinator"] = LINT_WRONG_SIDE,
-}
+local MESSAGE_CHECK = LINT_MESSAGE_CHECK
 lint.MESSAGE_CHECK = MESSAGE_CHECK
 
 -- What one evaluation decides: eval_stop the combinator facts of a stop, eval_name the name overlap (per name, so
