@@ -25,6 +25,14 @@ local function kinds(rows)
 	return out
 end
 
+--- The reference result of the backward scans: the newest `n` events about one subject, newest first, from an
+--- unbounded diag.events.
+local function last_for(kind, id, n)
+	local rows, out = diag.events({ [kind] = id }, nil, n, math.huge), {}
+	for i = #rows, 1, -1 do out[#out + 1] = rows[i] end
+	return out
+end
+
 --- Walk of the live entries by confirmed reason, to check the incremental counts against.
 local function tally(d)
 	local out = {}
@@ -44,7 +52,6 @@ test("apply: off is nil, basic and full create the state, the full ring follows 
 	assert_false(d.full)
 	assert_eq(d.ring_basic.size, diag.BASIC_RING)
 	assert_eq(d.ring_full.size, 2048)
-	assert_eq(d.loaded_tick, 100)
 	local same = setup("full", 4096)
 	assert_same(same, d)
 	assert_true(d.full)
@@ -368,6 +375,7 @@ test("station_removed: entries, counters and acknowledgements of the station go"
 	assert_eq(d.counts, { [REASON_NO_PROVIDER] = 1 })
 	assert_nil(storage.acks.station[4])
 	assert_nil(storage.acks.request[4])
+	assert_eq(storage.acks.n, 0)
 end)
 
 test("fleet_size: every Cybersyn train per network, each-network masks too, exact under add, change and remove", function()
@@ -446,8 +454,8 @@ test("rings: basic kinds and full kinds go to their own ring; full kinds only in
 	assert_eq(kinds(diag.events(nil, nil, 2)), { "served", "arrive_p" }, "nil from_seq = the newest, oldest first")
 	assert_eq(kinds(diag.events({ kind = DIAG_KIND_SERVED }, 0, 10)), { "served" })
 	assert_eq(kinds(diag.events({ station = 4 }, 0, 10)), { "dispatched", "served" })
-	assert_eq(kinds(diag.last_for("train", 2, 10)), { "arrive_p", "served", "dispatched" })
-	assert_eq(kinds(diag.last_for("delivery", 1, 1)), { "arrive_p" })
+	assert_eq(kinds(last_for("train", 2, 10)), { "arrive_p", "served", "dispatched" })
+	assert_eq(kinds(last_for("delivery", 1, 1)), { "arrive_p" })
 	local oldest, span = diag.horizon()
 	assert_eq({ oldest, span }, { 7, 0 })
 end)
@@ -481,6 +489,35 @@ test("rings: wrap keeps the newest rows; merged order follows seq across both ri
 	assert_eq(#diag.events(nil, 4990, 100), 10)
 end)
 
+test("events: both directions over the merged rings, the scan budget and the seq a later call continues from", function()
+	at(0)
+	local d = setup("full")
+	for k = 1, 10 do
+		if k % 2 == 1 then
+			diag.event(d, DIAG_KIND_ALERT, DIAG_SEV_ERROR, 1, 0, 0, 0, 0, 0, k, 0)
+		else
+			diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 0, 0, 0, 0, k, 0)
+		end
+	end
+	local function run(...)
+		local rows, reached = diag.events(...)
+		local seqs = {}
+		for i, ev in ipairs(rows) do seqs[i] = ev.seq end
+		return { seqs, reached }
+	end
+	local alerts, arrivals = { kind = DIAG_KIND_ALERT }, { kind = DIAG_KIND_ARRIVE_P }
+	assert_eq(run(nil, nil, 3), { { 8, 9, 10 }, 8 }, "the newest, rows left below")
+	assert_eq(run(nil, nil, 10), { { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 } }, "the limit met at the oldest row: the end")
+	assert_eq(run(alerts, nil, 100, 4), { { 7, 9 }, 7 }, "four rows examined, newest first")
+	assert_eq(run(arrivals, 0, 100, 3), { { 2 }, 3 }, "three rows examined, oldest first")
+	assert_eq(run(arrivals, 3, 100), { { 4, 6, 8, 10 } }, "continued from the seq reached, to the end")
+	assert_eq(run(nil, 7, 3), { { 8, 9, 10 } })
+	assert_eq(run(nil, 0, 2), { { 1, 2 }, 2 })
+	assert_eq(run({ max_seq = 5 }, 0, 100), { { 1, 2, 3, 4, 5 } }, "max_seq ends a forward scan")
+	setup("off")
+	assert_eq(run(nil, nil, 3), { {} })
+end)
+
 test("rings: resizing the full ring keeps the newest rows and their order", function()
 	at(0)
 	local d = setup("full", 2048)
@@ -503,7 +540,7 @@ test("rings: resizing the full ring keeps the newest rows and their order", func
 	assert_eq({ #ev, ev[1].a, ev[1025].a }, { 1025, 1978, 3002 })
 end)
 
-test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk per export tick", function()
+test("export: csv lines with a header, one write of every row on the player's machine", function()
 	at(50)
 	local d = setup("full")
 	local writes = {}
@@ -514,109 +551,23 @@ test("export: csv lines, a header once, chunks of 1,000 rows appended, one chunk
 		diag.event(d, DIAG_KIND_UNSERVED_REASON, DIAG_SEV_WARNING, REASON_CAPACITY, 0, 0, 7, 8, 1, 50, 40)
 	end
 	diag.event(d, DIAG_KIND_TRAIN_STATE, DIAG_SEV_ERROR, defines.train_state.no_path, 3, 4, 0, 0, 2, 0, 0)
-	game.players[1] = { index = 1, name = "a", connected = true }
-	local path = diag.export(1, nil)
-	assert_eq(path, "cybersyn/diag-50.csv")
-	local job = d.export_jobs[1]
+	assert_eq({ diag.export(1, nil) }, { "cybersyn/diag-50.csv", 4001 })
 	-- A second export in the same tick gets a file of its own.
-	assert_eq(diag.export(2, nil), "cybersyn/diag-50-2.csv")
-	table.remove(d.export_jobs, 2)
-	assert_eq(diag.export_progress(job), 0)
-	assert_same(diag.export_job(1), job)
-	assert_nil(diag.export_job(2))
-	-- written after the export started: not part of it
-	diag.event(d, DIAG_KIND_ALERT, DIAG_SEV_ERROR, 1, 0, 0, 0, 0, 0, 0, 0)
-	local ended = {}
-	diag.set_export_listener(function(j, cause) ended[#ended + 1] = { j.path, j.rows, cause } end)
-	assert_eq(#d.export_jobs, 1)
-	diag.export_tick()
-	assert_eq(#writes, 1)
-	assert_near(diag.export_progress(job), 1000 / 4001, 1e-9)
-	for t = 51, 54 do
-		at(t)
-		diag.export_tick()
-	end
-	assert_eq(#d.export_jobs, 0)
-	at(55)
-	assert_nil(diag.export_tick())
-	assert_eq(#writes, 5)
-	assert_eq(ended, { { "cybersyn/diag-50.csv", 4001, "done" } })
+	assert_eq({ diag.export(nil, { train = 4 }) }, { "cybersyn/diag-50-2.csv", 1 })
+	assert_eq(#writes, 2)
 	assert_eq({ writes[1][1], writes[1][3], writes[1][4] }, { "cybersyn/diag-50.csv", false, 1 })
-	assert_eq({ writes[2][3], writes[5][3] }, { true, true })
+	assert_eq(writes[2][4], 0, "nil is the server")
 	local lines = {}
-	for i, w in ipairs(writes) do
-		for line in string.gmatch(w[2], "[^\n]+") do lines[#lines + 1] = line end
-	end
+	for line in string.gmatch(writes[1][2], "[^\n]+") do lines[#lines + 1] = line end
 	assert_eq(#lines, 1 + 4001)
 	assert_eq(lines[1], "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b")
 	assert_eq(lines[2], "1,50,unserved_reason,warning,CAPACITY,0,0,7,8,iron-plate|rare,50,40")
 	assert_eq(lines[4002], '4001,50,train_state,error,no_path,3,4,0,0,"odd,""name""",0,0')
-	diag.set_export_listener(nil)
-	helpers.write_file = function() end
-	game.players[1] = nil
-end)
-
-test("export: an item name holding a comma or quote is quoted the CSV way", function()
-	at(2)
-	local d = setup("basic")
-	local writes = {}
-	helpers.write_file = function(path, data) writes[#writes + 1] = data end
-	local item = diag.intern(d, 'odd,"name"')
-	diag.event(d, DIAG_KIND_ALERT, DIAG_SEV_ERROR, DIAG_ALERT_STUCK, 0, 3, 0, 0, item, 0, 0)
-	diag.export(0, nil)
-	diag.export_tick()
-	assert_eq(writes[1], "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
-		.. '1,2,alert,error,stuck,0,3,0,0,"odd,""name""",0,0\n')
-	helpers.write_file = function() end
-end)
-
-test("export: a player who leaves mid-export gets the file written on the server instead, from the start", function()
-	at(50)
-	local d = setup("basic")
-	local writes = {}
-	helpers.write_file = function(path, data, append, player) writes[#writes + 1] = { path, append, player, #data } end
-	for _ = 1, 2500 do
-		diag.event(d, DIAG_KIND_UNSERVED_REASON, DIAG_SEV_WARNING, REASON_CAPACITY, 0, 0, 7, 8, 0, 50, 40)
-	end
-	local player = { index = 3, name = "c", connected = true }
-	game.players[3] = player
-	local ended = {}
-	diag.set_export_listener(function(j, cause) ended[#ended + 1] = { j.rows, j.server, cause } end)
-	diag.export(3, nil)
-	diag.export_tick()
-	assert_eq({ writes[1][2], writes[1][3] }, { false, 3 })
-	player.connected = false
-	diag.export_tick()
-	assert_eq({ writes[2][2], writes[2][3] }, { false, 0 }, "a fresh file on the server, header again")
-	diag.export_tick()
-	diag.export_tick()
-	assert_eq(#d.export_jobs, 0)
-	assert_eq(ended, { { 2500, true, "done" } }, "every row, on the server")
-	diag.set_export_listener(nil)
-	helpers.write_file = function() end
-	game.players[3] = nil
-end)
-
-test("export: a selective filter is scanned in bounded steps", function()
-	at(60)
-	local d = setup("full")
-	local writes = {}
-	helpers.write_file = function(path, data, append, player) writes[#writes + 1] = { path, data, append, player } end
-	for i = 1, 9000 do
-		diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 3, 0, 0, 0, 0, 0)
-	end
-	diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 4, 0, 0, 0, 0, 0)
-	diag.export(nil, { train = 4 })
-	diag.export_tick()
-	assert_eq(#d.export_jobs, 1, "4,000 rows scanned, the match not reached yet")
-	at(61)
-	diag.export_tick()
-	assert_eq(#d.export_jobs, 1, "8,000 rows scanned")
-	at(62)
-	diag.export_tick()
-	assert_eq(#d.export_jobs, 0)
-	assert_eq(#writes, 3)
-	assert_eq(writes[3][2], "9001,60,arrive_p,info,0,0,4,0,0,,0,0\n")
+	assert_eq(writes[2][2], "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
+		.. '4001,50,train_state,error,no_path,3,4,0,0,"odd,""name""",0,0\n')
+	setup("off")
+	assert_eq({ diag.export(1, nil) }, { nil, 0 }, "nothing to export while diagnostics are off")
+	assert_eq(#writes, 2)
 	helpers.write_file = function() end
 end)
 
@@ -635,11 +586,6 @@ test("export: the Log's filter (severities, kind group with alert codes, window,
 	local function run(filter)
 		writes = {}
 		diag.export(nil, filter)
-		at(game.tick + 1)
-		while d.export_jobs[1] do
-			at(game.tick + 1)
-			diag.export_tick()
-		end
 		local seqs = {}
 		for line in string.gmatch(table.concat(writes), "[^\n]+") do
 			local seq = string.match(line, "^(%d+),")
@@ -656,41 +602,6 @@ test("export: the Log's filter (severities, kind group with alert codes, window,
 	helpers.write_file = function() end
 end)
 
-test("export: turning diagnostics off keeps a queued export draining one chunk per export tick", function()
-	at(70)
-	local d = setup("basic")
-	local writes = {}
-	helpers.write_file = function(path, data) writes[#writes + 1] = data end
-	for i = 1, 2500 do
-		diag.event(d, DIAG_KIND_STATION_LIMIT, DIAG_SEV_INFO, 0, 0, 0, 1, 0, 0, 1, 2)
-	end
-	game.players[4] = { index = 4, name = "d", connected = true }
-	diag.export(4, nil)
-	diag.export_tick()
-	local ended = {}
-	diag.set_export_listener(function(j, cause) ended[#ended + 1] = { j.rows, cause } end)
-	setup("off")
-	assert_nil(storage.diag)
-	-- Nothing is written in the setting's tick; the job outlives diagnostics with its rings.
-	assert_eq(#writes, 1)
-	assert_eq(ended, {})
-	assert_eq(#diag.export_jobs(), 1)
-	assert_not_nil(diag.export_job(4))
-	diag.export_tick()
-	assert_eq(#writes, 2)
-	diag.export_tick()
-	assert_eq(#writes, 3)
-	assert_eq(ended, { { 2500, "off" } })
-	assert_nil(storage.diag_export_tail)
-	assert_nil(diag.export_tick())
-	local n = 0
-	for _ in string.gmatch(table.concat(writes), "[^\n]+") do n = n + 1 end
-	assert_eq(n, 2501)
-	diag.set_export_listener(nil)
-	helpers.write_file = function() end
-	game.players[4] = nil
-end)
-
 test("export and events after full -> basic: the full session's rows are gone from every reader", function()
 	at(80)
 	local d = setup("full")
@@ -705,21 +616,7 @@ test("export and events after full -> basic: the full session's rows are gone fr
 	local evs = diag.events(nil, nil, 100)
 	assert_eq(#evs, 2)
 	assert_eq({ evs[1].seq, evs[2].seq }, { 2, 3 })
-	diag.export(nil, nil)
-	diag.export_tick()
-	local lines = {}
-	for line in string.gmatch(table.concat(writes), "[^\n]+") do lines[#lines + 1] = line end
-	assert_eq(#lines, 3)
-	-- A job started while full was on keeps that ring until it ends, even when full is switched off meanwhile.
-	d = setup("full")
-	diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 3, 0, 0, 0, 0, 0)
-	writes = {}
-	diag.export(nil, nil)
-	d = setup("basic")
-	diag.export_tick()
-	lines = {}
-	for line in string.gmatch(table.concat(writes), "[^\n]+") do lines[#lines + 1] = line end
-	assert_eq(#lines, 1 + 3)
+	assert_eq(select(2, diag.export(nil, nil)), 2)
 	helpers.write_file = function() end
 end)
 
@@ -757,6 +654,7 @@ test("acks: expiry by time, by a confirmed reason change, on service; events and
 	assert_eq(#acked, 4)
 	assert_eq({ acked[1].station, acked[1].station2, acked[1].a, acked[1].item }, { 1, 3, 1000, 1 })
 	assert_true(#H.logged >= 8)
+	assert_eq(storage.acks.n, 0, "every acknowledgement ended")
 end)
 
 test("acks: survive diagnostics off, capped at 1,024 with the oldest dropped", function()
@@ -771,13 +669,15 @@ test("acks: survive diagnostics off, capped at 1,024 with the oldest dropped", f
 	local n = 0
 	for _ in pairs(storage.acks.station) do n = n + 1 end
 	assert_eq(n, diag.ACK_CAP - 1)
+	assert_eq(storage.acks.n, diag.ACK_CAP)
 	assert_nil(storage.acks.station[1])
 	assert_not_nil(storage.acks.request[77].coal)
 	assert_nil(diag.is_acked("request", 77, "coal").reason)
 	-- replacing an existing acknowledgement does not evict another
 	diag.ack("station", 2, nil, 1, 9000)
 	assert_not_nil(storage.acks.station[3])
-	assert_eq(storage.acks.station[2].until_tick, 9000)
+	assert_eq(storage.acks.station[2][0].until_tick, 9000)
+	assert_eq(storage.acks.n, diag.ACK_CAP)
 end)
 
 test("alerts: one row per entity and alert until it changes or 10 minutes pass", function()
@@ -1068,7 +968,7 @@ test("schedule_edited, lint and manual_action rows", function()
 	diag.schedule_edited(d, 9, train, 3)
 	at(1000 + diag.EDIT_REPEAT)
 	diag.schedule_edited(d, 9, train, 2)
-	diag.lint(LINT_CAPACITY, LINT_SUBJECT_STATION, 44, true)
+	diag.lint(LINT_CAPACITY, LINT_SUBJECT_STATION, 44, true, 501)
 	diag.lint(LINT_IN_GROUP, LINT_SUBJECT_TRAIN, 9, false)
 	diag.manual_action(ACTION_FIX_PRIORITIES, nil, 3)
 	local rows = diag.events(nil, 0, 10)
@@ -1077,6 +977,7 @@ test("schedule_edited, lint and manual_action rows", function()
 	assert_eq({ rows[3].station, rows[3].a, rows[3].b, rows[3].code, rows[3].sev },
 		{ 44, LINT_CAPACITY, 44, DIAG_LINT_APPEARED, DIAG_SEV_ERROR })
 	assert_eq({ rows[4].train, rows[4].station, rows[4].code, rows[4].sev }, { 9, 0, DIAG_LINT_CLEARED, DIAG_SEV_INFO })
+	assert_eq({ rows[3].delivery, rows[4].delivery }, { 501, 0 }, "the pass key, 0 outside a pass")
 	assert_eq({ rows[5].code, rows[5].a, rows[5].b, rows[5].station2 }, { ACTION_FIX_PRIORITIES, ACTION_FIX_PRIORITIES, 0, 3 })
 	assert_eq(diag.code_name(DIAG_KIND_MANUAL_ACTION, ACTION_FIX_PRIORITIES), "fix_priorities")
 	assert_eq(diag.code_name(DIAG_KIND_LINT, DIAG_LINT_CLEARED), "cleared")
@@ -1084,4 +985,10 @@ test("schedule_edited, lint and manual_action rows", function()
 	setup("off")
 	diag.lint(LINT_CAPACITY, LINT_SUBJECT_STATION, 44, true)
 	diag.manual_action(ACTION_FIX_PRIORITIES, nil, 3)
+end)
+
+test("kind schema: every kind has an entry, so the ring readers index it without a check", function()
+	for kind, name in ipairs(DIAG_KIND_NAMES) do assert_not_nil(DIAG_KIND_SCHEMA[kind], name) end
+	assert_eq(diag.code_name(DIAG_KIND_TRAIN_STATE, defines.train_state.on_the_path), "on_the_path")
+	assert_eq(diag.code_name(DIAG_KIND_STATION_LIMIT, 7), "7", "a kind without code names writes the number")
 end)

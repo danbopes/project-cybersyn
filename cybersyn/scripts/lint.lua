@@ -583,12 +583,13 @@ local function note_logged(s, field, id, mask)
 end
 
 --- Writes the transitions between `old` and `new` to the log.
-local function transitions(subject, id, old, new)
+--- @param pass uint the running pass's start tick + 1 (diag.lint)
+local function transitions(subject, id, old, new, pass)
 	if old == new then return end
 	for check = 1, LINT_COUNT do
 		local bit = LINT_BIT[check]
 		local was, is = band(old, bit) ~= 0, band(new, bit) ~= 0
-		if was ~= is then diag.lint(check, subject, id, is) end
+		if was ~= is then diag.lint(check, subject, id, is, pass) end
 	end
 end
 
@@ -748,7 +749,7 @@ local function check_record(s, job, snap, k, cycle_ticks)
 	local logged = s.logged
 	local old = logged and logged[id] or s.bits[id] or 0
 	if old ~= mask then
-		transitions(subject, id, old, mask)
+		transitions(subject, id, old, mask, job.started_tick + 1)
 		note_logged(s, "logged", id, mask)
 	end
 	if mask ~= 0 then job.bits[id] = mask end
@@ -841,7 +842,7 @@ local function check_train(s, job, snap, id)
 	local logged = s.train_logged
 	local old = logged and logged[id] or s.train_bits[id] or 0
 	if old ~= mask then
-		transitions(LINT_SUBJECT_TRAIN, id, old, mask)
+		transitions(LINT_SUBJECT_TRAIN, id, old, mask, job.started_tick + 1)
 		note_logged(s, "train_logged", id, mask)
 	end
 	if mask ~= 0 then job.train_bits[id] = mask end
@@ -891,7 +892,7 @@ end
 --- @param s LintState
 local function resolve_acks(s)
 	local acks = storage.acks
-	if not (acks and acks.lint and next(acks.lint)) then return end
+	if not (acks and next(acks.lint)) then return end
 	local ended = {}
 	for key, by in pairs(acks.lint) do
 		local mask = key < 0 and s.train_bits[-key] or s.bits[key] or 0
@@ -1085,7 +1086,7 @@ end
 --- @param checks int[]
 local function end_acks(unit, msgs, checks)
 	local acks = storage.acks
-	if not (acks and acks.lint and acks.lint[unit]) then return end
+	if not (acks and acks.lint[unit]) then return end
 	for _, check in ipairs(checks) do
 		local still = false
 		for m in pairs(msgs) do
@@ -1372,7 +1373,7 @@ end
 --- Ends the acknowledgements of registry checks the registry no longer has (after a seed).
 local function resolve_registry_acks()
 	local acks = storage.acks
-	if not (acks and acks.lint and next(acks.lint)) then return end
+	if not (acks and next(acks.lint)) then return end
 	local entries = registry().entries
 	local ended = {}
 	for key, by in pairs(acks.lint) do

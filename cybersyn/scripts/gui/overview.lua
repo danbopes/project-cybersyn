@@ -359,8 +359,8 @@ end
 local function row_before(a, b)
 	local ea, eb = a.e, b.e
 	if ea.first_tick ~= eb.first_tick then return ea.first_tick < eb.first_tick end
-	local sa, sb = REASON_SEVERITY[ea.reason] or 0, REASON_SEVERITY[eb.reason] or 0
-	if sa ~= sb then return sa > sb end
+	local sa, sb = REASON_SEVERITY[ea.reason] or DIAG_SEV_INFO, REASON_SEVERITY[eb.reason] or DIAG_SEV_INFO
+	if sa ~= sb then return sa < sb end
 	if a.r_id ~= b.r_id then return a.r_id < b.r_id end
 	return a.hash < b.hash
 end

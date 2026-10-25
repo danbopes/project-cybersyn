@@ -133,14 +133,21 @@ for code, name in ipairs(REASON_NAMES) do
 	REASON_KEYS[code] = string.gsub(string.lower(name), "_", "-")
 	REASON_BY_NAME[name] = code
 end
---- Chip colour per reason: red = nothing will change on its own, orange = waiting on stock or capacity, grey = by
---- design (a setting of the player's). Also the order of "worst reason" for a station.
+DIAG_SEV_ERROR = 1
+DIAG_SEV_WARNING = 2
+DIAG_SEV_INFO = 3
+DIAG_SEV_NAMES = { "error", "warning", "info" }
+
+--- DIAG_SEV_* per reason, also its chip colour: error (red) = nothing will change on its own, warning (orange) =
+--- waiting on stock or capacity, info (grey) = by design (a setting of the player's). Also the order of "worst
+--- reason" for a station. An unknown reason counts as info.
+local E, W, I = DIAG_SEV_ERROR, DIAG_SEV_WARNING, DIAG_SEV_INFO
 REASON_SEVERITY = {
-	[REASON_NO_PROVIDER] = 3, [REASON_R_AT_LIMIT] = 2, [REASON_R_DISABLED] = 1, [REASON_R_IS_PROVIDING] = 1,
-	[REASON_P_AT_LIMIT] = 2, [REASON_P_IS_REQUESTING] = 1, [REASON_MASK_MISMATCH] = 3, [REASON_NO_SURFACE_ROUTE] = 3,
-	[REASON_P_BELOW_THRESHOLD] = 2, [REASON_NO_TRAINS_ON_NETWORK] = 3, [REASON_TRAIN_FILTERED] = 3,
-	[REASON_CAPACITY] = 3, [REASON_R_LAYOUT] = 3, [REASON_P_LAYOUT] = 3, [REASON_ALL_IN_INTERRUPT] = 2,
-	[REASON_P_RESERVED] = 2,
+	[REASON_NO_PROVIDER] = E, [REASON_R_AT_LIMIT] = W, [REASON_R_DISABLED] = I, [REASON_R_IS_PROVIDING] = I,
+	[REASON_P_AT_LIMIT] = W, [REASON_P_IS_REQUESTING] = I, [REASON_MASK_MISMATCH] = E, [REASON_NO_SURFACE_ROUTE] = E,
+	[REASON_P_BELOW_THRESHOLD] = W, [REASON_NO_TRAINS_ON_NETWORK] = E, [REASON_TRAIN_FILTERED] = E,
+	[REASON_CAPACITY] = E, [REASON_R_LAYOUT] = E, [REASON_P_LAYOUT] = E, [REASON_ALL_IN_INTERRUPT] = W,
+	[REASON_P_RESERVED] = W,
 }
 
 -- Rejection counters of one evaluation (an unserved entry's `rej`): the five provider sites in the order a provider
@@ -162,7 +169,7 @@ REJ_REASON = {
 	REASON_P_AT_LIMIT, REASON_P_IS_REQUESTING, REASON_MASK_MISMATCH, REASON_NO_SURFACE_ROUTE, REASON_P_BELOW_THRESHOLD,
 }
 
--- Event kinds of the two rings. Kinds 1-18 and 26 go to the basic ring, 19-25 (DIAG_KIND_FULL) only to the full ring.
+-- Event kinds of the two rings; what each kind's columns hold is DIAG_KIND_SCHEMA.
 -- Kinds are positional (saved rings and exports hold the numbers): new kinds are appended.
 DIAG_KIND_UNSERVED_REASON = 1
 DIAG_KIND_SERVED = 2
@@ -201,16 +208,6 @@ DIAG_KIND_KEYS = {}
 for kind, name in ipairs(DIAG_KIND_NAMES) do
 	DIAG_KIND_KEYS[kind] = string.gsub(name, "_", "-")
 end
-DIAG_KIND_FULL = {
-	[DIAG_KIND_DISPATCHED] = true, [DIAG_KIND_ARRIVE_P] = true, [DIAG_KIND_LEAVE_P] = true,
-	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true, [DIAG_KIND_RETURNED] = true,
-	[DIAG_KIND_TRAIN_STATE] = true,
-}
-
-DIAG_SEV_ERROR = 1
-DIAG_SEV_WARNING = 2
-DIAG_SEV_INFO = 3
-DIAG_SEV_NAMES = { "error", "warning", "info" }
 
 -- `code` of an alert event: the alert that was sent. 1-10 match the ids active_alerts already uses.
 DIAG_ALERT_STUCK = 1
@@ -352,3 +349,49 @@ ACTION_REFRESH_ALLOW_LISTS = 5
 ACTION_RECOUNT_DELIVERIES = 6
 ACTION_NAMES = { "fix_priorities", "abolish_same_depot", "recalculate_train_size", "fail_delivery",
 	"refresh_allow_lists", "recount_deliveries" }
+
+-- `a` of a dispatch_failed event: the train's defines.train_state plus this, so 0 can mean "not recorded"
+-- (on_the_path is 0).
+DIAG_STATE_OFFSET = 1
+--- defines.train_state value -> name.
+DIAG_TRAIN_STATE_NAMES = {}
+for name, v in pairs(defines.train_state) do DIAG_TRAIN_STATE_NAMES[v] = name end
+
+--- What the columns of each event kind hold, for every reader of the rings:
+--- full: the kind goes to the full ring (written only in full mode), else to the basic ring;
+--- station2: "station" (a second station: the provider, the other end of a delivery), "player" (a player index, 0 =
+---   the server) or "subject" (a LINT_SUBJECT_*); nil when unused;
+--- pass: the delivery column holds the lint pass key (diag.lint), not a delivery;
+--- code_names: the name of each `code` (the CSV export);
+--- a_named, b_named: `a` / `b` name what the event is about rather than measure it, so two events that differ there
+---   are different events.
+--- @type {[int]: {full: true?, station2: "station"|"player"|"subject"?, pass: true?, code_names: string[]?, a_named: true?, b_named: true?}}
+DIAG_KIND_SCHEMA = {
+	[DIAG_KIND_UNSERVED_REASON] = { station2 = "station", code_names = REASON_NAMES },
+	[DIAG_KIND_SERVED] = { station2 = "station", code_names = REASON_NAMES },
+	[DIAG_KIND_FLAPPING] = { station2 = "station", code_names = REASON_NAMES },
+	[DIAG_KIND_DISPATCH_FAILED] = { station2 = "station", code_names = DIAG_DISPATCH_NAMES },
+	[DIAG_KIND_DELIVERY_FAILED] = { station2 = "station", code_names = DIAG_FAIL_NAMES },
+	[DIAG_KIND_ALERT] = { station2 = "station", code_names = DIAG_ALERT_NAMES },
+	[DIAG_KIND_STATION_POWER] = {},
+	[DIAG_KIND_STATION_LIMIT] = {},
+	[DIAG_KIND_STATION_WARMUP_DONE] = {},
+	[DIAG_KIND_STATION_DISABLED] = {},
+	[DIAG_KIND_SHORT_LOAD] = { station2 = "station" },
+	[DIAG_KIND_UNEXPECTED_CARGO] = { station2 = "station" },
+	[DIAG_KIND_RESIDUAL_CARGO] = { station2 = "station" },
+	[DIAG_KIND_SCHEDULE_EDITED] = { station2 = "player", a_named = true },
+	[DIAG_KIND_LINT] = { station2 = "subject", pass = true, code_names = { "appeared", "cleared" }, a_named = true,
+		b_named = true },
+	[DIAG_KIND_ACKNOWLEDGED] = { station2 = "player", code_names = DIAG_ACK_KINDS },
+	[DIAG_KIND_UNACKNOWLEDGED] = { station2 = "player", code_names = DIAG_ACK_KINDS },
+	[DIAG_KIND_MANUAL_ACTION] = { station2 = "player", code_names = ACTION_NAMES, a_named = true, b_named = true },
+	[DIAG_KIND_DISPATCHED] = { full = true, station2 = "station" },
+	[DIAG_KIND_ARRIVE_P] = { full = true, station2 = "station" },
+	[DIAG_KIND_LEAVE_P] = { full = true, station2 = "station" },
+	[DIAG_KIND_ARRIVE_R] = { full = true, station2 = "station" },
+	[DIAG_KIND_LEAVE_R] = { full = true, station2 = "station" },
+	[DIAG_KIND_RETURNED] = { full = true },
+	[DIAG_KIND_TRAIN_STATE] = { full = true, code_names = DIAG_TRAIN_STATE_NAMES },
+	[DIAG_KIND_SLOW_DELIVERY] = { station2 = "station" },
+}

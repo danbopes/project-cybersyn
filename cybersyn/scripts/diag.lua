@@ -23,8 +23,9 @@ local FLAP_WINDOW = 36000
 -- wait_signal flaps against on_the_path in normal traffic; only a wait this long is worth a log row.
 local WAIT_SIGNAL_MIN = 600
 -- The dispatcher re-sends its merged no-train alerts every planner cycle, its other requester alerts on every failing
--- evaluation and the stuck-train alert on every visit; the log keeps one row per entity and alert until the alert
--- changes or this long has passed.
+-- evaluation and the stuck-train alert on every visit. The log keeps one row per entity and alert per this long, so a
+-- row says the alert was being sent from then on, not that it had just appeared: one that clears and comes back
+-- within the window writes no new row.
 local ALERT_REPEAT = 36000
 -- The unserved sweep runs on every SWEEP_EVERY-th planner cycle: an entry then lives up to that many cycles longer,
 -- and the walk over every entry (about 60 µs per cycle on a 2,030-station base) costs that much less per tick.
@@ -35,12 +36,6 @@ local SWEEP_SPARE = 36000
 -- A player editing a schedule changes it several times in a row; one log row per train per this long.
 local EDIT_REPEAT = 600
 local ACK_CAP = 1024
--- A 2,000-row chunk cost 4.1-5.3 ms per update on a 2,030-station base, one chunk over the 5 ms budget.
-local EXPORT_CHUNK = 1000
-local EXPORT_SCAN = 4 * EXPORT_CHUNK
--- Export jobs drain one chunk on this fixed nth tick only (main.lua skips the ticks the manager updates on), so they
--- finish with manager updates or diagnostics off; a prime, so it rarely meets another handler's nth.
-local EXPORT_NTH = 7
 -- Rows a filtered diag.events call examines before it returns with the seq it reached.
 local EVENTS_SCAN = 4096
 
@@ -52,27 +47,16 @@ diag.UNSERVED_CAP = UNSERVED_CAP
 diag.FLAP_TICKS = FLAP_TICKS
 diag.FLAP_WINDOW = FLAP_WINDOW
 diag.ACK_CAP = ACK_CAP
-diag.EXPORT_CHUNK = EXPORT_CHUNK
-diag.EXPORT_NTH = EXPORT_NTH
 diag.EVENTS_SCAN = EVENTS_SCAN
 diag.WAIT_SIGNAL_MIN = WAIT_SIGNAL_MIN
 diag.SWEEP_EVERY = SWEEP_EVERY
 diag.SWEEP_SPARE = SWEEP_SPARE
 diag.EDIT_REPEAT = EDIT_REPEAT
 
+-- What station2, delivery, code, a and b hold depends on the kind: DIAG_KIND_SCHEMA.
 local COLUMNS = { "seq", "tick", "kind", "sev", "code", "delivery", "train", "station", "station2", "item", "a", "b" }
 diag.COLUMNS = COLUMNS
-
---- Kinds whose station2 column holds a second station (provider, requester, the other end of a delivery); the others
---- put a player index or a lint subject type there.
-local STATION2_IS_STATION = {
-	[DIAG_KIND_UNSERVED_REASON] = true, [DIAG_KIND_SERVED] = true, [DIAG_KIND_FLAPPING] = true,
-	[DIAG_KIND_DISPATCH_FAILED] = true, [DIAG_KIND_DELIVERY_FAILED] = true, [DIAG_KIND_ALERT] = true,
-	[DIAG_KIND_SHORT_LOAD] = true, [DIAG_KIND_UNEXPECTED_CARGO] = true, [DIAG_KIND_RESIDUAL_CARGO] = true,
-	[DIAG_KIND_DISPATCHED] = true, [DIAG_KIND_ARRIVE_P] = true, [DIAG_KIND_LEAVE_P] = true,
-	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true, [DIAG_KIND_SLOW_DELIVERY] = true,
-}
-diag.STATION2_IS_STATION = STATION2_IS_STATION
+local SCHEMA = DIAG_KIND_SCHEMA
 
 local NO_TRAIN_REASONS = {
 	[REASON_NO_TRAINS_ON_NETWORK] = true,
@@ -96,6 +80,8 @@ local ALERT_SEVERITY = {
 diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 
 --- @class DiagRing parallel integer columns (see COLUMNS); row `head` is the newest, `count` rows are live
+--- A row is not changed once written, except the train count of a group's schedule edit (diag.schedule_edited); a
+--- reader that copied the row earlier keeps the older count.
 --- @field size int
 --- @field head int
 --- @field count int
@@ -142,9 +128,7 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field cycles int planner cycles started since this state was created (the unserved sweep runs every SWEEP_EVERY)
 --- @field item_served {[int]: uint} item index -> tick create_delivery last served a requester of it
 --- @field next_delivery uint
---- @field export_jobs DiagExportJob[]
 --- @field id int which state this is (seqs restart in a new one)
---- @field loaded_tick uint when this state was created
 --- @field inherit_cycles int? planner cycle starts seen since creation, while the inherited window is open
 --- @field inherit_until uint? start of the second planner cycle after creation; see diag.inherit_threshold
 
@@ -210,8 +194,6 @@ local function new_state()
 		cycles = 0,
 		item_served = {},
 		next_delivery = 0,
-		export_jobs = {},
-		loaded_tick = game.tick,
 		inherit_cycles = 0,
 	}
 end
@@ -243,15 +225,11 @@ local function clear_delivery_ids()
 	end
 end
 
-local detach_exports
-
 --- Brings storage.diag in line with the settings: nil when off, created when missing, the full ring resized.
 --- @return DiagState?
 function diag.apply()
 	local mode = mode_setting()
 	if mode == "off" then
-		local old = storage.diag
-		if old and old.export_jobs[1] then detach_exports(old) end
 		storage.diag = nil
 		return nil
 	end
@@ -324,7 +302,7 @@ end
 --- @param sev int DIAG_SEV_*
 --- @return uint? seq
 function diag.event(d, kind, sev, code, delivery, train, station, station2, item, a, b)
-	if DIAG_KIND_FULL[kind] then
+	if SCHEMA[kind].full then
 		if not d.full then return nil end
 		return push(d, d.ring_full, kind, sev, code, delivery, train, station, station2, item, a, b)
 	end
@@ -349,6 +327,22 @@ end
 
 diag.ring_at = at
 diag.first_after = first_after
+
+--- One step of the walk over both rings merged by seq: of the rows at logical index kb of `rb` and kf of `rf`, the
+--- one that comes first in direction `dir` (1 = oldest first, -1 = newest first), and kb, kf advanced past it; nil
+--- once both rings are walked out.
+--- @param dir 1|-1
+--- @return DiagRing? r
+--- @return int? i ring index of the row
+--- @return int kb
+--- @return int kf
+local function step(rb, rf, kb, kf, dir)
+	local ib = kb >= 0 and kb < rb.count and at(rb, kb) or nil
+	local iff = kf >= 0 and kf < rf.count and at(rf, kf) or nil
+	if ib and (not iff or (rb.seq[ib] < rf.seq[iff]) == (dir > 0)) then return rb, ib, kb + dir, kf end
+	if iff then return rf, iff, kb, kf + dir end
+	return nil, nil, kb, kf
+end
 
 --- @class DiagEventFilter
 --- @field kind int? DIAG_KIND_*
@@ -379,10 +373,12 @@ local function matches(r, i, f)
 	if f.sev and sev > f.sev then return false end
 	if f.sevs and not f.sevs[sev] then return false end
 	if f.train and r.train[i] ~= f.train then return false end
-	if f.delivery and (r.delivery[i] ~= f.delivery or kind == DIAG_KIND_LINT) then return false end
+	if f.delivery and (r.delivery[i] ~= f.delivery or SCHEMA[kind].pass) then return false end
 	if f.item and r.item[i] ~= f.item then return false end
 	local st = f.station
-	if st and r.station[i] ~= st and not (STATION2_IS_STATION[kind] and r.station2[i] == st) then return false end
+	if st and r.station[i] ~= st and not (r.station2[i] == st and SCHEMA[kind].station2 == "station") then
+		return false
+	end
 	return true
 end
 diag.matches = matches
@@ -412,78 +408,34 @@ function diag.events(filter, from_seq, limit, max_scan)
 	limit = limit or 1000
 	max_scan = max_scan or (filter and EVENTS_SCAN or math.huge)
 	local rb, rf = d.ring_basic, d.ring_full
-	local scanned = 0
-	if from_seq == nil then
-		-- Newest first, then reversed.
-		local kb, kf = rb.count - 1, rf.count - 1
-		local reached
-		while #out < limit and (kb >= 0 or kf >= 0) do
-			if scanned >= max_scan then break end
-			local ib = kb >= 0 and at(rb, kb) or nil
-			local iff = kf >= 0 and at(rf, kf) or nil
-			local r, i
-			if ib and (not iff or rb.seq[ib] > rf.seq[iff]) then
-				r, i, kb = rb, ib, kb - 1
-			else
-				r, i, kf = rf, iff, kf - 1
-			end
-			scanned = scanned + 1
-			reached = r.seq[i]
-			if matches(r, i, filter) then out[#out + 1] = row(r, i) end
-		end
-		local n = #out
-		for k = 1, math.floor(n / 2) do
-			out[k], out[n - k + 1] = out[n - k + 1], out[k]
-		end
-		return out, (kb >= 0 or kf >= 0) and reached or nil
+	local backward = from_seq == nil
+	local dir = backward and -1 or 1
+	local kb, kf
+	if backward then
+		kb, kf = rb.count - 1, rf.count - 1
+	else
+		kb, kf = first_after(rb, from_seq), first_after(rf, from_seq)
 	end
-	local kb, kf = first_after(rb, from_seq), first_after(rf, from_seq)
-	local reached
-	while #out < limit and (kb < rb.count or kf < rf.count) do
-		if scanned >= max_scan then break end
-		local ib = kb < rb.count and at(rb, kb) or nil
-		local iff = kf < rf.count and at(rf, kf) or nil
+	local max_seq = not backward and filter and filter.max_seq
+	local scanned, reached, ended = 0, nil, false
+	while #out < limit and scanned < max_scan do
 		local r, i
-		if ib and (not iff or rb.seq[ib] < rf.seq[iff]) then
-			r, i, kb = rb, ib, kb + 1
-		else
-			r, i, kf = rf, iff, kf + 1
-		end
-		if filter and filter.max_seq and r.seq[i] > filter.max_seq then
-			kb, kf = rb.count, rf.count
+		r, i, kb, kf = step(rb, rf, kb, kf, dir)
+		if not r or (max_seq and r.seq[i] > max_seq) then
+			ended = true
 			break
 		end
 		scanned = scanned + 1
 		reached = r.seq[i]
 		if matches(r, i, filter) then out[#out + 1] = row(r, i) end
 	end
-	return out, (kb < rb.count or kf < rf.count) and reached or nil
-end
-
---- The last `n` events about one train, station or delivery, newest first (a backward scan of both rings).
---- @param kind "train"|"station"|"delivery"
---- @param id uint
---- @param n int
---- @return table[]
-function diag.last_for(kind, id, n)
-	local f = { [kind] = id }
-	local d = storage.diag
-	if not d then return {} end
-	local out = {}
-	local rb, rf = d.ring_basic, d.ring_full
-	local kb, kf = rb.count - 1, rf.count - 1
-	while #out < n and (kb >= 0 or kf >= 0) do
-		local ib = kb >= 0 and at(rb, kb) or nil
-		local iff = kf >= 0 and at(rf, kf) or nil
-		local r, i
-		if ib and (not iff or rb.seq[ib] > rf.seq[iff]) then
-			r, i, kb = rb, ib, kb - 1
-		else
-			r, i, kf = rf, iff, kf - 1
+	if backward then
+		local n = #out
+		for k = 1, math.floor(n / 2) do
+			out[k], out[n - k + 1] = out[n - k + 1], out[k]
 		end
-		if matches(r, i, f) then out[#out + 1] = row(r, i) end
 	end
-	return out
+	return out, not ended and step(rb, rf, kb, kf, dir) and reached or nil
 end
 
 -- Rows one diag.last_for_step call examines at most. A rare entity's last rows can sit 70,000 rows back in a full
@@ -494,8 +446,9 @@ diag.SCAN_ROWS = 4096
 
 --- Walks both rings backwards over the rows with stop_seq < seq < below, newest first, appending the rows that match
 --- `f` (one subject: {station|train|delivery = id}) to `out` until it holds `n`, or `budget` rows were examined. The
---- columns are read straight from the ring arrays: through ring_at and diag.matches a row cost about 1 µs inside the
---- real tick on full rings, which kept the stop panel over its 0.2 ms refresh budget.
+--- merge of `step` written out, with the columns read straight from the ring arrays: through ring_at and diag.matches
+--- a row cost about 1 µs inside the real tick on full rings, which kept the stop panel over its 0.2 ms refresh budget,
+--- and through `step` alone it still costs 3.6 times the inlined walk (host Lua, 20,000 rows).
 --- @return int examined
 --- @return uint oldest seq of the oldest row examined (`below` when none)
 --- @return boolean exhausted no unexamined row is left in the range
@@ -508,7 +461,6 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 	local seq_b, seq_f = rb.seq, rf.seq
 	local col_b, col_f = rb[key], rf[key]
 	local is_station = key == "station"
-	-- A lint row's delivery column holds its pass key, not a delivery.
 	local is_delivery = key == "delivery"
 	local st2_b, st2_f = rb.station2, rf.station2
 	local kind_b, kind_f = rb.kind, rf.kind
@@ -521,7 +473,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 			if examined >= budget then return examined, oldest, false end
 			examined = examined + 1
 			oldest = seq
-			if (col_b[ib] == id and not (is_delivery and kind_b[ib] == DIAG_KIND_LINT)) or (is_station and st2_b[ib] == id and STATION2_IS_STATION[kind_b[ib]]) then
+			if (col_b[ib] == id and not (is_delivery and SCHEMA[kind_b[ib]].pass)) or (is_station and st2_b[ib] == id and SCHEMA[kind_b[ib]].station2 == "station") then
 				found = found + 1
 				out[found] = row(rb, ib)
 			end
@@ -533,7 +485,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 			if examined >= budget then return examined, oldest, false end
 			examined = examined + 1
 			oldest = seq
-			if (col_f[iff] == id and not (is_delivery and kind_f[iff] == DIAG_KIND_LINT)) or (is_station and st2_f[iff] == id and STATION2_IS_STATION[kind_f[iff]]) then
+			if (col_f[iff] == id and not (is_delivery and SCHEMA[kind_f[iff]].pass)) or (is_station and st2_f[iff] == id and SCHEMA[kind_f[iff]].station2 == "station") then
 				found = found + 1
 				out[found] = row(rf, iff)
 			end
@@ -546,7 +498,7 @@ local function scan_back(d, f, below, stop_seq, budget, out, n)
 	return examined, oldest, false
 end
 
---- @class DiagScanCursor diag.last_for as a resumable scan; plain data, kept per panel in storage
+--- @class DiagScanCursor a resumable backward scan for one subject; plain data, kept per panel in storage
 --- @field kind "train"|"station"|"delivery"
 --- @field id uint
 --- @field n int
@@ -554,7 +506,7 @@ end
 --- @field top uint every row with seq in (low, top] has been examined
 --- @field low uint
 --- @field done boolean rows holds the newest n matches of the whole log (or all of them)
---- @field loaded_tick uint the diagnostics state the cursor read (a new state starts over)
+--- @field state_id int? DiagState.id of the state the cursor read (a new state starts over)
 --- @field examined int rows examined by the last call
 
 --- @param kind "train"|"station"|"delivery"
@@ -562,12 +514,12 @@ end
 --- @param n int
 --- @return DiagScanCursor
 function diag.scan_cursor(kind, id, n)
-	return { kind = kind, id = id, n = n, rows = {}, top = 0, low = 1, done = false, loaded_tick = -1, examined = 0 }
+	return { kind = kind, id = id, n = n, rows = {}, top = 0, low = 1, done = false, examined = 0 }
 end
 
---- The last `n` events about one train, station or delivery, newest first, as diag.last_for returns them, but
---- examining at most `budget` rows (diag.SCAN_ROWS) per call: rows written since the previous call first, then the
---- backward scan continues where it stopped. The result is complete once `cursor.done` is true.
+--- The last `n` events about one train, station or delivery, newest first, examining at most `budget` rows
+--- (diag.SCAN_ROWS) per call: rows written since the previous call first, then the backward scan continues where it
+--- stopped. The result is complete once `cursor.done` is true.
 --- @param cursor DiagScanCursor
 --- @param budget int?
 --- @return table[] rows
@@ -575,15 +527,15 @@ function diag.last_for_step(cursor, budget)
 	local d = storage.diag
 	cursor.examined = 0
 	if not d then
-		cursor.rows, cursor.done, cursor.loaded_tick = {}, true, -1
+		cursor.rows, cursor.done, cursor.state_id = {}, true, nil
 		return cursor.rows
 	end
-	if cursor.done and cursor.top == d.seq and cursor.loaded_tick == d.loaded_tick then return cursor.rows end
+	if cursor.done and cursor.top == d.seq and cursor.state_id == d.id then return cursor.rows end
 	budget = budget or diag.SCAN_ROWS
 	local n = cursor.n
 	local f = { [cursor.kind] = cursor.id }
-	if cursor.loaded_tick ~= d.loaded_tick or d.seq < cursor.top then
-		cursor.rows, cursor.top, cursor.low, cursor.done, cursor.loaded_tick = {}, d.seq, d.seq + 1, false, d.loaded_tick
+	if cursor.state_id ~= d.id then
+		cursor.rows, cursor.top, cursor.low, cursor.done, cursor.state_id = {}, d.seq, d.seq + 1, false, d.id
 	end
 	if d.seq > cursor.top then
 		if d.seq - cursor.top > budget then
@@ -644,11 +596,12 @@ end
 --- @field until_tick uint? nil = until the reason changes
 --- @field reason int? confirmed reason when acknowledged (requests)
 
---- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}, lint_version: int?} lint_version counts every change to the lint acknowledgements
+--- One shape for every kind: acks[kind][id][sub], sub = the item hash (request), the check (lint) or 0 (station).
+--- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: {[0]: DiagAck}}, lint: {[uint]: {[int]: DiagAck}}, n: int, lint_version: int?} n counts the acknowledgements; lint_version counts every change to the lint ones
 function diag.acks()
 	local acks = storage.acks
 	if not acks then
-		acks = { request = {}, station = {}, lint = {} }
+		acks = { request = {}, station = {}, lint = {}, n = 0 }
 		storage.acks = acks
 	end
 	return acks
@@ -656,22 +609,13 @@ end
 
 local ACK_KIND = { request = DIAG_ACK_REQUEST, station = DIAG_ACK_STATION, lint = DIAG_ACK_LINT }
 
---- Calls fn(kind_code, id, sub, ack, parent_table, key) for every acknowledgement.
+--- Calls fn(kind_code, id, sub, ack) for every acknowledgement.
 local function each_ack(acks, fn)
-	for id, by in pairs(acks.request) do
-		for hash, ack in pairs(by) do fn(DIAG_ACK_REQUEST, id, hash, ack, by, hash) end
+	for code, name in ipairs(DIAG_ACK_KINDS) do
+		for id, by in pairs(acks[name]) do
+			for sub, ack in pairs(by) do fn(code, id, sub, ack) end
+		end
 	end
-	for id, ack in pairs(acks.station) do fn(DIAG_ACK_STATION, id, nil, ack, acks.station, id) end
-	for id, by in pairs(acks.lint) do
-		for bit, ack in pairs(by) do fn(DIAG_ACK_LINT, id, bit, ack, by, bit) end
-	end
-end
-
---- @return int
-local function ack_total(acks)
-	local n = 0
-	each_ack(acks, function() n = n + 1 end)
-	return n
 end
 
 local function log_ack(verb, kind, id, sub, player_index, until_tick)
@@ -683,7 +627,7 @@ end
 local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 	local d = storage.diag
 	if not d then return end
-	local item = kind == DIAG_ACK_REQUEST and sub and intern(d, sub) or 0
+	local item = kind == DIAG_ACK_REQUEST and intern(d, sub) or 0
 	-- Lint acknowledgements of trains are keyed by the negated train id (lint.subject_key): write it where the
 	-- train's own lint events put it.
 	local train, station = 0, id
@@ -693,16 +637,26 @@ local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 end
 
 --- Removes one acknowledgement and writes the unacknowledged event.
-local function end_ack(kind, id, sub, parent, key, cause, player_index)
-	parent[key] = nil
+--- @param kind int DIAG_ACK_*
+local function end_ack(kind, id, sub, cause, player_index)
 	local acks = storage.acks
-	if kind == DIAG_ACK_REQUEST and next(parent) == nil then acks.request[id] = nil end
-	if kind == DIAG_ACK_LINT then
-		if next(parent) == nil then acks.lint[id] = nil end
-		acks.lint_version = (acks.lint_version or 0) + 1
-	end
+	local t = acks[DIAG_ACK_KINDS[kind]]
+	local by = t[id]
+	by[sub] = nil
+	if next(by) == nil then t[id] = nil end
+	acks.n = acks.n - 1
+	if kind == DIAG_ACK_LINT then acks.lint_version = (acks.lint_version or 0) + 1 end
 	ack_event(DIAG_KIND_UNACKNOWLEDGED, kind, id, sub, player_index, 0, cause)
 	log_ack("unacknowledged", kind, id, sub, player_index, nil)
+end
+
+--- The stored acknowledgement, expired or not.
+--- @param kind "request"|"station"|"lint"
+--- @return DiagAck?
+local function find_ack(kind, id, sub)
+	local acks = storage.acks
+	local by = acks and acks[kind][id]
+	return by and by[sub or 0]
 end
 
 --- @param stop LuaEntity?
@@ -723,13 +677,17 @@ end
 function diag.ack(kind, id, sub, player_index, until_tick, reason)
 	local code = ACK_KIND[kind]
 	if not code then error("unknown acknowledgement kind " .. tostring(kind)) end
+	sub = sub or 0
 	local acks = diag.acks()
-	if ack_total(acks) >= ACK_CAP and not diag.is_acked(kind, id, sub) then
-		local oldest
-		each_ack(acks, function(k, i, s, ack, parent, key)
-			if not oldest or ack.tick < oldest[4].tick then oldest = { k, i, s, ack, parent, key } end
-		end)
-		end_ack(oldest[1], oldest[2], oldest[3], oldest[5], oldest[6], DIAG_ACK_END_EXPIRED, nil)
+	if not find_ack(kind, id, sub) then
+		if acks.n >= ACK_CAP then
+			local oldest
+			each_ack(acks, function(k, i, s, ack)
+				if not oldest or ack.tick < oldest[4].tick then oldest = { k, i, s, ack } end
+			end)
+			end_ack(oldest[1], oldest[2], oldest[3], DIAG_ACK_END_EXPIRED, nil)
+		end
+		acks.n = acks.n + 1
 	end
 	local d = storage.diag
 	if code == DIAG_ACK_REQUEST and reason == nil and d then
@@ -739,16 +697,14 @@ function diag.ack(kind, id, sub, player_index, until_tick, reason)
 		reason = e and e.reason or nil
 	end
 	local ack = { player_index = player_index, tick = game.tick, until_tick = until_tick, reason = reason }
-	if code == DIAG_ACK_REQUEST then
-		acks.request[id] = acks.request[id] or {}
-		acks.request[id][sub] = ack
-	elseif code == DIAG_ACK_STATION then
-		acks.station[id] = ack
-	else
-		acks.lint[id] = acks.lint[id] or {}
-		acks.lint[id][sub] = ack
-		acks.lint_version = (acks.lint_version or 0) + 1
+	local t = acks[kind]
+	local by = t[id]
+	if not by then
+		by = {}
+		t[id] = by
 	end
+	by[sub] = ack
+	if code == DIAG_ACK_LINT then acks.lint_version = (acks.lint_version or 0) + 1 end
 	ack_event(DIAG_KIND_ACKNOWLEDGED, code, id, sub, player_index, until_tick or 0, nil)
 	log_ack("acknowledged", code, id, sub, player_index, until_tick)
 	local station = storage.stations and storage.stations[id]
@@ -758,35 +714,15 @@ end
 
 --- @return boolean removed
 function diag.unack(kind, id, sub, player_index)
-	local code = ACK_KIND[kind]
-	local acks = diag.acks()
-	local parent, key
-	if code == DIAG_ACK_REQUEST then
-		parent, key = acks.request[id], sub
-	elseif code == DIAG_ACK_STATION then
-		parent, key = acks.station, id
-	elseif code == DIAG_ACK_LINT then
-		parent, key = acks.lint[id], sub
-	end
-	if not (parent and parent[key]) then return false end
-	end_ack(code, id, sub, parent, key, DIAG_ACK_END_MANUAL, player_index)
+	sub = sub or 0
+	if not find_ack(kind, id, sub) then return false end
+	end_ack(ACK_KIND[kind], id, sub, DIAG_ACK_END_MANUAL, player_index)
 	return true
 end
 
 --- @return DiagAck? the acknowledgement while it holds
 function diag.is_acked(kind, id, sub)
-	local acks = storage.acks
-	if not acks then return nil end
-	local ack
-	if kind == "request" then
-		local by = acks.request[id]
-		ack = by and by[sub]
-	elseif kind == "station" then
-		ack = acks.station[id]
-	elseif kind == "lint" then
-		local by = acks.lint[id]
-		ack = by and by[sub]
-	end
+	local ack = find_ack(kind, id, sub)
 	if ack and ack.until_tick and ack.until_tick <= game.tick then return nil end
 	return ack
 end
@@ -796,20 +732,16 @@ end
 --- @param key int lint.subject_key of the subject
 --- @param check int LINT_*
 function diag.resolve_lint_ack(key, check)
-	local acks = storage.acks
-	local by = acks and acks.lint and acks.lint[key]
-	if by and by[check] then end_ack(DIAG_ACK_LINT, key, check, by, check, DIAG_ACK_END_RESOLVED, nil) end
+	if find_ack("lint", key, check) then end_ack(DIAG_ACK_LINT, key, check, DIAG_ACK_END_RESOLVED, nil) end
 end
 
 --- Drops acknowledgements whose time is up. Runs at every planner cycle start, with or without storage.diag.
 function diag.expire_acks()
 	local acks = storage.acks
-	if not acks or (next(acks.request) == nil and next(acks.station) == nil and next(acks.lint) == nil) then return end
+	if not acks or acks.n == 0 then return end
 	local now = game.tick
-	each_ack(acks, function(kind, id, sub, ack, parent, key)
-		if ack.until_tick and ack.until_tick <= now then
-			end_ack(kind, id, sub, parent, key, DIAG_ACK_END_EXPIRED, nil)
-		end
+	each_ack(acks, function(kind, id, sub, ack)
+		if ack.until_tick and ack.until_tick <= now then end_ack(kind, id, sub, DIAG_ACK_END_EXPIRED, nil) end
 	end)
 end
 
@@ -817,9 +749,7 @@ end
 --- @param hash string
 --- @param cause int DIAG_ACK_END_*
 local function end_request_ack(r_id, hash, cause)
-	local acks = storage.acks
-	local by = acks and acks.request[r_id]
-	if by and by[hash] then end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, cause, nil) end
+	if find_ack("request", r_id, hash) then end_ack(DIAG_ACK_REQUEST, r_id, hash, cause, nil) end
 end
 
 -- ---------------------------------------------------------------- unserved state
@@ -863,12 +793,6 @@ end
 local function count_add(d, reason, delta)
 	local n = (d.counts[reason] or 0) + delta
 	d.counts[reason] = n ~= 0 and n or nil
-end
-
---- @param reason int
---- @return int DIAG_SEV_*
-local function reason_sev(reason)
-	return 4 - (REASON_SEVERITY[reason] or 1)
 end
 
 --- @param d DiagState
@@ -918,15 +842,9 @@ local function confirm(d, e, r_id, ix, reason, now)
 		e.suppressed_until = now + FLAP_WINDOW
 	else
 		e.suppressed_until = nil
-		diag.event(d, DIAG_KIND_UNSERVED_REASON, reason_sev(reason), reason, 0, 0, r_id, e.p_station_id, ix, e.a, e.b)
+		diag.event(d, DIAG_KIND_UNSERVED_REASON, REASON_SEVERITY[reason] or DIAG_SEV_INFO, reason, 0, 0, r_id, e.p_station_id, ix, e.a, e.b)
 	end
-	local acks = storage.acks
-	local by = acks and acks.request[r_id]
-	if by then
-		local hash = d.item_hash[ix]
-		local ack = by[hash]
-		if ack then end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, DIAG_ACK_END_REASON_CHANGED, nil) end
-	end
+	end_request_ack(r_id, d.item_hash[ix], DIAG_ACK_END_REASON_CHANGED)
 	if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
 end
 
@@ -964,18 +882,16 @@ function diag.fail(d, r_id, hash, reason, a, b, p_id, rej, lost_to)
 		d.unserved_count[r_id] = (d.unserved_count[r_id] or 0) + 1
 		count_add(d, reason, 1)
 		write_payload(e, reason, a, b, p_id, rej)
-		diag.event(d, DIAG_KIND_UNSERVED_REASON, reason_sev(reason), reason, 0, 0, r_id, p_id, ix, e.a, e.b)
+		diag.event(d, DIAG_KIND_UNSERVED_REASON, REASON_SEVERITY[reason] or DIAG_SEV_INFO, reason, 0, 0, r_id, p_id, ix, e.a, e.b)
 		if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
 		-- The key may have been swept or diagnostics turned off since the acknowledgement: it holds only while the
 		-- reason is the one acknowledged, and one taken without a known reason binds to this one.
-		local acks = storage.acks
-		local by = acks and acks.request[r_id]
-		local ack = by and by[hash]
+		local ack = find_ack("request", r_id, hash)
 		if ack then
 			if ack.reason == nil then
 				ack.reason = reason
 			elseif ack.reason ~= reason then
-				end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, DIAG_ACK_END_REASON_CHANGED, nil)
+				end_ack(DIAG_ACK_REQUEST, r_id, hash, DIAG_ACK_END_REASON_CHANGED, nil)
 			end
 		end
 	else
@@ -1071,11 +987,13 @@ function diag.station_removed(station_id)
 	end
 	local acks = storage.acks
 	if acks then
-		acks.request[station_id] = nil
-		acks.station[station_id] = nil
-		if acks.lint[station_id] then
-			acks.lint[station_id] = nil
-			acks.lint_version = (acks.lint_version or 0) + 1
+		for _, name in ipairs(DIAG_ACK_KINDS) do
+			local by = acks[name][station_id]
+			if by then
+				for _ in pairs(by) do acks.n = acks.n - 1 end
+				acks[name][station_id] = nil
+				if name == "lint" then acks.lint_version = (acks.lint_version or 0) + 1 end
+			end
 		end
 	end
 end
@@ -1147,13 +1065,13 @@ function diag.unserved_summary(r_id)
 	local d = storage.diag
 	local by_item = d and d.unserved[r_id]
 	if not by_item then return 0, nil, nil end
-	local n, worst, oldest = 0, nil, nil
+	local n, worst, worst_sev, oldest = 0, nil, nil, nil
 	for _, e in pairs(by_item) do
 		n = n + 1
 		local r = e.reason
-		if not worst or REASON_SEVERITY[r] > REASON_SEVERITY[worst] or
-			(REASON_SEVERITY[r] == REASON_SEVERITY[worst] and r < worst) then
-			worst = r
+		local sev = REASON_SEVERITY[r] or DIAG_SEV_INFO
+		if not worst or sev < worst_sev or (sev == worst_sev and r < worst) then
+			worst, worst_sev = r, sev
 		end
 		if not oldest or e.first_tick < oldest then oldest = e.first_tick end
 	end
@@ -1265,14 +1183,14 @@ end
 --- The create_delivery exits that give up on a chosen train.
 --- @param code int DIAG_DISPATCH_*
 --- @param manifest Manifest? its first item fills the item column
---- @param state defines.train_state? stored as state + 1 in a (0 = not recorded)
+--- @param state defines.train_state? stored as state + DIAG_STATE_OFFSET in a (0 = not recorded)
 function diag.dispatch_failed(code, train_id, r_id, p_id, manifest, state)
 	local d = storage.diag
 	if not d then return end
 	local first = manifest and manifest[1]
 	local item = first and intern(d, hash_item(first.name, first.quality)) or 0
 	diag.event(d, DIAG_KIND_DISPATCH_FAILED, DIAG_DISPATCH_SEVERITY[code] or DIAG_SEV_ERROR, code, 0, train_id, r_id,
-		p_id, item, state and state + 1 or 0, 0)
+		p_id, item, state and state + DIAG_STATE_OFFSET or 0, 0)
 end
 
 --- on_failed_delivery: a delivery ended without being completed.
@@ -1554,19 +1472,17 @@ function diag.schedule_edited(d, train_id, train, player_index, group)
 end
 
 --- A lint finding appeared or cleared (`a` = check, `b` = subject id; trains also in `train`, stops in `station`).
---- The delivery column holds the running pass's start tick + 1 (0 outside a pass), so the Log shows a pass as one row;
---- delivery subjects and filters skip lint rows and the CSV export writes 0 there.
+--- The delivery column holds the pass key, so the Log shows a pass as one row; delivery subjects and filters skip lint
+--- rows and the CSV export writes 0 there.
 --- @param check int LINT_*
 --- @param subject int LINT_SUBJECT_*
 --- @param id uint
 --- @param appeared boolean
-function diag.lint(check, subject, id, appeared)
+--- @param pass uint? the running pass's start tick + 1; 0 or nil outside a pass
+function diag.lint(check, subject, id, appeared, pass)
 	local d = storage.diag
 	if not d then return end
 	local is_train = subject == LINT_SUBJECT_TRAIN
-	local s = storage.manager and storage.manager.lint
-	local job = s and s.job
-	local pass = job and job.started_tick and job.started_tick + 1 or 0
 	diag.event(d, DIAG_KIND_LINT, appeared and (LINT_SEVERITY[check] or DIAG_SEV_WARNING) or DIAG_SEV_INFO,
 		appeared and DIAG_LINT_APPEARED or DIAG_LINT_CLEARED, pass, is_train and id or 0, is_train and 0 or id, subject, 0,
 		check, id)
@@ -1583,51 +1499,15 @@ end
 
 -- ---------------------------------------------------------------- export
 
---- @class DiagExportJob
---- @field player_index uint 0 = the server
---- @field path string relative to script-output
---- @field start_seq uint rows at or below this were gone (or not written yet) when the export started
---- @field next_seq uint rows above this are still to be written
---- @field end_seq uint rows above this were written after the export started
---- @field filter DiagEventFilter?
---- @field rows int written so far
---- @field started boolean the header is out
---- @field chunks int? chunks written so far
---- @field first_tick uint? tick of the first chunk
---- @field last_tick uint? tick of the latest chunk
---- @field rb DiagRing the basic ring the job reads (kept when diagnostics are turned off mid-export)
---- @field rf DiagRing? the full ring, only while full was on when the job started
---- @field item_hash string[]
---- @field off boolean? diagnostics were turned off before the job ended
-
 local HEADER = "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
 
-local STATE_NAMES = {}
-for name, v in pairs(defines.train_state) do STATE_NAMES[v] = name end
-
---- Name of the event's code column: a reason, an alert, a dispatch or delivery failure, a train state or a number.
+--- Name of the event's code column, or the number where its kind names none.
 --- @param kind int
 --- @param code int
 --- @return string
 local function code_name(kind, code)
-	if kind == DIAG_KIND_UNSERVED_REASON or kind == DIAG_KIND_SERVED or kind == DIAG_KIND_FLAPPING then
-		return REASON_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_ALERT then
-		return DIAG_ALERT_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_DISPATCH_FAILED then
-		return DIAG_DISPATCH_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_DELIVERY_FAILED then
-		return DIAG_FAIL_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_ACKNOWLEDGED or kind == DIAG_KIND_UNACKNOWLEDGED then
-		return DIAG_ACK_KINDS[code] or tostring(code)
-	elseif kind == DIAG_KIND_TRAIN_STATE then
-		return STATE_NAMES[code] or tostring(code)
-	elseif kind == DIAG_KIND_LINT then
-		return code == DIAG_LINT_APPEARED and "appeared" or "cleared"
-	elseif kind == DIAG_KIND_MANUAL_ACTION then
-		return ACTION_NAMES[code] or tostring(code)
-	end
-	return tostring(code)
+	local names = SCHEMA[kind].code_names
+	return names and names[code] or tostring(code)
 end
 
 diag.code_name = code_name
@@ -1643,196 +1523,34 @@ local function csv_item(item_hash, ix)
 	return item
 end
 
---- Who hears that an export job ended: fun(job: DiagExportJob, cause: "done"|"off"). Set once at load by the GUI, so
---- every Lua state has the same one.
---- @type fun(job: DiagExportJob, cause: string)?
-local export_listener
-
---- @param fn fun(job: DiagExportJob, cause: string)
-function diag.set_export_listener(fn)
-	export_listener = fn
-end
-
---- Queues an export of everything the rings the Log reads hold now (matching `filter`); a fixed nth tick writes it in
---- chunks.
+--- Writes every row the rings hold now that matches `filter` to one CSV file within the tick: exports are rare, so a
+--- long tick is a fair price for not spreading the write over many.
 --- @param player_index uint? whose machine gets the file; 0 or nil = the server
 --- @param filter DiagEventFilter?
 --- @return string? path relative to script-output, nil while diagnostics are off
+--- @return int rows
 function diag.export(player_index, filter)
 	local d = storage.diag
-	if not d then return nil end
-	-- Two exports in one tick get two files (the first may already be written and gone from the queue).
+	if not d then return nil, 0 end
+	-- Two exports in one tick get two files.
 	local tick = game.tick
 	if d.export_name_tick == tick then
-		d.export_name_n = (d.export_name_n or 1) + 1
+		d.export_name_n = d.export_name_n + 1
 	else
 		d.export_name_tick, d.export_name_n = tick, 1
 	end
 	local path = "cybersyn/diag-" .. tick .. (d.export_name_n > 1 and ("-" .. d.export_name_n) or "") .. ".csv"
-	local rb, rf = d.ring_basic, d.full and d.ring_full or nil
-	local oldest = d.seq
-	for _, r in ipairs({ rb, rf }) do
-		if r.count > 0 then oldest = math.min(oldest, r.seq[at(r, 0)] - 1) end
+	local item_hash = d.item_hash
+	local parts = { HEADER }
+	for _, ev in ipairs(diag.events(filter, 0, math.huge, math.huge)) do
+		local kind = ev.kind
+		parts[#parts + 1] = string.format(LINE, ev.seq, ev.tick, DIAG_KIND_NAMES[kind] or tostring(kind),
+			DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev), code_name(kind, ev.code),
+			SCHEMA[kind].pass and 0 or ev.delivery, ev.train, ev.station, ev.station2, csv_item(item_hash, ev.item),
+			ev.a, ev.b)
 	end
-	d.export_jobs[#d.export_jobs + 1] = {
-		player_index = player_index or 0,
-		path = path,
-		start_seq = oldest,
-		next_seq = oldest,
-		end_seq = d.seq,
-		filter = filter,
-		rows = 0,
-		started = false,
-		rb = rb,
-		rf = rf,
-		item_hash = d.item_hash,
-	}
-	return path
-end
-
---- Share of a job's rows already scanned, 0..1.
---- @param job DiagExportJob
---- @return number
-function diag.export_progress(job)
-	local total = job.end_seq - job.start_seq
-	if total <= 0 then return 1 end
-	return math.max(0, math.min(1, (job.next_seq - job.start_seq) / total))
-end
-
---- The first queued job of a player (0 = the server), if any.
---- @param player_index uint
---- @return DiagExportJob?
-function diag.export_job(player_index)
-	for _, list in ipairs({ storage.diag_export_tail or {}, storage.diag and storage.diag.export_jobs or {} }) do
-		for _, job in ipairs(list) do
-			if job.player_index == player_index then return job end
-		end
-	end
-	return nil
-end
-
---- Every queued job: those that outlived diagnostics first (they drain first), then the current state's.
---- @return DiagExportJob[]
-function diag.export_jobs()
-	local out = {}
-	for _, job in ipairs(storage.diag_export_tail or {}) do out[#out + 1] = job end
-	local d = storage.diag
-	for _, job in ipairs(d and d.export_jobs or {}) do out[#out + 1] = job end
-	return out
-end
-
---- Writes the next chunk of the oldest export job.
---- @return boolean? done nil when there was no job
-function diag.export_step()
-	local list = storage.diag_export_tail
-	if not (list and list[1]) then
-		local d = storage.diag
-		list = d and d.export_jobs
-	end
-	local job = list and list[1]
-	if not job then return nil end
-	-- The player who asked for the file left: the rest would be written to a machine that is gone, so the export
-	-- starts over on the server and says so in the server log and on the Log tab's note.
-	if job.player_index ~= 0 then
-		local player = game.get_player(job.player_index)
-		if not (player and player.connected) then
-			log({ "", "Cybersyn diagnostics: export ", job.path, " for player ", player and player.name or "?",
-				" continues on the server (the player left)" })
-			job.player_index, job.server = 0, true
-			job.next_seq, job.started, job.rows, job.chunks = job.start_seq, false, 0, 0
-		end
-	end
-	local rb, rf = job.rb, job.rf
-	local nf = rf and rf.count or 0
-	-- Formatted straight from the ring columns: a row table per event made a 2,000-row chunk cost ~20 ms.
-	local kb, kf = first_after(rb, job.next_seq), rf and first_after(rf, job.next_seq) or 0
-	local filter, end_seq, item_hash = job.filter, job.end_seq, job.item_hash
-	local parts, n, rows = {}, 0, 0
-	if not job.started then
-		n = 1
-		parts[1] = HEADER
-	end
-	local exhausted, scanned = false, 0
-	-- A selective filter matches few rows, so the scan is bounded as well as the rows written.
-	while rows < EXPORT_CHUNK and scanned < EXPORT_SCAN do
-		local ib = kb < rb.count and at(rb, kb) or nil
-		local iff = kf < nf and at(rf, kf) or nil
-		local r, i
-		if ib and (not iff or rb.seq[ib] < rf.seq[iff]) then
-			r, i, kb = rb, ib, kb + 1
-		elseif iff then
-			r, i, kf = rf, iff, kf + 1
-		else
-			exhausted = true
-			break
-		end
-		local seq = r.seq[i]
-		if seq > end_seq then
-			exhausted = true
-			break
-		end
-		scanned = scanned + 1
-		job.next_seq = seq
-		if matches(r, i, filter) then
-			local kind, code = r.kind[i], r.code[i]
-			n = n + 1
-			parts[n] = string.format(LINE, seq, r.tick[i], DIAG_KIND_NAMES[kind] or tostring(kind),
-				DIAG_SEV_NAMES[r.sev[i]] or tostring(r.sev[i]), code_name(kind, code),
-				kind == DIAG_KIND_LINT and 0 or r.delivery[i], r.train[i],
-				r.station[i], r.station2[i], csv_item(item_hash, r.item[i]), r.a[i], r.b[i])
-			rows = rows + 1
-		end
-	end
-	if not exhausted then exhausted = job.next_seq >= end_seq end
-	helpers.write_file(job.path, table.concat(parts), job.started, job.player_index)
-	job.started = true
-	job.rows = job.rows + rows
-	job.chunks = (job.chunks or 0) + 1
-	job.first_tick = job.first_tick or game.tick
-	job.last_tick = game.tick
-	if exhausted then
-		job.next_seq = end_seq
-		table.remove(list, 1)
-		if list == storage.diag_export_tail and not list[1] then storage.diag_export_tail = nil end
-		if export_listener then export_listener(job, job.off and "off" or "done") end
-	end
-	return exhausted
-end
-
---- One chunk: called from a fixed nth tick registered whatever the settings say (off the manager's own ticks), so an
---- export also finishes while manager updates or diagnostics are off.
---- @return DiagExportJob? job the job the chunk belonged to
-function diag.export_tick()
-	local list = storage.diag_export_tail
-	local job = list and list[1]
-	if not job then
-		local d = storage.diag
-		job = d and d.export_jobs[1]
-	end
-	if not job then return nil end
-	diag.export_step()
-	return job
-end
-
---- Diagnostics are being turned off: queued exports keep their rings and go on draining one chunk per export tick, so
---- no file is left truncated and no tick writes more than one chunk.
---- @param d DiagState
-detach_exports = function(d)
-	local tail = storage.diag_export_tail or {}
-	for _, job in ipairs(d.export_jobs) do
-		job.off = true
-		tail[#tail + 1] = job
-	end
-	d.export_jobs = {}
-	storage.diag_export_tail = tail
-end
-
--- ---------------------------------------------------------------- migration
-
---- Creates storage.acks and brings storage.diag in line with the diagnostics setting; idempotent.
-function diag.migrate()
-	diag.acks()
-	diag.apply()
+	helpers.write_file(path, table.concat(parts), false, player_index or 0)
+	return path, #parts - 1
 end
 
 return diag

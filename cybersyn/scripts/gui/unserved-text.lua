@@ -3,20 +3,19 @@
 
 local format = require("__flib__.format")
 local logic = require("scripts.gui.tab-logic")
+local CHIP_STYLE = require("scripts.gui.problems-model").CHIP_STYLE
 
 local text = {}
 
 text.NO_VALUE = "–"
 text.INHERITED = "≥"
 
-local CHIP_STYLE = { [3] = "cybersyn_chip_red", [2] = "cybersyn_chip_orange", [1] = "cybersyn_chip_grey" }
-
 --- Chip style by the reason's severity: red = nothing changes on its own, orange = waiting on stock or capacity,
 --- grey = a setting of the player's.
 --- @param reason int REASON_*
 --- @return string
 function text.chip_style(reason)
-	return CHIP_STYLE[REASON_SEVERITY[reason] or 1] or "cybersyn_chip_grey"
+	return CHIP_STYLE[REASON_SEVERITY[reason] or DIAG_SEV_INFO]
 end
 
 --- @param reason int

@@ -463,10 +463,6 @@ function manager_gui.repair_tick()
 	repair.job_tick()
 end
 
---- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
-function manager_gui.export_tick()
-	manager.log_tab.export_tick()
-end
 
 --- on_player_display_resolution_changed / on_player_display_scale_changed.
 function manager_gui.on_display_changed(e)
