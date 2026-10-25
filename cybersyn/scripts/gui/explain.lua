@@ -251,17 +251,13 @@ function explain.close(player, pd)
 	if frame and frame.valid then frame.destroy() end
 end
 
---- Manager tick: refresh the open frames; close a frame whose window was closed.
+--- Manager tick: refresh the open frames. Closing the window closes its frame (manager_close, reset_player).
 --- @param manager_data Manager
 function explain.tick(manager_data)
 	for i, pd in pairs(manager_data.players) do
 		if pd.explain then
 			local player = game.get_player(i)
-			if not (player and pd.is_manager_open) then
-				explain.close(player, pd)
-			else
-				explain.render(player, pd)
-			end
+			if player then explain.render(player, pd) end
 		end
 	end
 end
