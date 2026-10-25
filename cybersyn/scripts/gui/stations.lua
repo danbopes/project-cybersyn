@@ -1381,9 +1381,16 @@ local function last_tooltip(m)
 	return m.last_full and { "cybersyn-gui.time-ago", m.last_full } or { "cybersyn-gui.never" }
 end
 
---- Slot buttons of the 32 px rows: clickable items with the standard item click semantics and hover-hold, the
---- filtered item highlighted rather than hidden.
-local function decorate_slots(defs, item)
+--- The 32 px rows' slots; the filtered item is highlighted rather than hidden.
+--- @param item string?
+--- @return SlotLook
+local function slot_look(item)
+	return { prefix = "cybersyn_slot_32_", selected_prefix = "cybersyn_selected_slot_32_", count = "cybersyn_slot_32_count",
+		selected = item }
+end
+
+--- Slot buttons of the 32 px rows: clickable items with the standard item click semantics and hover-hold.
+local function decorate_slots(defs)
 	for _, def in pairs(defs) do
 		local tags = def.tags
 		local hash = tags and tags.kind == "item" and tags.id or nil
@@ -1395,15 +1402,6 @@ local function decorate_slots(defs, item)
 			util.hoverable(def, SCROLL)
 			def.tooltip = { "", def.tooltip, "\n", { "cybersyn-gui.item-click-hint" } }
 		end
-		local count = def.children and def.children[1]
-		if count then count.style = "cybersyn_slot_32_count" end
-		local style = def.style
-		if hash and hash == item then
-			style = string.gsub(style, "^ltnm_small_slot_button_", "cybersyn_selected_slot_32_")
-		else
-			style = string.gsub(style, "^ltnm_small_slot_button_", "cybersyn_slot_32_")
-		end
-		def.style = style
 	end
 	return defs
 end
@@ -1489,12 +1487,13 @@ end
 local SLOT_TABLES = {
 	pr = function(row, item, w)
 		if not row then return {} end
-		local defs = util.slot_table_build_from_station({ provided = row.provided, requested = row.requested, wait = row.st.wait })
-		return fit_slots(decorate_slots(defs, item), w.pr_slots)
+		local defs = util.slot_table_build_from_station({ provided = row.provided, requested = row.requested, wait = row.st.wait },
+			slot_look(item))
+		return fit_slots(decorate_slots(defs), w.pr_slots)
 	end,
 	dl = function(row, item, w)
 		if not row or row.index ~= 0 then return {} end
-		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(row.st), item), w.dl_slots)
+		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(row.st, slot_look(item))), w.dl_slots)
 	end,
 }
 local NO_SLOTS = { pr = "", dl = "" }

@@ -1170,6 +1170,14 @@ test("slot_table_build_from_deliveries: incoming green, outgoing blue", function
 	assert_eq(defs[2].tooltip[4], { "cybersyn-gui.incoming" })
 end)
 
+test("slot builders: a look sets the slot and count styles and highlights its selected item", function()
+	local u = util()
+	local look = { prefix = "p_", selected_prefix = "s_", count = "c", selected = "coal" }
+	local defs = u.slot_table_build_from_deliveries(slot_station(), look)
+	assert_eq({ defs[1].style, defs[2].style, defs[2].children[1].style }, { "s_blue", "p_green", "c" })
+	assert_eq(u.slot_table_build_from_station(slot_station(), look)[2].style, "s_green")
+end)
+
 test("slot_table_build_from_control_signals: sorted virtual signals with a sprite, then thresholds", function()
 	local u = util()
 	local defs = u.slot_table_build_from_control_signals(slot_station())

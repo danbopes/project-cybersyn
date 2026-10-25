@@ -1326,7 +1326,12 @@ function util.hashes_in_item_order(hashes)
 	return util.sort_by(list, util.item_rank, true, function(h) return h end)
 end
 
-local function slot_button(hash, count, color, tooltip_tail)
+--- Slot styles: `prefix` .. colour for a slot (`selected_prefix` for the `selected` item's), `count` for its label.
+--- @alias SlotLook {prefix: string, selected_prefix: string?, count: string, selected: string?}
+local SMALL_SLOTS = { prefix = "ltnm_small_slot_button_", count = "ltnm_label_signal_count" }
+
+--- @param look SlotLook
+local function slot_button(hash, count, color, tooltip_tail, look)
 	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 	if not sprite then return nil end
 	local tooltip = { "", name_tooltip }
@@ -1338,14 +1343,14 @@ local function slot_button(hash, count, color, tooltip_tail)
 		sprite = sprite,
 		quality = quality,
 		enabled = false,
-		style = "ltnm_small_slot_button_" .. color,
+		style = (hash == look.selected and look.selected_prefix or look.prefix) .. color,
 		tooltip = tooltip,
 		elem_tooltip = util.elem_tooltip(hash),
 		tags = { kind = "item", id = hash },
 		children = {
 			{
 				type = "label",
-				style = "ltnm_label_signal_count",
+				style = look.count,
 				ignored_by_interaction = true,
 				caption = format_signal_count(count),
 			},
@@ -1355,15 +1360,17 @@ end
 
 --- Provided (green) and requested (red, orange below threshold) items of a snapshot station, in item order.
 --- @param st SnapshotStation
+--- @param look SlotLook? the small LTNM slots when nil
 --- @return GuiElemDef[]
-function util.slot_table_build_from_station(st)
+function util.slot_table_build_from_station(st, look)
+	look = look or SMALL_SLOTS
 	local children = {}
 	local now = game.tick
 	for _, hash in ipairs(util.hashes_in_item_order(st.provided)) do
 		children[#children + 1] = slot_button(hash, st.provided[hash], "green", {
 			" ", { "cybersyn-gui.provided" },
 			"\n", { "cybersyn-gui.amount", format.number(st.provided[hash]) },
-		})
+		}, look)
 	end
 	for _, hash in ipairs(util.hashes_in_item_order(st.requested)) do
 		local req = st.requested[hash]
@@ -1381,21 +1388,23 @@ function util.slot_table_build_from_station(st)
 		end
 		tail[#tail + 1] = "\n"
 		tail[#tail + 1] = { "cybersyn-gui.amount", format.number(req.count) }
-		children[#children + 1] = slot_button(hash, req.count, req.active and "red" or "orange", tail)
+		children[#children + 1] = slot_button(hash, req.count, req.active and "red" or "orange", tail, look)
 	end
 	return children
 end
 
 --- @param st SnapshotStation
+--- @param look SlotLook? the small LTNM slots when nil
 --- @return GuiElemDef[]
-function util.slot_table_build_from_deliveries(st)
+function util.slot_table_build_from_deliveries(st, look)
+	look = look or SMALL_SLOTS
 	local children = {}
 	for _, hash in ipairs(util.hashes_in_item_order(st.deliveries)) do
 		local count = st.deliveries[hash]
 		children[#children + 1] = slot_button(hash, count, count > 0 and "green" or "blue", {
 			" ", count > 0 and { "cybersyn-gui.incoming" } or { "cybersyn-gui.outgoing" },
 			"\n", { "cybersyn-gui.amount", format.number(count) },
-		})
+		}, look)
 	end
 	return children
 end
@@ -1430,7 +1439,7 @@ function util.slot_table_build_from_control_signals(st)
 	for _, hash in ipairs(util.hashes_in_item_order(st.thresholds)) do
 		children[#children + 1] = slot_button(hash, st.thresholds[hash], "default", {
 			"\n", { "cybersyn-gui.request-threshold", format.number(st.thresholds[hash]) },
-		})
+		}, SMALL_SLOTS)
 	end
 	return children
 end
