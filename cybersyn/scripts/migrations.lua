@@ -501,23 +501,31 @@ local migrations_table = {
 ---@param t {[string]: any}?
 ---@param migrations {[string]: {[string]: string}}
 ---@param removed {[string]: true}? collects the removed names
+---@return int gone entries dropped: their item or quality was removed, or their new key was already taken
 local function rename_keys(t, migrations, removed)
-	if not t then return end
-	local moved = {}
+	if not t then return 0 end
+	local moved, gone = {}, 0
 	for hash, v in pairs(t) do
 		local name, quality = unhash_signal(hash)
 		local new_name = migrations.item[name] or migrations.fluid[name]
 		local new_quality = quality and migrations.quality[quality]
 		if new_name == "" or new_quality == "" then
 			t[hash] = nil
+			gone = gone + 1
 			if removed then removed[name] = true end
 		elseif new_name or new_quality then
-			moved[hash_item(new_name or name, new_quality or quality)] = v
+			local new_hash = hash_item(new_name or name, new_quality or quality)
+			if moved[new_hash] then gone = gone + 1 end
+			moved[new_hash] = v
 			t[hash] = nil
 		end
 	end
 	-- Added after the walk: a key inserted during `pairs` makes the traversal undefined.
-	for hash, v in pairs(moved) do t[hash] = v end
+	for hash, v in pairs(moved) do
+		if t[hash] ~= nil then gone = gone + 1 end
+		t[hash] = v
+	end
+	return gone
 end
 
 ---@param config_change_data ConfigurationChangedData
@@ -551,8 +559,12 @@ function sanitize_economy_names(config_change_data)
 		end
 		rename_keys(stats.trip_ema, migrations)
 	end
-	for _, by_hash in pairs(map_data.acks and map_data.acks.request or {}) do
-		rename_keys(by_hash, migrations)
+	local acks = map_data.acks
+	if acks then
+		for id, by_hash in pairs(acks.request) do
+			acks.n = acks.n - rename_keys(by_hash, migrations)
+			if next(by_hash) == nil then acks.request[id] = nil end
+		end
 	end
 
 	for train_id, train in pairs(map_data.trains) do

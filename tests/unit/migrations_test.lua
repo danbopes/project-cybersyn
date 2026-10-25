@@ -185,7 +185,7 @@ test("sanitize_economy_names carries renamed items and qualities into deliveries
 			hour = { [1] = { items = { ["iron-plate|rare"] = 6 } } },
 			trip_ema = { coal = { avg = 60, n = 2 } },
 		},
-		acks = { request = { [7] = { ["iron-plate|rare"] = ack, stone = { tick = 1 } } } },
+		acks = { request = { [7] = { ["iron-plate|rare"] = ack, stone = { tick = 1 } }, [8] = { stone = { tick = 2 } } }, n = 3 },
 	}
 	sanitize_economy_names({ migrations = { item = { coal = "coke", stone = "" }, quality = { rare = "epic" } } })
 	assert_eq(storage.stations[7].deliveries, { coke = 5, ["iron-plate|epic"] = 3 })
@@ -193,4 +193,6 @@ test("sanitize_economy_names carries renamed items and qualities into deliveries
 	assert_eq(storage.stats.hour[1].items, { ["iron-plate|epic"] = 6 })
 	assert_eq(storage.stats.trip_ema, { coke = { avg = 60, n = 2 } })
 	assert_eq(storage.acks.request[7], { ["iron-plate|epic"] = ack })
+	assert_nil(storage.acks.request[8])
+	assert_eq(storage.acks.n, 1)
 end)
