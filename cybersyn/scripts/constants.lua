@@ -128,14 +128,21 @@ for code, name in ipairs(REASON_NAMES) do
 	REASON_KEYS[code] = string.gsub(string.lower(name), "_", "-")
 	REASON_BY_NAME[name] = code
 end
---- Chip colour per reason: red = nothing will change on its own, orange = waiting on stock or capacity, grey = by
---- design (a setting of the player's). Also the order of "worst reason" for a station.
+DIAG_SEV_ERROR = 1
+DIAG_SEV_WARNING = 2
+DIAG_SEV_INFO = 3
+DIAG_SEV_NAMES = { "error", "warning", "info" }
+
+--- DIAG_SEV_* per reason, also its chip colour: error (red) = nothing will change on its own, warning (orange) =
+--- waiting on stock or capacity, info (grey) = by design (a setting of the player's). Also the order of "worst
+--- reason" for a station. An unknown reason counts as info.
+local E, W, I = DIAG_SEV_ERROR, DIAG_SEV_WARNING, DIAG_SEV_INFO
 REASON_SEVERITY = {
-	[REASON_NO_PROVIDER] = 3, [REASON_R_AT_LIMIT] = 2, [REASON_R_DISABLED] = 1, [REASON_R_IS_PROVIDING] = 1,
-	[REASON_P_AT_LIMIT] = 2, [REASON_P_IS_REQUESTING] = 1, [REASON_MASK_MISMATCH] = 3, [REASON_NO_SURFACE_ROUTE] = 3,
-	[REASON_P_BELOW_THRESHOLD] = 2, [REASON_NO_TRAINS_ON_NETWORK] = 3, [REASON_TRAIN_FILTERED] = 3,
-	[REASON_CAPACITY] = 3, [REASON_R_LAYOUT] = 3, [REASON_P_LAYOUT] = 3, [REASON_ALL_IN_INTERRUPT] = 2,
-	[REASON_P_RESERVED] = 2,
+	[REASON_NO_PROVIDER] = E, [REASON_R_AT_LIMIT] = W, [REASON_R_DISABLED] = I, [REASON_R_IS_PROVIDING] = I,
+	[REASON_P_AT_LIMIT] = W, [REASON_P_IS_REQUESTING] = I, [REASON_MASK_MISMATCH] = E, [REASON_NO_SURFACE_ROUTE] = E,
+	[REASON_P_BELOW_THRESHOLD] = W, [REASON_NO_TRAINS_ON_NETWORK] = E, [REASON_TRAIN_FILTERED] = E,
+	[REASON_CAPACITY] = E, [REASON_R_LAYOUT] = E, [REASON_P_LAYOUT] = E, [REASON_ALL_IN_INTERRUPT] = W,
+	[REASON_P_RESERVED] = W,
 }
 
 -- Rejection counters of one evaluation (an unserved entry's `rej`): the five provider sites in the order a provider
@@ -201,11 +208,6 @@ DIAG_KIND_FULL = {
 	[DIAG_KIND_ARRIVE_R] = true, [DIAG_KIND_LEAVE_R] = true, [DIAG_KIND_RETURNED] = true,
 	[DIAG_KIND_TRAIN_STATE] = true,
 }
-
-DIAG_SEV_ERROR = 1
-DIAG_SEV_WARNING = 2
-DIAG_SEV_INFO = 3
-DIAG_SEV_NAMES = { "error", "warning", "info" }
 
 -- `code` of an alert event: the alert that was sent. 1-10 match the ids active_alerts already uses.
 DIAG_ALERT_STUCK = 1

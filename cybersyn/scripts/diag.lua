@@ -808,12 +808,6 @@ local function count_add(d, reason, delta)
 	d.counts[reason] = n ~= 0 and n or nil
 end
 
---- @param reason int
---- @return int DIAG_SEV_*
-local function reason_sev(reason)
-	return 4 - (REASON_SEVERITY[reason] or 1)
-end
-
 --- @param d DiagState
 --- @param r_id uint
 --- @param by_item {[int]: DiagEntry}
@@ -861,7 +855,7 @@ local function confirm(d, e, r_id, ix, reason, now)
 		e.suppressed_until = now + FLAP_WINDOW
 	else
 		e.suppressed_until = nil
-		diag.event(d, DIAG_KIND_UNSERVED_REASON, reason_sev(reason), reason, 0, 0, r_id, e.p_station_id, ix, e.a, e.b)
+		diag.event(d, DIAG_KIND_UNSERVED_REASON, REASON_SEVERITY[reason] or DIAG_SEV_INFO, reason, 0, 0, r_id, e.p_station_id, ix, e.a, e.b)
 	end
 	end_request_ack(r_id, d.item_hash[ix], DIAG_ACK_END_REASON_CHANGED)
 	if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
@@ -901,7 +895,7 @@ function diag.fail(d, r_id, hash, reason, a, b, p_id, rej, lost_to)
 		d.unserved_count[r_id] = (d.unserved_count[r_id] or 0) + 1
 		count_add(d, reason, 1)
 		write_payload(e, reason, a, b, p_id, rej)
-		diag.event(d, DIAG_KIND_UNSERVED_REASON, reason_sev(reason), reason, 0, 0, r_id, p_id, ix, e.a, e.b)
+		diag.event(d, DIAG_KIND_UNSERVED_REASON, REASON_SEVERITY[reason] or DIAG_SEV_INFO, reason, 0, 0, r_id, p_id, ix, e.a, e.b)
 		if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
 		-- The key may have been swept or diagnostics turned off since the acknowledgement: it holds only while the
 		-- reason is the one acknowledged, and one taken without a known reason binds to this one.
@@ -1102,13 +1096,13 @@ function diag.unserved_summary(r_id)
 	local d = storage.diag
 	local by_item = d and d.unserved[r_id]
 	if not by_item then return 0, nil, nil end
-	local n, worst, oldest = 0, nil, nil
+	local n, worst, worst_sev, oldest = 0, nil, nil, nil
 	for _, e in pairs(by_item) do
 		n = n + 1
 		local r = e.reason
-		if not worst or REASON_SEVERITY[r] > REASON_SEVERITY[worst] or
-			(REASON_SEVERITY[r] == REASON_SEVERITY[worst] and r < worst) then
-			worst = r
+		local sev = REASON_SEVERITY[r] or DIAG_SEV_INFO
+		if not worst or sev < worst_sev or (sev == worst_sev and r < worst) then
+			worst, worst_sev = r, sev
 		end
 		if not oldest or e.first_tick < oldest then oldest = e.first_tick end
 	end
