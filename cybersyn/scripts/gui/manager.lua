@@ -357,6 +357,7 @@ function manager.apply_layout(player, player_data)
 end
 
 --- Restores the stored position, or centres the window when there is none or it would be off the screen.
+--- player_data.location duplicates the engine's own only so the position survives reset_player's rebuilds.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.place_window(player, player_data)
@@ -871,6 +872,7 @@ function manager.handle.manager_closed_by_game(player, player_data, refs)
 	if not player_data.is_manager_open or player_data.pinning or util.switching(player.index) then return end
 	if peel_overlay(player, player_data) then
 		manager.render(player, player_data)
+		-- The API has a single opened slot and no overlay stack, so layered Escape re-takes it inside the close event.
 		player.opened = refs.manager_window
 		return
 	end
