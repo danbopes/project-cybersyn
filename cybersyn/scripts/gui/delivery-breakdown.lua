@@ -423,7 +423,7 @@ end
 ---@param map_data MapData Map data containing analytics
 ---@param data table Analytics data
 ---@param oldest_tick number Minimum complete_tick to include
----@param search_item string? Optional item filter
+---@param search_item string? the item filter's hash
 ---@return table filtered Filtered and sorted deliveries
 ---@return table stats Aggregated statistics
 local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
@@ -441,13 +441,7 @@ local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
 	local fail_by_reason, fail_reasons = {}, {}
 
 	for item_hash, deliveries in pairs(data.completed_deliveries) do
-		local include = true
-		if search_item then
-			local item_name = unhash_signal(item_hash)
-			include = (item_name == search_item)
-		end
-
-		if include then
+		if not search_item or item_hash == search_item then
 			for _, delivery in ipairs(deliveries) do
 				if delivery.complete_tick >= oldest_tick then
 					-- Add item_hash to delivery for tooltip display
@@ -469,10 +463,7 @@ local function gather_filter_and_stats(map_data, data, oldest_tick, search_item)
 	if search_item then
 		local active_failures = analytics.get_active_failures(map_data, oldest_tick)
 		for _, failure in ipairs(active_failures) do
-			local item_name = unhash_signal(failure.item_hash)
-			local include = (item_name == search_item)
-
-			if include then
+			if failure.item_hash == search_item then
 				fail_count = fail_count + 1
 				local duration = failure.duration or 0
 
@@ -654,11 +645,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	end
 
 	-- Use item filter from manager toolbar (optional - shows all items when not set)
-	local search_item = player_data.search_item
-	local has_item_filter = search_item and search_item ~= ""
-	if not has_item_filter then
-		search_item = nil
-	end
+	local search_item = util.get_filters(player_data).item
 
 	-- Calculate time range based on interval (needed for cache key)
 	local interval_ticks = RANGES[interval_index].ticks
@@ -787,7 +774,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 
 		-- Build bar_icons array when no item filter is set so users can identify items
 		local bar_icons = nil
-		if not has_item_filter then
+		if not search_item then
 			bar_icons = {}
 			for i, delivery in ipairs(filtered) do
 				if delivery.item_hash then
