@@ -1144,6 +1144,12 @@ local function main()
 		defines.events.on_player_display_scale_changed,
 	}, manager.on_display_changed)
 	script.on_event(defines.events.on_player_controller_changed, manager.on_controller_changed)
+	script.on_event({
+		defines.events.on_surface_created,
+		defines.events.on_surface_deleted,
+		defines.events.on_surface_renamed,
+		defines.events.on_surface_imported,
+	}, manager.on_surfaces_changed)
 	script.on_event(defines.events.on_gui_location_changed, flib_gui.dispatch)
 
 	register_tick()

@@ -43,7 +43,6 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field search_item string? item hash (name or name|quality)
 --- @field search_station uint? station id of the station chip; dropped by util.valid_station_filter once the stop is gone
 --- @field surface_dropdown_ids {[integer]: uint}? drop-down index -> surface index
---- @field surface_count integer? #game.surfaces when the drop-down was built
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see util.get_sort
 --- @field page {[string]: integer}? current page per tab, see util.paginate
 --- @field gui_state {[string]: {keys: (string|number)[]?, dirty: true?}}? per container, see util.sync_children
@@ -372,7 +371,6 @@ local function update(manager_data)
 	local boosting = manager_data.collect_boost ~= nil and collector.wanted()
 	local held = boosting or manager_data.settle ~= nil or manager_data.settle_tick == game.tick
 	local ran = not held and collector.tick()
-	local surface_count
 	for i, v in pairs(manager_data.players) do
 		if not v.player_index then
 			v.player_index = i
@@ -380,10 +378,6 @@ local function update(manager_data)
 		if v.is_manager_open then
 			local player = game.get_player(i)
 			if player then
-				surface_count = surface_count or #game.surfaces
-				if v.surface_count ~= surface_count then
-					manager.rebuild_surface_dropdown(v)
-				end
 				if not held then
 					refresh_window(i, v)
 					ran = true
@@ -464,6 +458,20 @@ function manager_gui.on_display_changed(e)
 	if player and player_data then
 		manager.relayout(player, player_data)
 		relative.on_display_changed(player, player_data)
+	end
+end
+
+--- on_surface_created/deleted/renamed/imported: open windows rebuild the surface drop-down and its visibility; a
+--- closed window rebuilds it when it opens.
+function manager_gui.on_surfaces_changed()
+	local manager_data = storage.manager
+	if not manager_data then return end
+	for i, v in pairs(manager_data.players) do
+		local player = v.is_manager_open and game.get_player(i)
+		if player then
+			manager.rebuild_surface_dropdown(v)
+			manager.refresh_filter_row(player, v)
+		end
 	end
 end
 

@@ -647,7 +647,6 @@ function manager.rebuild_surface_dropdown(player_data)
 	dropdown.items = items
 	dropdown.selected_index = selected
 	player_data.surface_dropdown_ids = ids
-	player_data.surface_count = #game.surfaces
 end
 
 --- Writes the stored filters into the filter row, the search fields and the chips; done on open and after a
