@@ -388,6 +388,7 @@ function manager.relayout(player, player_data)
 	-- A hidden window is placed when it opens; centring it now would use a stale size.
 	if player_data.is_manager_open then
 		manager.place_window(player, player_data)
+		explain.place(player, player_data)
 		manager.render(player, player_data)
 	end
 end
@@ -969,6 +970,7 @@ function manager.handle.manager_location_changed(player, player_data, refs, e)
 	if window and window.valid and window == refs.manager_window and window.visible and player_data.is_manager_open then
 		local loc = window.location
 		player_data.location = { x = loc.x, y = loc.y }
+		explain.place(player, player_data)
 	end
 end
 

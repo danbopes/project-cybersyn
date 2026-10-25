@@ -170,6 +170,14 @@ local function place(player, pd, frame)
 	frame.location = { x = x, y = loc.y }
 end
 
+--- Places the open frame again after the manager window moved or was laid out again.
+--- @param player LuaPlayer
+--- @param pd PlayerData
+function explain.place(player, pd)
+	local frame = pd.explain and player.gui.screen[FRAME]
+	if frame and frame.valid then place(player, pd, frame) end
+end
+
 --- Builds or refreshes the frame for pd.explain.
 --- @param player LuaPlayer
 --- @param pd PlayerData
