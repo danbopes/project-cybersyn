@@ -45,14 +45,14 @@ function text.stacks(threshold, stack_size)
 	return math.ceil(threshold / stack_size)
 end
 
---- The threshold the dispatcher holds a request against: a provider's own item threshold replaces the requester's
---- when it is lower (central-planning.lua, the effective_threshold of tick_dispatch).
+--- The requester's threshold against the lowest provider override: a provider's own item threshold replaces the
+--- requester's when it is not higher, as in tick_dispatch, which applies it per pairing with each provider's own.
 --- @param threshold number
---- @param override number?
+--- @param override number? the lowest provider override
 --- @return number
 --- @return boolean overridden
 function text.effective_threshold(threshold, override)
-	if override and override < threshold then return override, true end
+	if override and override <= threshold then return override, true end
 	return threshold, false
 end
 

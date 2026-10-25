@@ -32,7 +32,7 @@ test("stacks: whole stacks a threshold fills, rounded up; no stack size reads 0"
 	assert_eq(t.stacks(100, nil), 0)
 end)
 
-test("effective_threshold: a lower provider threshold replaces the requester's, a higher one does not", function()
+test("effective_threshold: a lower or equal provider threshold replaces the requester's, a higher one does not", function()
 	local t = rt()
 	local v, o = t.effective_threshold(5000, 2000)
 	assert_eq(v, 2000)
@@ -40,6 +40,9 @@ test("effective_threshold: a lower provider threshold replaces the requester's, 
 	v, o = t.effective_threshold(5000, 8000)
 	assert_eq(v, 5000)
 	assert_false(o)
+	v, o = t.effective_threshold(5000, 5000)
+	assert_eq(v, 5000)
+	assert_true(o)
 	v, o = t.effective_threshold(5000, nil)
 	assert_eq(v, 5000)
 	assert_false(o)
