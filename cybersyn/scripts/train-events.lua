@@ -108,7 +108,7 @@ function on_failed_delivery(map_data, train_id, train, cause)
 	local is_r_in_progress = is_p_in_progress or train.status == STATUS_TO_R or train.status == STATUS_R
 	if is_p_in_progress then
 		local station = map_data.stations[p_station_id]
-		if station and station.entity_comb1.valid and (not station.entity_comb2 or station.entity_comb2.valid) then
+		if station then
 			remove_manifest(map_data, station, manifest, 1)
 			if train.status == STATUS_P then
 				set_comb1(map_data, station, nil)
@@ -118,7 +118,7 @@ function on_failed_delivery(map_data, train_id, train, cause)
 	end
 	if is_r_in_progress then
 		local station = map_data.stations[r_station_id]
-		if station and station.entity_comb1.valid and (not station.entity_comb2 or station.entity_comb2.valid) then
+		if station then
 			remove_manifest(map_data, station, manifest, -1)
 			if train.status == STATUS_R then
 				set_comb1(map_data, station, nil)
@@ -337,6 +337,20 @@ local function on_train_arrives_refueler(map_data, refueler, train_id, train)
 end
 
 ---@param map_data MapData
+---@param train_id uint
+---@param train Train
+---@param old_status uint
+---@param status uint? STATUS_TO_D (the default) or STATUS_TO_D_BYPASS
+function send_train_to_depot(map_data, train_id, train, old_status, status)
+	train.status = status or STATUS_TO_D
+	if not train.use_any_depot then
+		-- train using same depot, coord. station was inserted -> we need to color
+		color_train_by_stop(train.entity, map_data.depots[train.depot_id].entity_stop)
+	end
+	interface_raise_train_status_changed(train_id, old_status, train.status)
+end
+
+---@param map_data MapData
 ---@param mod_settings CybersynModSettings
 ---@param train_id uint
 ---@param train Train
@@ -523,12 +537,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 			end
 		end
 		--the train has not qualified for depot bypass nor refueling
-		train.status = STATUS_TO_D
-		if not train.use_any_depot then
-			-- train using same depot, coord. station was inserted -> we need to color
-			color_train_by_stop(train.entity, map_data.depots[train.depot_id].entity_stop)
-		end
-		interface_raise_train_status_changed(train_id, STATUS_R, STATUS_TO_D)
+		send_train_to_depot(map_data, train_id, train, STATUS_R)
 	elseif train.status == STATUS_F then
 		local refueler = map_data.refuelers[train.refueler_id]
 		train.refueler_id = nil
@@ -543,11 +552,7 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		else
 			train.status = STATUS_TO_D
 		end
-		if not train.use_any_depot then
-			-- train using same depot, coord. station was inserted -> we need to color
-			color_train_by_stop(train.entity, map_data.depots[train.depot_id].entity_stop)
-		end
-		interface_raise_train_status_changed(train_id, STATUS_F, train.status)
+		send_train_to_depot(map_data, train_id, train, STATUS_F, train.status)
 	elseif train.status == STATUS_D then
 		--The train is leaving the depot without a manifest, the player likely intervened
 		remove_train(map_data, train_id, train)
@@ -575,14 +580,20 @@ local function on_train_modified(map_data, pre_train_id)
 end
 
 
----Whether the train is inside an interrupt: its current schedule record was inserted by one.
+---Whether the train is inside an interrupt: any of its schedule records was inserted by one. Interrupt records exist
+---exactly from the insert event to the removal event, while `current` still points at the record being left when the
+---insert event fires, so the current record alone would read false for the whole interrupt (measured on 2.1.23).
 ---@param entity LuaTrain
 ---@return boolean
 function train_in_interrupt(entity)
 	local schedule = entity.get_schedule()
-	if schedule.get_record_count() == 0 then return false end
-	local record = schedule.get_record({ schedule_index = schedule.current })
-	return record ~= nil and record.created_by_interrupt == true
+	local count = schedule.get_record_count()
+	if count == 0 then return false end
+	for i = 1, count do
+		local record = schedule.get_record({ schedule_index = i })
+		if record and record.created_by_interrupt then return true end
+	end
+	return false
 end
 
 ---Schedule changes made while the mod was not loaded raised no event, so every cached flag is recomputed.
@@ -594,8 +605,9 @@ function refresh_train_interrupts(map_data)
 	end
 end
 
----Keeps Train.in_interrupt current for the dispatcher, which reads it instead of the schedule. Fires on every
----record insert and removal, interrupts and Cybersyn's own schedule writes included, before the writing call returns.
+---Keeps Train.in_interrupt current for the dispatcher, which reads it instead of the schedule. Fires on every record
+---insert and removal, interrupts and Cybersyn's own schedule writes included, before the writing call returns; an
+---interrupt's insert fires before `current` moves, and go_to_station raises nothing (measured on 2.1.23).
 ---@param event EventData.on_train_schedule_changed
 function on_train_schedule_changed(event)
 	local train_e = event.train

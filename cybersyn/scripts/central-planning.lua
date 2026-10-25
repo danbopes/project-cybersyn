@@ -720,9 +720,6 @@ local function tick_dispatch(map_data, mod_settings)
 			network_name = r_stop.network_name --[[@as string]]
 		end
 		local trains = map_data.available_trains[network_name]
-		-- The stale-train cleanup below empties a network's table without removing it; empty means none available,
-		-- and the train loop does nothing over either.
-		if trains and next(trains) == nil then trains = nil end
 		local is_fluid = item_type == "fluid"
 		if not is_fluid and r_station.is_stack then
 			r_threshold = r_threshold * get_stack_size(map_data, item_name)
@@ -885,6 +882,7 @@ local function tick_dispatch(map_data, mod_settings)
 						-- removed train needs cleanup in available_trains
 						trains[train_id] = nil
 						stats.available_changed(network_name, -1)
+						if next(trains) == nil then map_data.available_trains[network_name] = nil end
 						goto train_continue
 					end
 
@@ -1020,7 +1018,7 @@ local function tick_dispatch(map_data, mod_settings)
 				if correctness == 1 then
 					-- "Missing train" only when the network has none available; otherwise they were filtered.
 					note_no_train_alert(alert_dedupe(map_data), item_network_name,
-						trains and DIAG_ALERT_TRAINS_FILTERED or DIAG_ALERT_MISSING_TRAIN, r_station_id, closest_id,
+						trains and next(trains) and DIAG_ALERT_TRAINS_FILTERED or DIAG_ALERT_MISSING_TRAIN, r_station_id, closest_id,
 						wait_so_far)
 				elseif correctness == 2 then
 					requester_alert(d, DIAG_ALERT_NO_TRAIN_HAS_CAPACITY,
@@ -1062,7 +1060,7 @@ local function tick_dispatch(map_data, mod_settings)
 						reason = REASON_NO_PROVIDER
 					end
 				end
-			elseif not trains then
+			elseif not trains or next(trains) == nil then
 				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_NO_TRAINS_ON_NETWORK
 			elseif correctness == 1 then
 				failure_reason, reason = FAILURE_REASON_NO_TRAIN_AVAILABLE, REASON_TRAIN_FILTERED

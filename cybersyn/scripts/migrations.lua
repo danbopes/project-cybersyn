@@ -473,6 +473,11 @@ local migrations_table = {
 			station.request_start_ticks = {}
 		end
 
+		-- A network with no available trains has no table; older saves could keep an empty one.
+		for network_name, trains in pairs(map_data.available_trains) do
+			if next(trains) == nil then map_data.available_trains[network_name] = nil end
+		end
+
 		local tick = game.tick
 		for _, train in pairs(map_data.trains) do
 			local entity = train.entity

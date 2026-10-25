@@ -196,3 +196,27 @@ test("tick_init: a station built while warm-ups finish keeps its own warm-up", f
 	end)
 	assert_eq({ map_data.active_station_ids, st.is_warming_up, map_data.warmup_station_cycles }, { { 100 }, nil, { [500] = 0 } })
 end)
+
+test("a network's last stale available train takes its table with it", function()
+	H.fresh()
+	local req = station(100, { list = { NET, sig("iron-plate", -3000) } }, nil, { is_p = false })
+	local prov = station(300, { list = { NET, sig("iron-plate", 9000) } }, nil, { is_r = false })
+	local map_data = world({ req, prov })
+	map_data.available_trains["signal-A"] = { [99] = true }
+	with_globals(ANY_ROUTE, function() pass(map_data) end)
+	assert_nil(map_data.available_trains["signal-A"])
+end)
+
+test("on_failed_delivery takes the delivery off a station whose control combinator is gone", function()
+	H.fresh()
+	local r = station(100, { list = { NET } }, nil, { is_p = false, deliveries = { ["iron-plate"] = 100 },
+		deliveries_total = 1, display_state = 1, entity_comb2 = { valid = false } })
+	local map_data = world({ r })
+	map_data.to_output = {}
+	local train = { status = STATUS_TO_R, r_station_id = 100, p_station_id = 300,
+		manifest = { { type = "item", name = "iron-plate", count = 100 } } }
+	with_globals({ interface_raise_train_failed_delivery = function() end }, function()
+		on_failed_delivery(map_data, 7, train, nil)
+	end)
+	assert_eq({ r.deliveries, r.deliveries_total, r.display_state }, { {}, 0, 0 })
+end)

@@ -139,7 +139,7 @@ local function abolish_same_depot()
 					log(string.format("%s adjusted, %s", stop_richtext(stop), detail))
 				end
 
-				if stop.trains_limit > 2100000000 then -- no limit = uint_max, ~int_max is good enough here
+				if stop.trains_limit > TRAIN_LIMIT_UNLIMITED then
 					log_depot("train limit set to 1")
 					stop.trains_limit = 1
 				else

@@ -45,6 +45,7 @@ local function storage_212()
 			},
 			[8] = { deliveries = {}, request_start_ticks = {} },
 		},
+		available_trains = { ["signal-A"] = {}, ["signal-B"] = { [1] = true } },
 		trains = {
 			[1] = { entity = train_entity(1, defines.train_state.wait_station) },
 			[2] = { entity = { valid = false } },
@@ -86,6 +87,7 @@ test("2.1.2 -> 2.2.0 creates the new fields and drops the unread ones", function
 		assert_nil(storage.warmup_station_ids)
 		assert_eq(storage.warmup_station_cycles, { [7] = 1 })
 		assert_eq(storage.economy, { all_r_stops = {}, all_p_stops = {}, all_names = {} })
+		assert_eq(storage.available_trains, { ["signal-B"] = { [1] = true } }, "empty network tables dropped")
 
 		for id, station in pairs(storage.stations) do
 			assert_eq(station.secondary_inv_combs, {}, "station " .. id)
@@ -160,13 +162,15 @@ test("refresh_train_interrupts recomputes the flag from the live schedule", func
 	local inserted = { created_by_interrupt = true }
 	storage.trains = {
 		[1] = { entity = train_entity(1, 0, { normal, inserted }, 2), in_interrupt = false },
-		[2] = { entity = train_entity(2, 0, { normal, inserted }, 1), in_interrupt = true },
+		[2] = { entity = train_entity(2, 0, { normal, inserted }, 1), in_interrupt = false },
 		[3] = { entity = train_entity(3, 0, {}), in_interrupt = true },
 		[4] = { entity = { valid = false }, in_interrupt = true },
+		[5] = { entity = train_entity(5, 0, { normal, normal }, 2), in_interrupt = true },
 	}
 	refresh_train_interrupts(storage)
 	assert_true(storage.trains[1].in_interrupt)
-	assert_false(storage.trains[2].in_interrupt)
+	assert_true(storage.trains[2].in_interrupt, "an interrupt record counts while current still points elsewhere")
 	assert_false(storage.trains[3].in_interrupt, "an empty schedule is no interrupt")
 	assert_true(storage.trains[4].in_interrupt, "an invalid train is left for its removal handler")
+	assert_false(storage.trains[5].in_interrupt, "no interrupt record")
 end)

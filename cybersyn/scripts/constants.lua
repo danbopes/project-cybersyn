@@ -95,6 +95,9 @@ STATE_DISPATCH = 2
 
 DIFFERENT_SURFACE_DISTANCE = 1000000000
 
+-- A stop with its train limit disabled reads back the largest uint; anything this close to it counts as no limit.
+TRAIN_LIMIT_UNLIMITED = 2100000000
+
 -- Diagnostics (scripts/diag.lua). Reason codes name the tick_dispatch site that rejected a request.
 -- Lost priority is a counter on an entry; P_RESERVED is the reason of a requester whose only provider was locked by
 -- a requester evaluated ahead of it although it held enough for this one. There is no "no path" reason (the

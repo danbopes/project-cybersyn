@@ -464,9 +464,11 @@ function ScheduleBuilder:add_refuel_order(f_stop)
 end
 
 ---@param train LuaTrain
----@param probe boolean? on a failure, ask once more ignoring the chain-signal start rule, to name the cause
+---@param probe boolean? on a failure, ask once more ignoring the chain-signal start rule, to name the cause; this
+---costs a second pathfinder search, since the engine's result carries no reason for a failure
 ---@return boolean found
----@return boolean? blocked with probe and not found: a route exists, its start cannot be reserved now
+---@return boolean? blocked with probe and not found: a route exists, its start cannot be reserved now. A heuristic:
+---the looser search succeeding suggests the chain-signal start is the obstacle, it does not prove it
 function ScheduleBuilder:is_path_available(train, probe)
 	---@type TrainPathFinderGoal?
 	local goal = nil
@@ -1069,7 +1071,7 @@ end
 ---@param map_data MapData
 ---@param station Station
 function set_comb2(map_data, station)
-	if station.entity_comb2 then
+	if station.entity_comb2 and station.entity_comb2.valid then
 		local deliveries = station.deliveries
 		---@type LogisticFilter[]
 		local signals = {}
@@ -1147,13 +1149,7 @@ local send_alert_about_missing_train_icon = { name = MISSING_TRAIN_NAME, type = 
 ---@return LocalisedString message as sent, for remove_alert_about_missing_train
 function send_alert_about_missing_train(r_stop, p_stop, message)
 	local text = { message, r_stop.backer_name, p_stop.backer_name }
-	for _, player in pairs(r_stop.force.players) do
-		player.add_custom_alert(
-			r_stop,
-			send_alert_about_missing_train_icon,
-			text,
-			true)
-	end
+	r_stop.force.add_custom_alert(r_stop, send_alert_about_missing_train_icon, text, true)
 	return text
 end
 
@@ -1162,10 +1158,8 @@ end
 ---@param stop LuaEntity
 ---@param message LocalisedString? as it was sent
 function remove_alert_about_missing_train(stop, message)
-	for _, player in pairs(stop.force.players) do
-		player.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
-			message = message })
-	end
+	stop.force.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
+		message = message })
 end
 
 ---@param train LuaTrain
