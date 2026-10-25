@@ -1384,7 +1384,6 @@ local function render_table(player_data, model)
 			content_sigs = {}
 			state.content_sigs = content_sigs
 		end
-		local state = util.gui_state(player_data, TABLE)
 		local hide = state.hide or { stock = false, lost = false }
 		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths,
 			content_sigs = content_sigs, setup = setup_index(), hide = hide }
