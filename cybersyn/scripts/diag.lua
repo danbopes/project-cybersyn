@@ -332,6 +332,22 @@ end
 diag.ring_at = at
 diag.first_after = first_after
 
+--- One step of the walk over both rings merged by seq: of the rows at logical index kb of `rb` and kf of `rf`, the
+--- one that comes first in direction `dir` (1 = oldest first, -1 = newest first), and kb, kf advanced past it; nil
+--- once both rings are walked out.
+--- @param dir 1|-1
+--- @return DiagRing? r
+--- @return int? i ring index of the row
+--- @return int kb
+--- @return int kf
+local function step(rb, rf, kb, kf, dir)
+	local ib = kb >= 0 and kb < rb.count and at(rb, kb) or nil
+	local iff = kf >= 0 and kf < rf.count and at(rf, kf) or nil
+	if ib and (not iff or (rb.seq[ib] < rf.seq[iff]) == (dir > 0)) then return rb, ib, kb + dir, kf end
+	if iff then return rf, iff, kb, kf + dir end
+	return nil, nil, kb, kf
+end
+
 --- @class DiagEventFilter
 --- @field kind int? DIAG_KIND_*
 --- @field kinds {[int]: true}? any of these kinds (with `alerts`: or an alert row whose code is in `alerts`)
@@ -396,52 +412,34 @@ function diag.events(filter, from_seq, limit, max_scan)
 	limit = limit or 1000
 	max_scan = max_scan or (filter and EVENTS_SCAN or math.huge)
 	local rb, rf = d.ring_basic, d.ring_full
-	local scanned = 0
-	if from_seq == nil then
-		-- Newest first, then reversed.
-		local kb, kf = rb.count - 1, rf.count - 1
-		local reached
-		while #out < limit and (kb >= 0 or kf >= 0) do
-			if scanned >= max_scan then break end
-			local ib = kb >= 0 and at(rb, kb) or nil
-			local iff = kf >= 0 and at(rf, kf) or nil
-			local r, i
-			if ib and (not iff or rb.seq[ib] > rf.seq[iff]) then
-				r, i, kb = rb, ib, kb - 1
-			else
-				r, i, kf = rf, iff, kf - 1
-			end
-			scanned = scanned + 1
-			reached = r.seq[i]
-			if matches(r, i, filter) then out[#out + 1] = row(r, i) end
-		end
-		local n = #out
-		for k = 1, math.floor(n / 2) do
-			out[k], out[n - k + 1] = out[n - k + 1], out[k]
-		end
-		return out, (kb >= 0 or kf >= 0) and reached or nil
+	local backward = from_seq == nil
+	local dir = backward and -1 or 1
+	local kb, kf
+	if backward then
+		kb, kf = rb.count - 1, rf.count - 1
+	else
+		kb, kf = first_after(rb, from_seq), first_after(rf, from_seq)
 	end
-	local kb, kf = first_after(rb, from_seq), first_after(rf, from_seq)
-	local reached
-	while #out < limit and (kb < rb.count or kf < rf.count) do
-		if scanned >= max_scan then break end
-		local ib = kb < rb.count and at(rb, kb) or nil
-		local iff = kf < rf.count and at(rf, kf) or nil
+	local max_seq = not backward and filter and filter.max_seq
+	local scanned, reached, ended = 0, nil, false
+	while #out < limit and scanned < max_scan do
 		local r, i
-		if ib and (not iff or rb.seq[ib] < rf.seq[iff]) then
-			r, i, kb = rb, ib, kb + 1
-		else
-			r, i, kf = rf, iff, kf + 1
-		end
-		if filter and filter.max_seq and r.seq[i] > filter.max_seq then
-			kb, kf = rb.count, rf.count
+		r, i, kb, kf = step(rb, rf, kb, kf, dir)
+		if not r or (max_seq and r.seq[i] > max_seq) then
+			ended = true
 			break
 		end
 		scanned = scanned + 1
 		reached = r.seq[i]
 		if matches(r, i, filter) then out[#out + 1] = row(r, i) end
 	end
-	return out, (kb < rb.count or kf < rf.count) and reached or nil
+	if backward then
+		local n = #out
+		for k = 1, math.floor(n / 2) do
+			out[k], out[n - k + 1] = out[n - k + 1], out[k]
+		end
+	end
+	return out, not ended and step(rb, rf, kb, kf, dir) and reached or nil
 end
 
 -- Rows one diag.last_for_step call examines at most. A rare entity's last rows can sit 70,000 rows back in a full
@@ -452,8 +450,9 @@ diag.SCAN_ROWS = 4096
 
 --- Walks both rings backwards over the rows with stop_seq < seq < below, newest first, appending the rows that match
 --- `f` (one subject: {station|train|delivery = id}) to `out` until it holds `n`, or `budget` rows were examined. The
---- columns are read straight from the ring arrays: through ring_at and diag.matches a row cost about 1 µs inside the
---- real tick on full rings, which kept the stop panel over its 0.2 ms refresh budget.
+--- merge of `step` written out, with the columns read straight from the ring arrays: through ring_at and diag.matches
+--- a row cost about 1 µs inside the real tick on full rings, which kept the stop panel over its 0.2 ms refresh budget,
+--- and through `step` alone it still costs 3.6 times the inlined walk (host Lua, 20,000 rows).
 --- @return int examined
 --- @return uint oldest seq of the oldest row examined (`below` when none)
 --- @return boolean exhausted no unexamined row is left in the range

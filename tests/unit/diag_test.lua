@@ -482,6 +482,35 @@ test("rings: wrap keeps the newest rows; merged order follows seq across both ri
 	assert_eq(#diag.events(nil, 4990, 100), 10)
 end)
 
+test("events: both directions over the merged rings, the scan budget and the seq a later call continues from", function()
+	at(0)
+	local d = setup("full")
+	for k = 1, 10 do
+		if k % 2 == 1 then
+			diag.event(d, DIAG_KIND_ALERT, DIAG_SEV_ERROR, 1, 0, 0, 0, 0, 0, k, 0)
+		else
+			diag.event(d, DIAG_KIND_ARRIVE_P, DIAG_SEV_INFO, 0, 0, 0, 0, 0, 0, k, 0)
+		end
+	end
+	local function run(...)
+		local rows, reached = diag.events(...)
+		local seqs = {}
+		for i, ev in ipairs(rows) do seqs[i] = ev.seq end
+		return { seqs, reached }
+	end
+	local alerts, arrivals = { kind = DIAG_KIND_ALERT }, { kind = DIAG_KIND_ARRIVE_P }
+	assert_eq(run(nil, nil, 3), { { 8, 9, 10 }, 8 }, "the newest, rows left below")
+	assert_eq(run(nil, nil, 10), { { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 } }, "the limit met at the oldest row: the end")
+	assert_eq(run(alerts, nil, 100, 4), { { 7, 9 }, 7 }, "four rows examined, newest first")
+	assert_eq(run(arrivals, 0, 100, 3), { { 2 }, 3 }, "three rows examined, oldest first")
+	assert_eq(run(arrivals, 3, 100), { { 4, 6, 8, 10 } }, "continued from the seq reached, to the end")
+	assert_eq(run(nil, 7, 3), { { 8, 9, 10 } })
+	assert_eq(run(nil, 0, 2), { { 1, 2 }, 2 })
+	assert_eq(run({ max_seq = 5 }, 0, 100), { { 1, 2, 3, 4, 5 } }, "max_seq ends a forward scan")
+	setup("off")
+	assert_eq(run(nil, nil, 3), { {} })
+end)
+
 test("rings: resizing the full ring keeps the newest rows and their order", function()
 	at(0)
 	local d = setup("full", 2048)
