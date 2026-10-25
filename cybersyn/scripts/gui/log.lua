@@ -1423,16 +1423,7 @@ local function find_group(player_data, seq)
 	for _, g in ipairs(rs and rs.groups or {}) do
 		if g.seq == seq or g.first == seq then return g end
 	end
-	local d = storage.diag
-	if not d then return nil end
-	for _, r in ipairs({ d.ring_basic, d.ring_full }) do
-		local k = diag.first_after(r, seq - 1)
-		if k < r.count then
-			local i = diag.ring_at(r, k)
-			if r.seq[i] == seq then return model.new_group(r, i) end
-		end
-	end
-	return nil
+	return find_ring_group(seq)
 end
 
 --- The chat line for a row: its age, kind, tags the chat makes clickable, and the message.
