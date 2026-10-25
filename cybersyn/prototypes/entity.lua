@@ -13,6 +13,7 @@ combinator_entity.radius_visualisation_specification = {
 }
 combinator_entity.active_energy_usage = "10kW"
 combinator_entity.fast_replaceable_group = COMBINATOR_NAME
+table.insert(combinator_entity.flags, "get-by-unit-number")
 
 if mods["nullius"] then
 	combinator_entity.localised_name = { "entity-name.cybersyn-combinator" }

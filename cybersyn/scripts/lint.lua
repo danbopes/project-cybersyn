@@ -1477,14 +1477,14 @@ function lint.registry_findings()
 	return list
 end
 
---- The registry's stop or combinator with this unit number (most entities cannot be looked up by unit number, so
---- the `entity` links of unregistered ones resolve here).
+--- The stop or combinator with this unit number: a stop from the registry, since the base train stop cannot be
+--- looked up by unit number; a combinator from the game, registered or not.
 --- @param unit uint
 --- @return LuaEntity?
 function lint.registry_entity(unit)
 	local reg = storage.lint_registry
 	local entry = reg and reg.entries[unit]
-	local e = entry and entry.entity
+	local e = entry and entry.entity or game.get_entity_by_unit_number(unit)
 	if e and e.valid then return e end
 	return nil
 end
