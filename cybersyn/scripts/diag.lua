@@ -1609,12 +1609,4 @@ function diag.export(player_index, filter)
 	return path, #parts - 1
 end
 
--- ---------------------------------------------------------------- migration
-
---- Creates storage.acks and brings storage.diag in line with the diagnostics setting; idempotent.
-function diag.migrate()
-	diag.acks()
-	diag.apply()
-end
-
 return diag

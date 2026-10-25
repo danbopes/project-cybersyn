@@ -1058,7 +1058,7 @@ local function main()
 	-- the events that normally keep it current.
 	local function refresh_derived_state()
 		-- storage.diag is sized by the diagnostics setting, which is otherwise applied only when it changes.
-		diag.migrate()
+		diag.apply()
 		refresh_train_interrupts(storage)
 		-- A removed item or quality must leave the stats buckets before the GUI reads them.
 		stats.init()
