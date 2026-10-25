@@ -527,10 +527,48 @@ local function start_job(s, snap)
 	return job
 end
 
+--- Every stop at a non-default priority that shares a name with a Cybersyn station, depot or refueler, its own
+--- included: a vanilla stop of that name pulls in Cybersyn's trains too.
+--- @param force LuaForce?
+--- @return LuaEntity[]
+local function off_priority_stops(force)
+	local seen, names = {}, {}
+	for _, records in ipairs({ storage.stations, storage.depots, storage.refuelers }) do
+		for _, rec in pairs(records) do
+			local stop = rec.entity_stop
+			local name = stop and stop.valid and stop.backer_name
+			if name and not seen[name] then
+				seen[name] = true
+				names[#names + 1] = name
+			end
+		end
+	end
+	local out = {}
+	if not names[1] then return out end
+	for _, stop in pairs(game.train_manager.get_train_stops({ station_name = names, force = force })) do
+		if stop.train_stop_priority ~= DEFAULT_PRIORITY then out[#out + 1] = stop end
+	end
+	return out
+end
+
+--- The priority to report for a Cybersyn stop: that of an off-priority stop of its name and force seen when the
+--- pass started (read live), else its own.
+--- @param job LintJob
+--- @param stop LuaEntity
+--- @return int
+local function stop_priority(job, stop)
+	local other = job.off_priority[stop.backer_name]
+	if other and other.valid and other.force == stop.force then return other.train_stop_priority end
+	return stop.train_stop_priority
+end
+
 --- @param job LintJob
 --- @param snap Snapshot
 local function setup_job(job, snap)
 	if job.setup == 1 then
+		local off = {}
+		for _, stop in ipairs(off_priority_stops()) do off[stop.backer_name] = stop end
+		job.off_priority = off
 		job.dids = snap.depot_ids or keys_into(storage.depots, {})
 		job.fids = keys_into(storage.refuelers, {})
 		job.tids = keys_into(storage.trains, {})
@@ -690,7 +728,7 @@ local function check_record(s, job, snap, k, cycle_ticks)
 			deliveries = station.deliveries_total or 0
 		end
 		live.limit = stop.trains_limit
-		live.priority = stop.train_stop_priority
+		live.priority = stop_priority(job, stop)
 		live.count = count
 		live.occupancy = occupancy
 		-- Only more trains than Cybersyn sent count: one it sent is routed through a rail record first and is not
@@ -723,12 +761,12 @@ local function check_record(s, job, snap, k, cycle_ticks)
 		local stop = depot and depot.entity_stop
 		if not (stop and stop.valid) then return end
 		mask = lint.check_depot(out, id, stop.trains_limit, (snap.depots_by_name or NO_LAYOUTS)[stop.backer_name],
-			stop.train_stop_priority)
+			stop_priority(job, stop))
 	else
 		local refueler = storage.refuelers[id]
 		local stop = refueler and refueler.entity_stop
 		if not (stop and stop.valid) then return end
-		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet, stop.train_stop_priority)
+		mask = lint.check_refueler(out, id, live_refueler(refueler), snap.fleet, stop_priority(job, stop))
 	end
 	local logged = s.logged
 	local old = logged and logged[id] or s.bits[id] or 0
@@ -1490,8 +1528,8 @@ function lint.registry_entity(unit)
 end
 
 --- Prints the registry the way /cybersyn-find-problems always has: one line per problem with a link to the stop or
---- the combinator's position, then the registered stops at a non-default priority (read now: no event reports a
---- priority change), or the all-clear line.
+--- the combinator's position, then the stops sharing a Cybersyn stop's name at a non-default priority (read now: no
+--- event reports a priority change), or the all-clear line.
 --- @param player LuaPlayer?
 --- @return int lines
 function lint.report(player)
@@ -1511,14 +1549,7 @@ function lint.report(player)
 			line(f.message == "wrong-side-combinator" and f.stop or f.entity, f.message)
 		end
 	end
-	for _, records in ipairs({ storage.stations, storage.depots, storage.refuelers }) do
-		for _, rec in pairs(records) do
-			local stop = rec.entity_stop
-			if stop and stop.valid and stop.train_stop_priority ~= DEFAULT_PRIORITY and (not force or stop.force == force) then
-				line(stop, "non-default-priority")
-			end
-		end
-	end
+	for _, stop in ipairs(off_priority_stops(force)) do line(stop, "non-default-priority") end
 	if n == 0 then say({ "cybersyn-problems.no-problems-found" }) end
 	return n
 end
