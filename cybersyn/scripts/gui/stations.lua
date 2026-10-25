@@ -1678,7 +1678,7 @@ local function update_row(row, inv, m, cell, item, hold, minute, sigs, w)
 		local sig = sigs[name]
 		if table_elem and sig_of[name] ~= sig then
 			local result = sync_slots(table_elem, build(inv, item, w), slot_state(slots, name), hold, minute)
-			-- A hold deferred a structural change, so the table is retried next update.
+			-- A hold deferred a structural change (util.hoverable), so the table is retried next update.
 			sig_of[name] = result ~= "held" and sig or nil
 		end
 	end

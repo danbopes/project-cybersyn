@@ -634,6 +634,8 @@ function util.with_hover(handlers)
 end
 
 --- Makes an element definition hover-aware for `scope` (normally the name of the container passed to sync_children).
+--- An element destroyed, rebuilt or moved under the cursor loses the click or hands it to another row, and Factorio
+--- has no "leave alone while hovered" option, so the hover events drive a hold that defers structural changes.
 --- @param def flib.GuiElemDef Modified in place and returned.
 --- @param scope string
 --- @return flib.GuiElemDef
