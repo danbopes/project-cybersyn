@@ -792,7 +792,7 @@ local function render_header(player_data, cache)
 			refs.item_station_chip_icon.tooltip = { "cybersyn-gui.station-chip-tooltip" }
 		end
 	end
-	local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
+	local sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash)
 	local icon = refs.item_icon
 	if icon and icon.valid then
 		icon.sprite = sprite
@@ -803,7 +803,7 @@ local function render_header(player_data, cache)
 		tags.kind, tags.id = "item", hash
 		icon.tags = tags
 	end
-	set_caption(refs.item_name, name_tooltip and name_tooltip[4] or hash)
+	set_caption(refs.item_name, item_name or hash)
 	local function total(name, key, value, stations, tooltip_key, note)
 		local elem = refs["item_total_" .. name]
 		if not (elem and elem.valid) then return end

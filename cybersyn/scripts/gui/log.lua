@@ -1014,8 +1014,8 @@ local function render_summary_table(player_data, tbl, list, is_item)
 			tooltip = { "cybersyn-diag.sev-" .. SEV_KEYS[e.sev] } })
 		if is_item then
 			local hash = d and d.item_hash[e.item]
-			local sprite, quality, tooltip = nil, nil, nil
-			if hash then sprite, quality, tooltip = util.item_sprite_and_tooltip(hash) end
+			local sprite, quality, _, item_name
+			if hash then sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash) end
 			gui.add(tbl, {
 				type = "flow",
 				direction = "horizontal",
@@ -1031,7 +1031,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 					handler = { [defines.events.on_gui_click] = util.handle.link_click },
 				},
 				{ type = "label", style = "cybersyn_log_message", style_mods = { width = name_width - 32 },
-					caption = tooltip and tooltip[4] or hash or "?" },
+					caption = item_name or hash or "?" },
 			})
 		else
 			local view = station_view(e.id)

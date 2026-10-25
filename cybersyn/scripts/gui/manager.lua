@@ -489,8 +489,8 @@ function manager.refresh_chips(player_data)
 	if player_data.chip_sig == sig then return end
 	player_data.chip_sig = sig
 	refresh_station_chips(player_data, station, station_name)
-	local sprite, quality, name_tooltip = nil, nil, nil
-	if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
+	local sprite, quality, _, item_name
+	if hash then sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
 	for _, tab in ipairs(HEADER_TABS) do
 		local flow = not NO_ITEM_CHIP[tab] and refs[tab .. "_chip_flow"]
@@ -504,7 +504,7 @@ function manager.refresh_chips(player_data)
 				icon.elem_tooltip = util.elem_tooltip(hash)
 				icon.tooltip = tooltip
 				local chip = refs[tab .. "_chip"]
-				chip.caption = { "cybersyn-gui.filter-chip", name_tooltip[4] or hash }
+				chip.caption = { "cybersyn-gui.filter-chip", item_name or hash }
 				chip.tooltip = tooltip
 			end
 		end

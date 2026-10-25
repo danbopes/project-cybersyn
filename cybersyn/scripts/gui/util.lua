@@ -204,6 +204,7 @@ end
 --- @return string? quality
 --- @return LocalisedString? name_tooltip "[img] Localised name"
 --- @return SignalID? signal
+--- @return LocalisedString? name the localised name alone
 function util.item_sprite_and_tooltip(hash)
 	local cached = sprite_cache[hash]
 	if cached == nil then
@@ -213,11 +214,13 @@ function util.item_sprite_and_tooltip(hash)
 		-- A quality removed by a mod change still lingers in persisted hashes, and gui.add throws on it.
 		if helpers.is_valid_sprite_path(sprite) and not (quality and not prototypes.quality[quality]) then
 			local proto = util.prototype_from_name(name)
+			local localised = proto and proto.localised_name or name
 			cached = {
 				sprite = sprite,
 				quality = quality,
-				tooltip = { "", util.rich_text_from_signal(signal), " ", proto and proto.localised_name or name },
+				tooltip = { "", util.rich_text_from_signal(signal), " ", localised },
 				signal = signal,
+				name = localised,
 			}
 		else
 			cached = false
@@ -225,7 +228,7 @@ function util.item_sprite_and_tooltip(hash)
 		sprite_cache[hash] = cached
 	end
 	if not cached then return nil end
-	return cached.sprite, cached.quality, cached.tooltip, cached.signal
+	return cached.sprite, cached.quality, cached.tooltip, cached.signal, cached.name
 end
 
 --- Decorate-sort-undecorate. `key_fn` runs once per row; the comparator touches no API.
