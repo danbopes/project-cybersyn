@@ -22,7 +22,7 @@ local function st(id, name, over)
 		wait = {},
 	}
 	for k, v in pairs(over or {}) do r[k] = v end
-	return r
+	return require("inventory_fixtures").rows(r)
 end
 
 local function setup()
@@ -522,8 +522,7 @@ test("query: a refilled station that gained an inventory gets its row merged in"
 	local i2 = { kind = "inventory", index = 2, unit = 2003, ok = true, priority = 0, network_name = "signal-A", mask = 1,
 		provided = { stone = 10 }, requested = {}, ignored = {}, read = true }
 	hub.sources[3] = i2
-	hub.rows = nil
-	collector.inventories(hub)
+	F.rows(hub)
 	local log = storage.manager.collect_log
 	log.ids[#log.ids + 1] = 21
 	snap.tick = 20
@@ -574,20 +573,20 @@ test("network cell: each row shows its own network and mask, no badge", function
 	local unread = F.naphtha(20)
 	unread.sources[3].mask, unread.sources[3].read = nil, false
 	unread.comb_ok = true
-	unread.rows = nil
+	F.rows(unread)
 	local cell = stations_tab.network_cell(collector.inventories(unread)[3])
 	assert_eq(cell.caption, "–")
 	assert_eq(cell.tooltip[1], "cybersyn-gui.section-paused-no-signals")
 	-- Read, but its own input is empty or the combinator is off: the station combinator is not to blame.
 	local empty = F.naphtha(20)
 	empty.sources[3].mask, empty.sources[3].read, empty.sources[3].ok = nil, true, true
-	empty.rows = nil
+	F.rows(empty)
 	cell = stations_tab.network_cell(collector.inventories(empty)[3])
 	assert_eq(cell.caption, "–")
 	assert_eq(cell.tooltip[1], "cybersyn-gui.stations-inventory-empty-tooltip")
 	local off = F.naphtha(20)
 	off.sources[3].mask, off.sources[3].read, off.sources[3].ok = nil, true, false
-	off.rows = nil
+	F.rows(off)
 	local off_cell = stations_tab.network_cell(collector.inventories(off)[3])
 	assert_eq(off_cell.tooltip[1], "cybersyn-gui.stations-inventory-off-tooltip")
 	assert_true(off_cell.sig ~= cell.sig, "the reason is part of the sig")
@@ -683,18 +682,18 @@ test("marker: an inventory row names its combinator, links it and says when its 
 		{ "cybersyn-gui.stations-inventory-network", "[virtual-signal=signal-A]", "3" } })
 	assert_nil(serpent.line(m.tooltip):find("relative-i-red", 1, true))
 	n.sources[2].failed = true
-	n.rows = nil
+	F.rows(n)
 	local failed = stations_tab.marker(collector.inventories(n)[2])
 	assert_true(serpent.line(failed.tooltip):find("relative-i-red", 1, true) ~= nil)
 	assert_true(failed.sig ~= m.sig)
 	local empty = F.naphtha(20)
 	empty.sources[3].mask, empty.sources[3].read, empty.sources[3].ok = nil, true, true
-	empty.rows = nil
+	F.rows(empty)
 	local e = stations_tab.marker(collector.inventories(empty)[3])
 	assert_eq(e.tooltip[2][4], { "cybersyn-gui.stations-inventory-empty" }, "read, with an empty input: not 'not read'")
 	local paused = F.naphtha(20)
 	paused.sources[3].mask, paused.sources[3].read = nil, false
-	paused.rows = nil
+	F.rows(paused)
 	local pz = stations_tab.marker(collector.inventories(paused)[3])
 	assert_eq(pz.tooltip[2][4], { "cybersyn-gui.stations-inventory-unread" })
 	assert_true(pz.sig ~= e.sig)

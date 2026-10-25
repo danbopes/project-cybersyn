@@ -258,7 +258,9 @@ end)
 -- ---------------------------------------------------------------- inventory rows
 
 -- Records in the collector's inventory-row contract, built by hand: each source carries its own lists, priority and
--- network, and collector.inventories derives st.rows from them.
+-- network, and the fixtures fill st.rows from them.
+
+local F = require("inventory_fixtures")
 
 local function fluid(name, order)
 	prototypes.fluid[name] = prototypes.fluid[name]
@@ -279,13 +281,13 @@ local function naphthalene()
 	local s0 = source("station", 0, 0, 1, { ["naphthalene-oil"] = 199134 })
 	local s1 = source("inventory", 1, 0, 3, { ["liquid-fuel"] = 99134 })
 	local s2 = source("inventory", 2, 0, 4, {}, {}, { ["liquid-fuel"] = -866 })
-	return {
+	return F.rows({
 		id = 7, name = "[fluid=naphthalene-oil] Provider", is_p = true, is_r = false, is_stack = false,
 		network_name = "signal-A", network_mask = 1, comb_ok = true, priority = 0,
 		provided = { ["naphthalene-oil"] = 199134, ["liquid-fuel"] = 99134 }, requested = {}, wait = {}, deliveries = {},
 		ignored = { ["liquid-fuel"] = -866 },
 		sources = { s0, s1, s2 },
-	}
+	})
 end
 
 --- A plain requester: Request only, the station combinator on A3, several requests below threshold, and a provide the
@@ -297,12 +299,12 @@ local function plain()
 		["coal"] = { count = -2500, threshold = 2000, active = true },
 	}
 	local provided, ignored = {}, { stone = 52 }
-	return {
+	return F.rows({
 		id = 9, name = "Circuit Requestor", is_p = false, is_r = true, is_stack = false,
 		network_name = "signal-A", network_mask = 3, comb_ok = true, priority = 1,
 		provided = provided, requested = requested, ignored = ignored, wait = {}, deliveries = {},
 		sources = { source("station", 0, 1, 3, provided, requested, ignored) },
-	}
+	})
 end
 
 local function rows_of(st)
@@ -335,7 +337,7 @@ test("rows: inventories, the distinct networks and their mask union", function()
 	assert_eq(t.row_networks(n), { { name = "signal-A", mask = 1 }, { name = "signal-A", mask = 3 }, { name = "signal-A", mask = 4 } })
 	assert_eq(t.rows_union(n), { ["signal-A"] = 7 })
 	n.sources[3].mask = 3
-	n.rows = nil
+	F.rows(n)
 	assert_eq(#t.row_networks(n), 2, "two inventories on one mask are one network")
 	assert_eq(#t.advertised_rows(n), 3, "and still two blocks")
 end)
@@ -424,6 +426,7 @@ test("stop panel: an unserved request names the inventory that asks for it, a pl
 	n.sources[3].requested = { ["liquid-fuel"] = req }
 	-- The station's sum is larger: the line gives the request of the inventory it names.
 	n.requested = { ["liquid-fuel"] = { count = -2866, threshold = 100, active = true } }
+	F.rows(n)
 	local e = { first_tick = 0, reason = REASON_NO_PROVIDER, a = 0, b = 0, n = 1 }
 	local tip = r.unserved_texts({ st = n, name = n.name, network_name = "signal-A" }, { hash = "liquid-fuel", e = e }, 60, 0)
 	local why = serpent.line(tip[4], { comment = false })
@@ -442,6 +445,7 @@ test("stop panel: two inventories on one mask are two blocks", function()
 	local r = relative_mod()
 	local n = naphthalene()
 	n.sources[3].mask = 3
+	F.rows(n)
 	local text = table.concat(captions(r.slots_defs(n)), "\n")
 	local _, count = text:gsub("%[virtual%-signal=signal%-A%]3\n", "")
 	assert_eq(count, 2, text)
@@ -508,7 +512,7 @@ test("stop panel: red S and red I on the heads, from the combinators' display", 
 	assert_true(text:find("[color=1,0.35,0.35]I[/color] cybersyn-gui.source-inventory2", 1, true) ~= nil, text)
 	-- Without the live display, the collector's row.failed decides the I.
 	n.sources[2].failed = true
-	n.rows = nil
+	F.rows(n)
 	text = table.concat(captions(r.slots_defs(n)), "\n")
 	assert_true(text:find("[color=1,0.35,0.35]I[/color] cybersyn-gui.source-inventory1", 1, true) ~= nil, text)
 	local tips = {}

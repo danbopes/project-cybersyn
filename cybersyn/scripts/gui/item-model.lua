@@ -143,22 +143,9 @@ function model.provider_priority(st, row, hash, priority_signal)
 	return row.priority
 end
 
---- A record without inventory rows (built by hand, or from before rows existed) is one station row on its own lists.
---- @param st table
---- @param id uint
---- @return table[]
-local function own_rows(st, id)
-	local mask = st.network_mask
-	return { {
-		st = st, key = id .. "@0", index = 0, unit = 0, kind = "station", priority = st.priority or 0, read = true,
-		network_name = st.network_name, mask = type(mask) == "number" and mask or nil,
-		networks = type(mask) == "table" and mask or nil, provided = st.provided or {}, requested = st.requested or {},
-	} }
-end
-
 --- @class ItemProviderRow
 --- @field id uint
---- @field key string the inventory row's key (collector.row_key, "id@unit"; "id@0" for a record without rows)
+--- @field key string the inventory row's key (collector.row_key, "id@unit")
 --- @field index int the row's inventory index: 0 = station combinator, 1.. = secondary inventories
 --- @field row SnapshotInventory the inventory row it shows
 --- @field multi boolean? the station has more than one inventory row, so the row names its inventory
@@ -217,7 +204,7 @@ end
 --- @param changed uint[]? stations whose records changed since the index was built (the collector's change log)
 --- @param keep ItemKeep? the manager's filters; with them the totals are summed from the rows kept (a station counted
 --- once per side), since the snapshot's totals count every network, surface and station
---- @param rows_of (fun(st: table): table[])? collector.inventories; without it a record's own st.rows
+--- @param rows_of fun(st: table): table[] collector.inventories
 --- @return ItemModel
 function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 	local providers, requesters, trains = {}, {}, {}
@@ -249,7 +236,7 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 	for _, id in ipairs(ids or list) do
 		local st = stations[id]
 		if st then
-			local rows = rows_of and rows_of(st) or st.rows or own_rows(st, id)
+			local rows = rows_of(st)
 			local multi = #rows > 1 or nil
 			local d = st.deliveries and st.deliveries[hash] or 0
 			local first, p_rows, r_rows, p_active, r_active = nil, 0, 0, false, false

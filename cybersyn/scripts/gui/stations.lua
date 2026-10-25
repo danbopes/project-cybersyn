@@ -519,7 +519,6 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	local shown, is_acked = pm.shown_status, diag.is_acked
 	local all, unserved, setup, failing = 0, 0, 0, 0
 	for id, st in pairs(stations) do
-		collector.inventories(st)
 		if passes(st, f) then
 			local s = shown(st.status, id, st.lint, is_acked)
 			status[id] = s
@@ -553,7 +552,6 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 	for i = first, last do
 		local id = ids[i]
 		local st = stations[id]
-		if st then collector.inventories(st) end
 		local old = status[id]
 		local new = st and util.station_passes(st, f) and pm.shown_status(st.status, id, st.lint, diag.is_acked) or nil
 		local old_flags = flags[id] or 0

@@ -199,7 +199,6 @@ end)
 
 test("row_passes / station_passes: each row its own network and items, deliveries on row 0, the station chip", function()
 	local u = util()
-	local collector = H.load("scripts.gui.collector")
 	local st = station({ id = 9, network_mask = 1, requested = {} })
 	st.provided = { ["iron-ore"] = 100 }
 	st.sources = {
@@ -208,7 +207,7 @@ test("row_passes / station_passes: each row its own network and items, deliverie
 		{ kind = "inventory", index = 1, unit = 91, ok = true, priority = 2, network_name = "signal-A", mask = 4,
 			provided = { ["iron-ore"] = 40 }, requested = { coal = { count = -10, threshold = 1, active = true } }, ignored = {} },
 	}
-	local rows = collector.inventories(st)
+	local rows = require("inventory_fixtures").rows(st).rows
 	assert_eq(#rows, 2)
 	local r0, r1 = rows[1], rows[2]
 	assert_true(u.row_passes(r0, { mask = -1 }))

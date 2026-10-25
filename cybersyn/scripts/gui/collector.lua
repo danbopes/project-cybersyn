@@ -1180,37 +1180,16 @@ local function fill_rows(st, sources)
 	for i = #rows, #sources + 1, -1 do rows[i] = nil end
 end
 
---- The station's rows: the station combinator, then each secondary inventory combinator in unit-number
---- order, each with its own lists, priority and network. Collector records carry them from their last pass; a
---- hand-built record (tests) gets them derived from its sources, or one station row from its own lists, and keeps
---- them.
+collector.fill_rows = fill_rows
+
+local NO_ROWS = {}
+
+--- The station's rows from its last pass: the station combinator, then each secondary inventory combinator in
+--- unit-number order, each with its own lists, priority and network.
 --- @param st SnapshotStation
 --- @return SnapshotInventory[]
 function collector.inventories(st)
-	local rows = st.rows
-	if rows then return rows end
-	local sources = st.sources
-	if not sources or not sources[1] then
-		sources = { { kind = "station", index = 0, unit = 0, ok = st.comb_ok ~= false, priority = st.priority or 0,
-			network_mask = st.network_mask } }
-	end
-	for _, src in ipairs(sources) do
-		if src.network_name == nil and src.read ~= false then
-			set_source_network(src, st.network_name, src.network_mask or (src.index == 0 and st.network_mask or nil))
-		end
-		if not src.provided then
-			-- Fresh tables, never a shared empty one: the lists are refilled in place.
-			if src.index == 0 and st.provided then
-				src.provided, src.requested, src.ignored = st.provided, st.requested or {}, st.ignored or {}
-			else
-				src.provided, src.requested, src.ignored = {}, {}, {}
-			end
-		end
-	end
-	rows = {}
-	st.rows = rows
-	fill_rows(st, sources)
-	return rows
+	return st.rows or NO_ROWS
 end
 
 local function by_unit(a, b) return (a.unit_number or 0) < (b.unit_number or 0) end
