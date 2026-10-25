@@ -1149,13 +1149,7 @@ local send_alert_about_missing_train_icon = { name = MISSING_TRAIN_NAME, type = 
 ---@return LocalisedString message as sent, for remove_alert_about_missing_train
 function send_alert_about_missing_train(r_stop, p_stop, message)
 	local text = { message, r_stop.backer_name, p_stop.backer_name }
-	for _, player in pairs(r_stop.force.players) do
-		player.add_custom_alert(
-			r_stop,
-			send_alert_about_missing_train_icon,
-			text,
-			true)
-	end
+	r_stop.force.add_custom_alert(r_stop, send_alert_about_missing_train_icon, text, true)
 	return text
 end
 
@@ -1164,10 +1158,8 @@ end
 ---@param stop LuaEntity
 ---@param message LocalisedString? as it was sent
 function remove_alert_about_missing_train(stop, message)
-	for _, player in pairs(stop.force.players) do
-		player.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
-			message = message })
-	end
+	stop.force.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
+		message = message })
 end
 
 ---@param train LuaTrain
