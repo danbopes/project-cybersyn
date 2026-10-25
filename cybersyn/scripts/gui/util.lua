@@ -692,6 +692,8 @@ local switching = {}
 
 --- Runs `move`, which changes what player.opened is (a link opening an entity, the action dialog, show on map), so
 --- that the manager's on_gui_closed and on_gui_opened handlers know the switch is the mod's and not the player's.
+--- Desync-safe: the flag is set and cleared within one call on every peer. Only the mod's own moves that the close and
+--- open handlers must ignore go through here; those handlers' own re-takes of player.opened stay outside it.
 --- @param player LuaPlayer
 --- @param move fun()
 function util.switch_opened(player, move)
@@ -1497,7 +1499,8 @@ function util.set_refresh_toggles(fn)
 	refresh_toggles_fn = fn
 end
 
--- The zoom a click on a vanilla map pin lands on (measured): show on map lands in the same view.
+-- The zoom a click on a vanilla map pin lands on, measured: re-measure if the pin's zoom changes. It must be written
+-- after centered_on, which enters remote view and resets the zoom.
 local SHOW_ZOOM = 1.5
 
 --- Shift-click on a link: the view a click on the target's map pin gives (remote view following the target at the

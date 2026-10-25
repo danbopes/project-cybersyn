@@ -109,6 +109,7 @@ logic.GROUP_NAME_MAX = 200
 local ROW_PADDING, COLUMN_GAP = 20, 8
 
 --- The Trains table's columns in display order: {key, width, min = shrinkable down to}; the status takes the rest.
+--- Widths are fixed because a Factorio table sizes columns to content and cannot fit a width and hide the overflow.
 logic.TRAIN_WIDTHS = {
 	{ "train_id", 52 },
 	{ "train_status", 0 },
