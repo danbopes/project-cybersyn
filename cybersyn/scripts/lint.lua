@@ -901,7 +901,7 @@ end
 --- @param s LintState
 local function resolve_acks(s)
 	local acks = storage.acks
-	if not (acks and acks.lint and next(acks.lint)) then return end
+	if not (acks and next(acks.lint)) then return end
 	local ended = {}
 	for key, by in pairs(acks.lint) do
 		local mask = key < 0 and s.train_bits[-key] or s.bits[key] or 0
@@ -1095,7 +1095,7 @@ end
 --- @param checks int[]
 local function end_acks(unit, msgs, checks)
 	local acks = storage.acks
-	if not (acks and acks.lint and acks.lint[unit]) then return end
+	if not (acks and acks.lint[unit]) then return end
 	for _, check in ipairs(checks) do
 		local still = false
 		for m in pairs(msgs) do
@@ -1379,7 +1379,7 @@ end
 --- Ends the acknowledgements of registry checks the registry no longer has (after a seed).
 local function resolve_registry_acks()
 	local acks = storage.acks
-	if not (acks and acks.lint and next(acks.lint)) then return end
+	if not (acks and next(acks.lint)) then return end
 	local entries = registry().entries
 	local ended = {}
 	for key, by in pairs(acks.lint) do

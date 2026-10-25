@@ -30,7 +30,7 @@
 ---@field public stats Stats? delivery throughput and request-wait aggregates for the manager Overview, see scripts/stats.lua
 ---@field public diag DiagState? dispatcher diagnostics, nil while the cybersyn-diagnostics setting is off, see scripts/diag.lua
 ---@field public diag_serial int? the last DiagState.id handed out; it outlives the state, so a new state never reuses an id
----@field public acks {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}, lint_version: int?}? acknowledgements; kept while diagnostics are off
+---@field public acks {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: {[0]: DiagAck}}, lint: {[uint]: {[int]: DiagAck}}, n: int, lint_version: int?}? acknowledgements (diag.acks); kept while diagnostics are off
 ---@field public lint_registry LintRegistry? setup findings per stop and combinator, see scripts/lint.lua
 ---@field public alert_dedupe {cycle: int, sent: int, keys: {[string]: NoTrainAlert}}? per-(item, network) no-train alerts of the planner cycle, see central-planning.lua
 

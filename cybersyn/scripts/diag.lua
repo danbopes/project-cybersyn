@@ -609,11 +609,12 @@ end
 --- @field until_tick uint? nil = until the reason changes
 --- @field reason int? confirmed reason when acknowledged (requests)
 
---- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: DiagAck}, lint: {[uint]: {[int]: DiagAck}}, lint_version: int?} lint_version counts every change to the lint acknowledgements
+--- One shape for every kind: acks[kind][id][sub], sub = the item hash (request), the check (lint) or 0 (station).
+--- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: {[0]: DiagAck}}, lint: {[uint]: {[int]: DiagAck}}, n: int, lint_version: int?} n counts the acknowledgements; lint_version counts every change to the lint ones
 function diag.acks()
 	local acks = storage.acks
 	if not acks then
-		acks = { request = {}, station = {}, lint = {} }
+		acks = { request = {}, station = {}, lint = {}, n = 0 }
 		storage.acks = acks
 	end
 	return acks
@@ -621,22 +622,13 @@ end
 
 local ACK_KIND = { request = DIAG_ACK_REQUEST, station = DIAG_ACK_STATION, lint = DIAG_ACK_LINT }
 
---- Calls fn(kind_code, id, sub, ack, parent_table, key) for every acknowledgement.
+--- Calls fn(kind_code, id, sub, ack) for every acknowledgement.
 local function each_ack(acks, fn)
-	for id, by in pairs(acks.request) do
-		for hash, ack in pairs(by) do fn(DIAG_ACK_REQUEST, id, hash, ack, by, hash) end
+	for code, name in ipairs(DIAG_ACK_KINDS) do
+		for id, by in pairs(acks[name]) do
+			for sub, ack in pairs(by) do fn(code, id, sub, ack) end
+		end
 	end
-	for id, ack in pairs(acks.station) do fn(DIAG_ACK_STATION, id, nil, ack, acks.station, id) end
-	for id, by in pairs(acks.lint) do
-		for bit, ack in pairs(by) do fn(DIAG_ACK_LINT, id, bit, ack, by, bit) end
-	end
-end
-
---- @return int
-local function ack_total(acks)
-	local n = 0
-	each_ack(acks, function() n = n + 1 end)
-	return n
 end
 
 local function log_ack(verb, kind, id, sub, player_index, until_tick)
@@ -648,7 +640,7 @@ end
 local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 	local d = storage.diag
 	if not d then return end
-	local item = kind == DIAG_ACK_REQUEST and sub and intern(d, sub) or 0
+	local item = kind == DIAG_ACK_REQUEST and intern(d, sub) or 0
 	-- Lint acknowledgements of trains are keyed by the negated train id (lint.subject_key): write it where the
 	-- train's own lint events put it.
 	local train, station = 0, id
@@ -658,16 +650,26 @@ local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 end
 
 --- Removes one acknowledgement and writes the unacknowledged event.
-local function end_ack(kind, id, sub, parent, key, cause, player_index)
-	parent[key] = nil
+--- @param kind int DIAG_ACK_*
+local function end_ack(kind, id, sub, cause, player_index)
 	local acks = storage.acks
-	if kind == DIAG_ACK_REQUEST and next(parent) == nil then acks.request[id] = nil end
-	if kind == DIAG_ACK_LINT then
-		if next(parent) == nil then acks.lint[id] = nil end
-		acks.lint_version = (acks.lint_version or 0) + 1
-	end
+	local t = acks[DIAG_ACK_KINDS[kind]]
+	local by = t[id]
+	by[sub] = nil
+	if next(by) == nil then t[id] = nil end
+	acks.n = acks.n - 1
+	if kind == DIAG_ACK_LINT then acks.lint_version = (acks.lint_version or 0) + 1 end
 	ack_event(DIAG_KIND_UNACKNOWLEDGED, kind, id, sub, player_index, 0, cause)
 	log_ack("unacknowledged", kind, id, sub, player_index, nil)
+end
+
+--- The stored acknowledgement, expired or not.
+--- @param kind "request"|"station"|"lint"
+--- @return DiagAck?
+local function find_ack(kind, id, sub)
+	local acks = storage.acks
+	local by = acks and acks[kind][id]
+	return by and by[sub or 0]
 end
 
 --- @param stop LuaEntity?
@@ -688,13 +690,17 @@ end
 function diag.ack(kind, id, sub, player_index, until_tick, reason)
 	local code = ACK_KIND[kind]
 	if not code then error("unknown acknowledgement kind " .. tostring(kind)) end
+	sub = sub or 0
 	local acks = diag.acks()
-	if ack_total(acks) >= ACK_CAP and not diag.is_acked(kind, id, sub) then
-		local oldest
-		each_ack(acks, function(k, i, s, ack, parent, key)
-			if not oldest or ack.tick < oldest[4].tick then oldest = { k, i, s, ack, parent, key } end
-		end)
-		end_ack(oldest[1], oldest[2], oldest[3], oldest[5], oldest[6], DIAG_ACK_END_EXPIRED, nil)
+	if not find_ack(kind, id, sub) then
+		if acks.n >= ACK_CAP then
+			local oldest
+			each_ack(acks, function(k, i, s, ack)
+				if not oldest or ack.tick < oldest[4].tick then oldest = { k, i, s, ack } end
+			end)
+			end_ack(oldest[1], oldest[2], oldest[3], DIAG_ACK_END_EXPIRED, nil)
+		end
+		acks.n = acks.n + 1
 	end
 	local d = storage.diag
 	if code == DIAG_ACK_REQUEST and reason == nil and d then
@@ -704,16 +710,14 @@ function diag.ack(kind, id, sub, player_index, until_tick, reason)
 		reason = e and e.reason or nil
 	end
 	local ack = { player_index = player_index, tick = game.tick, until_tick = until_tick, reason = reason }
-	if code == DIAG_ACK_REQUEST then
-		acks.request[id] = acks.request[id] or {}
-		acks.request[id][sub] = ack
-	elseif code == DIAG_ACK_STATION then
-		acks.station[id] = ack
-	else
-		acks.lint[id] = acks.lint[id] or {}
-		acks.lint[id][sub] = ack
-		acks.lint_version = (acks.lint_version or 0) + 1
+	local t = acks[kind]
+	local by = t[id]
+	if not by then
+		by = {}
+		t[id] = by
 	end
+	by[sub] = ack
+	if code == DIAG_ACK_LINT then acks.lint_version = (acks.lint_version or 0) + 1 end
 	ack_event(DIAG_KIND_ACKNOWLEDGED, code, id, sub, player_index, until_tick or 0, nil)
 	log_ack("acknowledged", code, id, sub, player_index, until_tick)
 	local station = storage.stations and storage.stations[id]
@@ -723,35 +727,15 @@ end
 
 --- @return boolean removed
 function diag.unack(kind, id, sub, player_index)
-	local code = ACK_KIND[kind]
-	local acks = diag.acks()
-	local parent, key
-	if code == DIAG_ACK_REQUEST then
-		parent, key = acks.request[id], sub
-	elseif code == DIAG_ACK_STATION then
-		parent, key = acks.station, id
-	elseif code == DIAG_ACK_LINT then
-		parent, key = acks.lint[id], sub
-	end
-	if not (parent and parent[key]) then return false end
-	end_ack(code, id, sub, parent, key, DIAG_ACK_END_MANUAL, player_index)
+	sub = sub or 0
+	if not find_ack(kind, id, sub) then return false end
+	end_ack(ACK_KIND[kind], id, sub, DIAG_ACK_END_MANUAL, player_index)
 	return true
 end
 
 --- @return DiagAck? the acknowledgement while it holds
 function diag.is_acked(kind, id, sub)
-	local acks = storage.acks
-	if not acks then return nil end
-	local ack
-	if kind == "request" then
-		local by = acks.request[id]
-		ack = by and by[sub]
-	elseif kind == "station" then
-		ack = acks.station[id]
-	elseif kind == "lint" then
-		local by = acks.lint[id]
-		ack = by and by[sub]
-	end
+	local ack = find_ack(kind, id, sub)
 	if ack and ack.until_tick and ack.until_tick <= game.tick then return nil end
 	return ack
 end
@@ -761,20 +745,16 @@ end
 --- @param key int lint.subject_key of the subject
 --- @param check int LINT_*
 function diag.resolve_lint_ack(key, check)
-	local acks = storage.acks
-	local by = acks and acks.lint and acks.lint[key]
-	if by and by[check] then end_ack(DIAG_ACK_LINT, key, check, by, check, DIAG_ACK_END_RESOLVED, nil) end
+	if find_ack("lint", key, check) then end_ack(DIAG_ACK_LINT, key, check, DIAG_ACK_END_RESOLVED, nil) end
 end
 
 --- Drops acknowledgements whose time is up. Runs at every planner cycle start, with or without storage.diag.
 function diag.expire_acks()
 	local acks = storage.acks
-	if not acks or (next(acks.request) == nil and next(acks.station) == nil and next(acks.lint) == nil) then return end
+	if not acks or acks.n == 0 then return end
 	local now = game.tick
-	each_ack(acks, function(kind, id, sub, ack, parent, key)
-		if ack.until_tick and ack.until_tick <= now then
-			end_ack(kind, id, sub, parent, key, DIAG_ACK_END_EXPIRED, nil)
-		end
+	each_ack(acks, function(kind, id, sub, ack)
+		if ack.until_tick and ack.until_tick <= now then end_ack(kind, id, sub, DIAG_ACK_END_EXPIRED, nil) end
 	end)
 end
 
@@ -782,9 +762,7 @@ end
 --- @param hash string
 --- @param cause int DIAG_ACK_END_*
 local function end_request_ack(r_id, hash, cause)
-	local acks = storage.acks
-	local by = acks and acks.request[r_id]
-	if by and by[hash] then end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, cause, nil) end
+	if find_ack("request", r_id, hash) then end_ack(DIAG_ACK_REQUEST, r_id, hash, cause, nil) end
 end
 
 -- ---------------------------------------------------------------- unserved state
@@ -885,13 +863,7 @@ local function confirm(d, e, r_id, ix, reason, now)
 		e.suppressed_until = nil
 		diag.event(d, DIAG_KIND_UNSERVED_REASON, reason_sev(reason), reason, 0, 0, r_id, e.p_station_id, ix, e.a, e.b)
 	end
-	local acks = storage.acks
-	local by = acks and acks.request[r_id]
-	if by then
-		local hash = d.item_hash[ix]
-		local ack = by[hash]
-		if ack then end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, DIAG_ACK_END_REASON_CHANGED, nil) end
-	end
+	end_request_ack(r_id, d.item_hash[ix], DIAG_ACK_END_REASON_CHANGED)
 	if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
 end
 
@@ -933,14 +905,12 @@ function diag.fail(d, r_id, hash, reason, a, b, p_id, rej, lost_to)
 		if NO_TRAIN_REASONS[reason] then stats.record_no_train_failure() end
 		-- The key may have been swept or diagnostics turned off since the acknowledgement: it holds only while the
 		-- reason is the one acknowledged, and one taken without a known reason binds to this one.
-		local acks = storage.acks
-		local by = acks and acks.request[r_id]
-		local ack = by and by[hash]
+		local ack = find_ack("request", r_id, hash)
 		if ack then
 			if ack.reason == nil then
 				ack.reason = reason
 			elseif ack.reason ~= reason then
-				end_ack(DIAG_ACK_REQUEST, r_id, hash, by, hash, DIAG_ACK_END_REASON_CHANGED, nil)
+				end_ack(DIAG_ACK_REQUEST, r_id, hash, DIAG_ACK_END_REASON_CHANGED, nil)
 			end
 		end
 	else
@@ -1054,11 +1024,13 @@ function diag.station_removed(station_id)
 	end
 	local acks = storage.acks
 	if acks then
-		acks.request[station_id] = nil
-		acks.station[station_id] = nil
-		if acks.lint[station_id] then
-			acks.lint[station_id] = nil
-			acks.lint_version = (acks.lint_version or 0) + 1
+		for _, name in ipairs(DIAG_ACK_KINDS) do
+			local by = acks[name][station_id]
+			if by then
+				for _ in pairs(by) do acks.n = acks.n - 1 end
+				acks[name][station_id] = nil
+				if name == "lint" then acks.lint_version = (acks.lint_version or 0) + 1 end
+			end
 		end
 	end
 end

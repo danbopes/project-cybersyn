@@ -375,6 +375,7 @@ test("station_removed: entries, counters and acknowledgements of the station go"
 	assert_eq(d.counts, { [REASON_NO_PROVIDER] = 1 })
 	assert_nil(storage.acks.station[4])
 	assert_nil(storage.acks.request[4])
+	assert_eq(storage.acks.n, 0)
 end)
 
 test("fleet_size: every Cybersyn train per network, each-network masks too, once per cycle", function()
@@ -617,6 +618,7 @@ test("acks: expiry by time, by a confirmed reason change, on service; events and
 	assert_eq(#acked, 4)
 	assert_eq({ acked[1].station, acked[1].station2, acked[1].a, acked[1].item }, { 1, 3, 1000, 1 })
 	assert_true(#H.logged >= 8)
+	assert_eq(storage.acks.n, 0, "every acknowledgement ended")
 end)
 
 test("acks: survive diagnostics off, capped at 1,024 with the oldest dropped", function()
@@ -631,13 +633,15 @@ test("acks: survive diagnostics off, capped at 1,024 with the oldest dropped", f
 	local n = 0
 	for _ in pairs(storage.acks.station) do n = n + 1 end
 	assert_eq(n, diag.ACK_CAP - 1)
+	assert_eq(storage.acks.n, diag.ACK_CAP)
 	assert_nil(storage.acks.station[1])
 	assert_not_nil(storage.acks.request[77].coal)
 	assert_nil(diag.is_acked("request", 77, "coal").reason)
 	-- replacing an existing acknowledgement does not evict another
 	diag.ack("station", 2, nil, 1, 9000)
 	assert_not_nil(storage.acks.station[3])
-	assert_eq(storage.acks.station[2].until_tick, 9000)
+	assert_eq(storage.acks.station[2][0].until_tick, 9000)
+	assert_eq(storage.acks.n, diag.ACK_CAP)
 end)
 
 test("alerts: one row per entity and alert until it changes or 10 minutes pass", function()
