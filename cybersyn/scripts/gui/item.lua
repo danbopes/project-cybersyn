@@ -911,11 +911,7 @@ function item.build(map_data, player_data, hash)
 	-- for both (budget: 2 ms per update). The header's totals follow with the rows, so header and rows always
 	-- show the same pass (only a drill-down that never showed a header gets it at once).
 	if not refreshed or not cache.header_sig then render_header(player_data, cache) end
-	if refreshed then
-		cache.rows_pending = true
-		return true
-	end
-	cache.rows_pending = nil
+	if refreshed then return true end
 	local layout = player_data.layout
 	local total = layout.rows_by_tab[TAB]
 
