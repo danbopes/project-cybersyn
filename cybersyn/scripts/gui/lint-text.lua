@@ -3,6 +3,7 @@
 -- and the side of a station a finding predicts the dispatcher's reason for. problems-model keeps the pure parts.
 
 local util = require("scripts.gui.util")
+local rich_text = require("scripts.gui.rich-text")
 local lint = require("scripts.lint")
 local pm = require("scripts.gui.problems-model")
 
@@ -12,7 +13,7 @@ local lint_text = {}
 --- @return string
 local function item_icon(hash)
 	if not hash then return "" end
-	return item_rich_text(unhash_signal(hash))
+	return rich_text.of_hash(hash)
 end
 
 --- @param hash string?
@@ -24,7 +25,7 @@ local function is_fluid(hash)
 end
 
 --- @type ProblemsEnv
-lint_text.ENV = { item = item_icon, network = network_icon, is_fluid = is_fluid, duration = util.short_duration,
+lint_text.ENV = { item = item_icon, network = rich_text.network_icon, is_fluid = is_fluid, duration = util.short_duration,
 	count = format_signal_count }
 
 -- Captions and tooltips that depend only on the check, the side of the station it predicts for and the finding's

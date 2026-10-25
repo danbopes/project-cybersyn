@@ -11,6 +11,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local rich_text = require("scripts.gui.rich-text")
 local collector = require("scripts.gui.collector")
 local manager = require("scripts.gui.manager")
 local trains_tab = require("scripts.gui.trains")
@@ -148,7 +149,7 @@ end
 local function network_rich(name)
 	if not name then return { "cybersyn-gui.station-no-network" } end
 	if name == NETWORK_EACH then return { "cybersyn-gui.network-each" } end
-	local icon = network_icon(name)
+	local icon = rich_text.network_icon(name)
 	if icon == name then return name end
 	return icon .. " " .. name
 end
@@ -174,7 +175,7 @@ local HEAD_NETWORKS = 12
 local function networks_caption(nets)
 	local parts = {}
 	for i = 1, math.min(#nets, HEAD_NETWORKS) do
-		parts[i] = network_icon_with(nets[i].name, collector.mask_label(nets[i].mask))
+		parts[i] = rich_text.network_icon_with(nets[i].name, collector.mask_label(nets[i].mask))
 	end
 	local caption = table.concat(parts, " · ")
 	if #nets > HEAD_NETWORKS then caption = caption .. " +" .. (#nets - HEAD_NETWORKS) end
@@ -982,7 +983,7 @@ local function not_advertised(ignored, reason)
 	local parts = {}
 	for i = 1, math.min(#hashes, NOT_ADVERTISED_SHOWN) do
 		local hash = hashes[i]
-		parts[i] = util.rich_text_from_signal(util.signalid_from_hash(hash)) .. format_signal_count(ignored[hash])
+		parts[i] = rich_text.of_hash(hash) .. format_signal_count(ignored[hash])
 	end
 	local icons = table.concat(parts, " ")
 	if #hashes > NOT_ADVERTISED_SHOWN then icons = icons .. " +" .. (#hashes - NOT_ADVERTISED_SHOWN) end

@@ -10,6 +10,7 @@
 
 local format = require("__flib__.format")
 local diag = require("scripts.diag")
+local rich_text = require("scripts.gui.rich-text")
 local logic = require("scripts.gui.tab-logic")
 local utext = require("scripts.gui.unserved-text")
 
@@ -1177,7 +1178,7 @@ function model.chat_tags(train_unit, stop_unit, gps, item)
 	local parts = {}
 	if train_unit then parts[#parts + 1] = "[train=" .. train_unit .. "]" end
 	if stop_unit then parts[#parts + 1] = "[train-stop=" .. stop_unit .. "]" end
-	if item then parts[#parts + 1] = item_rich_text(unhash_signal(item)) end
+	if item then parts[#parts + 1] = rich_text.of_hash(item) end
 	if gps then
 		parts[#parts + 1] = string.format("[gps=%d,%d,%s]", math.floor(gps.x), math.floor(gps.y), gps.surface)
 	end

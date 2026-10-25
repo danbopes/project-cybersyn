@@ -47,35 +47,11 @@ test("network_text and get_network_mask", function()
 	assert_eq(get_network_mask({ network_name = NETWORK_EACH, network_mask = {} }, "signal-B"), 0)
 end)
 
-test("network_icon: signal, item and fluid icons; an unknown name as it is", function()
-	assert_eq(network_icon("signal-A"), "[virtual-signal=signal-A]")
-	assert_eq(network_icon("coal"), "[item=coal]")
-	assert_eq(network_icon("water"), "[fluid=water]")
-	assert_eq(network_icon("no-such-signal"), "no-such-signal")
-	assert_eq(network_icon(nil), "?")
-	-- Memoised: a second call returns the same string.
-	assert_eq(network_icon("signal-A"), "[virtual-signal=signal-A]")
-end)
-
 test("entity_richtext: a stop tag for any train stop, a gps tag and the name otherwise", function()
 	assert_eq(entity_richtext({ type = "train-stop", name = "modded-stop", unit_number = 5, valid = true }), "[train-stop=5]")
 	local comb = { type = "arithmetic-combinator", valid = true, position = { x = 1.5, y = -2 },
 		surface = { name = "nauvis" }, localised_name = { "entity-name.cybersyn-combinator" } }
 	assert_eq(entity_richtext(comb), { "", "[gps=1.5,-2,nauvis]", " ", { "entity-name.cybersyn-combinator" } })
-end)
-
-test("network_icon_with: an unknown name keeps a space before its mask", function()
-	assert_eq(network_icon_with("signal-A", "3"), "[virtual-signal=signal-A]3")
-	assert_eq(network_icon_with("no-such-signal", "3"), "no-such-signal 3")
-	assert_eq(network_icon_with("no-such-signal", ""), "no-such-signal")
-end)
-
-test("item_rich_text: quality only when not normal, fluids never", function()
-	assert_eq(item_rich_text("iron-plate"), "[item=iron-plate]")
-	assert_eq(item_rich_text("iron-plate", "normal"), "[item=iron-plate]")
-	assert_eq(item_rich_text("iron-plate", "rare"), "[item=iron-plate,quality=rare]")
-	assert_eq(item_rich_text("water"), "[fluid=water]")
-	assert_eq(item_rich_text(unhash_signal("iron-plate|legendary")), "[item=iron-plate,quality=legendary]")
 end)
 
 test("gps_text: an entity's position, empty for an invalid one", function()

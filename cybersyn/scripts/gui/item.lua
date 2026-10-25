@@ -10,6 +10,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local rich_text = require("scripts.gui.rich-text")
 local collector = require("scripts.gui.collector")
 local diag = require("scripts.diag")
 local pm = require("scripts.gui.problems-model")
@@ -396,9 +397,9 @@ local function row_network_label(row)
 	local name = row.network_name
 	if not name then return nil end
 	if name == NETWORK_EACH then
-		return network_icon_with(name, "×" .. (row.networks and table_size(row.networks) or 0))
+		return rich_text.network_icon_with(name, "×" .. (row.networks and table_size(row.networks) or 0))
 	end
-	return network_icon_with(name, row.mask and tostring(row.mask) or "")
+	return rich_text.network_icon_with(name, row.mask and tostring(row.mask) or "")
 end
 
 --- What the row's network texts depend on: the station's network, or for a station with several inventory rows the

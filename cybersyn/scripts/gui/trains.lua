@@ -10,6 +10,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local rich_text = require("scripts.gui.rich-text")
 local templates = require("scripts.gui.templates")
 local collector = require("scripts.gui.collector")
 local sizing = require("scripts.gui.sizing")
@@ -830,7 +831,7 @@ local function cargo_caption(tr)
 	local icons = {}
 	for _, item in ipairs(tr.manifest) do
 		if #icons >= 3 then break end
-		icons[#icons + 1] = item_rich_text(item.name, item.quality)
+		icons[#icons + 1] = rich_text.item(item.name, item.quality)
 	end
 	if #icons == 0 then return nil end
 	if #tr.manifest > 3 then icons[#icons + 1] = "+" .. (#tr.manifest - 3) end

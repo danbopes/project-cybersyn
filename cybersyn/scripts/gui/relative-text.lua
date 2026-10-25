@@ -4,6 +4,7 @@
 
 local format = require("__flib__.format")
 local logic = require("scripts.gui.tab-logic")
+local rich_text = require("scripts.gui.rich-text")
 
 local band = bit32.band
 local bor = bit32.bor
@@ -311,14 +312,14 @@ function text.row_network(row)
 		local list = sorted_nets(nets)
 		local parts = {}
 		for i = 1, math.min(#list, EACH_SHOWN) do
-			parts[i] = network_icon_with(list[i].name, collector.mask_label(list[i].mask))
+			parts[i] = rich_text.network_icon_with(list[i].name, collector.mask_label(list[i].mask))
 		end
 		if #list > EACH_SHOWN then parts[#parts + 1] = "+" .. (#list - EACH_SHOWN) end
 		return table.concat(parts, " ")
 	end
 	local name, mask = row.network_name, row.mask
 	if not name or name == NETWORK_EACH or mask == nil then return "" end
-	return network_icon_with(name, collector.mask_label(mask))
+	return rich_text.network_icon_with(name, collector.mask_label(mask))
 end
 
 --- "Inventory 2 · priority 5": the stop panel's block head, and the start of every text that names a row.

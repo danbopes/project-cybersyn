@@ -7,6 +7,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local rich_text = require("scripts.gui.rich-text")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
 local diag = require("scripts.diag")
@@ -805,7 +806,7 @@ local function render_fleet_tile(refs, cache, model)
 	set_line(refs, cache, "fleet", 2, "fail", { "cybersyn-gui.overview-fleet-failures" }, red_if(f.failures, count_text(f.failures)))
 	set_line(refs, cache, "fleet", 3, f.network and "net" or "worst",
 		{ f.network and "cybersyn-gui.overview-fleet-network-filtered" or "cybersyn-gui.overview-fleet-worst" },
-		f.worst and network_icon(f.worst) or NO_VALUE)
+		f.worst and rich_text.network_icon(f.worst) or NO_VALUE)
 	local parts = {}
 	for i, name in ipairs(f.names) do parts[i] = name .. ":" .. f.mins[name] .. ":" .. (f.current[name] or 0) end
 	local busy = f.busy and string.format("%.1f", f.busy) or "-"
@@ -821,7 +822,7 @@ local function render_fleet_tile(refs, cache, model)
 				tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-more-networks", tostring(#f.names - MAX_TOOLTIP_NETWORKS) } }
 				break
 			end
-			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-fleet-network", network_icon(name),
+			tooltip[#tooltip + 1] = { "", "\n", { "cybersyn-gui.overview-fleet-network", rich_text.network_icon(name),
 				format.number(f.mins[name]), format.number(f.current[name] or 0) } }
 		end
 	end
