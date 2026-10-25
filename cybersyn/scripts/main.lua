@@ -944,10 +944,8 @@ local function register_tick()
 	add(analytics.SAMPLE_TICKS, function()
 		analytics.tick(storage)
 	end)
-	local manager_nth
 	if mod_settings.manager_ups > DELTA then
-		manager_nth = ceil(60 / mod_settings.manager_ups) --[[@as uint]]
-		add(manager_nth, function()
+		add(ceil(60 / mod_settings.manager_ups) --[[@as uint]], function()
 			manager.tick(storage)
 		end)
 	else
@@ -957,16 +955,9 @@ local function register_tick()
 			if m and m.repair_job then manager.job_tick() end
 		end)
 	end
-	-- Registered whatever the settings say, so an export also finishes while manager updates are off; a no-op without
-	-- a queued job. A chunk never shares a tick with a manager update (collector step plus render) unless every export
-	-- tick is a manager tick.
-	local skip_nth = manager_nth and manager_nth > 1 and diag.EXPORT_NTH % manager_nth ~= 0 and manager_nth or nil
 	-- The opt-in HUD line refreshes on its own cadence; a no-op loop over the players when nobody has it on.
 	add(manager.HUD_TICKS, manager.hud_tick)
-	add(diag.EXPORT_NTH, function()
-		if skip_nth and game.tick % skip_nth == 0 then return end
-		manager.export_tick()
-	end)
+	add(REPAIR_JOB_NTH, manager.confirm_tick)
 	-- The manager's opening boost and kept-snapshot release run every tick whatever the settings; the
 	-- handler reads only storage, so a joining client registers the same one. Added last: on an nth shared with the
 	-- planner or the manager update it runs after them.

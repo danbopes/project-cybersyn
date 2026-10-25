@@ -27,7 +27,6 @@ local text = require("scripts.gui.unserved-text")
 --- @field log_badge LogBadgeState?
 --- @field log_summary LogSummaryState? only while Summary is on
 --- @field log_seen {state: string, seq: uint}? newest seq the player had the Log on screen for, in which diagnostics state (the badge counts errors after it)
---- @field log_export {path: string, state: "running"|"done"|"off", rows: int?, chunks: int?, first_tick: uint?, last_tick: uint?}? the player's latest export
 --- @field log_widths {station: int, message: int, rows: int}? cell widths for the current layout
 --- @field log_caps {[string]: any}? signatures of the subheader and caption texts last written
 --- @field log_expanded {[number]: true}? lint passes (model.pass_key) whose rows the player opened
@@ -423,8 +422,6 @@ function log_tab.create()
 					{ type = "label", name = "log_header", style = "subheader_caption_label", caption = "",
 						style_mods = { horizontally_squashable = true } },
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
-					{ type = "label", name = "log_export_note", style = "cybersyn_subheader_note", visible = false,
-						style_mods = { maximal_width = 420, horizontally_squashable = true } },
 					{ type = "label", name = "log_status", style = "cybersyn_subheader_note", caption = "" },
 				},
 				{
@@ -1098,39 +1095,6 @@ local function header_line(d)
 		covering .. "|" .. basic_covering .. "|" .. cycle_ticks .. "|" .. per
 end
 
---- The export note in the subheader: "Exporting… n %", then where the file went.
---- @param player_data PlayerData
-function log_tab.refresh_export_note(player_data)
-	local refs = player_data.refs
-	local note = refs and refs.log_export_note
-	if not (note and note.valid) then return end
-	local ex = player_data.log_export
-	local job
-	if ex and ex.state == "running" then
-		for _, j in ipairs(diag.export_jobs()) do
-			if j.path == ex.path then job = j end
-		end
-	end
-	local sig, caption, tooltip
-	if job then
-		local percent = math.floor(diag.export_progress(job) * 100)
-		sig = "run" .. percent
-		caption = { "cybersyn-gui.log-exporting", tostring(percent) }
-		tooltip = { "cybersyn-gui.log-export-path", job.path }
-	elseif ex and ex.state ~= "running" then
-		sig = ex.state .. ex.path .. tostring(ex.rows)
-		local key = ex.state == "off" and "cybersyn-gui.log-exported-off"
-			or ex.state == "server" and "cybersyn-gui.log-exported-server" or "cybersyn-gui.log-exported"
-		caption = { key, format.number(ex.rows or 0), ex.path }
-		tooltip = { "cybersyn-gui.log-export-path", ex.path }
-	else
-		sig = ""
-	end
-	local shown = sig ~= ""
-	if note.visible ~= shown then note.visible = shown end
-	if shown then set_caption(player_data, note, sig, caption, tooltip) end
-end
-
 --- @param player_data PlayerData
 --- @param cs LogCountsState
 --- @param building boolean
@@ -1369,51 +1333,20 @@ function log_tab.build(map_data, player_data)
 
 	local header, header_sig = header_line(d)
 	set_caption(player_data, refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
-	log_tab.refresh_export_note(player_data)
 	if seen then log_tab.mark_seen(player_data, seen) end
 end
 
 -- ---------------------------------------------------------------- export, chat print
 
---- Ends of the export jobs, from diag (also when diagnostics are turned off with a job queued).
-diag.set_export_listener(function(job, cause)
-	local manager_data = storage.manager
-	if not manager_data then return end
-	-- By path, not player index: an export for a player who is not connected is written on the server (index 0).
-	for _, player_data in pairs(manager_data.players) do
-		local ex = player_data.log_export
-		if ex and ex.path == job.path and ex.state == "running" then
-			player_data.log_export = { path = job.path, state = cause == "off" and "off" or (job.server and "server" or "done"),
-				rows = job.rows, chunks = job.chunks, first_tick = job.first_tick, last_tick = job.last_tick }
-			log_tab.refresh_export_note(player_data)
-		end
-	end
-end)
-
---- The fixed export tick: one export chunk, then the note of whoever started that export.
-function log_tab.export_tick()
-	local job = diag.export_tick()
-	if not job then return end
-	local manager_data = storage.manager
-	if not manager_data then return end
-	for _, player_data in pairs(manager_data.players) do
-		local ex = player_data.log_export
-		if ex and ex.path == job.path and player_data.is_manager_open then log_tab.refresh_export_note(player_data) end
-	end
-end
-
---- Queues an export of what the Log's filter selects, written on the player's machine.
+--- Writes what the Log's filter selects to a CSV file on the player's machine and says where in chat.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 --- @return string? path
 function log_tab.export(player, player_data)
 	local d = storage.diag
 	if not d then return nil end
-	local path = diag.export(player.connected and player.index or 0, model.export_filter(compiled(player_data, d)))
-	if path then
-		player_data.log_export = { path = path, state = "running" }
-		log_tab.refresh_export_note(player_data)
-	end
+	local path, rows = diag.export(player.index, model.export_filter(compiled(player_data, d)))
+	if path then player.print({ "cybersyn-gui.log-exported", format.number(rows), path }) end
 	return path
 end
 

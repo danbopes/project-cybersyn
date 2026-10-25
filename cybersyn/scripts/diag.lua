@@ -35,12 +35,6 @@ local SWEEP_SPARE = 36000
 -- A player editing a schedule changes it several times in a row; one log row per train per this long.
 local EDIT_REPEAT = 600
 local ACK_CAP = 1024
--- A 2,000-row chunk cost 4.1-5.3 ms per update on a 2,030-station base, one chunk over the 5 ms budget.
-local EXPORT_CHUNK = 1000
-local EXPORT_SCAN = 4 * EXPORT_CHUNK
--- Export jobs drain one chunk on this fixed nth tick only (main.lua skips the ticks the manager updates on), so they
--- finish with manager updates or diagnostics off; a prime, so it rarely meets another handler's nth.
-local EXPORT_NTH = 7
 -- Rows a filtered diag.events call examines before it returns with the seq it reached.
 local EVENTS_SCAN = 4096
 
@@ -52,8 +46,6 @@ diag.UNSERVED_CAP = UNSERVED_CAP
 diag.FLAP_TICKS = FLAP_TICKS
 diag.FLAP_WINDOW = FLAP_WINDOW
 diag.ACK_CAP = ACK_CAP
-diag.EXPORT_CHUNK = EXPORT_CHUNK
-diag.EXPORT_NTH = EXPORT_NTH
 diag.EVENTS_SCAN = EVENTS_SCAN
 diag.WAIT_SIGNAL_MIN = WAIT_SIGNAL_MIN
 diag.SWEEP_EVERY = SWEEP_EVERY
@@ -144,7 +136,6 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field cycles int planner cycles started since this state was created (the unserved sweep runs every SWEEP_EVERY)
 --- @field item_served {[int]: uint} item index -> tick create_delivery last served a requester of it
 --- @field next_delivery uint
---- @field export_jobs DiagExportJob[]
 --- @field id int which state this is (seqs restart in a new one)
 --- @field loaded_tick uint when this state was created
 --- @field inherit_cycles int? planner cycle starts seen since creation, while the inherited window is open
@@ -214,7 +205,6 @@ local function new_state()
 		cycles = 0,
 		item_served = {},
 		next_delivery = 0,
-		export_jobs = {},
 		loaded_tick = game.tick,
 		inherit_cycles = 0,
 	}
@@ -247,15 +237,11 @@ local function clear_delivery_ids()
 	end
 end
 
-local detach_exports
-
 --- Brings storage.diag in line with the settings: nil when off, created when missing, the full ring resized.
 --- @return DiagState?
 function diag.apply()
 	local mode = mode_setting()
 	if mode == "off" then
-		local old = storage.diag
-		if old and old.export_jobs[1] then detach_exports(old) end
 		storage.diag = nil
 		return nil
 	end
@@ -1605,23 +1591,6 @@ end
 
 -- ---------------------------------------------------------------- export
 
---- @class DiagExportJob
---- @field player_index uint 0 = the server
---- @field path string relative to script-output
---- @field start_seq uint rows at or below this were gone (or not written yet) when the export started
---- @field next_seq uint rows above this are still to be written
---- @field end_seq uint rows above this were written after the export started
---- @field filter DiagEventFilter?
---- @field rows int written so far
---- @field started boolean the header is out
---- @field chunks int? chunks written so far
---- @field first_tick uint? tick of the first chunk
---- @field last_tick uint? tick of the latest chunk
---- @field rb DiagRing the basic ring the job reads (kept when diagnostics are turned off mid-export)
---- @field rf DiagRing? the full ring, only while full was on when the job started
---- @field item_hash string[]
---- @field off boolean? diagnostics were turned off before the job ended
-
 local HEADER = "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
 
 local STATE_NAMES = {}
@@ -1665,188 +1634,34 @@ local function csv_item(item_hash, ix)
 	return item
 end
 
---- Who hears that an export job ended: fun(job: DiagExportJob, cause: "done"|"off"). Set once at load by the GUI, so
---- every Lua state has the same one.
---- @type fun(job: DiagExportJob, cause: string)?
-local export_listener
-
---- @param fn fun(job: DiagExportJob, cause: string)
-function diag.set_export_listener(fn)
-	export_listener = fn
-end
-
---- Queues an export of everything the rings the Log reads hold now (matching `filter`); a fixed nth tick writes it in
---- chunks.
+--- Writes every row the rings hold now that matches `filter` to one CSV file within the tick: exports are rare, so a
+--- long tick is a fair price for not spreading the write over many.
 --- @param player_index uint? whose machine gets the file; 0 or nil = the server
 --- @param filter DiagEventFilter?
 --- @return string? path relative to script-output, nil while diagnostics are off
+--- @return int rows
 function diag.export(player_index, filter)
 	local d = storage.diag
-	if not d then return nil end
-	-- Two exports in one tick get two files (the first may already be written and gone from the queue).
+	if not d then return nil, 0 end
+	-- Two exports in one tick get two files.
 	local tick = game.tick
 	if d.export_name_tick == tick then
-		d.export_name_n = (d.export_name_n or 1) + 1
+		d.export_name_n = d.export_name_n + 1
 	else
 		d.export_name_tick, d.export_name_n = tick, 1
 	end
 	local path = "cybersyn/diag-" .. tick .. (d.export_name_n > 1 and ("-" .. d.export_name_n) or "") .. ".csv"
-	local rb, rf = d.ring_basic, d.full and d.ring_full or nil
-	local oldest = d.seq
-	for _, r in ipairs({ rb, rf }) do
-		if r.count > 0 then oldest = math.min(oldest, r.seq[at(r, 0)] - 1) end
+	local item_hash = d.item_hash
+	local parts = { HEADER }
+	for _, ev in ipairs(diag.events(filter, 0, math.huge, math.huge)) do
+		local kind = ev.kind
+		parts[#parts + 1] = string.format(LINE, ev.seq, ev.tick, DIAG_KIND_NAMES[kind] or tostring(kind),
+			DIAG_SEV_NAMES[ev.sev] or tostring(ev.sev), code_name(kind, ev.code),
+			kind == DIAG_KIND_LINT and 0 or ev.delivery, ev.train, ev.station, ev.station2, csv_item(item_hash, ev.item),
+			ev.a, ev.b)
 	end
-	d.export_jobs[#d.export_jobs + 1] = {
-		player_index = player_index or 0,
-		path = path,
-		start_seq = oldest,
-		next_seq = oldest,
-		end_seq = d.seq,
-		filter = filter,
-		rows = 0,
-		started = false,
-		rb = rb,
-		rf = rf,
-		item_hash = d.item_hash,
-	}
-	return path
-end
-
---- Share of a job's rows already scanned, 0..1.
---- @param job DiagExportJob
---- @return number
-function diag.export_progress(job)
-	local total = job.end_seq - job.start_seq
-	if total <= 0 then return 1 end
-	return math.max(0, math.min(1, (job.next_seq - job.start_seq) / total))
-end
-
---- The first queued job of a player (0 = the server), if any.
---- @param player_index uint
---- @return DiagExportJob?
-function diag.export_job(player_index)
-	for _, list in ipairs({ storage.diag_export_tail or {}, storage.diag and storage.diag.export_jobs or {} }) do
-		for _, job in ipairs(list) do
-			if job.player_index == player_index then return job end
-		end
-	end
-	return nil
-end
-
---- Every queued job: those that outlived diagnostics first (they drain first), then the current state's.
---- @return DiagExportJob[]
-function diag.export_jobs()
-	local out = {}
-	for _, job in ipairs(storage.diag_export_tail or {}) do out[#out + 1] = job end
-	local d = storage.diag
-	for _, job in ipairs(d and d.export_jobs or {}) do out[#out + 1] = job end
-	return out
-end
-
---- Writes the next chunk of the oldest export job.
---- @return boolean? done nil when there was no job
-function diag.export_step()
-	local list = storage.diag_export_tail
-	if not (list and list[1]) then
-		local d = storage.diag
-		list = d and d.export_jobs
-	end
-	local job = list and list[1]
-	if not job then return nil end
-	-- The player who asked for the file left: the rest would be written to a machine that is gone, so the export
-	-- starts over on the server and says so in the server log and on the Log tab's note.
-	if job.player_index ~= 0 then
-		local player = game.get_player(job.player_index)
-		if not (player and player.connected) then
-			log({ "", "Cybersyn diagnostics: export ", job.path, " for player ", player and player.name or "?",
-				" continues on the server (the player left)" })
-			job.player_index, job.server = 0, true
-			job.next_seq, job.started, job.rows, job.chunks = job.start_seq, false, 0, 0
-		end
-	end
-	local rb, rf = job.rb, job.rf
-	local nf = rf and rf.count or 0
-	-- Formatted straight from the ring columns: a row table per event made a 2,000-row chunk cost ~20 ms.
-	local kb, kf = first_after(rb, job.next_seq), rf and first_after(rf, job.next_seq) or 0
-	local filter, end_seq, item_hash = job.filter, job.end_seq, job.item_hash
-	local parts, n, rows = {}, 0, 0
-	if not job.started then
-		n = 1
-		parts[1] = HEADER
-	end
-	local exhausted, scanned = false, 0
-	-- A selective filter matches few rows, so the scan is bounded as well as the rows written.
-	while rows < EXPORT_CHUNK and scanned < EXPORT_SCAN do
-		local ib = kb < rb.count and at(rb, kb) or nil
-		local iff = kf < nf and at(rf, kf) or nil
-		local r, i
-		if ib and (not iff or rb.seq[ib] < rf.seq[iff]) then
-			r, i, kb = rb, ib, kb + 1
-		elseif iff then
-			r, i, kf = rf, iff, kf + 1
-		else
-			exhausted = true
-			break
-		end
-		local seq = r.seq[i]
-		if seq > end_seq then
-			exhausted = true
-			break
-		end
-		scanned = scanned + 1
-		job.next_seq = seq
-		if matches(r, i, filter) then
-			local kind, code = r.kind[i], r.code[i]
-			n = n + 1
-			parts[n] = string.format(LINE, seq, r.tick[i], DIAG_KIND_NAMES[kind] or tostring(kind),
-				DIAG_SEV_NAMES[r.sev[i]] or tostring(r.sev[i]), code_name(kind, code),
-				kind == DIAG_KIND_LINT and 0 or r.delivery[i], r.train[i],
-				r.station[i], r.station2[i], csv_item(item_hash, r.item[i]), r.a[i], r.b[i])
-			rows = rows + 1
-		end
-	end
-	if not exhausted then exhausted = job.next_seq >= end_seq end
-	helpers.write_file(job.path, table.concat(parts), job.started, job.player_index)
-	job.started = true
-	job.rows = job.rows + rows
-	job.chunks = (job.chunks or 0) + 1
-	job.first_tick = job.first_tick or game.tick
-	job.last_tick = game.tick
-	if exhausted then
-		job.next_seq = end_seq
-		table.remove(list, 1)
-		if list == storage.diag_export_tail and not list[1] then storage.diag_export_tail = nil end
-		if export_listener then export_listener(job, job.off and "off" or "done") end
-	end
-	return exhausted
-end
-
---- One chunk: called from a fixed nth tick registered whatever the settings say (off the manager's own ticks), so an
---- export also finishes while manager updates or diagnostics are off.
---- @return DiagExportJob? job the job the chunk belonged to
-function diag.export_tick()
-	local list = storage.diag_export_tail
-	local job = list and list[1]
-	if not job then
-		local d = storage.diag
-		job = d and d.export_jobs[1]
-	end
-	if not job then return nil end
-	diag.export_step()
-	return job
-end
-
---- Diagnostics are being turned off: queued exports keep their rings and go on draining one chunk per export tick, so
---- no file is left truncated and no tick writes more than one chunk.
---- @param d DiagState
-detach_exports = function(d)
-	local tail = storage.diag_export_tail or {}
-	for _, job in ipairs(d.export_jobs) do
-		job.off = true
-		tail[#tail + 1] = job
-	end
-	d.export_jobs = {}
-	storage.diag_export_tail = tail
+	helpers.write_file(path, table.concat(parts), false, player_index or 0)
+	return path, #parts - 1
 end
 
 -- ---------------------------------------------------------------- migration

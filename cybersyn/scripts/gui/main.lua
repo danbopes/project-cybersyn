@@ -451,9 +451,8 @@ manager_gui.HUD_TICKS = extras.HUD_TICKS
 --- The Refresh allow-lists job while manager updates are off (scripts/main.lua's REPAIR_JOB_NTH handler).
 manager_gui.job_tick = repair.job_tick
 
---- Export jobs drain here only: a fixed nth tick, whatever the manager's update rate, off the manager's own ticks.
-function manager_gui.export_tick()
-	manager.log_tab.export_tick()
+--- A fixed nth tick, whatever the manager's update rate, so an armed confirm button reverts soon after its expiry.
+function manager_gui.confirm_tick()
 	if storage.manager then repair.expire(storage.manager) end
 end
 

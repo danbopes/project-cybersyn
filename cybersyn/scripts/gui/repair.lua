@@ -315,8 +315,8 @@ function repair.tick(manager_data)
 end
 
 --- Redraws expired confirm buttons, and drops their state once the click grace (logic.CONFIRM_GRACE) is over too. Also
---- called on the fixed export tick, so a "Confirm?" goes back within a few ticks of its expiry whatever the manager's
---- update rate (with updates at 0 too); free while no player has a button armed.
+--- called on a fixed nth tick (manager_gui.confirm_tick), so a "Confirm?" goes back within a few ticks of its expiry
+--- whatever the manager's update rate (with updates at 0 too); free while no player has a button armed.
 --- @param manager_data Manager
 function repair.expire(manager_data)
 	if not manager_data.confirm_any then return end
