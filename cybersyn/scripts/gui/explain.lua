@@ -274,7 +274,7 @@ function explain.handle.explain_close(player, pd)
 	explain.close(player, pd)
 end
 
-explain.wrapper = util.wrapper_pd
+explain.wrapper = util.wrapper
 
 gui.add_handlers(explain.handle, explain.wrapper, "cybersyn_explain")
 

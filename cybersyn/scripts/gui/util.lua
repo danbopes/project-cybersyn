@@ -578,23 +578,14 @@ function util.stop_record(id)
 	return nil, nil, nil
 end
 
+--- Every GUI handler's form: `handler(player, player_data, refs, e)`. Panels outside the manager window can fire
+--- before `storage.manager` exists.
 --- @param e {player_index: uint}
 function util.wrapper(e, handler)
 	local player = game.get_player(e.player_index)
-	if not player then return end
-	local player_data = storage.manager.players[e.player_index]
-	if not player_data then return end
+	local player_data = storage.manager and storage.manager.players[e.player_index]
+	if not (player and player_data) then return end
 	handler(player, player_data, player_data.refs, e)
-end
-
---- The three-argument form for panels that live outside the manager window, so they can fire before
---- `storage.manager` exists.
---- @param e {player_index: uint}
-function util.wrapper_pd(e, handler)
-	local player = game.get_player(e.player_index)
-	local pd = storage.manager and storage.manager.players[e.player_index]
-	if not (player and pd) then return end
-	handler(player, pd, e)
 end
 
 --- @param player_data PlayerData

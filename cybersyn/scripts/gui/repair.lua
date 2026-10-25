@@ -254,7 +254,7 @@ local function confirm_click(player, pd, e, what, run)
 end
 repair.confirm_click = confirm_click
 
-function repair.handle.repair_fail_click(player, pd, e)
+function repair.handle.repair_fail_click(player, pd, refs, e)
 	local kind, id = repair.subject(e.element)
 	if kind ~= "train" then return end
 	confirm_click(player, pd, e, "fail delivery", function()
@@ -279,7 +279,7 @@ local function deliveries_text(deliveries)
 	return #keys > 0 and table.concat(keys, ", ") or "–"
 end
 
-function repair.handle.repair_recount_click(player, pd, e)
+function repair.handle.repair_recount_click(player, pd, refs, e)
 	local kind, id = repair.subject(e.element)
 	if kind ~= "stop" then return end
 	if not repair.has_leak(id) then
@@ -344,7 +344,7 @@ end
 --- @type fun(elem: LuaGuiElement): string?, uint?
 repair.subject = function() return nil, nil end
 
-repair.wrapper = util.wrapper_pd
+repair.wrapper = util.wrapper
 
 gui.add_handlers(repair.handle, repair.wrapper, "cybersyn_repair")
 
