@@ -88,6 +88,8 @@ local ALERT_SEVERITY = {
 diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 
 --- @class DiagRing parallel integer columns (see COLUMNS); row `head` is the newest, `count` rows are live
+--- A row is not changed once written, except the train count of a group's schedule edit (diag.schedule_edited); a
+--- reader that copied the row earlier keeps the older count.
 --- @field size int
 --- @field head int
 --- @field count int
