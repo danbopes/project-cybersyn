@@ -23,8 +23,6 @@ local DEFAULT_TAB = "overview_tab"
 -- Tabs whose content gets the banner and subheader, in pane order.
 local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab",
 	"utilization_tab", "delivery_breakdown_tab" }
--- Tabs that ignore the item filter, so they never show its chip.
-local NO_ITEM_CHIP = {}
 -- Tabs that show the station chip but do not apply it: its tooltip says so.
 local STATION_CHIP_IGNORED = { overview_tab = true, utilization_tab = true, delivery_breakdown_tab = true }
 -- Tabs the station-name search applies to.
@@ -493,7 +491,7 @@ function manager.refresh_chips(player_data)
 	if hash then sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
 	for _, tab in ipairs(HEADER_TABS) do
-		local flow = not NO_ITEM_CHIP[tab] and refs[tab .. "_chip_flow"]
+		local flow = refs[tab .. "_chip_flow"]
 		if flow and flow.valid then
 			flow.visible = shown
 			if shown then
