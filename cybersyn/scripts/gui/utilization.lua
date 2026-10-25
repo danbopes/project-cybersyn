@@ -311,7 +311,7 @@ function utilization_tab.build(map_data, player_data)
 	end
 
 	-- The interval's own viewer table decides, not the player's flag: the flag outlives a window rebuilt by reset_player
-	-- and an interval set replaced by analytics.init.
+	-- and an interval set replaced by analytics.migrate.
 	if interval.guis[player.index] then
 		interval.guis[player.index] = refs
 	else

@@ -94,15 +94,11 @@ local function reset_charts(map_data)
 	end
 	data.surface_data = charts.create_surface(SURFACE_NAME)
 	data.breakdown_interval = nil
-	-- The Breakdown tab registers a viewer on this flag alone, so a kept one would leave the new chart without a chunk.
-	for _, pd in pairs(map_data.manager and map_data.manager.players or {}) do
-		pd.breakdown_registered = nil
-	end
 end
 
----Initialize analytics data structure
+---Brings a save's analytics to the current shape, then creates what is missing (analytics.init).
 ---@param map_data MapData
-function analytics.init(map_data)
+function analytics.migrate(map_data)
 	local data = map_data.analytics
 	if data then
 		local series = data.train_utilization
@@ -110,26 +106,31 @@ function analytics.init(map_data)
 			reset_charts(map_data)
 			data.train_utilization = new_interval_set()
 		end
+		-- Series and per-item averages no tab reads.
+		data.failed_dispatches, data.last_failure_tick = nil, nil
+		data.fulfillment_times, data.total_delivery_times = nil, nil
+		data.fulfillment_ema, data.total_time_ema, data.delivery_counts, data.delivery_starts = nil, nil, nil, nil
+	end
+	analytics.init(map_data)
+end
+
+---Creates whatever analytics state is missing.
+---@param map_data MapData
+function analytics.init(map_data)
+	local data = map_data.analytics
+	if data then
 		-- The stored surface_data carries the chunk allocation cursor: a fresh one would place every new chunk at {0,0},
 		-- on top of the charts already there.
 		local surface_data = data.surface_data
 		if not (surface_data and surface_data.surface and surface_data.surface.valid) then
 			surface_data = charts.create_surface(SURFACE_NAME)
 			data.surface_data = surface_data
-		else
-			-- A force created after the surface must not see it in map view either.
-			for _, force in pairs(game.forces) do
-				force.set_surface_hidden(surface_data.surface, true)
-			end
 		end
 		data.surface = surface_data.surface
+		data.train_utilization = data.train_utilization or new_interval_set()
 		data.delivery_phases = data.delivery_phases or {}
 		data.completed_deliveries = data.completed_deliveries or {}
 		data.active_failures = data.active_failures or {}
-		-- Series and per-item averages no tab reads.
-		data.failed_dispatches, data.last_failure_tick = nil, nil
-		data.fulfillment_times, data.total_delivery_times = nil, nil
-		data.fulfillment_ema, data.total_time_ema, data.delivery_counts, data.delivery_starts = nil, nil, nil, nil
 		return
 	end
 
@@ -239,8 +240,7 @@ function analytics.destroy_chart(interval)
 end
 
 ---Gives every chart chunk the save holds the factorio-charts 1.3.0 background (black, no lights): chunks allocated
----by an older library keep their lit lab tiles otherwise. Idempotent, so on_configuration_changed may call it on
----every change.
+---by an older library keep their lit lab tiles otherwise. Idempotent.
 ---@param map_data MapData
 function analytics.restyle_chunks(map_data)
 	local data = map_data.analytics

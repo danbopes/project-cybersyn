@@ -63,14 +63,14 @@ local function storage_212()
 end
 
 local function with_stubs(fn)
-	local saved = { retrigger_train_calculation, analytics.init, analytics.is_library_available, analytics.is_enabled }
+	local saved = { retrigger_train_calculation, analytics.migrate, analytics.is_library_available, analytics.is_enabled }
 	local inits = {}
 	retrigger_train_calculation = function() end
-	analytics.init = function(map_data) inits[#inits + 1] = map_data end
+	analytics.migrate = function(map_data) inits[#inits + 1] = map_data end
 	analytics.is_library_available = function() return false end
 	analytics.is_enabled = function() return false end
 	local ok, err = pcall(fn, inits)
-	retrigger_train_calculation, analytics.init, analytics.is_library_available, analytics.is_enabled =
+	retrigger_train_calculation, analytics.migrate, analytics.is_library_available, analytics.is_enabled =
 		saved[1], saved[2], saved[3], saved[4]
 	if not ok then error(err, 0) end
 end
@@ -134,7 +134,7 @@ test("2.2.0 does not run once a save is on 2.2.0", function()
 	end)
 end)
 
-test("2.2.0 reshapes analytics only when the charts library is loaded", function()
+test("a configuration change reshapes analytics only when the charts library is loaded", function()
 	with_stubs(function(inits)
 		storage = storage_212()
 		storage.analytics = { train_utilization = {} }

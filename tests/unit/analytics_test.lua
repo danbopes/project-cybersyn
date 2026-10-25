@@ -129,7 +129,7 @@ local function with_charts(fn)
 	if not ok then error(err, 0) end
 end
 
-test("init: a series of another shape drops every chart and restarts chunk allocation", function()
+test("migrate: a series of another shape drops every chart and restarts chunk allocation", function()
 	H.fresh()
 	with_charts(function(a, destroyed, created)
 		local old_cursor = { surface = { valid = true }, chunk_freelist = {}, next_chunk_x = 1, next_chunk_y = 0 }
@@ -142,8 +142,7 @@ test("init: a series of another shape drops every chart and restarts chunk alloc
 			fulfillment_ema = {}, total_time_ema = {}, delivery_counts = {},
 			delivery_starts = {},
 		}
-		storage.manager = { players = { [1] = { breakdown_registered = true } } }
-		a.init(storage)
+		a.migrate(storage)
 		local data = storage.analytics
 		table.sort(destroyed)
 		assert_eq(destroyed, { "b1", "f1", "t1", "u1" })
@@ -151,7 +150,6 @@ test("init: a series of another shape drops every chart and restarts chunk alloc
 		assert_true(data.surface_data ~= old_cursor, "a fresh allocation cursor")
 		assert_eq(data.surface_data.next_chunk_x, 0)
 		assert_nil(data.breakdown_interval)
-		assert_nil(storage.manager.players[1].breakdown_registered)
 		assert_eq(#data.train_utilization, #a.UTILIZATION_INTERVALS)
 		for _, key in ipairs({ "fulfillment_times", "total_delivery_times", "fulfillment_ema", "total_time_ema",
 			"delivery_counts" }) do
@@ -160,7 +158,7 @@ test("init: a series of another shape drops every chart and restarts chunk alloc
 		-- The current shape keeps its charts and cursor.
 		local kept = data.surface_data
 		data.breakdown_interval = { line_ids = { "b2" } }
-		a.init(storage)
+		a.migrate(storage)
 		assert_eq(#destroyed, 4)
 		assert_true(storage.analytics.surface_data == kept)
 		assert_not_nil(storage.analytics.breakdown_interval)

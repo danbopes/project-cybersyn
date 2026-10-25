@@ -723,12 +723,12 @@ function delivery_breakdown_tab.build(map_data, player_data)
 		}
 	end
 
-	if not player_data.breakdown_registered then
-		analytics.interval_register_gui(map_data, data.breakdown_interval, player, refs, {
-			viewport_width = gw,
-			viewport_height = gh,
-		})
-		player_data.breakdown_registered = true
+	-- The interval's own viewer table decides: analytics.migrate replaces the interval with one that has no viewers.
+	local interval = data.breakdown_interval
+	if interval.guis[player.index] then
+		interval.guis[player.index] = refs
+	else
+		analytics.interval_register_gui(map_data, interval, player, refs, { viewport_width = gw, viewport_height = gh })
 	end
 
 	local chunk = data.breakdown_interval.chunk
@@ -836,7 +836,6 @@ function delivery_breakdown_tab.cleanup(map_data, player_data)
 		end
 	end
 
-	player_data.breakdown_registered = nil
 	player_data.breakdown_stats_of = nil
 end
 
