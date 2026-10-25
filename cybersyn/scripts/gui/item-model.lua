@@ -62,6 +62,16 @@ function model.split_rows(n, counts)
 	return out
 end
 
+--- The control combinator's priority signal when the item has its own threshold on that combinator, else nil.
+--- @param st {thresholds: {[string]: int}?, control2: {[string]: int}?}
+--- @param hash string
+--- @param priority_signal string
+--- @return int?
+local function item_override(st, hash, priority_signal)
+	local thresholds, control2 = st.thresholds, st.control2
+	if thresholds and thresholds[hash] ~= nil and control2 then return control2[priority_signal] end
+end
+
 --- The priority the dispatcher compares for this item: the station's, or the control combinator's priority signal
 --- when the item has its own threshold on that combinator (tick_dispatch reads station.item_priority only then).
 --- @param st {priority: int?, thresholds: {[string]: int}?, control2: {[string]: int}?}
@@ -69,11 +79,8 @@ end
 --- @param priority_signal string the priority signal's name (SIGNAL_PRIORITY)
 --- @return int
 function model.effective_priority(st, hash, priority_signal)
-	local thresholds, control2 = st.thresholds, st.control2
-	if thresholds and thresholds[hash] ~= nil and control2 then
-		local item_prior = control2[priority_signal]
-		if item_prior ~= nil then return item_prior end
-	end
+	local override = item_override(st, hash, priority_signal)
+	if override ~= nil then return override end
 	return st.priority or 0
 end
 
@@ -131,11 +138,8 @@ end
 --- @return int
 function model.provider_priority(st, row, hash, priority_signal)
 	if row.index == 0 or row.priority == nil then return model.effective_priority(st, hash, priority_signal) end
-	local thresholds, control2 = st.thresholds, st.control2
-	if thresholds and thresholds[hash] ~= nil and control2 then
-		local item_prior = control2[priority_signal]
-		if item_prior ~= nil then return item_prior end
-	end
+	local override = item_override(st, hash, priority_signal)
+	if override ~= nil then return override end
 	return row.priority
 end
 
