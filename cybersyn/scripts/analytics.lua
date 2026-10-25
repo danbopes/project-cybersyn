@@ -129,7 +129,7 @@ function analytics.init(map_data)
 		-- Series and per-item averages no tab reads.
 		data.failed_dispatches, data.last_failure_tick = nil, nil
 		data.fulfillment_times, data.total_delivery_times = nil, nil
-		data.fulfillment_ema, data.total_time_ema, data.delivery_counts = nil, nil, nil
+		data.fulfillment_ema, data.total_time_ema, data.delivery_counts, data.delivery_starts = nil, nil, nil, nil
 		return
 	end
 
@@ -138,7 +138,6 @@ function analytics.init(map_data)
 		surface = surface_data.surface,
 		surface_data = surface_data,
 		train_utilization = new_interval_set(),
-		delivery_starts = {},
 		delivery_phases = {},
 		completed_deliveries = {},
 		active_failures = {},
@@ -269,8 +268,6 @@ function analytics.record_delivery_start(map_data, train_id, item_hash, fulfillm
 	local data = map_data.analytics
 	local current_tick = game.tick
 
-	data.delivery_starts[train_id] = { item_hash = item_hash }
-
 	if not data.delivery_phases then data.delivery_phases = {} end
 	data.delivery_phases[train_id] = {
 		item_hash = item_hash,
@@ -295,44 +292,38 @@ function analytics.record_delivery_complete(map_data, train_id)
 	if not map_data.analytics then return end
 
 	local data = map_data.analytics
-	local start_info = data.delivery_starts[train_id]
-	if not start_info then return end
+	local phases = data.delivery_phases and data.delivery_phases[train_id]
+	if not phases then return end
+	local item_hash = phases.item_hash
 
-	local item_hash = start_info.item_hash
-	data.delivery_starts[train_id] = nil
-
-	if not data.delivery_phases then data.delivery_phases = {} end
 	if not data.completed_deliveries then data.completed_deliveries = {} end
 
-	local phases = data.delivery_phases[train_id]
-	if phases then
-		local current_tick = game.tick
-		local completed = {
-			complete_tick = current_tick,
-			wait = phases.dispatch_tick and phases.request_tick and
-				((phases.dispatch_tick - phases.request_tick) / 60) or 0,
-			travel_to_p = phases.arrive_p_tick and phases.dispatch_tick and
-				((phases.arrive_p_tick - phases.dispatch_tick) / 60) or 0,
-			loading = phases.leave_p_tick and phases.arrive_p_tick and
-				((phases.leave_p_tick - phases.arrive_p_tick) / 60) or 0,
-			travel_to_r = phases.arrive_r_tick and phases.leave_p_tick and
-				((phases.arrive_r_tick - phases.leave_p_tick) / 60) or 0,
-			unloading = phases.arrive_r_tick and
-				((current_tick - phases.arrive_r_tick) / 60) or 0,
-		}
+	local current_tick = game.tick
+	local completed = {
+		complete_tick = current_tick,
+		wait = phases.dispatch_tick and phases.request_tick and
+			((phases.dispatch_tick - phases.request_tick) / 60) or 0,
+		travel_to_p = phases.arrive_p_tick and phases.dispatch_tick and
+			((phases.arrive_p_tick - phases.dispatch_tick) / 60) or 0,
+		loading = phases.leave_p_tick and phases.arrive_p_tick and
+			((phases.leave_p_tick - phases.arrive_p_tick) / 60) or 0,
+		travel_to_r = phases.arrive_r_tick and phases.leave_p_tick and
+			((phases.arrive_r_tick - phases.leave_p_tick) / 60) or 0,
+		unloading = phases.arrive_r_tick and
+			((current_tick - phases.arrive_r_tick) / 60) or 0,
+	}
 
-		if not data.completed_deliveries[item_hash] then
-			data.completed_deliveries[item_hash] = {}
-		end
-		local completed_list = data.completed_deliveries[item_hash]
-		table.insert(completed_list, completed)
-
-		while #completed_list > 50 do
-			table.remove(completed_list, 1)
-		end
-
-		data.delivery_phases[train_id] = nil
+	if not data.completed_deliveries[item_hash] then
+		data.completed_deliveries[item_hash] = {}
 	end
+	local completed_list = data.completed_deliveries[item_hash]
+	table.insert(completed_list, completed)
+
+	while #completed_list > 50 do
+		table.remove(completed_list, 1)
+	end
+
+	data.delivery_phases[train_id] = nil
 end
 
 ---Record train arriving at provider
