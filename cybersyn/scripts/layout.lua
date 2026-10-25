@@ -91,23 +91,31 @@ function remove_train(map_data, train_id, train)
 end
 
 
+---@param entity LuaTrain
+---@return int item_slots
+---@return int fluid
+function train_capacity(entity)
+	local items, fluid = 0, 0
+	for _, wagon in pairs(entity.cargo_wagons) do
+		items = items + #wagon.get_inventory(defines.inventory.cargo_wagon)
+	end
+	for _, wagon in pairs(entity.fluid_wagons) do
+		fluid = fluid + math.floor(wagon.prototype.get_fluid_capacity(wagon.quality))
+	end
+	return items, fluid
+end
+
 ---@param map_data MapData
 ---@param train Train
 function set_train_layout(map_data, train)
 	local carriages = train.entity.carriages
 	local layout = {}
 	local i = 1
-	local item_slot_capacity = 0
-	local fluid_capacity = 0
 	for _, carriage in pairs(carriages) do
 		if carriage.type == "cargo-wagon" then
 			layout[#layout + 1] = 1
-			local inv = carriage.get_inventory(defines.inventory.cargo_wagon)
-			item_slot_capacity = item_slot_capacity + #inv
 		elseif carriage.type == "fluid-wagon" then
 			layout[#layout + 1] = 2
-			fluid_capacity = fluid_capacity
-				+ math.floor(carriage.prototype.get_fluid_capacity(carriage.quality))
 		else
 			layout[#layout + 1] = 0
 		end
@@ -148,8 +156,7 @@ function set_train_layout(map_data, train)
 		map_data.layout_train_count[layout_id] = map_data.layout_train_count[layout_id] + 1
 	end
 	train.layout_id = layout_id
-	train.item_slot_capacity = item_slot_capacity
-	train.fluid_capacity = fluid_capacity
+	train.item_slot_capacity, train.fluid_capacity = train_capacity(train.entity)
 end
 
 --- Re-reads a train's carriage layout, first dropping its count under the old layout (and the layout itself with its

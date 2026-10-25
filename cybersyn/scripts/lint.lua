@@ -745,22 +745,6 @@ local function check_record(s, job, snap, k, cycle_ticks)
 	if mask ~= 0 then job.bits[id] = mask end
 end
 
---- Live capacity of a train's wagons, as set_train_layout computes it (fluid capacity per wagon quality).
---- @param entity LuaTrain
---- @return int items
---- @return int fluid
-local function live_capacity(entity)
-	local items, fluid = 0, 0
-	for _, wagon in pairs(entity.cargo_wagons) do
-		local inv = wagon.get_inventory(defines.inventory.cargo_wagon)
-		if inv then items = items + #inv end
-	end
-	for _, wagon in pairs(entity.fluid_wagons) do
-		fluid = fluid + math.floor(wagon.prototype.get_fluid_capacity(wagon.quality))
-	end
-	return items, fluid
-end
-
 -- Reused for every train of a pass, as `live` is for stations.
 local train_live = {}
 
@@ -814,7 +798,7 @@ local function check_train(s, job, snap, id)
 				break
 			end
 		end
-		local items, fluid = live_capacity(entity)
+		local items, fluid = train_capacity(entity)
 		if not seen then
 			seen = {}
 			s.train_live[id] = seen
