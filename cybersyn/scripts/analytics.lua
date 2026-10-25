@@ -187,6 +187,58 @@ function analytics.interval_register_gui(map_data, interval, player, gui, option
 	return chunk
 end
 
+---Brings a tab's graph frame and camera to gw x gh, registers the player as a viewer of `interval` and aims the camera
+---at its chunk.
+---@param map_data MapData
+---@param interval table
+---@param player LuaPlayer
+---@param refs table the tab's refs, kept as the player's viewer entry
+---@param frame LuaGuiElement?
+---@param camera LuaGuiElement?
+---@param gw int
+---@param gh int
+---@param y_bias number the tab's vertical offset, in tiles, tuned by eye
+---@return boolean? resized
+---@return table? camera_info nil while the interval has no chunk
+function analytics.sync_chart_view(map_data, interval, player, refs, frame, camera, gw, gh, y_bias)
+	local data = map_data.analytics
+	local resized = frame and frame.valid and (frame.style.minimal_width ~= gw or frame.style.minimal_height ~= gh)
+	if resized then
+		for _, e in ipairs({ frame, camera }) do
+			if e and e.valid then
+				e.style.width, e.style.height = gw, gh
+				e.style.minimal_width, e.style.minimal_height = gw, gh
+				e.style.maximal_width, e.style.maximal_height = gw, gh
+			end
+		end
+		if interval.chunk and data.surface_data then
+			charts.ensure_tile_coverage(data.surface_data, interval.chunk, { viewport_width = gw, viewport_height = gh })
+		end
+	end
+	-- Keeps the camera off the player's own surface even when no chunk could be allocated.
+	if camera and data.surface then camera.surface_index = data.surface.index end
+	-- The interval's own viewer table decides, not a per-player flag: a flag outlives a window rebuilt by reset_player
+	-- and an interval replaced by analytics.migrate.
+	if interval.guis[player.index] then
+		interval.guis[player.index] = refs
+	else
+		analytics.interval_register_gui(map_data, interval, player, refs, { viewport_width = gw, viewport_height = gh })
+	end
+	local chunk = interval.chunk
+	if not (chunk and camera and charts) then return resized, nil end
+	-- zoom = scale / density puts one tile on 32 logical px on any display (Windows density 1.0-1.75, Mac 2.0). The
+	-- library centres the camera on a 900x700 viewport (it is not told the size); the offsets move it onto the graph's
+	-- centre.
+	local display_scale = player.display_scale or 1.0
+	return resized, charts.setup_camera_widget(camera, data.surface, chunk, {
+		widget_width = gw,
+		widget_height = gh,
+		display_scale = display_scale,
+		position_offset = { x = (gw - 900) / 64 - 0.125, y = (gh - 700) / 64 + y_bias },
+		zoom_override = display_scale / (player.display_density_scale or 1.0),
+	})
+end
+
 ---Unregister a GUI from viewing an interval
 ---@param map_data MapData
 ---@param interval table

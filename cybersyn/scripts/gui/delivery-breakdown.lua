@@ -654,20 +654,6 @@ function delivery_breakdown_tab.build(map_data, player_data)
 
 	-- The graph fills the tab: its size follows the window's layout.
 	local gw, gh = graph_size(player_data)
-	local frame, camera = refs.breakdown_camera_frame, refs.breakdown_camera
-	if frame and frame.valid and frame.style.minimal_width ~= gw or frame and frame.valid and frame.style.minimal_height ~= gh then
-		for _, e in ipairs({ frame, camera }) do
-			if e and e.valid then
-				e.style.width, e.style.height = gw, gh
-				e.style.minimal_width, e.style.minimal_height = gw, gh
-				e.style.maximal_width, e.style.maximal_height = gw, gh
-			end
-		end
-		if data.breakdown_interval and data.breakdown_interval.chunk and data.surface_data then
-			charts.ensure_tile_coverage(data.surface_data, data.breakdown_interval.chunk,
-				{ viewport_width = gw, viewport_height = gh })
-		end
-	end
 	local overlay_button_opts = overlay_button_options(gw, gh)
 
 	-- Check cache - use cached data if still valid
@@ -703,14 +689,8 @@ function delivery_breakdown_tab.build(map_data, player_data)
 		refs.breakdown_main_flow.visible = has_data
 	end
 
-	-- Register chunk for this graph if not already registered
 	local player = game.get_player(player_data.player_index)
 	if not player then return end
-
-	-- Always ensure camera points at the correct surface (prevents showing wrong surface if chunk allocation fails)
-	if refs.breakdown_camera and data.surface then
-		refs.breakdown_camera.surface_index = data.surface.index
-	end
 
 	-- Allocate or reuse chunk for breakdown chart
 	if not data.breakdown_interval then
@@ -723,40 +703,11 @@ function delivery_breakdown_tab.build(map_data, player_data)
 		}
 	end
 
-	-- The interval's own viewer table decides: analytics.migrate replaces the interval with one that has no viewers.
-	local interval = data.breakdown_interval
-	if interval.guis[player.index] then
-		interval.guis[player.index] = refs
-	else
-		analytics.interval_register_gui(map_data, interval, player, refs, { viewport_width = gw, viewport_height = gh })
-	end
-
+	-- The constant y term, tuned by eye (-1.0 at 1100x700), moves the camera a tile up as the axis labels sit low.
+	local _, camera_info = analytics.sync_chart_view(map_data, data.breakdown_interval, player, refs,
+		refs.breakdown_camera_frame, refs.breakdown_camera, gw, gh, -1.0)
 	local chunk = data.breakdown_interval.chunk
-	if not chunk then
-		return
-	end
-
-	-- Set up camera widget (must happen before early return so camera points at correct surface)
-	local display_scale = player.display_scale or 1.0
-	local display_density = player.display_density_scale or 1.0
-	-- Resolution-independent zoom formula: zoom = scale / density
-	-- Works across Windows (density 1.0-1.75) and Mac (density 2.0)
-	local zoom = display_scale / display_density
-	-- The library centres the camera on a 900x700 viewport (it is not told the size); these shift it onto the graph's
-	-- centre, the y offset a tile up as the axis labels sit low; the constant terms are tuned by eye (3.0, -1.0 at
-	-- 1100x700).
-	local xoffset = (gw - 900) / 64 - 0.125
-	local yoffset = (gh - 700) / 64 - 1.0
-	local camera_info = nil
-	if refs.breakdown_camera and chunk.coord and charts then
-		camera_info = charts.setup_camera_widget(refs.breakdown_camera, data.surface, chunk, {
-			widget_width = gw,
-			widget_height = gh,
-			display_scale = display_scale,
-			position_offset = {x = xoffset, y = yoffset},
-			zoom_override = zoom,
-		})
-	end
+	if not chunk then return end
 
 	-- Early return if no data to render (camera is already set up above)
 	if #filtered == 0 then

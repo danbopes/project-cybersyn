@@ -289,59 +289,13 @@ function utilization_tab.build(map_data, player_data)
 
 	-- The graph fills the tab: its size follows the window's layout.
 	local gw, gh = graph_size(player_data)
-	local frame, camera = refs.utilization_camera_frame, refs.utilization_camera
-	local resized = frame and frame.valid and (frame.style.minimal_width ~= gw or frame.style.minimal_height ~= gh)
-	if resized then
-		for _, e in ipairs({ frame, camera }) do
-			if e and e.valid then
-				e.style.width, e.style.height = gw, gh
-				e.style.minimal_width, e.style.minimal_height = gw, gh
-				e.style.maximal_width, e.style.maximal_height = gw, gh
-			end
-		end
-		if interval.chunk and data.surface_data then
-			charts.ensure_tile_coverage(data.surface_data, interval.chunk, { viewport_width = gw, viewport_height = gh })
-		end
-		player_data.utilization_cache = nil
-	end
-
-	-- Keeps the camera off the player's own surface even when no chunk could be allocated.
-	if camera and data.surface then
-		camera.surface_index = data.surface.index
-	end
-
-	-- The interval's own viewer table decides, not the player's flag: the flag outlives a window rebuilt by reset_player
-	-- and an interval set replaced by analytics.migrate.
-	if interval.guis[player.index] then
-		interval.guis[player.index] = refs
-	else
-		analytics.interval_register_gui(map_data, interval, player, refs, { viewport_width = gw, viewport_height = gh })
-	end
+	local camera = refs.utilization_camera
+	-- The constant y term is tuned by eye (0.1 at 1100x700).
+	local resized, camera_info = analytics.sync_chart_view(map_data, interval, player, refs, refs.utilization_camera_frame,
+		camera, gw, gh, 0.1)
+	if resized then player_data.utilization_cache = nil end
 	player_data.utilization_registered = true
-
-	local chunk = interval.chunk
-	if not chunk then
-		return
-	end
-
-	-- zoom = scale / density puts one tile on 32 logical px on any display (Windows density 1.0-1.75, Mac 2.0). The
-	-- library centres the camera on a 900x700 viewport (it is not told the size); the offsets move it onto the graph's
-	-- centre; the constant terms are tuned by eye (3.0, 0.1 at 1100x700).
-	local display_scale = player.display_scale or 1.0
-	local display_density = player.display_density_scale or 1.0
-	local zoom = display_scale / display_density
-	local xoffset = (gw - 900) / 64 - 0.125
-	local yoffset = (gh - 700) / 64 + 0.1
-	local camera_info
-	if camera and charts then
-		camera_info = charts.setup_camera_widget(camera, data.surface, chunk, {
-			widget_width = gw,
-			widget_height = gh,
-			display_scale = display_scale,
-			position_offset = { x = xoffset, y = yoffset },
-			zoom_override = zoom,
-		})
-	end
+	if not interval.chunk then return end
 
 	if not has_data then
 		return
