@@ -94,7 +94,7 @@ manager_gui.open_manager_on = open_manager_on
 
 --- The remote interface's toggle_gui (scripts/remote-interface.lua), the same as the shortcut.
 --- @param player_index uint
-function cybersyn_manager_toggle(player_index)
+function manager_gui.toggle(player_index)
 	if not game.get_player(player_index) then return end
 	local pd = storage.manager and storage.manager.players[player_index]
 	if not pd then return end

@@ -411,6 +411,8 @@ package.preload["__core__.lualib.util"] = function() return {} end
 -- central-planning.lua is loaded for hash_item/hash_signal/unhash_signal; analytics is only touched by the
 -- dispatcher functions, which the unit layer never calls.
 package.preload["scripts.analytics"] = function() return {} end
+-- The manager GUI is engine-only; the remote interface only hands toggle_gui to it.
+package.preload["gui.main"] = function() return {} end
 
 harness.flib_gui = flib_gui
 

@@ -1,4 +1,5 @@
 --By Mami
+local manager_gui = require("gui.main")
 local raise_event = script.raise_event
 local script_generate_event_name = script.generate_event_name
 
@@ -388,7 +389,7 @@ end
 ---@param player_index uint
 ---@return boolean open after the call
 function interface.toggle_gui(player_index)
-	if cybersyn_manager_toggle then cybersyn_manager_toggle(player_index) end
+	manager_gui.toggle(player_index)
 	return interface.is_gui_open(player_index)
 end
 
