@@ -1017,13 +1017,15 @@ local function item_threshold(station, hash, name, item_type, base_item, base_fl
 	return threshold
 end
 
--- Virtual signals a secondary inventory combinator consumes as settings; every other virtual signal on a
--- NETWORK_EACH station's secondary is one of its networks (tick_poll_station).
+-- Virtual signals a secondary inventory combinator consumes as settings, and locked slots, which only the station
+-- combinator sets; every other virtual signal on a NETWORK_EACH station's secondary is one of its networks
+-- (tick_poll_station).
 local SECONDARY_SETTINGS = {
 	[SIGNAL_PRIORITY] = true,
 	[REQUEST_THRESHOLD] = true,
 	[REQUEST_FLUID_THRESHOLD] = true,
 	[RESERVED_FLUID_CAPACITY] = true,
+	[LOCKED_SLOTS] = true,
 }
 
 --- Mirrors tick_poll_station: negative = request when is_r, positive = provide when is_p; a signal the switch rules
