@@ -459,6 +459,14 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 	local locked_slots = p_station.locked_slots
 	local total_item_slots = train.item_slot_capacity
 	if locked_slots > 0 and total_item_slots > 0 then
+		if mod_settings.locked_slots_per_item then
+			-- Each item type loaded needs its own spare slots for surplus to transfer into.
+			local item_types = 0
+			for _, item in ipairs(manifest) do
+				if item.type ~= "fluid" then item_types = item_types + 1 end
+			end
+			locked_slots = locked_slots * item_types
+		end
 		-- TODO: possible subtle bug here with modded wagons if locked_slots is
 		-- bigger than the number of item slots in one wagon but not another. Might need to look
 		-- at individual wagon capacities here.
