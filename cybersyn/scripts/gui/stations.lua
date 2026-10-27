@@ -65,11 +65,13 @@ local CHIP_ICON = {
 	stuck = "item/locomotive",
 	failing = "utility/danger_icon",
 }
--- Widths of the chips with their names and a one-digit count at the default font (English, measured on a screenshot at
--- UI scale 1.0), so the chips that do not fit beside the search field go to the second line instead of overflowing.
+-- Widths of the chips with their names and a one-digit count at UI scale 1.0, the widest any shipped locale renders
+-- (tests/unit/chip_width_test.lua measures them with the game's fonts). They are the buttons' maximal_width and what
+-- chip_lines reserves, so the chips that do not fit beside the search field go to the second line instead of
+-- overflowing.
 local CHIP_WIDTH = {
-	all = 50, no_power = 110, disabled = 108, warming_up = 125, starved = 92, setup = 86, saturated = 114, idle = 75, ok = 72,
-	unserved = 114, problems = 108, stuck = 152, failing = 98,
+	all = 52, no_power = 117, disabled = 112, warming_up = 133, starved = 106, setup = 95, saturated = 119, idle = 82, ok = 76,
+	unserved = 117, problems = 117, stuck = 155, failing = 98,
 }
 -- Each further digit of a count, separators included.
 local DIGIT_WIDTH = 8
@@ -1781,7 +1783,8 @@ end
 
 --- @param key string
 --- @param count integer? nil while the first pass after opening (or the first lint pass) runs
-local function chip_caption(key, count)
+--- @return LocalisedString
+function stations_tab.chip_caption(key, count)
 	local number = count and format.number(count) or "–"
 	if key == "all" then
 		return { "", { "cybersyn-gui.station-status-all" }, "  ", number }
@@ -1845,11 +1848,20 @@ function stations_tab.chip_space(player_data, tab)
 	return space
 end
 
+--- The chip button's maximal_width: a caption wider than the layout reserved is clipped instead of pushing the line
+--- past the subheader.
+--- @param key string
+--- @param count int?
+--- @return int
+function stations_tab.chip_max_width(key, count)
+	return CHIP_WIDTH[key] + DIGIT_WIDTH * (#format.number(count or 0) - 1)
+end
+
 --- @param key string
 --- @param count int?
 --- @return int
 local function chip_width(key, count)
-	return CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(count or 0) - 1)
+	return stations_tab.chip_max_width(key, count) + 4
 end
 
 --- Which chips show, and on which line (tab-logic chip_lines).
@@ -1891,7 +1903,8 @@ local function sync_chip_line(flow, keys, counts, wanted, state, pending)
 				return {
 					type = "button",
 					style = "cybersyn_filter_chip",
-					caption = chip_caption(key, count),
+					style_mods = { maximal_width = stations_tab.chip_max_width(key, count) },
+					caption = stations_tab.chip_caption(key, count),
 					tooltip = chip_tooltip(key, waiting),
 					toggled = selected,
 					enabled = enabled,
@@ -1900,7 +1913,8 @@ local function sync_chip_line(flow, keys, counts, wanted, state, pending)
 				}
 			end,
 			update = function(elem)
-				elem.caption = chip_caption(key, count)
+				elem.caption = stations_tab.chip_caption(key, count)
+				elem.style.maximal_width = stations_tab.chip_max_width(key, count)
 				elem.tooltip = chip_tooltip(key, waiting)
 				elem.toggled = selected
 				elem.enabled = enabled

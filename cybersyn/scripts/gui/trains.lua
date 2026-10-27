@@ -87,11 +87,11 @@ local NETWORK_COLUMNS = 3
 
 local TRAIN_CHIPS = logic.TRAIN_CHIPS
 local NO_FINDINGS = {}
--- Widths of the chips with their names and a one-digit count (English, measured at UI scale 1.0); each further digit
--- adds DIGIT_WIDTH. The group toggle takes 32 more.
+-- Widths of the chips with their names and a one-digit count, without the icon, as stations.lua CHIP_WIDTH (the widest
+-- any shipped locale renders at UI scale 1.0); each further digit adds DIGIT_WIDTH. The group toggle takes 32 more.
 local CHIP_WIDTH = {
-	all = 46, parked = 75, to_p = 98, loading = 78, to_r = 106, unloading = 92, returning = 92, refuel = 95,
-	interrupt = 99, not_refuelled = 145, in_group = 123, trouble = 91, problems = 92,
+	all = 51, parked = 78, to_p = 103, loading = 83, to_r = 111, unloading = 97, returning = 96, refuel = 94,
+	interrupt = 105, not_refuelled = 145, in_group = 129, trouble = 95, problems = 94,
 }
 local DIGIT_WIDTH = 8
 -- The [img=] prefix of a chip caption: a 16 px icon at the default font and its space.
@@ -1609,11 +1609,19 @@ end
 --- @param key string
 --- @param count int
 --- @param hours number
-local function chip_caption(key, count, hours)
+function trains_tab.chip_caption(key, count, hours)
 	local locale = logic.train_chip_locale(key)
 	local name = key == "not_refuelled" and { locale, logic.hours_caption(hours) } or { locale }
 	local icon = chip_icon(key)
 	return { "", icon and ("[img=" .. icon .. "] ") or "", name, "  ", format.number(count) }
+end
+
+--- The chip button's maximal_width (stations_tab.chip_max_width).
+--- @param key string
+--- @param count int
+--- @return int
+function trains_tab.chip_max_width(key, count)
+	return CHIP_WIDTH[key] + DIGIT_WIDTH * (#format.number(count) - 1) + (CHIP_ICON[key] and ICON_WIDTH or 0)
 end
 
 --- The px a chip takes in the subheader with its spacing.
@@ -1621,7 +1629,7 @@ end
 --- @param count int
 --- @return int
 local function chip_width(key, count)
-	return CHIP_WIDTH[key] + 4 + DIGIT_WIDTH * (#format.number(count) - 1) + (CHIP_ICON[key] and ICON_WIDTH or 0)
+	return trains_tab.chip_max_width(key, count) + 4
 end
 
 --- The subheader gets the chips and the group toggle at its right end on first use.
@@ -1662,7 +1670,8 @@ local function chip_entries(keys, counts, wanted, hours)
 				return {
 					type = "button",
 					style = "cybersyn_filter_chip",
-					caption = chip_caption(key, count, hours),
+					style_mods = { maximal_width = trains_tab.chip_max_width(key, count) },
+					caption = trains_tab.chip_caption(key, count, hours),
 					tooltip = tooltip,
 					toggled = selected,
 					enabled = enabled,
@@ -1671,7 +1680,8 @@ local function chip_entries(keys, counts, wanted, hours)
 				}
 			end,
 			update = function(elem)
-				elem.caption = chip_caption(key, count, hours)
+				elem.caption = trains_tab.chip_caption(key, count, hours)
+				elem.style.maximal_width = trains_tab.chip_max_width(key, count)
 				elem.toggled = selected
 				elem.enabled = enabled
 				elem.tooltip = tooltip
