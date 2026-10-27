@@ -19,6 +19,7 @@ local sync = require("scripts.gui.utils.sync")
 local hover = require("scripts.gui.utils.hover")
 local links = require("scripts.gui.utils.links")
 local nav = require("scripts.gui.utils.nav")
+local filters = require("scripts.gui.utils.filters")
 local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
 local diag = require("scripts.diag")
@@ -161,11 +162,10 @@ end
 log_tab.get_filter = get_filter
 
 --- The manager's item filter as diag's item index (-1: an item the log has never seen, so nothing matches).
---- @param player_data PlayerData
+--- @param hash string?
 --- @param d DiagState
 --- @return int?
-local function item_filter(player_data, d)
-	local hash = player_data.filters.item
+local function item_filter(hash, d)
 	if not hash then return nil end
 	return d.item_ix[hash] or -1
 end
@@ -175,8 +175,9 @@ end
 --- @return LogCompiled
 local function compiled(player_data, d)
 	local f = get_filter(player_data)
-	local item = item_filter(player_data, d)
-	local station = player_data.filters.station
+	local mf = filters.get(player_data, "log_tab")
+	local item = item_filter(mf.item, d)
+	local station = mf.station
 	local c = player_data.cache.log_cf
 	local sev = f.sev
 	-- Rebuilt only when the filter changed; otherwise only the window's start moves with the clock.

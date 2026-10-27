@@ -35,7 +35,8 @@ function filters.terms_match(name_lower, terms)
 	return true
 end
 
---- @class FilterState every filter the manager applies (player_data.filters); written through filters.set and filters.clear
+--- @class FilterState every filter the manager applies (player_data.filters); written through filters.set and
+--- filters.clear, except the tab chips, which their own tab sets so that only its page resets
 --- @field query string? raw text of the station-name search
 --- @field terms string[]? lowercase terms of `query`
 --- @field item string? item hash (name or name|quality)
@@ -62,14 +63,11 @@ local VALID = {
 local ROW = { "item", "station", "train", "network", "mask", "surface" }
 -- What a jump to a subject drops even when it keeps the row (manager.focus keep_row): the station and train chips
 -- and the tabs' own chips.
-local SCOPES = {
-	chips = { "station", "train", "stations_chip", "problems_scope", "trains_chip" },
-	row = { "item", "station", "train", "network", "mask", "surface", "stations_chip", "problems_scope", "trains_chip" },
-	all = { "query", "terms", "item", "station", "train", "network", "mask", "surface", "stations_chip",
-		"problems_scope", "trains_chip" },
-}
+local CHIPS = { "station", "train", "stations_chip", "problems_scope", "trains_chip" }
 local IS_ROW = {}
 for _, field in ipairs(ROW) do IS_ROW[field] = true end
+local SCOPES = { chips = CHIPS, row = { "stations_chip", "problems_scope", "trains_chip" } }
+for _, field in ipairs(ROW) do table.insert(SCOPES.row, field) end
 
 --- Sets one filter: validates it, resets every tab's page and opens the filter row for a row filter, so no
 --- filter is ever active with the row hidden. An empty query or a mask of -1 clears that filter.
@@ -97,8 +95,12 @@ end
 --- @param player_data PlayerData
 --- @param scope "chips"|"row"|"all"
 function filters.clear(player_data, scope)
-	local fs = player_data.filters
-	for _, field in ipairs(SCOPES[scope]) do fs[field] = nil end
+	if scope == "all" then
+		player_data.filters = {}
+	else
+		local fs = player_data.filters
+		for _, field in ipairs(SCOPES[scope]) do fs[field] = nil end
+	end
 	listing.reset_pages(player_data)
 end
 
