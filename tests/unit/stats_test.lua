@@ -516,27 +516,22 @@ test("trip average: slow only beyond SLOW_FACTOR x the average with SLOW_MIN_SAM
 	assert_near(ema.coal.avg, 1200)
 end)
 
-test("record_delivery_complete: a slow trip reaches the listener with the average before it, then joins it", function()
+test("record_delivery_complete: a slow trip is returned with the average before it, then joins it", function()
 	at(0)
 	stats.get()
-	local seen = {}
-	stats.set_slow_listener(function(train, hash, ticks, avg) seen[#seen + 1] = { train.id, hash, ticks, avg } end)
 	for i = 1, 3 do
 		local t = { id = i, manifest = { { name = "coal", count = 1 }, { name = "stone", count = 1 } }, dispatch_tick = i * 10000 }
 		at(i * 10000 + 600)
-		stats.record_delivery_complete(t)
+		assert_false((stats.record_delivery_complete(t)))
 	end
-	assert_eq(seen, {})
 	at(50000 + 1201)
-	stats.record_delivery_complete({ id = 9, manifest = { { name = "coal", count = 1 } }, dispatch_tick = 50000 })
-	assert_eq(seen, { { 9, "coal", 1201, 600 } })
+	assert_eq({ stats.record_delivery_complete({ id = 9, manifest = { { name = "coal", count = 1 } }, dispatch_tick = 50000 }) },
+		{ true, "coal", 1201, 600 })
 	assert_near(stats.get().trip_ema.coal.avg, 600 + 0.2 * 601)
 	assert_nil(stats.get().trip_ema.stone, "only the manifest's first item")
 	-- Untimed (no dispatch tick) and empty manifests leave the averages alone.
-	stats.record_delivery_complete({ id = 10, manifest = { { name = "coal", count = 1 } } })
-	stats.record_delivery_complete({ id = 11, dispatch_tick = 50000 })
-	assert_eq(#seen, 1)
+	assert_false((stats.record_delivery_complete({ id = 10, manifest = { { name = "coal", count = 1 } } })))
+	assert_false((stats.record_delivery_complete({ id = 11, dispatch_tick = 50000 })))
 	assert_eq(stats.get().trip_ema.coal.n, 4)
-	stats.set_slow_listener(nil)
 end)
 
