@@ -618,7 +618,7 @@ function set_manifest_schedule(
 	if new_schedule and next(new_schedule.records) then
 		-- only available trains that are mid-travel can run into a situation where the train will have no path
 		if train.status == STATUS_TO_D_BYPASS then
-			local found, blocked = new_schedule:is_path_available(train_e, map_data.diag ~= nil)
+			local found, blocked = new_schedule:is_path_available(train_e, map_data.diag and map_data.diag.full)
 			if not found then
 				-- give the train some time to travel and avoid expensive path checks for a while
 				train.skip_path_checks_until = game.tick + NO_PATH_SKIP_TIME
