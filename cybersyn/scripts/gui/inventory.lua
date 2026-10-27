@@ -860,6 +860,13 @@ local function sync_buttons(player_data, columns)
 	if dim and dim.valid then dim.toggled = player_data.inventory_dim == true end
 end
 
+--- Leaving the tab: coming back must show current totals at once, not a refresh spread over the next renders.
+---@param map_data MapData
+---@param player_data PlayerData
+function inventory_tab.cleanup(map_data, player_data)
+	player_data.inventory_cache = nil
+end
+
 --- The grids, while no item filter is set (with one the tab shows the item's drill-down): the other filters
 --- and the station chip restrict which inventory rows are aggregated.
 ---@param map_data MapData

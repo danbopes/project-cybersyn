@@ -3,13 +3,10 @@ local gui = require("__flib__.gui")
 
 local templates = require("scripts.gui.templates")
 
-local overview_tab = require("scripts.gui.overview")
-local stations_tab = require("scripts.gui.stations")
+local tabs = require("scripts.gui.utils.tabs")
 local trains_tab = require("scripts.gui.trains")
 local inventory_tab = require("scripts.gui.inventory")
 local log_tab = require("scripts.gui.log")
-local utilization_tab = require("scripts.gui.utilization")
-local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
 local item = require("scripts.gui.item")
 local explain = require("scripts.gui.explain")
 local util = require("scripts.gui.util")
@@ -25,13 +22,9 @@ local sizing = require("scripts.gui.sizing")
 local manager = {}
 
 local DEFAULT_TAB = "overview_tab"
--- Tabs whose content gets the banner and subheader, in pane order.
-local HEADER_TABS = { "overview_tab", "inventory_tab", "stations_tab", "trains_tab", "log_tab",
-	"utilization_tab", "delivery_breakdown_tab" }
--- Tabs that show the station chip but do not apply it: its tooltip says so.
-local STATION_CHIP_IGNORED = { overview_tab = true, utilization_tab = true, delivery_breakdown_tab = true }
--- Tabs the station-name search applies to.
-local SEARCH_TABS = { inventory_tab = true, stations_tab = true, trains_tab = true }
+--- @type {[string]: table} each tab's module, by tab name
+local tab_modules = {}
+for _, t in ipairs(tabs) do tab_modules[t.name] = require(t.module) end
 -- The last render must be this old before the title bar says how old it is.
 local STALE_TICKS = 180
 
@@ -48,11 +41,11 @@ local function frame_toggle(name, sprite, tooltip, handler)
 end
 
 --- @param def {content: flib.GuiElemDef}
---- @param tab string
+--- @param tab ManagerTab
 --- @param handlers table
 --- @param right flib.GuiElemDef[]?
 local function add_header(def, tab, handlers, right)
-	local banner, subheader = templates.tab_header(tab, handlers, right, SEARCH_TABS[tab] == true)
+	local banner, subheader = templates.tab_header(tab.name, handlers, right, tab.search == true)
 	local content = def.content
 	local children = content.children or content
 	table.insert(children, 1, subheader)
@@ -68,24 +61,19 @@ function manager.create(player)
 		search_changed = manager.handle.manager_search_changed,
 		chip_click = manager.handle.manager_chip_click,
 	}
-	local tabs = {
-		add_header(overview_tab.create(), "overview_tab", header, overview_tab.subheader_right()),
-		add_header(inventory_tab.create(), "inventory_tab", header),
-		add_header(stations_tab.create(), "stations_tab", header),
-		add_header(trains_tab.create(), "trains_tab", header),
-		add_header(log_tab.create(), "log_tab", header, log_tab.subheader_right()),
-	}
-	if analytics.is_enabled() then
-		tabs[#tabs + 1] = add_header(utilization_tab.create(), "utilization_tab", header)
-		tabs[#tabs + 1] = add_header(delivery_breakdown_tab.create(), "delivery_breakdown_tab", header)
-	end
 	local pane = {
 		name = "manager_tabbed_pane",
 		type = "tabbed-pane",
 		style = "ltnm_tabbed_pane",
 		handler = { [defines.events.on_gui_selected_tab_changed] = manager.handle.manager_tab_changed },
 	}
-	for i, t in ipairs(tabs) do pane[i] = t end
+	local with_analytics = analytics.is_enabled()
+	for _, t in ipairs(tabs) do
+		if with_analytics or not t.analytics then
+			local m = tab_modules[t.name]
+			pane[#pane + 1] = add_header(m.create(), t, header, m.subheader_right and m.subheader_right())
+		end
+	end
 
 	gui.add(player.gui.screen, {
 		{
@@ -302,14 +290,6 @@ function manager.layout(player, player_data)
 	return layout
 end
 
-local CONTENT_FRAMES = {
-	overview_tab = "manager_overview_content_frame",
-	inventory_tab = "manager_inventory_content_frame",
-	stations_tab = "manager_stations_content_frame",
-	trains_tab = "manager_trains_tab_content_frame",
-	log_tab = "manager_log_content_frame",
-}
-
 --- Writes the layout into the window: its width, every tab's height and the per-tab row areas.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
@@ -321,16 +301,15 @@ function manager.apply_layout(player, player_data)
 	if not (window and window.valid) then return layout end
 	window.style.width = layout.width
 	local height = layout.content_height + (manager.dispatch_paused() and sizing.BANNER_HEIGHT or 0)
-	for _, name in pairs(CONTENT_FRAMES) do
-		local content = refs[name]
+	for _, t in ipairs(tabs) do
+		local content = t.content and refs[t.content]
 		if content and content.valid then
 			content.style.height = height
 			content.style.width = layout.content_width
 		end
+		local m = tab_modules[t.name]
+		if m.apply_layout then m.apply_layout(player_data, layout) end
 	end
-	overview_tab.apply_layout(player_data, layout)
-	inventory_tab.apply_layout(player_data, layout)
-	log_tab.apply_layout(player_data, layout)
 	item.apply_layout(player_data, layout)
 	return layout
 end
@@ -384,12 +363,12 @@ function manager.refresh_banners(player_data)
 		local who = by and by > 0 and game.get_player(by)
 		caption = who and { "cybersyn-gui.dispatch-paused-by", who.name } or { "cybersyn-gui.dispatch-paused" }
 	end
-	for _, tab in ipairs(HEADER_TABS) do
-		local banner = refs[tab .. "_banner"]
+	for _, t in ipairs(tabs) do
+		local banner = refs[t.name .. "_banner"]
 		if banner and banner.valid then
 			banner.visible = paused
 			if paused then
-				local label = refs[tab .. "_banner_label"]
+				local label = refs[t.name .. "_banner_label"]
 				label.caption = caption
 				label.tooltip = { "cybersyn-gui.dispatch-paused-tooltip" }
 			end
@@ -410,7 +389,8 @@ end
 local function search_tab(player_data)
 	local tab = player_data.selected_tab
 	if tab == "inventory_tab" and item.filter_hash(player_data) then return false end
-	return SEARCH_TABS[tab] == true
+	local t = tabs.by_name[tab]
+	return t ~= nil and t.search == true
 end
 
 --- @param player_data PlayerData
@@ -418,8 +398,8 @@ function manager.refresh_search_fields(player_data)
 	local refs = player_data.refs
 	local shown = search_shown(player_data)
 	local text = player_data.filters.query or ""
-	for tab in pairs(SEARCH_TABS) do
-		local field = refs[tab .. "_search_field"]
+	for _, t in ipairs(tabs) do
+		local field = t.search and refs[t.name .. "_search_field"]
 		if field and field.valid then
 			if field.visible ~= shown then field.visible = shown end
 			if field.text ~= text then field.text = text end
@@ -441,15 +421,15 @@ end
 local function refresh_station_chips(player_data, id, name)
 	local refs = player_data.refs
 	local shown = id ~= nil
-	for _, tab in ipairs(HEADER_TABS) do
-		local flow = refs[tab .. "_station_chip_flow"]
+	for _, t in ipairs(tabs) do
+		local flow = refs[t.name .. "_station_chip_flow"]
 		if flow and flow.valid then
 			flow.visible = shown
 			if shown then
-				local tooltip = STATION_CHIP_IGNORED[tab] and { "cybersyn-gui.station-chip-ignored-tooltip" }
-					or { "cybersyn-gui.station-chip-tooltip" }
-				refs[tab .. "_station_chip_icon"].tooltip = tooltip
-				local chip = refs[tab .. "_station_chip"]
+				local tooltip = t.station and { "cybersyn-gui.station-chip-tooltip" }
+					or { "cybersyn-gui.station-chip-ignored-tooltip" }
+				refs[t.name .. "_station_chip_icon"].tooltip = tooltip
+				local chip = refs[t.name .. "_station_chip"]
 				chip.caption = { "cybersyn-gui.station-chip", name or "?", tostring(id) }
 				chip.tooltip = tooltip
 			end
@@ -470,18 +450,19 @@ function manager.refresh_chips(player_data)
 	local sprite, quality, _, item_name
 	if hash then sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
-	for _, tab in ipairs(HEADER_TABS) do
-		local flow = refs[tab .. "_chip_flow"]
+	for _, t in ipairs(tabs) do
+		local flow = refs[t.name .. "_chip_flow"]
 		if flow and flow.valid then
 			flow.visible = shown
 			if shown then
-				local tooltip = tab == "overview_tab" and { "cybersyn-gui.filter-chip-overview-tooltip" } or { "cybersyn-gui.filter-chip-tooltip" }
-				local icon = refs[tab .. "_chip_icon"]
+				local tooltip = { t.item_tooltip or t.item and "cybersyn-gui.filter-chip-tooltip"
+					or "cybersyn-gui.filter-chip-ignored-tooltip" }
+				local icon = refs[t.name .. "_chip_icon"]
 				icon.sprite = sprite
 				icon.quality = quality
 				icon.elem_tooltip = util.elem_tooltip(hash)
 				icon.tooltip = tooltip
-				local chip = refs[tab .. "_chip"]
+				local chip = refs[t.name .. "_chip"]
 				chip.caption = { "cybersyn-gui.filter-chip", item_name or hash }
 				chip.tooltip = tooltip
 			end
@@ -579,8 +560,8 @@ function manager.update_status(player_data)
 	local percent = show and math.floor(collecting * 100) or -1
 	if player_data.collecting_shown ~= percent then
 		player_data.collecting_shown = percent
-		for _, tab in ipairs(HEADER_TABS) do
-			local note = refs[tab .. "_collecting"]
+		for _, t in ipairs(tabs) do
+			local note = refs[t.name .. "_collecting"]
 			if note and note.valid then
 				note.visible = show
 				note.caption = show and { "cybersyn-gui.collecting-progress", tostring(percent) } or ""
@@ -634,15 +615,14 @@ local function write_filter_widgets(player, player_data)
 	manager.refresh_filter_row(player, player_data)
 end
 
-local tab_builders = {
-	overview_tab = overview_tab,
-	inventory_tab = inventory_tab,
-	stations_tab = stations_tab,
-	trains_tab = trains_tab,
-	log_tab = log_tab,
-	utilization_tab = utilization_tab,
-	delivery_breakdown_tab = delivery_breakdown_tab,
-}
+--- The tab's cleanup hook, if it has one: it is being left or the window closes.
+--- @param map_data MapData
+--- @param player_data PlayerData
+--- @param tab string?
+local function cleanup(map_data, player_data, tab)
+	local m = tab and tab_modules[tab]
+	if m and m.cleanup then m.cleanup(map_data, player_data) end
+end
 
 --- @param map_data MapData
 --- @param player_data PlayerData
@@ -650,14 +630,7 @@ function manager.update(map_data, player_data)
 	local previous_tab = player_data.previous_tab
 	local current_tab = player_data.selected_tab
 	if previous_tab ~= current_tab then
-		if previous_tab == "utilization_tab" then
-			utilization_tab.cleanup(map_data, player_data)
-		elseif previous_tab == "delivery_breakdown_tab" then
-			delivery_breakdown_tab.cleanup(map_data, player_data)
-		elseif previous_tab == "inventory_tab" then
-			-- Coming back must show current totals at once, not a refresh spread over the next renders.
-			player_data.inventory_cache = nil
-		end
+		cleanup(map_data, player_data, previous_tab)
 		player_data.previous_tab = current_tab
 	end
 
@@ -671,10 +644,8 @@ function manager.update(map_data, player_data)
 	if player_data.item_view then item.close(nil, player_data) end
 	if current_tab == "inventory_tab" then inventory_tab.set_drill_down(player_data, false) end
 
-	local builder = tab_builders[current_tab]
-	if builder then
-		builder.build(map_data, player_data)
-	end
+	local m = tab_modules[current_tab]
+	if m then m.build(map_data, player_data) end
 end
 
 --- Train alerts as the Trains tab's badge.
@@ -787,11 +758,7 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_close(player, player_data, refs)
-	if player_data.selected_tab == "utilization_tab" then
-		utilization_tab.cleanup(storage, player_data)
-	elseif player_data.selected_tab == "delivery_breakdown_tab" then
-		delivery_breakdown_tab.cleanup(storage, player_data)
-	end
+	cleanup(storage, player_data, player_data.selected_tab)
 	-- Cleanup above runs again on reopen otherwise.
 	player_data.previous_tab = nil
 	player_data.search_open = nil
