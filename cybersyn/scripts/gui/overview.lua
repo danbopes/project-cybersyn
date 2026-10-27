@@ -30,10 +30,6 @@ local logic = require("scripts.gui.tab-logic")
 --- @field overview_period int? minutes covered by the Throughput tile and the headroom minimum: 10, 60 or 1440
 --- @field overview_show_acked true? acknowledged rows are listed (greyed, at the bottom)
 --- @field overview_widths {requester: int, provider: int, tile: int}? column widths for the current layout
---- @field stations_chip "unserved"|"failing"|"problems"? the Stations chip a tile jump selects (stations.lua owns the others)
---- @field stations_problems_scope "errors"? set with the Problems chip by the Misconfigured jump: list only the stations
---- util.open_setup_errors counts (stations.lua honours it; any chip toggle there clears it)
---- @field trains_chip "parked"? the Trains chip the Fleet headroom tile selects, with the network filter
 --- @field overview_failing {fsig: string, parts: {[uint]: int}, errs: {[uint]: int}, counts: table, epoch: int, pos: int}?
 ---   the Stations failing tile's per-station flags and counts, kept up to date from the collector's change log
 
@@ -406,7 +402,7 @@ end
 --- pass over the unserved entries, never over the stations; the place filters are decided once per requester. The
 --- tile's station count is not taken here: it comes from the snapshot records (station_part), the Unserved chip's rule.
 --- @param d DiagState
---- @param f ManagerFilters filters.overview_filters
+--- @param f ManagerFilters filters.get(player_data, "overview_tab")
 --- @param stations {[uint]: SnapshotStation}
 --- @param rows int
 --- @param threshold int ticks a request must have waited for the tile
@@ -620,7 +616,7 @@ end
 function overview_tab.model(player_data)
 	local snapshot = collector.get()
 	local now = game.tick
-	local f = filters.overview_filters(player_data)
+	local f = filters.get(player_data, TAB)
 	local item = f.item
 	local period = get_period(player_data)
 	local minutes = UNSERVED_MINUTES
@@ -1490,7 +1486,7 @@ end
 --- @param scope "errors"?
 local function jump_stations(player, player_data, chip, sort, scope)
 	nav.focus(player, player_data, "stations_tab", { keep_row = true, stations_chip = chip,
-		stations_problems_scope = scope, sort = sort })
+		problems_scope = scope, sort = sort })
 end
 
 local UNSERVED_SORT = { tab = "stations_tab", column = "wait", ascending = false }

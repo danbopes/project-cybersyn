@@ -645,7 +645,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	end
 
 	-- Use item filter from manager toolbar (optional - shows all items when not set)
-	local search_item = filters.get_filters(player_data).item
+	local search_item = filters.get(player_data, "delivery_breakdown_tab").item
 
 	-- Calculate time range based on interval (needed for cache key)
 	local interval_ticks = RANGES[interval_index].ticks

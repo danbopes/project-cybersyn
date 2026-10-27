@@ -178,7 +178,7 @@ log_tab.get_filter = get_filter
 --- @param d DiagState
 --- @return int?
 local function item_filter(player_data, d)
-	local hash = player_data.search_item
+	local hash = player_data.filters.item
 	if not hash then return nil end
 	return d.item_ix[hash] or -1
 end
@@ -189,7 +189,7 @@ end
 local function compiled(player_data, d)
 	local f = get_filter(player_data)
 	local item = item_filter(player_data, d)
-	local station = player_data.search_station
+	local station = player_data.filters.station
 	local c = player_data.log_cf
 	local sev = f.sev
 	-- Rebuilt only when the filter changed; otherwise only the window's start moves with the clock.

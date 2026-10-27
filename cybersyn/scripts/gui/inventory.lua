@@ -867,7 +867,7 @@ end
 function inventory_tab.build(map_data, player_data)
 	local refs = player_data.refs
 	local snapshot = collector.get()
-	local f = filters.get_filters(player_data)
+	local f = filters.get(player_data, TAB)
 	local layout = player_data.layout
 	if layout then
 		local _, columns = grid_size(layout.content_width)

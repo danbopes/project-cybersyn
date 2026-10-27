@@ -31,7 +31,6 @@ local rtext = require("scripts.gui.relative-text")
 local stations_tab = {}
 
 --- @class PlayerData
---- @field stations_chip string? the toggled chip: one of STATUSES, or "unserved"|"problems"|"stuck"|"failing"
 --- @field stations_problems_view boolean? the Problems chip was on at the last query (its sort is set on the way in)
 --- @field stations_query table? classified and sorted rows of one snapshot and filter set; it can outlive a close
 ---   while the snapshot is kept, see nav.close_manager_window
@@ -360,7 +359,7 @@ local sort_keys = {
 --- @param player_data PlayerData
 --- @return string?
 local function active_chip(player_data)
-	local c = player_data.stations_chip
+	local c = player_data.filters.stations_chip
 	if c and (STATUS_RANK[c] or FLAG_CHIPS[c] or c == "stuck") then return c end
 	return nil
 end
@@ -712,12 +711,12 @@ end
 function stations_tab.query(player_data)
 	local snapshot = collector.get()
 	local stations = snapshot.stations
-	local f = filters.get_filters(player_data)
+	local f = filters.get(player_data, TAB)
 	local wanted = active_chip(player_data)
 	local problems = wanted == "problems"
 	-- The Overview's Misconfigured jump narrows the Problems view to the stations its line counts (p1's contract).
-	if not problems then player_data.stations_problems_scope = nil end
-	local errors_only = problems and player_data.stations_problems_scope == "errors"
+	if not problems then player_data.filters.problems_scope = nil end
+	local errors_only = problems and player_data.filters.problems_scope == "errors"
 	if problems ~= (player_data.stations_problems_view == true) then
 		-- The Problems view opens worst first; leaving it drops its sort.
 		player_data.stations_problems_view = problems or nil
@@ -1989,8 +1988,8 @@ local function view_registry(player_data, rows, ctx)
 	if not cache then return {} end
 	ctx.lint = problem_index(cache)
 	-- The Misconfigured jump's scope counts stations only.
-	if player_data.stations_problems_scope == "errors" then return {} end
-	return registry_rows(ctx.lint, filters.get_filters(player_data))
+	if player_data.filters.problems_scope == "errors" then return {} end
+	return registry_rows(ctx.lint, filters.get(player_data, TAB))
 end
 
 --- @param map_data MapData
@@ -2046,11 +2045,11 @@ function stations_tab.build(map_data, player_data)
 		return
 	end
 
-	local item = player_data.search_item
+	local item = player_data.filters.item
 	local minute = math.floor(ctx.now / 3600)
 	-- A hold must only defer data-driven reshuffles; a filter, sort, chip or page change the user just made (often
 	-- by clicking inside a hovered row) has to apply at once.
-	local view = view_sig(filters.get_filters(player_data), column, ascending) .. "\1"
+	local view = view_sig(filters.get(player_data, TAB), column, ascending) .. "\1"
 		.. (active_chip(player_data) or "") .. "\1" .. tostring(player_data.page and player_data.page[TAB])
 	local hold = state.view == view and hover.hold_active(player_data, SCROLL)
 	state.view = view
@@ -2166,7 +2165,7 @@ function stations_tab.build(map_data, player_data)
 		if empty then
 			local caption
 			local pending = problems and lint_pending()
-			local filtered = filters.filters_active(filters.get_filters(player_data))
+			local filtered = filters.filters_active(filters.get(player_data, TAB))
 			if pending then
 				caption = { "cybersyn-gui.problems-pending-progress", tostring(pending) }
 			elseif problems then
@@ -2268,9 +2267,9 @@ end
 --- @param chip string?
 function stations_tab.set_chip(player_data, chip)
 	if chip == "all" or chip == active_chip(player_data) then chip = nil end
-	player_data.stations_problems_scope = nil
+	player_data.filters.problems_scope = nil
 	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
-	player_data.stations_chip = chip
+	player_data.filters.stations_chip = chip
 	listing.reset_page(player_data, TAB)
 end
 

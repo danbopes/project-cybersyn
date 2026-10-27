@@ -91,7 +91,7 @@ local function setup(pinning)
 	local player = new_player(1, manager_gui)
 	local window = H.element({ name = "manager_window" })
 	window.visible = true
-	local pd = { is_manager_open = true, pinning = pinning or false, refs = { manager_window = window } }
+	local pd = { is_manager_open = true, pinning = pinning or false, refs = { manager_window = window }, filters = {} }
 	storage.manager = { players = { [1] = pd } }
 	player._state.opened = not pinning and window or nil
 	game.tick = 500
@@ -246,7 +246,7 @@ local function right_click(kind, id)
 	player.create_local_flying_text = function(spec) texts[#texts + 1] = spec.text end
 	storage.trains = { [5] = { entity = { valid = true, id = 5, locomotives = { front_movers = {}, back_movers = {} } } } }
 	storage.stations = {}
-	pd.search_item = "iron-plate"
+	pd.filters.item = "iron-plate"
 	require("scripts.gui.utils.links").handle_link_click(player, pd, { element = { tags = { kind = kind, id = id } },
 		button = defines.mouse_button_type.right })
 	manager.render = render
@@ -260,7 +260,7 @@ test("right-click on a station link: no handler, no re-render, nothing set", fun
 	assert_nil(pd.log_filter)
 	assert_nil(pd.return_to)
 	assert_same(player.opened, pd.refs.manager_window)
-	assert_eq(pd.search_item, "iron-plate")
+	assert_eq(pd.filters.item, "iron-plate")
 end)
 
 test("right-click on a train link: no handler, no re-render, nothing set", function()
@@ -273,7 +273,7 @@ end)
 
 test("right-click on an item still clears the item filter and re-renders", function()
 	local _, pd, renders = right_click("item", "iron-plate")
-	assert_nil(pd.search_item)
+	assert_nil(pd.filters.item)
 	assert_eq(renders, 1)
 end)
 

@@ -63,7 +63,7 @@ end
 
 test("query: status ladder and counts", function()
 	local stations_tab = setup()
-	local pd = {}
+	local pd = { filters = {} }
 	local rows, counts, ctx, column, ascending = stations_tab.query(pd)
 	assert_eq(column, "name")
 	assert_true(ascending)
@@ -84,16 +84,16 @@ test("query: Setup replaces OK while an error finding is open", function()
 	snap.stations[8].lint = LINT_BIT[LINT_CAPACITY]
 	snap.stations[4].lint = LINT_BIT[LINT_CAPACITY]
 	snap.stations[9].lint = LINT_BIT[LINT_LIMIT_ZERO]
-	local pd = {}
+	local pd = { filters = {} }
 	local _, counts, ctx = stations_tab.query(pd)
 	assert_eq(ctx.status[8], "setup")
 	assert_eq(ctx.status[4], "starved", "a status that says why stays")
 	assert_eq(ctx.status[9], "ok", "a warning does not block")
 	assert_eq(counts.setup, 1)
 	assert_eq(counts.ok, 2)
-	pd.stations_chip = "setup"
+	pd.filters.stations_chip = "setup"
 	assert_eq(ids((stations_tab.query(pd))), { 8 })
-	pd.stations_chip = nil
+	pd.filters.stations_chip = nil
 	storage.acks = { request = {}, station = {}, lint = { [8] = { [LINT_CAPACITY] = { player_index = 1 } } }, lint_version = 1 }
 	_, counts, ctx = stations_tab.query(pd)
 	assert_eq(ctx.status[8], "ok")
@@ -123,45 +123,45 @@ end)
 
 test("query: descending name keeps the id tiebreak ascending", function()
 	local stations_tab = setup()
-	local pd = { sort = { stations_tab = { column = "name", ascending = false } } }
+	local pd = { sort = { stations_tab = { column = "name", ascending = false } }, filters = {} }
 	local rows = stations_tab.query(pd)
 	assert_eq(ids(rows), { 8, 9, 7, 6, 5, 4, 3, 2, 1 })
 end)
 
 test("query: status and wait sort keys", function()
 	local stations_tab = setup()
-	local pd = { sort = { stations_tab = { column = "station_status", ascending = true } } }
+	local pd = { sort = { stations_tab = { column = "station_status", ascending = true } }, filters = {} }
 	assert_eq(ids((stations_tab.query(pd))), { 1, 2, 3, 4, 5, 7, 6, 8, 9 })
 	stations_tab = setup()
-	pd = { sort = { stations_tab = { column = "wait", ascending = true } } }
+	pd = { sort = { stations_tab = { column = "wait", ascending = true } }, filters = {} }
 	-- Ascending wait = latest request start first; stations without a wait last, by name.
 	assert_eq(ids((stations_tab.query(pd))), { 4, 9, 1, 2, 3, 5, 6, 7, 8 })
 	stations_tab = setup()
-	pd = { sort = { stations_tab = { column = "bogus", ascending = true } } }
+	pd = { sort = { stations_tab = { column = "bogus", ascending = true } }, filters = {} }
 	local _, _, _, column = stations_tab.query(pd)
 	assert_eq(column, "name")
 end)
 
 test("query: status filter applies after counting; an unknown chip reads as All without a write", function()
 	local stations_tab = setup()
-	local pd = { stations_chip = "ok" }
+	local pd = { filters = { stations_chip = "ok" } }
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(ids(rows), { 6, 8, 9 })
 	assert_eq(counts.all, 9)
-	pd.stations_chip = "gone"
+	pd.filters.stations_chip = "gone"
 	rows = stations_tab.query(pd)
-	assert_eq(pd.stations_chip, "gone")
+	assert_eq(pd.filters.stations_chip, "gone")
 	assert_eq(#rows, 9)
 end)
 
 test("query: global filters narrow the set and the counts", function()
 	local stations_tab = setup()
-	local pd = { search_query = "hotel" }
+	local pd = { filters = { query = "hotel", terms = { "hotel" } } }
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(ids(rows), { 8, 9 })
 	assert_eq(counts, { all = 2, no_power = 0, disabled = 0, warming_up = 0, starved = 0, setup = 0, saturated = 0, idle = 0,
 		ok = 2, unserved = 0, problems = 0, failing = 0, stuck = 0 })
-	pd = { search_item = "coal" }
+	pd = { filters = { item = "coal" } }
 	stations_tab = setup()
 	rows = stations_tab.query(pd)
 	assert_eq(ids(rows), { 3, 4 })
@@ -170,7 +170,7 @@ end)
 -- The collector refills records in place, so a renamed station keeps its record table.
 test("query: a refilled record is merged into the kept order once its pass has completed", function()
 	local stations_tab, collector, snap = setup()
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.query(pd)
 	assert_eq(pd.stations_query.sort_kind, "full")
 	snap.stations[8].name, snap.stations[8].name_lower = "Aardvark", "aardvark"
@@ -191,7 +191,7 @@ end)
 
 test("query: statuses the collector changed and logged update the cached counts", function()
 	local stations_tab, _, snap = setup()
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.query(pd)
 	snap.stations[4].status = "ok"
 	snap.stations[9].status = "starved"
@@ -209,14 +209,14 @@ end)
 test("query: the status is read from the record, never recomputed", function()
 	local stations_tab, _, snap = setup()
 	snap.stations[8].status = "saturated"
-	local _, counts, ctx = stations_tab.query({})
+	local _, counts, ctx = stations_tab.query({ filters = {} })
 	assert_eq(ctx.status[8], "saturated")
 	assert_eq(counts.saturated, 2)
 end)
 
 test("query: removed station leaves rows and counts", function()
 	local stations_tab, _, snap = setup()
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.query(pd)
 	snap.stations[5] = nil
 	local log = storage.manager.collect_log
@@ -230,7 +230,7 @@ end)
 -- The classification includes the chip flags, so the first build takes three updates (classify, sort, rows).
 test("query: the first build after a boosted pass is spread over the three updates after the one that completed it", function()
 	local stations_tab, _, snap = setup()
-	local pd = { player_index = 1 }
+	local pd = { player_index = 1, filters = {} }
 	snap.boosted = true
 	snap.tick = 20
 	local rows, counts, ctx = stations_tab.query(pd)
@@ -265,7 +265,7 @@ end)
 test("query: a pass completed by run_to_completion or the regular step shows rows at once", function()
 	local stations_tab, _, snap = setup()
 	snap.tick = 20
-	local rows = stations_tab.query({ player_index = 1 })
+	local rows = stations_tab.query({ player_index = 1, filters = {} })
 	assert_eq(#rows, 9)
 end)
 
@@ -279,30 +279,30 @@ test("chips: unserved, problems, stuck and failing count what they show", functi
 	snap.stations[8].unserved = { count = 1, worst_reason = 1, oldest_first_tick = 1 }
 	snap.trains = { [70] = { id = 70, p_station_id = 4, r_station_id = 9 }, [71] = { id = 71, p_station_id = 3 } }
 	snap.alerts = { { train_id = 70, kind = 1 }, { train_id = 71, kind = 2 } }
-	local pd = {}
+	local pd = { filters = {} }
 	local _, counts = stations_tab.query(pd)
 	assert_eq({ counts.unserved, counts.problems, counts.stuck, counts.failing }, { 2, 2, 2, 5 })
 	-- The Problems view sorts worst first: capacity (8) before the check behind bit 8 (6).
 	local want = { unserved = { 5, 8 }, problems = { 8, 6 }, stuck = { 4, 9 }, failing = { 1, 2, 6, 7, 8 } }
 	for chip, list in pairs(want) do
-		pd.stations_chip = nil
+		pd.filters.stations_chip = nil
 		stations_tab.set_chip(pd, chip)
 		local rows, c = stations_tab.query(pd)
 		assert_eq(ids(rows), list, chip)
 		assert_eq(#rows, c[chip], chip .. " count == rows")
 	end
 	-- Toggling the active chip again shows all; a status chip replaces a flag chip.
-	pd = {}
+	pd = { filters = {} }
 	stations_tab.set_chip(pd, "failing")
-	assert_eq(pd.stations_chip, "failing")
+	assert_eq(pd.filters.stations_chip, "failing")
 	stations_tab.set_chip(pd, "failing")
-	assert_nil(pd.stations_chip)
+	assert_nil(pd.filters.stations_chip)
 	stations_tab.set_chip(pd, "problems")
 	stations_tab.set_chip(pd, "ok")
-	assert_eq(pd.stations_chip, "ok")
+	assert_eq(pd.filters.stations_chip, "ok")
 	-- The surface filter narrows every chip count.
 	snap.stations[8].surface_index = 2
-	local _, narrowed = stations_tab.query({ search_surface_idx = 1 })
+	local _, narrowed = stations_tab.query({ filters = { surface = 1 } })
 	assert_eq({ narrowed.unserved, narrowed.problems }, { 1, 1 })
 end)
 
@@ -313,7 +313,7 @@ test("problems view: acknowledged stations sort after the open ones, at once", f
 	local stations_tab, _, snap = setup()
 	snap.stations[6].lint = 8
 	snap.stations[8].lint = 1
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.set_chip(pd, "problems")
 	assert_eq(ids((stations_tab.query(pd))), { 8, 6 })
 	storage.acks = { request = {}, station = {}, lint = { [8] = { [1] = { player_index = 1 } } }, lint_version = 1 }
@@ -328,7 +328,7 @@ end)
 
 test("chips: a refilled record moves between chip counts with the change log", function()
 	local stations_tab, collector, snap = setup()
-	local pd = {}
+	local pd = { filters = {} }
 	local _, counts = stations_tab.query(pd)
 	assert_eq(counts.problems, 0)
 	snap.stations[3].lint = 4
@@ -352,11 +352,11 @@ test("query: natural name order (stn-1 < stn-2 < stn-10), both directions", func
 		[5] = st(5, "Alpha"),
 	}
 	for _, record in pairs(snap.stations) do record.status = "ok" end
-	assert_eq(ids((stations_tab.query({}))), { 5, 3, 2, 4, 1 })
-	local pd = { sort = { stations_tab = { column = "name", ascending = false } } }
+	assert_eq(ids((stations_tab.query({ filters = {} }))), { 5, 3, 2, 4, 1 })
+	local pd = { sort = { stations_tab = { column = "name", ascending = false } }, filters = {} }
 	assert_eq(ids((stations_tab.query(pd))), { 1, 2, 4, 3, 5 })
 	-- Another column's ties fall back to the natural order too.
-	pd = { sort = { stations_tab = { column = "station_status", ascending = true } } }
+	pd = { sort = { stations_tab = { column = "station_status", ascending = true } }, filters = {} }
 	assert_eq(ids((stations_tab.query(pd))), { 5, 3, 2, 4, 1 })
 end)
 
@@ -367,7 +367,7 @@ test("problems chip: worst severity then check order; the sort comes and goes wi
 	snap.stations[4].lint = LINT_BIT[LINT_LIMIT_ZERO]
 	snap.stations[6].lint = LINT_BIT[LINT_LIMIT_ZERO] + LINT_BIT[LINT_LAYOUT]
 	snap.stations[8].lint = LINT_BIT[LINT_CAPACITY]
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.set_chip(pd, "problems")
 	local rows, counts, _, column, ascending = stations_tab.query(pd)
 	assert_eq({ column, ascending }, { "problems", true })
@@ -378,8 +378,8 @@ test("problems chip: worst severity then check order; the sort comes and goes wi
 	local _, _, _, column2 = stations_tab.query(pd)
 	assert_eq(column2, "name")
 	-- Provided / requested stands in for Problems outside the view, and the other way round.
-	pd = { sort = { stations_tab = { column = "provided_requested", ascending = true } }, stations_chip = "problems",
-		stations_problems_view = true }
+	pd = { sort = { stations_tab = { column = "provided_requested", ascending = true } }, stations_problems_view = true,
+		filters = { stations_chip = "problems" } }
 	local _, _, _, column3 = stations_tab.query(pd)
 	assert_eq(column3, "problems")
 end)
@@ -397,7 +397,7 @@ test("last dispatch: never while last_delivery_tick is still the build tick; sor
 	assert_true(stations_tab.never_dispatched(snap.stations[5]))
 	assert_false(stations_tab.never_dispatched(snap.stations[7]))
 	assert_false(stations_tab.never_dispatched(snap.stations[9]))
-	local pd = { sort = { stations_tab = { column = "last_delivery", ascending = true } } }
+	local pd = { sort = { stations_tab = { column = "last_delivery", ascending = true } }, filters = {} }
 	local order = ids((stations_tab.query(pd)))
 	assert_eq({ order[1], order[2] }, { 7, 9 })
 	assert_eq(order[#order], 8)
@@ -464,14 +464,14 @@ end
 
 test("query: a station lists one row per combinator; a name sort keeps them together in index order", function()
 	local stations_tab = setup_rows()
-	local pd = {}
+	local pd = { filters = {} }
 	local rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(row_ids(rows), { "1@0", "2@0", "3@0", "21@0", "21@1", "4@0", "5@0", "6@0", "7@0", "8@0", "9@0", "20@0",
 		"20@1", "20@2" })
 	assert_eq(counts.all, 11, "the counts are stations")
 	assert_eq(ctx.stations, 11)
 	assert_eq(rows[5].key, "21@2002")
-	pd = { sort = { stations_tab = { column = "name", ascending = false } } }
+	pd = { sort = { stations_tab = { column = "name", ascending = false } }, filters = {} }
 	stations_tab = setup_rows()
 	assert_eq(row_ids((stations_tab.query(pd))), { "20@0", "20@1", "20@2", "8@0", "9@0", "7@0", "6@0", "5@0", "4@0",
 		"21@0", "21@1", "3@0", "2@0", "1@0" }, "descending keeps the station's own rows ascending")
@@ -479,15 +479,15 @@ end)
 
 test("query: rows sort on their own network, provided / requested and priority", function()
 	local stations_tab = setup_rows()
-	local pd = { sort = { stations_tab = { column = "network", ascending = true } } }
+	local pd = { sort = { stations_tab = { column = "network", ascending = true } }, filters = {} }
 	local rows = stations_tab.query(pd)
 	assert_eq(row_ids(rows), { "1@0", "2@0", "3@0", "21@0", "4@0", "5@0", "6@0", "7@0", "8@0", "9@0", "20@0",
 		"21@1", "20@1", "20@2" }, "mask 1 by name, then masks 2, 3, 4")
 	stations_tab = setup_rows()
-	pd = { sort = { stations_tab = { column = "priority", ascending = false } } }
+	pd = { sort = { stations_tab = { column = "priority", ascending = false } }, filters = {} }
 	assert_eq(row_ids((stations_tab.query(pd)))[1], "21@1", "Inventory 1 of the coal hub at priority 3")
 	stations_tab = setup_rows()
-	pd = { sort = { stations_tab = { column = "provided_requested", ascending = false } } }
+	pd = { sort = { stations_tab = { column = "provided_requested", ascending = false } }, filters = {} }
 	rows = stations_tab.query(pd)
 	local first = {}
 	for i = 1, 6 do first[i] = rows[i].st.id .. "@" .. rows[i].index end
@@ -497,26 +497,26 @@ end)
 
 test("query: the network filter lists the rows on that mask; the counts stay stations", function()
 	local stations_tab = setup_rows()
-	local pd = { search_network_name = "signal-A", search_network_mask = 4 }
+	local pd = { filters = { network = "signal-A", mask = 4 } }
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(row_ids(rows), { "20@2" })
 	assert_eq(counts.all, 1)
 	stations_tab = setup_rows()
-	pd = { search_network_name = "signal-A", search_network_mask = 2 }
+	pd = { filters = { network = "signal-A", mask = 2 } }
 	rows, counts = stations_tab.query(pd)
 	assert_eq(row_ids(rows), { "21@1", "20@1" }, "mask 3 holds bit 2 too")
 	assert_eq(counts.all, 2)
 	stations_tab = setup_rows()
-	rows = stations_tab.query({ search_item = F.COAL })
+	rows = stations_tab.query({ filters = { item = F.COAL } })
 	assert_eq(row_ids(rows), { "3@0", "21@0", "21@1", "4@0" }, "the coal hub provides it on one row and requests it on the other")
 	stations_tab = setup_rows()
-	rows = stations_tab.query({ search_station = 20 })
+	rows = stations_tab.query({ filters = { station = 20 } })
 	assert_eq(row_ids(rows), { "20@0", "20@1", "20@2" }, "the station chip lists every row of its station")
 end)
 
 test("query: a refilled station that gained an inventory gets its row merged in", function()
 	local stations_tab, collector, snap = setup_rows()
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.query(pd)
 	local hub = snap.stations[21]
 	local i2 = { kind = "inventory", index = 2, unit = 2003, ok = true, priority = 0, network_name = "signal-A", mask = 1,
@@ -536,7 +536,7 @@ end)
 test("query: the Problems view lists a station once, on its station combinator's row", function()
 	local stations_tab, _, snap = setup_rows()
 	snap.stations[20].lint = 8
-	local pd = {}
+	local pd = { filters = {} }
 	stations_tab.set_chip(pd, "problems")
 	assert_eq(row_ids((stations_tab.query(pd))), { "20@0" })
 end)
@@ -545,14 +545,14 @@ test("query: under a filter that drops the station combinator's row, the Problem
 	local stations_tab, _, snap = setup_rows()
 	snap.stations[20].lint = 8
 	snap.stations[21].lint = 8
-	local pd = { search_network_name = "signal-A", search_network_mask = 2 }
+	local pd = { filters = { network = "signal-A", mask = 2 } }
 	stations_tab.set_chip(pd, "problems")
 	local rows, counts = stations_tab.query(pd)
 	assert_eq(counts.problems, 2)
 	assert_eq(row_ids(rows), { "21@1", "20@1" }, "Inventory 1 of each: mask 3 and mask 2 hold bit 2")
 	stations_tab, _, snap = setup_rows()
 	snap.stations[20].lint = 8
-	pd = { search_item = F.LIQUID_FUEL }
+	pd = { filters = { item = F.LIQUID_FUEL } }
 	stations_tab.set_chip(pd, "problems")
 	rows, counts = stations_tab.query(pd)
 	assert_eq(counts.problems, 1)

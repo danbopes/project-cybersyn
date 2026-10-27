@@ -30,7 +30,7 @@ function links.item_button_click(player, player_data, e, hash)
 	if e.button == defines.mouse_button_type.right then
 		-- A stop panel shows no filter, so its slots have nothing to clear.
 		if station then return end
-		filters.set_item_filter(player_data, nil)
+		filters.set(player_data, "item", nil)
 	elseif e.button == defines.mouse_button_type.left then
 		local name = unhash_signal(hash)
 		interface_raise_item_selected(player.index, name)
@@ -43,7 +43,7 @@ function links.item_button_click(player, player_data, e, hash)
 				reveal = tags.flight and { all = true } or nil })
 			return
 		end
-		filters.set_item_filter(player_data, hash)
+		filters.set(player_data, "item", hash)
 		local tab = e.shift and "stations_tab" or "inventory_tab"
 		if not nav.select_tab(player_data, tab) then player_data.selected_tab = tab end
 		if not player_data.is_manager_open then

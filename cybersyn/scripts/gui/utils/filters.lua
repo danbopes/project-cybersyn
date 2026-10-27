@@ -4,6 +4,7 @@
 local collector = require("scripts.gui.collector")
 local util = require("scripts.gui.util")
 local listing = require("scripts.gui.utils.listing")
+local tabs = require("scripts.gui.utils.tabs")
 
 local filters = {}
 
@@ -34,15 +35,107 @@ function filters.terms_match(name_lower, terms)
 	return true
 end
 
+--- @class FilterState every filter the manager applies (player_data.filters); written through filters.set and filters.clear
+--- @field query string? raw text of the station-name search
+--- @field terms string[]? lowercase terms of `query`
+--- @field item string? item hash (name or name|quality)
+--- @field station uint? station id of the station chip
+--- @field network string? network signal name
+--- @field mask int? network ID; nil = any
+--- @field surface uint? surface index
+--- @field stations_chip string? the Stations flag chip, see stations.lua
+--- @field problems_scope "errors"? with the Problems chip: only the stations with errors
+--- @field trains_chip string? the Trains chip, see trains.lua
+
+--- @class PlayerData
+--- @field filters FilterState
+
+-- A stored id or name that no longer resolves (a removed stop, an uninstalled item, a deleted surface) is dropped
+-- rather than kept as a filter nothing can pass.
+local VALID = {
+	item = function(hash) return util.signal_hash_valid(hash) end,
+	network = function(name) return util.signal_hash_valid(name) end,
+	station = function(id) return storage.stations[id] ~= nil end,
+	surface = function(index) return game.get_surface(index) ~= nil end,
+}
+
+-- The filter row's own filters: any of them set opens the row, and closing the row clears them.
+local ROW = { "item", "station", "network", "mask", "surface" }
+-- What a jump to a subject drops even when it keeps the row (manager.focus keep_row): the station chip and the
+-- tabs' own chips.
+local CHIPS = { "station", "stations_chip", "problems_scope", "trains_chip" }
+local SCOPES = {
+	chips = CHIPS,
+	row = { "item", "station", "network", "mask", "surface", "stations_chip", "problems_scope", "trains_chip" },
+	all = { "query", "terms", "item", "station", "network", "mask", "surface", "stations_chip", "problems_scope",
+		"trains_chip" },
+}
+local IS_ROW = {}
+for _, field in ipairs(ROW) do IS_ROW[field] = true end
+
+--- Sets one filter: validates it, resets every tab's page and opens the filter row for a row filter, so no
+--- filter is ever active with the row hidden. An empty query or a mask of -1 clears that filter.
 --- @param player_data PlayerData
---- @param text string?
-function filters.set_search_query(player_data, text)
-	if text == "" then text = nil end
-	player_data.search_query = text
-	player_data.search_terms = filters.search_terms(text)
+--- @param field string a FilterState field
+--- @param value any
+function filters.set(player_data, field, value)
+	local fs = player_data.filters
+	if field == "query" then
+		if value == "" then value = nil end
+		fs.terms = filters.search_terms(value)
+	elseif field == "mask" then
+		if value == -1 then value = nil end
+	elseif value ~= nil and VALID[field] and not VALID[field](value) then
+		value = nil
+	end
+	if fs[field] == value then return end
+	fs[field] = value
+	if value ~= nil and IS_ROW[field] then player_data.filter_row_open = true end
+	listing.reset_pages(player_data)
 end
 
---- @class ManagerFilters
+--- Clears a scope of filters: "chips" (the station chip and the tab chips), "row" (those and the filter row's
+--- filters) or "all" (also the station search).
+--- @param player_data PlayerData
+--- @param scope "chips"|"row"|"all"
+function filters.clear(player_data, scope)
+	local fs = player_data.filters
+	for _, field in ipairs(SCOPES[scope]) do fs[field] = nil end
+	listing.reset_pages(player_data)
+end
+
+--- Whether any of the filter row's filters is set.
+--- @param player_data PlayerData
+--- @return boolean
+function filters.active(player_data)
+	local fs = player_data.filters
+	for i = 1, #ROW do
+		if fs[ROW[i]] ~= nil then return true end
+	end
+	return false
+end
+
+--- Drops every stored filter that no longer resolves; run before anything reads or shows the filters.
+--- @param player_data PlayerData
+function filters.validate(player_data)
+	local fs = player_data.filters
+	for field, valid in pairs(VALID) do
+		local v = fs[field]
+		if v ~= nil and not valid(v) then fs[field] = nil end
+	end
+	if fs.query and not fs.terms then fs.terms = filters.search_terms(fs.query) end
+end
+
+--- A plain string of every stored filter, to tell when the widgets showing them need writing.
+--- @param player_data PlayerData
+--- @return string
+function filters.signature(player_data)
+	local fs = player_data.filters
+	return table.concat({ fs.query or "", fs.item or "", fs.station or "", fs.network or "", fs.mask or "",
+		fs.surface or "", fs.stations_chip or "", fs.problems_scope or "", fs.trains_chip or "" }, "\1")
+end
+
+--- @class ManagerFilters the filters one tab applies (filters.get)
 --- @field terms string[]? lowercase, AND-ed plain substrings of the station name
 --- @field item string? item hash
 --- @field network string? network signal name
@@ -50,21 +143,21 @@ end
 --- @field surface uint? surface index
 --- @field station uint? station id (the station chip): only that station's rows pass
 
+--- The filters `tab` applies: the stored ones less those its tabs.lua entry does not apply, so a tab cannot filter
+--- by something its chip tooltip says it ignores.
 --- @param player_data PlayerData
+--- @param tab string
 --- @return ManagerFilters
-function filters.get_filters(player_data)
-	local terms = player_data.search_terms
-	if terms == nil and player_data.search_query then
-		terms = filters.search_terms(player_data.search_query)
-		player_data.search_terms = terms
-	end
+function filters.get(player_data, tab)
+	local fs = player_data.filters
+	local t = tabs.by_name[tab]
 	return {
-		terms = terms,
-		item = player_data.search_item,
-		network = player_data.search_network_name,
-		mask = player_data.search_network_mask or -1,
-		surface = player_data.search_surface_idx,
-		station = player_data.search_station,
+		terms = t.search and fs.terms or nil,
+		item = t.item and fs.item or nil,
+		network = fs.network,
+		mask = fs.mask or -1,
+		surface = fs.surface,
+		station = t.station and fs.station or nil,
 	}
 end
 
@@ -158,19 +251,6 @@ function filters.station_passes(st, f, ignore_item)
 		if row_own_passes(rows[i], f, ignore_item) then return true end
 	end
 	return false
-end
-
---- The filters the Overview applies: network name, network ID, surface and item. It has no station search,
---- so the terms are left out: a query typed on another tab would otherwise filter it invisibly.
---- @param player_data PlayerData
---- @return ManagerFilters
-function filters.overview_filters(player_data)
-	local f = filters.get_filters(player_data)
-	f.terms = nil
-	-- The Overview ignores the station chip (its tooltip says so there).
-	f.station = nil
-	if f.item and not util.signal_hash_valid(f.item) then f.item = nil end
-	return f
 end
 
 --- A plain string of every filter field, for caches keyed on the filters.
@@ -270,44 +350,6 @@ function filters.train_terms_pass(tr, terms)
 		end
 	end
 	return true
-end
-
---- Applies an item filter (hash or nil) to player data and the toolbar chooser.
---- @param player_data PlayerData
---- @param hash string?
-function filters.set_item_filter(player_data, hash)
-	if hash and not util.signal_hash_valid(hash) then hash = nil end
-	player_data.search_item = hash
-	-- No filter is ever hidden: setting one opens the filter row; the manager's render shows it.
-	if hash then player_data.filter_row_open = true end
-	local elem = player_data.refs and player_data.refs.manager_item_filter
-	if elem and elem.valid then
-		elem.elem_value = hash and util.signalid_from_hash(hash) or nil
-	end
-	listing.reset_pages(player_data)
-end
-
---- The station chip: a station id, or nil to clear it. An id Cybersyn no longer knows clears it.
---- @param player_data PlayerData
---- @param id uint?
-function filters.set_station_filter(player_data, id)
-	if id and not storage.stations[id] then id = nil end
-	if player_data.search_station == id then return end
-	player_data.search_station = id
-	if id then player_data.filter_row_open = true end
-	listing.reset_pages(player_data)
-end
-
---- The station chip's station when it still exists; a stale id is dropped (a removed stop), as an unknown item is.
---- @param player_data PlayerData
---- @return uint?
-function filters.valid_station_filter(player_data)
-	local id = player_data.search_station
-	if id and not storage.stations[id] then
-		player_data.search_station = nil
-		id = nil
-	end
-	return id
 end
 
 return filters

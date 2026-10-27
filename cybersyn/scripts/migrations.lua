@@ -493,6 +493,9 @@ local migrations_table = {
 			pd.recent_panel_dirty, pd.disable_top_left_button = nil, nil
 			pd.delivery_times_interval, pd.delivery_times_mode, pd.delivery_times_selected = nil, nil, nil
 			pd.breakdown_registered = nil
+			-- Moved into pd.filters; only transient filter state, so it starts empty.
+			pd.search_query, pd.search_network_name, pd.search_network_mask = nil, nil, nil
+			pd.search_surface_idx, pd.search_item = nil, nil
 		end
 	end,
 }

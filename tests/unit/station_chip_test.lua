@@ -20,9 +20,9 @@ local function station(id, over)
 	return st
 end
 
-test("get_filters carries the chip as f.station; filters_active and filter_signature see it", function()
+test("get carries the chip as f.station; filters_active and filter_signature see it", function()
 	local u = filters()
-	local f = u.get_filters({ search_station = 12 })
+	local f = u.get({ filters = { station = 12 } }, "stations_tab")
 	assert_eq(f.station, 12)
 	assert_true(u.filters_active({ mask = -1, station = 12 }))
 	assert_true(u.filters_active({ mask = -1, station = 12 }, true))
@@ -55,11 +55,13 @@ test("train_passes: a train whose provider or requester is the chip's station", 
 	assert_true(u.train_passes(tr(nil, nil), { mask = -1 }))
 end)
 
-test("overview_filters drops the chip (the Overview ignores it)", function()
+test("the tabs that ignore the chip do not get it", function()
 	local u = filters()
-	local f = u.overview_filters({ search_station = 12, search_network_mask = -1 })
-	assert_nil(f.station)
-	assert_eq(u.get_filters({ search_station = 12 }).station, 12)
+	local pd = { filters = { station = 12 } }
+	for _, tab in ipairs({ "overview_tab", "utilization_tab", "delivery_breakdown_tab" }) do
+		assert_nil(u.get(pd, tab).station, tab)
+	end
+	assert_eq(u.get(pd, "log_tab").station, 12)
 end)
 
 test("empty_filter_suffix: '-filtered' with a place filter or the chip, '' otherwise", function()
@@ -83,31 +85,6 @@ test("the empty-text strings exist in en for every drill-down table", function()
 	end
 end)
 
-test("set_station_filter: a known id sets the chip, opens the row, resets pages; unknown or nil clears", function()
-	local u = filters()
-	storage.stations = { [12] = {} }
-	local pd = { page = { stations_tab = 3 } }
-	u.set_station_filter(pd, 12)
-	assert_eq(pd.search_station, 12)
-	assert_true(pd.filter_row_open)
-	assert_eq(pd.page, {})
-	u.set_station_filter(pd, 99)
-	assert_nil(pd.search_station)
-	pd.search_station = 12
-	u.set_station_filter(pd, nil)
-	assert_nil(pd.search_station)
-end)
-
-test("valid_station_filter drops a removed station", function()
-	local u = filters()
-	storage.stations = { [12] = {} }
-	local pd = { search_station = 12 }
-	assert_eq(u.valid_station_filter(pd), 12)
-	storage.stations[12] = nil
-	assert_nil(u.valid_station_filter(pd))
-	assert_nil(pd.search_station)
-end)
-
 -- ---------------------------------------------------------------- stop panel slot clicks
 
 local function click_setup(open)
@@ -125,7 +102,7 @@ local function click_setup(open)
 			calls.focus = focus
 		end,
 	})
-	local pd = { is_manager_open = open, selected_tab = "overview_tab", refs = {} }
+	local pd = { is_manager_open = open, selected_tab = "overview_tab", refs = {}, filters = {} }
 	return u, pd, calls, { index = 1 }
 end
 
@@ -163,9 +140,9 @@ end)
 
 test("right-click on a stop panel slot does nothing: the panel shows no filter to clear", function()
 	local u, pd, calls, player = click_setup(true)
-	pd.search_item = "coal"
+	pd.filters.item = "coal"
 	slot_click(u, player, pd, { station = 12 }, { right = true })
-	assert_eq(pd.search_item, "coal")
+	assert_eq(pd.filters.item, "coal")
 	assert_eq(calls, {})
 end)
 
@@ -173,7 +150,7 @@ test("an in-flight slot focuses Trains on item + chip, revealing the groups that
 	for _, open in ipairs({ false, true }) do
 		local u, pd, calls, player = click_setup(open)
 		-- manager.focus clears row filters such as this one; building the landing by hand kept it.
-		pd.trains_chip = "parked"
+		pd.filters.trains_chip = "parked"
 		slot_click(u, player, pd, { station = 12, flight = true })
 		assert_eq(calls[1], "focus:trains_tab")
 		assert_eq(#calls, 1)
@@ -183,17 +160,17 @@ end)
 
 test("a slot without a station leaves the chip alone; right-click clears only the item", function()
 	local u, pd, calls, player = click_setup(true)
-	pd.search_station = 12
-	pd.search_item = "coal"
+	pd.filters.station = 12
+	pd.filters.item = "coal"
 	slot_click(u, player, pd, {}, { right = true })
-	assert_nil(pd.search_item)
-	assert_eq(pd.search_station, 12)
+	assert_nil(pd.filters.item)
+	assert_eq(pd.filters.station, 12)
 	slot_click(u, player, pd, {})
-	assert_eq(pd.search_station, 12)
-	assert_eq(pd.search_item, "iron-plate")
+	assert_eq(pd.filters.station, 12)
+	assert_eq(pd.filters.item, "iron-plate")
 	assert_eq(pd.selected_tab, "inventory_tab", "left lands on the Inventory, which shows the drill-down")
 	slot_click(u, player, pd, { id = "coal" }, { shift = true })
-	assert_eq(pd.search_item, "coal")
+	assert_eq(pd.filters.item, "coal")
 	assert_eq(pd.selected_tab, "stations_tab", "shift keeps the Stations jump")
 	assert_eq(calls, {})
 end)
@@ -202,9 +179,9 @@ test("a left click outside the closed window (train panel) opens it on the Inven
 	local u, pd, calls, player = click_setup(false)
 	slot_click(u, player, pd, {})
 	assert_eq(calls, { "open-window" })
-	assert_eq(pd.search_item, "iron-plate")
+	assert_eq(pd.filters.item, "iron-plate")
 	assert_eq(pd.selected_tab, "inventory_tab")
-	assert_nil(pd.search_station)
+	assert_nil(pd.filters.station)
 	-- Shift with the window closed sets the filter for Stations and leaves the window closed.
 	local u2, pd2, calls2, player2 = click_setup(false)
 	slot_click(u2, player2, pd2, {}, { shift = true })

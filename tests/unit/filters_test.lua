@@ -17,41 +17,122 @@ test("search_terms: lowercase whitespace-split words, nil when empty", function(
 	assert_eq(u.search_terms(" a.b (c) "), { "a.b", "(c)" })
 end)
 
-test("set_search_query: empty string clears, whitespace-only keeps the query but no terms", function()
+test("set query: empty string clears, whitespace-only keeps the query but no terms", function()
 	local u = filters()
-	local pd = { search_query = "x", search_terms = { "x" } }
-	u.set_search_query(pd, "")
-	assert_nil(pd.search_query)
-	assert_nil(pd.search_terms)
-	u.set_search_query(pd, "Foo Bar")
-	assert_eq(pd.search_query, "Foo Bar")
-	assert_eq(pd.search_terms, { "foo", "bar" })
-	u.set_search_query(pd, "   ")
-	assert_eq(pd.search_query, "   ")
-	assert_nil(pd.search_terms)
-	u.set_search_query(pd, nil)
-	assert_nil(pd.search_query)
+	local pd = { filters = { query = "x", terms = { "x" } } }
+	u.set(pd, "query", "")
+	assert_eq(pd.filters, {})
+	u.set(pd, "query", "Foo Bar")
+	assert_eq(pd.filters, { query = "Foo Bar", terms = { "foo", "bar" } })
+	u.set(pd, "query", "   ")
+	assert_eq(pd.filters, { query = "   " })
+	assert_nil(pd.filter_row_open, "the search is not one of the row's filters")
+	u.set(pd, "query", nil)
+	assert_eq(pd.filters, {})
 end)
 
-test("get_filters: defaults and mapping from player_data", function()
+test("set: validates, resets every page, opens the row; a stale value clears the filter", function()
 	local u = filters()
-	assert_eq(u.get_filters({}), { mask = -1 })
-	local pd = {
-		search_item = "iron-plate",
-		search_network_name = "signal-A",
-		search_network_mask = 5,
-		search_surface_idx = 2,
-		search_terms = { "a" },
-	}
-	assert_eq(u.get_filters(pd), { terms = { "a" }, item = "iron-plate", network = "signal-A", mask = 5, surface = 2 })
+	storage.stations = { [12] = {} }
+	game.surfaces = { [1] = {} }
+	game.get_surface = function(i) return game.surfaces[i] end
+	local pd = { filters = {}, page = { stations_tab = 3 } }
+	u.set(pd, "item", "iron-plate|rare")
+	assert_eq(pd.filters.item, "iron-plate|rare")
+	assert_true(pd.filter_row_open)
+	assert_eq(pd.page, {})
+	pd.page.trains_tab = 2
+	u.set(pd, "item", "bogus")
+	assert_nil(pd.filters.item)
+	assert_eq(pd.page, {})
+	u.set(pd, "network", "signal-A")
+	u.set(pd, "station", 12)
+	u.set(pd, "surface", 1)
+	u.set(pd, "mask", 4)
+	assert_eq(pd.filters, { network = "signal-A", station = 12, surface = 1, mask = 4 })
+	u.set(pd, "network", "no-such-signal")
+	u.set(pd, "station", 99)
+	u.set(pd, "surface", 2)
+	u.set(pd, "mask", -1)
+	assert_eq(pd.filters, {})
+	pd.filter_row_open, pd.page.log_tab = nil, 4
+	u.set(pd, "station", nil)
+	assert_nil(pd.filter_row_open, "clearing a filter does not open the row")
+	assert_eq(pd.page.log_tab, 4, "an unchanged filter keeps the pages")
 end)
 
-test("get_filters: derives and caches terms from a query saved without them", function()
+test("clear: chips, row and all scopes", function()
 	local u = filters()
-	local pd = { search_query = "A b" }
-	local f = u.get_filters(pd)
-	assert_eq(f.terms, { "a", "b" })
-	assert_same(pd.search_terms, f.terms)
+	local function full()
+		return { filters = { query = "a", terms = { "a" }, item = "coal", station = 3, network = "signal-A", mask = 2,
+			surface = 1, stations_chip = "problems", problems_scope = "errors", trains_chip = "parked" },
+			page = { stations_tab = 2 } }
+	end
+	local pd = full()
+	u.clear(pd, "chips")
+	assert_eq(pd.filters, { query = "a", terms = { "a" }, item = "coal", network = "signal-A", mask = 2, surface = 1 })
+	assert_eq(pd.page, {})
+	pd = full()
+	u.clear(pd, "row")
+	assert_eq(pd.filters, { query = "a", terms = { "a" } })
+	pd = full()
+	u.clear(pd, "all")
+	assert_eq(pd.filters, {})
+end)
+
+test("active: the row's filters only, not the search or the tab chips", function()
+	local u = filters()
+	assert_false(u.active({ filters = {} }))
+	assert_false(u.active({ filters = { query = "a", terms = { "a" }, stations_chip = "ok", trains_chip = "parked" } }))
+	for _, field in ipairs({ "item", "station", "network", "mask", "surface" }) do
+		assert_true(u.active({ filters = { [field] = 1 } }), field)
+	end
+end)
+
+test("validate: drops what no longer resolves, derives missing terms", function()
+	local u = filters()
+	storage.stations = { [12] = {} }
+	game.get_surface = function(i) return i == 1 and {} or nil end
+	local pd = { filters = { item = "bogus", network = "signal-A", station = 13, surface = 2, query = "A b" } }
+	u.validate(pd)
+	assert_eq(pd.filters, { network = "signal-A", query = "A b", terms = { "a", "b" } })
+	pd.filters = { item = "coal", station = 12, surface = 1 }
+	u.validate(pd)
+	assert_eq(pd.filters, { item = "coal", station = 12, surface = 1 })
+end)
+
+test("get: each tab gets the stored filters less those it does not apply", function()
+	local u = filters()
+	local pd = { filters = { terms = { "a" }, item = "coal", station = 3, network = "signal-A", mask = 2, surface = 1 } }
+	local place = { network = "signal-A", mask = 2, surface = 1 }
+	local function with(extra)
+		local f = H.copy(place)
+		for k, v in pairs(extra) do f[k] = v end
+		return f
+	end
+	local all = with({ terms = { "a" }, item = "coal", station = 3 })
+	assert_eq(u.get(pd, "inventory_tab"), all)
+	assert_eq(u.get(pd, "stations_tab"), all)
+	assert_eq(u.get(pd, "trains_tab"), all)
+	assert_eq(u.get(pd, "overview_tab"), with({ item = "coal" }))
+	assert_eq(u.get(pd, "log_tab"), with({ item = "coal", station = 3 }))
+	assert_eq(u.get(pd, "utilization_tab"), place)
+	assert_eq(u.get(pd, "delivery_breakdown_tab"), with({ item = "coal" }))
+	assert_eq(u.get({ filters = {} }, "stations_tab"), { mask = -1 })
+	local f = u.get(pd, "stations_tab")
+	f.terms = nil
+	assert_eq(pd.filters.terms, { "a" }, "a tab may change its copy")
+end)
+
+test("signature: differs for every stored field", function()
+	local u = filters()
+	local sigs = { [u.signature({ filters = {} })] = true }
+	for _, field in ipairs({ "query", "item", "station", "network", "mask", "surface", "stations_chip",
+		"problems_scope", "trains_chip" }) do
+		local s = u.signature({ filters = { [field] = "1" } })
+		assert_nil(sigs[s], field)
+		sigs[s] = true
+	end
 end)
 
 test("filters_active: each field and ignore_item", function()
@@ -178,10 +259,8 @@ test("row_passes / station_passes: each row its own network and items, deliverie
 	assert_false(u.row_passes(r1, { mask = 4 }))
 end)
 
-test("get_filters / filter_signature: the station chip field", function()
+test("filter_signature: the station chip field", function()
 	local u = filters()
-	assert_nil(u.get_filters({}).station)
-	assert_eq(u.get_filters({ search_station = 12 }).station, 12)
 	local a = u.filter_signature({ mask = -1 })
 	assert_true(a ~= u.filter_signature({ mask = -1, station = 12 }))
 end)
@@ -224,20 +303,4 @@ test("train_passes: surface, network, manifest item, terms", function()
 	assert_true(u.train_passes(tr, { mask = -1, item = "coal" }, true))
 	assert_true(u.train_passes(tr, { mask = -1, terms = { "mine" } }))
 	assert_false(u.train_passes(tr, { mask = -1, terms = { "smelter" } }))
-end)
-
-test("set_item_filter: validates the hash, updates the chooser, resets every page", function()
-	local u = filters()
-	local chooser = H.element({ type = "choose-elem-button" })
-	local pd = { page = { stations_tab = 3 }, refs = { manager_item_filter = chooser } }
-	u.set_item_filter(pd, "iron-plate|rare")
-	assert_eq(pd.search_item, "iron-plate|rare")
-	assert_eq(chooser.elem_value, { type = "item", name = "iron-plate", quality = "rare" })
-	assert_eq(pd.page, {})
-	pd.page.trains_tab = 2
-	u.set_item_filter(pd, "bogus")
-	assert_nil(pd.search_item)
-	assert_nil(chooser.elem_value)
-	assert_eq(pd.page, {})
-	u.set_item_filter({}, "coal")
 end)

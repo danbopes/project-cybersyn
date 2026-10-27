@@ -9,16 +9,13 @@ local function station(surface, network, mask)
 	return { entity_stop = { valid = true, surface_index = surface }, network_name = network, network_mask = mask }
 end
 
-test("overview_filters: the station search never applies, the rest maps from player_data", function()
+test("the Overview's filters: the station search never applies, the rest maps from player_data", function()
 	local u = filters()
-	local f = u.overview_filters({ search_query = "iron", search_network_name = "signal-A", search_network_mask = 2,
-		search_surface_idx = 3, search_item = nil })
-	assert_eq(f.terms, nil)
-	assert_eq(f.network, "signal-A")
-	assert_eq(f.mask, 2)
-	assert_eq(f.surface, 3)
+	local f = u.get({ filters = { query = "iron", terms = { "iron" }, network = "signal-A", mask = 2, surface = 3 } },
+		"overview_tab")
+	assert_eq(f, { network = "signal-A", mask = 2, surface = 3 })
 	assert_true(u.place_filters_active(f))
-	assert_false(u.place_filters_active(u.overview_filters({ search_network_mask = -1 })))
+	assert_false(u.place_filters_active(u.get({ filters = {} }, "overview_tab")))
 end)
 
 test("filter_signature: differs for every field, equal for equal filters", function()

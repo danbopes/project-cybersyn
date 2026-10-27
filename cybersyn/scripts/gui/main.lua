@@ -1,8 +1,6 @@
 
 local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
-local util = require("scripts.gui.util")
-local filters = require("scripts.gui.utils.filters")
 local relative = require("scripts.gui.relative")
 local trains_tab = require("scripts.gui.trains")
 local extras = require("scripts.gui.extras")
@@ -36,13 +34,6 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field player_index uint
 --- @field is_manager_open boolean
 --- @field refs {[string]: LuaGuiElement}
---- @field search_query string? raw text of the station-name search
---- @field search_terms string[]? lowercase terms derived from search_query
---- @field search_network_name string?
---- @field search_network_mask int
---- @field search_surface_idx uint?
---- @field search_item string? item hash (name or name|quality)
---- @field search_station uint? station id of the station chip; dropped by filters.valid_station_filter once the stop is gone
 --- @field surface_dropdown_ids {[integer]: uint}? drop-down index -> surface index
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see listing.get_sort
 --- @field page {[string]: integer}? current page per tab, see listing.paginate
@@ -143,20 +134,10 @@ local function init_player_fields(player_data)
 	player_data.sort = player_data.sort or {}
 	player_data.page = player_data.page or {}
 	player_data.gui_state = player_data.gui_state or {}
-	player_data.search_network_mask = player_data.search_network_mask or -1
+	player_data.filters = player_data.filters or {}
 	if player_data.paused == nil then player_data.paused = false end
 	-- A hover names an element of the window that reset_player rebuilds next.
 	player_data.hover = nil
-	if player_data.search_item and not util.signal_hash_valid(player_data.search_item) then
-		player_data.search_item = nil
-	end
-	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
-		player_data.search_network_name = nil
-	end
-	filters.valid_station_filter(player_data)
-	if player_data.search_query and not player_data.search_terms then
-		filters.set_search_query(player_data, player_data.search_query)
-	end
 end
 
 local function create_player(player_index)
@@ -165,7 +146,6 @@ local function create_player(player_index)
 
 	local player_data = {
 		player_index = player_index,
-		search_network_mask = -1,
 		pinning = false,
 		refs = manager.create(player),
 		selected_tab = "overview_tab",
@@ -249,7 +229,7 @@ function manager_gui.reset_gui(player)
 	if not player_data then return end
 	player_data.location = nil
 	player_data.layout = nil
-	manager.close_filter_row(player, player_data)
+	manager.close_filter_row(player_data)
 	local refs = player_data.refs
 	if refs and refs.manager_window and refs.manager_window.valid then
 		manager.apply_layout(player, player_data)
@@ -451,16 +431,16 @@ function manager_gui.on_display_changed(e)
 	end
 end
 
---- on_surface_created/deleted/renamed/imported: open windows rebuild the surface drop-down and its visibility; a
---- closed window rebuilds it when it opens.
+--- on_surface_created/deleted/renamed/imported: open windows rewrite their filter widgets, which rebuilds the surface
+--- drop-down and its visibility (and drops a deleted surface's filter); a closed window rebuilds it when it opens.
 function manager_gui.on_surfaces_changed()
 	local manager_data = storage.manager
 	if not manager_data then return end
 	for i, v in pairs(manager_data.players) do
 		local player = v.is_manager_open and game.get_player(i)
 		if player then
-			manager.rebuild_surface_dropdown(v)
-			manager.refresh_filter_row(player, v)
+			v.filter_widgets_sig = nil
+			manager.render(player, v)
 		end
 	end
 end

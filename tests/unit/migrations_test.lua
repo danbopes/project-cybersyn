@@ -56,6 +56,8 @@ local function storage_212()
 					stations_sort = {}, trains_sort = {}, auto_refresh = true, pinned = {},
 					recent_panel_dirty = true, disable_top_left_button = false,
 					delivery_times_interval = 2, delivery_times_mode = "x", delivery_times_selected = {},
+					search_query = "iron", search_network_name = "signal-A", search_network_mask = 3,
+					search_surface_idx = 1, search_item = "coal",
 					is_manager_open = false,
 				},
 			},

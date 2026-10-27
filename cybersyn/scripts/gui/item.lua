@@ -308,7 +308,7 @@ end
 --- @param player_data PlayerData
 --- @return string?
 function item.filter_hash(player_data)
-	local hash = player_data.search_item
+	local hash = player_data.filters.item
 	if hash and util.item_sprite_and_tooltip(hash) then return hash end
 	return nil
 end
@@ -780,7 +780,7 @@ local function render_header(player_data, cache)
 	local t = m.totals
 	local collecting = collector.collecting_note()
 	local percent = collecting and math.floor(collecting * 100) or -1
-	local station = player_data.search_station
+	local station = player_data.filters.station
 	local station_record = station and storage.stations[station]
 	local stop = station_record and station_record.entity_stop
 	local station_name = stop and stop.valid and stop.backer_name or nil
@@ -861,7 +861,7 @@ end
 --- @param player_data PlayerData
 --- @return ManagerFilters
 local function view_filters(player_data)
-	local f = filters.get_filters(player_data)
+	local f = filters.get(player_data, "inventory_tab")
 	f.terms, f.item = nil, nil
 	return f
 end
@@ -1135,13 +1135,13 @@ item.wrapper = util.wrapper
 
 --- Back clears the item filter, as the filter chip's x does: the Inventory shows its grids again.
 function item.handle.item_back(player, player_data, refs, e)
-	filters.set_item_filter(player_data, nil)
+	filters.set(player_data, "item", nil)
 	nav.rerender(player, player_data)
 end
 
 --- The station chip in the drill-down's subheader: any click removes it, as on the tab subheader's chip.
 function item.handle.item_station_chip(player, player_data, refs, e)
-	filters.set_station_filter(player_data, nil)
+	filters.set(player_data, "station", nil)
 	nav.rerender(player, player_data)
 end
 

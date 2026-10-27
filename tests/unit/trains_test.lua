@@ -59,11 +59,11 @@ local function order(pd)
 end
 
 local function sorted(column, ascending)
-	return order({ sort = { trains_tab = { column = column, ascending = ascending } } })
+	return order({ sort = { trains_tab = { column = column, ascending = ascending } }, filters = {} })
 end
 
 test("query: default sort is train id ascending", function()
-	local pd = {}
+	local pd = { filters = {} }
 	assert_eq(order(pd), { 1, 2, 3, 4, 5, 6 })
 	assert_eq(pd.sort.trains_tab, { column = "train_id", ascending = true })
 	assert_eq(sorted("train_id", false), { 6, 5, 4, 3, 2, 1 })
@@ -98,17 +98,17 @@ test("query: shipment sorts by total amount; empty trains last", function()
 end)
 
 test("query: filters by item, station-name terms, network and surface", function()
-	assert_eq(order({ search_item = "iron-ore" }), { 2, 4 })
-	assert_eq(order({ search_query = "alpha" }), { 3, 4 })
-	assert_eq(order({ search_query = "depot a" }), { 2, 3, 4 })
-	assert_eq(order({ search_network_name = "signal-A" }), { 1, 2, 4, 6 })
-	assert_eq(order({ search_network_mask = 2 }), { 6 })
-	assert_eq(order({ search_surface_idx = 2 }), { 3 })
+	assert_eq(order({ filters = { item = "iron-ore" } }), { 2, 4 })
+	assert_eq(order({ filters = { query = "alpha", terms = { "alpha" } } }), { 3, 4 })
+	assert_eq(order({ filters = { query = "depot a", terms = { "depot", "a" } } }), { 2, 3, 4 })
+	assert_eq(order({ filters = { network = "signal-A" } }), { 1, 2, 4, 6 })
+	assert_eq(order({ filters = { mask = 2 } }), { 6 })
+	assert_eq(order({ filters = { surface = 2 } }), { 3 })
 end)
 
 test("query: the context resolves target names from the snapshot and refuelers", function()
 	local trains_tab = setup()
-	local rows, snap, ctx = trains_tab.query(MAP_DATA, {})
+	local rows, snap, ctx = trains_tab.query(MAP_DATA, { filters = {} })
 	assert_eq(#rows, 6)
 	assert_same(snap, require("scripts.gui.collector").get())
 	assert_eq({ ctx.names(snap.trains[2], "station", 10) }, { "Iron Mine", "iron mine" })

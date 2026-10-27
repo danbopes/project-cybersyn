@@ -38,7 +38,6 @@ function trains_tab.set_relative(r)
 end
 
 --- @class PlayerData
---- @field trains_chip string? the toggled Trains chip (TRAIN_CHIPS), "parked" from the Overview's Fleet tile
 --- @field trains_group_by_depot true? rows grouped by depot name
 --- @field expanded_depots {[string]: true}? depot groups showing their trains
 --- @field selected_train uint? the train the detail pane shows
@@ -420,9 +419,9 @@ local function train_id_of(tr) return tr.id end
 --- @param player_data PlayerData
 --- @return string?
 local function active_chip(player_data)
-	local c = player_data.trains_chip
+	local c = player_data.filters.trains_chip
 	if c and CHIP_WIDTH[c] and c ~= "all" then return c end
-	player_data.trains_chip = nil
+	player_data.filters.trains_chip = nil
 	return nil
 end
 
@@ -548,7 +547,7 @@ end
 --- @return table ctx
 function trains_tab.query(map_data, player_data)
 	local snapshot = collector.get()
-	local f = filters.get_filters(player_data)
+	local f = filters.get(player_data, TAB)
 	local column, ascending = listing.get_sort(player_data, TAB, DEFAULT_COLUMN)
 	if not SORTABLE[column] then column = DEFAULT_COLUMN end
 	local names = new_name_cache(snapshot)
@@ -1944,7 +1943,7 @@ local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 	-- Members follow the chip rows (recounted once a second), the numbers the filtered trains (once a pass).
 	local chips, cache = ctx.chips, ctx.cache
 	if not chips.groups then
-		local filtering = filters.filters_active(filters.get_filters(player_data)) or active_chip(player_data) ~= nil
+		local filtering = filters.filters_active(filters.get(player_data, TAB)) or active_chip(player_data) ~= nil
 		local names, members = depot_groups(rows, snapshot, filtering)
 		chips.groups = { names = names, members = members }
 	end
@@ -2077,7 +2076,7 @@ function trains_tab.build(map_data, player_data)
 	selected = player_data.selected_train
 	local wrapped = render_chips(player_data, ctx.counts, ctx.hours)
 	local alerts = ctx.alerts
-	local filter_item = player_data.search_item
+	local filter_item = player_data.filters.item
 	local state = sync.gui_state(player_data, SCROLL)
 	local grouped = player_data.trains_group_by_depot == true
 
@@ -2117,7 +2116,7 @@ function trains_tab.build(map_data, player_data)
 		local empty_key
 		if not snapshot.tick then
 			empty_key = "cybersyn-gui.trains-collecting"
-		elseif (filters.filters_active(filters.get_filters(player_data)) or active_chip(player_data)) and next(snapshot.trains) then
+		elseif (filters.filters_active(filters.get(player_data, TAB)) or active_chip(player_data)) and next(snapshot.trains) then
 			empty_key = "cybersyn-gui.trains-no-match"
 		else
 			empty_key = "cybersyn-gui.no-trains"
@@ -2277,7 +2276,7 @@ end
 --- @param chip string?
 function trains_tab.set_chip(player_data, chip)
 	if chip == "all" or chip == active_chip(player_data) then chip = nil end
-	player_data.trains_chip = chip
+	player_data.filters.trains_chip = chip
 	listing.reset_page(player_data, TAB)
 end
 
