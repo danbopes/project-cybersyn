@@ -30,11 +30,6 @@ local rtext = require("scripts.gui.relative-text")
 
 local stations_tab = {}
 
---- @class PlayerData
---- @field stations_problems_view boolean? the Problems chip was on at the last query (its sort is set on the way in)
---- @field stations_query table? classified and sorted rows of one snapshot and filter set; it can outlive a close
----   while the snapshot is kept, see nav.close_manager_window
-
 local TAB = "stations_tab"
 -- The row list (a flow, despite the name).
 local SCROLL = "manager_stations_tab_scroll_pane"
@@ -544,7 +539,7 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 	end
 	counts.all, counts.unserved, counts.problems, counts.failing = all, unserved, setup, failing
 	cache.changed = {}
-	player_data.stations_query = cache
+	player_data.cache.stations = cache
 	return cache
 end
 
@@ -717,9 +712,9 @@ function stations_tab.query(player_data)
 	-- The Overview's Misconfigured jump narrows the Problems view to the stations its line counts (p1's contract).
 	if not problems then player_data.filters.problems_scope = nil end
 	local errors_only = problems and player_data.filters.problems_scope == "errors"
-	if problems ~= (player_data.stations_problems_view == true) then
+	if problems ~= (player_data.tabs.stations_tab.problems_view == true) then
 		-- The Problems view opens worst first; leaving it drops its sort.
-		player_data.stations_problems_view = problems or nil
+		player_data.tabs.stations_tab.problems_view = problems or nil
 		local current = listing.get_sort(player_data, TAB, "name")
 		if problems then
 			listing.set_sort(player_data, TAB, "problems", true)
@@ -732,7 +727,7 @@ function stations_tab.query(player_data)
 	if not sort_keys[column] then column = "name" end
 	-- The first pass after opening is still filling records: rows and counts from part of the stations would change
 	-- on every update and disagree with the other tabs, so there are none until it completes.
-	local cache = player_data.stations_query
+	local cache = player_data.cache.stations
 	-- The first build after a boosted pass is split over three renders, so no tick carries more than one of the
 	-- pass's last batch, classifying every station, sorting them (together 6.4-6.6 ms on a 2,000-station base with
 	-- the chip flags) or writing every row of the page (3.8-4.4 ms): the completing tick shows nothing yet, the next
@@ -1985,7 +1980,7 @@ end
 local function view_registry(player_data, rows, ctx)
 	ctx.problems_view = active_chip(player_data) == "problems"
 	if not ctx.problems_view or ctx.pending then return {} end
-	local cache = player_data.stations_query
+	local cache = player_data.cache.stations
 	if not cache then return {} end
 	ctx.lint = problem_index(cache)
 	-- The Misconfigured jump's scope counts stations only.
@@ -2127,7 +2122,7 @@ function stations_tab.build(map_data, player_data)
 
 	if summary and summary.valid then
 		local open, acked
-		if problems then open, acked = open_error_counts(player_data.stations_query) end
+		if problems then open, acked = open_error_counts(player_data.cache.stations) end
 		local n_stations = ctx.stations or n_rows
 		local sig = counts.all .. "|" .. n_rows .. "|" .. n_stations .. "|" .. #registry .. "|" .. summary.index .. "|"
 			.. tostring(open) .. "|" .. tostring(acked)
@@ -2231,7 +2226,7 @@ function stations_tab.handle.on_lint_ack_click(player, player_data, refs, e)
 	local tags = e.element.tags
 	local targets = {}
 	if tags.sid then
-		local cache = player_data.stations_query
+		local cache = player_data.cache.stations
 		local px = cache and problem_index(cache)
 		local seen = {}
 		for _, en in ipairs(px and px.by_id[tags.sid] or {}) do

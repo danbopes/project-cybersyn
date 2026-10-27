@@ -38,13 +38,6 @@ local item_model = require("scripts.gui.item-model")
 --- @field delivered_key string?
 --- @field header_sig string?
 
---- @class PlayerData
---- @field item_view ItemView? the drill-down's elements exist in the Inventory's content
---- @field item_cache ItemCache? its model and render caches; dropped on close
---- @field item_refs {[string]: LuaGuiElement}? the drill-down's named elements; dropped on close
---- @field delivered_items {minute: int, by_period: {[int]: {[string]: int}}}? util.delivered_items' per-minute cache
---- @field item_widths {[string]: int}? flexible column widths for the current layout
-
 local item = {}
 
 local TAB = "item_tab"
@@ -318,11 +311,11 @@ end
 --- @param player LuaPlayer?
 --- @param player_data PlayerData
 function item.close(player, player_data)
-	local frame = player_data.item_refs and player_data.item_refs[VIEW]
+	local frame = player_data.cache.item_refs and player_data.cache.item_refs[VIEW]
 	if frame and frame.valid then frame.destroy() end
-	player_data.item_view = nil
-	player_data.item_cache = nil
-	player_data.item_refs = nil
+	player_data.cache.item_view = nil
+	player_data.cache.item = nil
+	player_data.cache.item_refs = nil
 	local states = player_data.gui_state
 	if states then
 		for _, t in ipairs(item_model.TABLES) do states[table_name(t)] = nil end
@@ -334,12 +327,12 @@ end
 --- @param hash string
 --- @return boolean ready
 local function ensure_view(player_data, hash)
-	local view = player_data.item_view
-	local frame = player_data.item_refs and player_data.item_refs[VIEW]
+	local view = player_data.cache.item_view
+	local frame = player_data.cache.item_refs and player_data.cache.item_refs[VIEW]
 	if view and frame and frame.valid then
 		if view.hash ~= hash then
 			view.hash = hash
-			player_data.item_cache = nil
+			player_data.cache.item = nil
 			-- Every cell is rewritten for the new item: the per-cell memo of the old one says nothing about it.
 			local states = player_data.gui_state
 			if states then
@@ -357,8 +350,8 @@ local function ensure_view(player_data, hash)
 	if not (layout and content and content.valid) then return false end
 	local refs = {}
 	gui.add(content, view_def(layout), refs)
-	player_data.item_refs = refs
-	player_data.item_view = { hash = hash }
+	player_data.cache.item_refs = refs
+	player_data.cache.item_view = { hash = hash }
 	return true
 end
 
@@ -767,7 +760,7 @@ end
 --- @param player_data PlayerData
 --- @param cache ItemCache
 local function render_header(player_data, cache)
-	local refs = player_data.item_refs
+	local refs = player_data.cache.item_refs
 	local m = cache.model
 	local hash = m.hash
 	local period = get_period(player_data)
@@ -874,7 +867,7 @@ local function get_cache(player_data, hash)
 	local f = view_filters(player_data)
 	local filtered = filters.filters_active(f, true)
 	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. filters.filter_signature(f)
-	local cache = player_data.item_cache
+	local cache = player_data.cache.item
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
 	local row_passes, train_passes = filters.row_passes, filters.train_passes
 	local keep = filtered and {
@@ -890,7 +883,7 @@ local function get_cache(player_data, hash)
 		return cache, true
 	end
 	cache = { hash = hash, key = key, model = m }
-	player_data.item_cache = cache
+	player_data.cache.item = cache
 	return cache, true
 end
 
@@ -902,8 +895,8 @@ end
 --- @return boolean rendered
 function item.build(map_data, player_data, hash)
 	if not ensure_view(player_data, hash) then return false end
-	local view = player_data.item_view
-	local refs = player_data.item_refs
+	local view = player_data.cache.item_view
+	local refs = player_data.cache.item_refs
 	local cache, refreshed = get_cache(player_data, view.hash)
 	local m = cache.model
 	-- A new pass rebuilds the model in this update and rewrites the rows in the next ones, so neither update pays
@@ -943,7 +936,7 @@ function item.build(map_data, player_data, hash)
 		snapshot = snapshot,
 		now = game.tick,
 		hash = hash,
-		widths = player_data.item_widths or flex_widths(layout.content_width),
+		widths = player_data.tabs.inventory_tab.item_widths or flex_widths(layout.content_width),
 		entries = d and d.unserved,
 		ix = d and d.item_ix[hash],
 		inherit_before = d and diag.inherit_threshold(d) or 0,
@@ -1106,11 +1099,11 @@ end
 --- @param layout ManagerLayout
 function item.apply_layout(player_data, layout)
 	local widths = flex_widths(layout.content_width)
-	local old = player_data.item_widths
-	player_data.item_widths = widths
-	local cache = player_data.item_cache
+	local old = player_data.tabs.inventory_tab.item_widths
+	player_data.tabs.inventory_tab.item_widths = widths
+	local cache = player_data.cache.item
 	if cache then cache.alloc_sig = nil end
-	local refs = player_data.item_refs
+	local refs = player_data.cache.item_refs
 	if not refs or (old and old.providers == widths.providers) then return end
 	for _, t in ipairs(item_model.TABLES) do
 		local tbl = refs[table_name(t)]

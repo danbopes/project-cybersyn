@@ -13,9 +13,6 @@ local logic = require("scripts.gui.extras-logic")
 local actions = require("scripts.actions")
 local lint = require("scripts.lint")
 
---- @class PlayerData
---- @field confirm ConfirmState? the one armed action button of this player
-
 --- @class RepairJob
 --- @field ids uint[] train ids at the start, in storage order
 --- @field i int done so far

@@ -260,7 +260,7 @@ function collector.init()
 	manager.settle = nil
 	manager.settle_tick = nil
 	-- A Stations query cache indexes records of the snapshot just replaced.
-	for _, player_data in pairs(manager.players or {}) do player_data.stations_query = nil end
+	for _, player_data in pairs(manager.players or {}) do player_data.cache.stations = nil end
 	collector.reset_log()
 end
 
@@ -335,7 +335,7 @@ end
 local function release(manager)
 	drop_lint_job(manager)
 	-- Kept past the close with the snapshot it indexes (nav.close_manager_window).
-	for _, player_data in pairs(manager.players) do player_data.stations_query = nil end
+	for _, player_data in pairs(manager.players) do player_data.cache.stations = nil end
 	manager.snapshot = collector.empty()
 	manager.snapshot_build = nil
 	manager.collect_boost = nil
@@ -1829,7 +1829,7 @@ function collector.ensure_fresh()
 		-- The closed windows' Stations caches stayed for their own reopen inside the grace; the log they would fold
 		-- in is trimmed by the passes this window runs, so they could only pin old records until the next release.
 		for _, player_data in pairs(manager.players) do
-			if not player_data.is_manager_open then player_data.stations_query = nil end
+			if not player_data.is_manager_open then player_data.cache.stations = nil end
 		end
 	end
 	if not snapshot.tick or game.tick - snapshot.tick > STALE_ON_OPEN_TICKS then

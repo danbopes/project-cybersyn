@@ -295,10 +295,10 @@ end
 --- @return {[string]: int}
 function util.delivered_items(player_data, minutes)
 	local minute = math.floor(game.tick / 3600)
-	local cache = player_data.delivered_items
+	local cache = player_data.cache.delivered
 	if not (cache and cache.minute == minute) then
 		cache = { minute = minute, by_period = {} }
-		player_data.delivered_items = cache
+		player_data.cache.delivered = cache
 	end
 	local items = cache.by_period[minutes]
 	if not items then

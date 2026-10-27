@@ -48,9 +48,6 @@ end
 --- @field problems_scope "errors"? with the Problems chip: only the stations with errors
 --- @field trains_chip string? the Trains chip, see trains.lua
 
---- @class PlayerData
---- @field filters FilterState
-
 -- A stored id or name that no longer resolves (a removed stop, an uninstalled item, a deleted surface) is dropped
 -- rather than kept as a filter nothing can pass.
 local VALID = {

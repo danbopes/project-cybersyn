@@ -17,9 +17,6 @@ local pm = require("scripts.gui.problems-model")
 local lint_text = require("scripts.gui.lint-text")
 local collector = require("scripts.gui.collector")
 
---- @class PlayerData
---- @field explain {r_id: uint, hash: string, sig: string?}? the open Explain frame's key
-
 local explain = {}
 explain.handle = {}
 

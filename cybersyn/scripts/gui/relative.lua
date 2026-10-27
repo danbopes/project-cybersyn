@@ -335,10 +335,6 @@ end
 
 -- ---------------------------------------------------------------- state
 
---- @class PlayerData
---- @field relative_pane RelativeState? the train panel docked in the Trains tab's detail pane
---- @field relative_pane_open {kind: "train", id: uint, panel: LuaGuiElement}? where that panel is mounted
-
 --- @class RelativeState per player, for the open panel; plain data
 --- @field kind "stop"|"train"
 --- @field id uint

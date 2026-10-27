@@ -509,11 +509,11 @@ end)
 
 test("get_period: a stale period falls back to the default and is written back", function()
 	local l = logic()
-	local pd = { overview_period = 1440 }
+	local pd = { tabs = { overview_tab = { period = 1440 } } }
 	assert_eq(l.get_period(pd), 1440)
-	pd.overview_period = 5
+	pd.tabs.overview_tab.period = 5
 	assert_eq(l.get_period(pd), l.DEFAULT_PERIOD)
-	assert_eq(pd.overview_period, l.DEFAULT_PERIOD)
+	assert_eq(pd.tabs.overview_tab.period, l.DEFAULT_PERIOD)
 end)
 
 test("train_chip: every Cybersyn status maps to a Trains chip", function()

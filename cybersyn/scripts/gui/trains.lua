@@ -37,15 +37,6 @@ function trains_tab.set_relative(r)
 	relative = r
 end
 
---- @class PlayerData
---- @field trains_group_by_depot true? rows grouped by depot name
---- @field expanded_depots {[string]: true}? depot groups showing their trains
---- @field selected_train uint? the train the detail pane shows
---- @field trains_reveal {train: uint?, group: string?, all: true?}? manager.focus: expand the group of this train (or
---- this group, or every group holding a filtered train)
---- once, on the first grouped build with a complete snapshot
---- @field trains_query table? the filtered, sorted train list and its layout strings, for one query signature
-
 local TAB = "trains_tab"
 -- The row list (a flow, despite the name).
 local SCROLL = "manager_trains_tab_scroll_pane"
@@ -555,7 +546,7 @@ function trains_tab.query(map_data, player_data)
 		tostring(snapshot.trains_version), tostring(snapshot.tick), filters.filter_signature(f), column,
 		ascending and "+" or "-",
 	}, "\1")
-	local cache = player_data.trains_query
+	local cache = player_data.cache.trains
 	if not (cache and cache.sig == qsig) then
 		local layout_keys, comps, icons, runs = layout_strings(map_data)
 		local all = {}
@@ -564,7 +555,7 @@ function trains_tab.query(map_data, player_data)
 		end
 		util.sort_by(all, key_fn_for(column, names, layout_keys), ascending, train_id_of)
 		cache = { sig = qsig, all = all, layout_keys = layout_keys, comps = comps, icons = icons, runs = runs }
-		player_data.trains_query = cache
+		player_data.cache.trains = cache
 	end
 	local layout_keys, comps, icons, runs = cache.layout_keys, cache.comps, cache.icons, cache.runs
 	local findings = lint.findings()
@@ -1697,7 +1688,7 @@ local function render_chips(player_data, counts, hours)
 	if not flow then return false end
 	local refs = player_data.refs
 	local toggle = refs.manager_trains_group_toggle
-	if toggle and toggle.valid then toggle.toggled = player_data.trains_group_by_depot == true end
+	if toggle and toggle.valid then toggle.toggled = player_data.tabs.trains_tab.group_by_depot == true end
 	local wanted = active_chip(player_data) or "all"
 	local list = {}
 	for i, key in ipairs(TRAIN_CHIPS) do
@@ -1708,7 +1699,7 @@ local function render_chips(player_data, counts, hours)
 	-- pane narrows while a train is selected.
 	local layout = player_data.layout
 	local content_width = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
-	local strip_space = logic.table_width(content_width, player_data.selected_train ~= nil) - 24
+	local strip_space = logic.table_width(content_width, player_data.tabs.trains_tab.selected ~= nil) - 24
 	local line1, rest = logic.chip_lines(list, wanted, stations_tab.chip_space(player_data, TAB) - 32, strip_space)
 	sync.sync_children(flow, chip_entries(line1, counts, wanted, hours), sync.gui_state(player_data, CHIPS), false)
 	local strip, wrapped_flow = refs[CHIP_STRIP], refs[CHIPS_WRAPPED]
@@ -1761,7 +1752,7 @@ end
 local function widths_for(player_data, hidden)
 	local layout = player_data.layout
 	local content_width = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
-	local pane = player_data.selected_train ~= nil
+	local pane = player_data.tabs.trains_tab.selected ~= nil
 	local mask = 0
 	for i, c in ipairs(COLUMNS) do
 		if hidden[c] then mask = mask + 2 ^ i end
@@ -1849,7 +1840,7 @@ end
 --- @param id uint?
 function trains_tab.select(player_data, id)
 	if id and not front_stock_of(id) then id = nil end
-	player_data.selected_train = id
+	player_data.tabs.trains_tab.selected = id
 	-- A path trace belongs to the train it was drawn for; another selection (or none) removes it.
 	extras.on_selection(player_data, "train", id)
 	if not id and relative then relative.unmount(player_data) end
@@ -1937,7 +1928,7 @@ end
 --- @return table[]
 local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 	if not grouped then
-		player_data.trains_reveal = nil
+		player_data.tabs.trains_tab.reveal = nil
 		return rows
 	end
 	-- Members follow the chip rows (recounted once a second), the numbers the filtered trains (once a pass).
@@ -1949,7 +1940,7 @@ local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 	end
 	if not cache.group_stats then cache.group_stats = group_stats(ctx.all) end
 	ctx.group_stats = cache.group_stats
-	local reveal = player_data.trains_reveal
+	local reveal = player_data.tabs.trains_tab.reveal
 	-- A cold open lists nothing yet: the reveal waits for the first complete pass.
 	if reveal and snapshot.tick then
 		local name = reveal.group
@@ -1962,16 +1953,16 @@ local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 				if name then break end
 			end
 		end
-		local expanded = player_data.expanded_depots or {}
+		local expanded = player_data.tabs.trains_tab.expanded_depots or {}
 		if name then expanded[name] = true end
 		if reveal.all then
 			for key in pairs(chips.groups.members) do expanded[key] = true end
 		end
-		player_data.expanded_depots = expanded
-		player_data.trains_reveal = nil
+		player_data.tabs.trains_tab.expanded_depots = expanded
+		player_data.tabs.trains_tab.reveal = nil
 	end
 	ctx.members = chips.groups.members
-	return logic.group_rows(chips.groups.names, chips.groups.members, player_data.expanded_depots)
+	return logic.group_rows(chips.groups.names, chips.groups.members, player_data.tabs.trains_tab.expanded_depots)
 end
 
 --- Fuel is read for the trains on the page only, again every FUEL_EVERY renders.
@@ -2066,19 +2057,19 @@ function trains_tab.build(map_data, player_data)
 	if not (list and list.valid) then return end
 
 	local rows, snapshot, ctx = trains_tab.query(map_data, player_data)
-	local selected = player_data.selected_train
+	local selected = player_data.tabs.trains_tab.selected
 	local front = selected and front_stock_of(selected)
 	if selected and not front then
 		trains_tab.select(player_data, nil)
 		selected = nil
 	end
 	sync_pane(player_data, selected, front)
-	selected = player_data.selected_train
+	selected = player_data.tabs.trains_tab.selected
 	local wrapped = render_chips(player_data, ctx.counts, ctx.hours)
 	local alerts = ctx.alerts
 	local filter_item = player_data.filters.item
 	local state = sync.gui_state(player_data, SCROLL)
-	local grouped = player_data.trains_group_by_depot == true
+	local grouped = player_data.tabs.trains_tab.group_by_depot == true
 
 	local seq = build_sequence(player_data, rows, snapshot, ctx, grouped)
 	-- Grouped, the pager counts rows (group rows too) and says so; the summary beside it counts trains.
@@ -2132,7 +2123,7 @@ function trains_tab.build(map_data, player_data)
 			end,
 		}
 	else
-		local expanded = player_data.expanded_depots or {}
+		local expanded = player_data.tabs.trains_tab.expanded_depots or {}
 		for i = first, last do
 			local index = i - first + 1
 			local color = index % 2 == 0 and "dark" or "light"
@@ -2209,7 +2200,7 @@ end
 --- @param player_data PlayerData
 --- @return boolean
 function trains_tab.pane_shown(player_data)
-	if not (player_data.selected_train and player_data.selected_tab == TAB) then return false end
+	if not (player_data.tabs.trains_tab.selected and player_data.selected_tab == TAB) then return false end
 	local pane = player_data.refs and player_data.refs[PANE]
 	return pane ~= nil and pane.valid and pane.visible
 end
@@ -2218,7 +2209,7 @@ end
 --- @param player_data PlayerData
 --- @return uint? train the train that was selected, nil when no pane showed
 function trains_tab.close_pane(player_data)
-	local id = player_data.selected_train
+	local id = player_data.tabs.trains_tab.selected
 	if not (id and player_data.selected_tab == TAB) then return nil end
 	local pane = player_data.refs and player_data.refs[PANE]
 	if not (pane and pane.valid and pane.visible) then return nil end
@@ -2253,7 +2244,7 @@ function trains_tab.on_row_click(e)
 		if parent.index == index then
 			local id = elem.tags.train_id
 			if not id then return false end
-			trains_tab.select(player_data, player_data.selected_train ~= id and id or nil)
+			trains_tab.select(player_data, player_data.tabs.trains_tab.selected ~= id and id or nil)
 			local player = game.get_player(e.player_index)
 			nav.rerender(player, player_data)
 			return true
@@ -2288,7 +2279,7 @@ end
 
 --- @param e EventData.on_gui_click
 function trains_tab.handle.on_group_by_depot(player, player_data, refs, e)
-	player_data.trains_group_by_depot = not player_data.trains_group_by_depot or nil
+	player_data.tabs.trains_tab.group_by_depot = not player_data.tabs.trains_tab.group_by_depot or nil
 	listing.reset_page(player_data, TAB)
 	nav.rerender(player, player_data)
 end
@@ -2298,9 +2289,9 @@ function trains_tab.handle.on_group_toggle(player, player_data, refs, e)
 	local name = e.element.tags.depot_group
 	if not name then return end
 	hover.touch_hover(e)
-	local expanded = player_data.expanded_depots or {}
+	local expanded = player_data.tabs.trains_tab.expanded_depots or {}
 	expanded[name] = not expanded[name] or nil
-	player_data.expanded_depots = expanded
+	player_data.tabs.trains_tab.expanded_depots = expanded
 	nav.rerender(player, player_data)
 end
 

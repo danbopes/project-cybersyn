@@ -496,6 +496,14 @@ local migrations_table = {
 			-- Moved into pd.filters; only transient filter state, so it starts empty.
 			pd.search_query, pd.search_network_name, pd.search_network_mask = nil, nil, nil
 			pd.search_surface_idx, pd.search_item = nil, nil
+			-- The tabs' choices move under pd.tabs; the view caches are rebuilt into pd.cache.
+			pd.tabs = pd.tabs or {
+				utilization_tab = { interval = pd.utilization_interval, selected = pd.utilization_selected },
+				delivery_breakdown_tab = { interval = pd.breakdown_interval },
+			}
+			pd.utilization_interval, pd.utilization_selected, pd.breakdown_interval = nil, nil, nil
+			pd.cache = {}
+			pd.utilization_cache, pd.breakdown_cache, pd.utilization_registered, pd.visible = nil, nil, nil, nil
 		end
 	end,
 }

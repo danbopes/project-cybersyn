@@ -26,13 +26,6 @@ local extras_logic = require("scripts.gui.extras-logic")
 local name_cell = require("scripts.gui.name-cell")
 local logic = require("scripts.gui.tab-logic")
 
---- @class PlayerData
---- @field overview_period int? minutes covered by the Throughput tile and the headroom minimum: 10, 60 or 1440
---- @field overview_show_acked true? acknowledged rows are listed (greyed, at the bottom)
---- @field overview_widths {requester: int, provider: int, tile: int}? column widths for the current layout
---- @field overview_failing {fsig: string, parts: {[uint]: int}, errs: {[uint]: int}, counts: table, epoch: int, pos: int}?
----   the Stations failing tile's per-station flags and counts, kept up to date from the collector's change log
-
 local overview_tab = {}
 
 local TAB = "overview_tab"
@@ -327,8 +320,8 @@ function overview_tab.apply_layout(player_data, layout)
 			end
 		end
 	end
-	local old = player_data.overview_widths
-	player_data.overview_widths = widths
+	local old = player_data.tabs.overview_tab.widths
+	player_data.tabs.overview_tab.widths = widths
 	local h_req, h_prov = refs.overview_unserved_h_requester, refs.overview_unserved_h_provider
 	if h_req and h_req.valid then h_req.style.width = requester end
 	if h_prov and h_prov.valid then h_prov.style.width = provider end
@@ -518,7 +511,7 @@ end
 --- @param f ManagerFilters
 --- @return table
 local function failing_model(player_data, snapshot, f)
-	local cache = player_data.overview_failing
+	local cache = player_data.cache.failing
 	local epoch, pos = collector.log_position()
 	local fsig = filters.filter_signature(f)
 	local ids, first, last
@@ -553,7 +546,7 @@ local function failing_model(player_data, snapshot, f)
 			end
 		end
 		cache = { fsig = fsig, parts = parts, errs = errs, counts = c }
-		player_data.overview_failing = cache
+		player_data.cache.failing = cache
 	end
 	cache.epoch, cache.pos = epoch, pos
 	local c = cache.counts
@@ -950,7 +943,7 @@ local function render_tiles(player_data, model)
 	if toggle and toggle.valid then
 		local n = model.unserved and model.unserved.acked_total or 0
 		set_caption(cache, toggle, tostring(n), { "cybersyn-gui.overview-show-acked", tostring(n) })
-		local state = player_data.overview_show_acked == true
+		local state = player_data.tabs.overview_tab.show_acked == true
 		if toggle.state ~= state then toggle.state = state end
 	end
 end
@@ -1350,7 +1343,7 @@ local function render_table(player_data, model)
 	if not (tbl and tbl.valid) then return end
 	local cache = caption_cache(player_data)
 	local u = model.unserved
-	local widths = player_data.overview_widths
+	local widths = player_data.tabs.overview_tab.widths
 	if not widths then return end
 	local entries = {}
 	local shown_total = 0
@@ -1365,7 +1358,8 @@ local function render_table(player_data, model)
 		local hide = state.hide or { stock = false, lost = false }
 		local ctx = { now = model.now, snapshot = collector.get(), inherit_before = model.inherit_before, widths = widths,
 			content_sigs = content_sigs, setup = setup_index(), hide = hide }
-		local open_take, acked_take = logic.unserved_split(model.rows, #u.open, #u.acked, player_data.overview_show_acked)
+		local show_acked = player_data.tabs.overview_tab.show_acked
+		local open_take, acked_take = logic.unserved_split(model.rows, #u.open, #u.acked, show_acked)
 		local picked = {}
 		for i = 1, open_take do picked[i] = { u.open[i], false } end
 		for i = 1, acked_take do picked[open_take + i] = { u.acked[i], true } end
@@ -1403,7 +1397,7 @@ local function render_table(player_data, model)
 			local entry = row_entry(p[1], p[2], ctx)
 			if entry then entries[#entries + 1] = entry end
 		end
-		shown_total = u.total + (player_data.overview_show_acked and u.acked_total or 0)
+		shown_total = u.total + (player_data.tabs.overview_tab.show_acked and u.acked_total or 0)
 	end
 	-- Rows key on (requester, item), so a wait that reorders them is a structural change the hover hold defers.
 	sync.sync_table_rows(tbl, TABLE_COLUMNS, TABLE_COLUMNS, entries, sync.gui_state(player_data, TABLE),
@@ -1442,7 +1436,6 @@ local function render_table(player_data, model)
 		if dropped.visible ~= show then dropped.visible = show end
 		if show then set_caption(cache, dropped, tostring(n), { "cybersyn-gui.unserved-dropped", format.number(n) }) end
 	end
-	player_data.overview_rendered = #entries
 end
 
 --- @param map_data MapData
@@ -1464,14 +1457,14 @@ function overview_tab.handle.overview_period_changed(player, player_data, refs, 
 	local element = e.element
 	if not (element and element.valid) then return end
 	local minutes = PERIODS[element.selected_index]
-	if not minutes or minutes == player_data.overview_period then return end
-	player_data.overview_period = minutes
+	if not minutes or minutes == player_data.tabs.overview_tab.period then return end
+	player_data.tabs.overview_tab.period = minutes
 	nav.rerender(player, player_data)
 end
 
 --- @param e EventData.on_gui_checked_state_changed
 function overview_tab.handle.overview_show_acked(player, player_data, refs, e)
-	player_data.overview_show_acked = e.element.state or nil
+	player_data.tabs.overview_tab.show_acked = e.element.state or nil
 	hover.release_hold(player_data)
 	nav.rerender(player, player_data)
 end

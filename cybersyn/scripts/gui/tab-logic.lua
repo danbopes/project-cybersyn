@@ -718,13 +718,13 @@ logic.PERIODS = { 10, 60, 1440 }
 logic.DEFAULT_PERIOD = 60
 
 --- The player's throughput period, repairing a missing or stale value in place so every reader sees the same one.
---- @param player_data {overview_period: int?}
+--- @param player_data PlayerData
 --- @return int minutes
 function logic.get_period(player_data)
-	local period = player_data.overview_period
+	local period = player_data.tabs.overview_tab.period
 	if period ~= 10 and period ~= 60 and period ~= 1440 then
 		period = logic.DEFAULT_PERIOD
-		player_data.overview_period = period
+		player_data.tabs.overview_tab.period = period
 	end
 	return period
 end

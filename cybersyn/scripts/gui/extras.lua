@@ -11,11 +11,6 @@ local utext = require("scripts.gui.unserved-text")
 local diag = require("scripts.diag")
 local stats = require("scripts.stats")
 
---- @class PlayerData
---- @field path_trace {train_id: uint, ids: uint[], until_tick: uint, rails: int, runs: int, segments: int}? the drawn trace
---- @field hud_on boolean? cached cybersyn-manager-hud; nil = read it again
---- @field hud_location {x: int, y: int}? the HUD's position, physical px
-
 local extras = {}
 extras.handle = {}
 

@@ -84,7 +84,7 @@ for g, group in ipairs(model.GROUPS) do
 	end
 end
 
---- @class LogFilter per player (player_data.log_filter); plain values only
+--- @class LogFilter per player (player_data.tabs.log_tab.filter); plain values only
 --- @field sev boolean[] error, warning, info shown
 --- @field group int? index into model.GROUPS
 --- @field kind int? DIAG_KIND_*
@@ -444,7 +444,7 @@ function model.collapse(events, limit)
 	return out
 end
 
---- @class LogRowsState per player (player_data.log_rows)
+--- @class LogRowsState per player (player_data.tabs.log_tab.rows)
 --- @field sig string?
 --- @field groups LogGroup[] newest first
 --- @field top uint every row up to this seq has been considered at the top
@@ -722,7 +722,7 @@ end
 
 -- ---------------------------------------------------------------- severity counts
 
---- @class LogCountsState per player (player_data.log_counts)
+--- @class LogCountsState per player (player_data.tabs.log_tab.counts)
 --- @field sig string?
 --- @field hi uint every row up to this seq is counted (or was outside the filter)
 --- @field build uint? the first count is still scanning backward below this seq
@@ -830,7 +830,7 @@ end
 
 -- ---------------------------------------------------------------- unread errors (the tab's badge)
 
---- @class LogBadgeState per player (player_data.log_badge)
+--- @class LogBadgeState per player (player_data.tabs.log_tab.badge)
 --- @field epoch string?
 --- @field hi uint every row up to this seq is counted
 --- @field n int unread errors
@@ -888,7 +888,7 @@ end
 
 -- ---------------------------------------------------------------- summary
 
---- @class LogSummaryState per player while Summary is on (player_data.log_summary)
+--- @class LogSummaryState per player while Summary is on (player_data.tabs.log_tab.summary)
 --- @field sig string?
 --- @field below uint? the scan continues below this seq; nil once done
 --- @field as_of uint seq the summary counts up to

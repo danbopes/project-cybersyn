@@ -12,9 +12,6 @@ if not charts_available then
 	charts = nil
 end
 
---- @class PlayerData
---- @field utilization_hover_key string? the chart state the hover buttons were made for
-
 local utilization_tab = {}
 
 local TAB = "utilization_tab"
@@ -269,7 +266,7 @@ function utilization_tab.build(map_data, player_data)
 	local refs = player_data.refs
 	local data = map_data.analytics
 
-	local interval_index = player_data.utilization_interval or 1
+	local interval_index = player_data.tabs.utilization_tab.interval or 1
 	if not interval_names[interval_index] then interval_index = 1 end
 	local intervals = data.train_utilization
 	local interval = intervals[interval_index]
@@ -293,17 +290,16 @@ function utilization_tab.build(map_data, player_data)
 	-- The constant y term is tuned by eye (0.1 at 1100x700).
 	local resized, camera_info = analytics.sync_chart_view(map_data, interval, player, refs, refs.utilization_camera_frame,
 		camera, gw, gh, 0.1)
-	if resized then player_data.utilization_cache = nil end
-	player_data.utilization_registered = true
+	if resized then player_data.cache.utilization = nil end
 	if not interval.chunk then return end
 
 	if not has_data then
 		return
 	end
 
-	local selected_series = player_data.utilization_selected or {}
+	local selected_series = player_data.tabs.utilization_tab.selected or {}
 	local current_tick = game.tick
-	local cache = player_data.utilization_cache
+	local cache = player_data.cache.utilization
 	local legend_table = refs.utilization_legend_table
 	-- A window rebuilt within the cache's life (reset_player) has an empty legend that must not wait for the cache.
 	local legend_built = legend_table and legend_table.valid and #legend_table.children > 0
@@ -332,14 +328,14 @@ function utilization_tab.build(map_data, player_data)
 		end
 		table.sort(hidden)
 		local key = table.concat({ interval_index, interval.index, gw, gh, zoom, table.concat(hidden, ",") }, ";")
-		if player_data.utilization_hover_key ~= key or #camera.children == 0 then
+		if player_data.cache.utilization_hover ~= key or #camera.children == 0 then
 			local configs = charts.interactive.get_hover_buttons(state, camera_info, { player = player })
 			charts.create_overlay_buttons(camera, configs, { button_style = OVERLAY_STYLE, widget_width = gw,
 				widget_height = gh })
-			player_data.utilization_hover_key = key
+			player_data.cache.utilization_hover = key
 		end
 	end
-	player_data.utilization_cache = {
+	player_data.cache.utilization = {
 		tick = current_tick,
 		interval_index = interval_index,
 		series = #all_series,
@@ -353,13 +349,13 @@ end
 ---@param map_data MapData
 ---@param player_data PlayerData
 function utilization_tab.cleanup(map_data, player_data)
-	player_data.utilization_cache = nil
-	player_data.utilization_hover_key = nil
+	player_data.cache.utilization = nil
+	player_data.cache.utilization_hover = nil
 	if not map_data.analytics then return end
 	if not player_data.player_index then return end
 
 	local series = map_data.analytics.train_utilization
-	local interval = series and series[player_data.utilization_interval or 1]
+	local interval = series and series[player_data.tabs.utilization_tab.interval or 1]
 
 	local player = game.get_player(player_data.player_index)
 	if player and interval and interval.guis[player.index] then
@@ -368,7 +364,6 @@ function utilization_tab.cleanup(map_data, player_data)
 	if interval and interval.chart and charts then
 		charts.interactive.clear_hover(interval.chart, player_data.player_index)
 	end
-	player_data.utilization_registered = nil
 
 	-- The chart is every viewer's: only the last one to leave destroys it.
 	if interval and interval.viewer_count <= 0 and charts then
@@ -416,7 +411,7 @@ function utilization_tab.handle.on_utilization_interval_click(player, player_dat
 
 	-- Unregisters the interval shown so far; build registers the new one.
 	utilization_tab.cleanup(storage, player_data)
-	player_data.utilization_interval = interval_index
+	player_data.tabs.utilization_tab.interval = interval_index
 	style_interval_buttons(refs, interval_index)
 	nav.rerender(player, player_data)
 end
@@ -431,11 +426,11 @@ function utilization_tab.handle.on_utilization_legend_checkbox_changed(player, p
 	local series_name = element.tags.series_name
 	if not series_name then return end
 
-	if not player_data.utilization_selected then
-		player_data.utilization_selected = {}
+	if not player_data.tabs.utilization_tab.selected then
+		player_data.tabs.utilization_tab.selected = {}
 	end
-	player_data.utilization_selected[series_name] = element.state
-	player_data.utilization_cache = nil
+	player_data.tabs.utilization_tab.selected[series_name] = element.state
+	player_data.cache.utilization = nil
 	nav.rerender(player, player_data)
 end
 

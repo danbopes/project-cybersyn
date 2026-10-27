@@ -6,6 +6,7 @@ local trains_tab = require("scripts.gui.trains")
 local extras = require("scripts.gui.extras")
 local repair = require("scripts.gui.repair")
 local explain = require("scripts.gui.explain")
+local tabs = require("scripts.gui.utils.tabs")
 
 trains_tab.set_relative(relative)
 relative.set_pane_gone(trains_tab.on_pane_gone)
@@ -34,33 +35,96 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field player_index uint
 --- @field is_manager_open boolean
 --- @field refs {[string]: LuaGuiElement}
+--- @field cache PlayerCache data derived for the open window; a close replaces it, see nav.close_manager_window
+--- @field tabs PlayerTabs per tab, the view state and choices that outlive a close
+--- @field filters FilterState
 --- @field surface_dropdown_ids {[integer]: uint}? drop-down index -> surface index
 --- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see listing.get_sort
 --- @field page {[string]: integer}? current page per tab, see listing.paginate
 --- @field gui_state {[string]: {keys: (string|number)[]?, dirty: true?}}? per container, see sync.sync_children
 --- @field hover {tick: uint, scope: string?, index: uint}? element under the cursor, see hover.hold_active
+--- @field hold_released_tick uint? the tick in which a row-changing click lifted the hover hold (hover.release_hold)
 --- @field paused boolean? title-bar pause: no renders and no collection for this player
 --- @field last_update_tick uint? game tick of the last render
 --- @field rendered_snapshot_tick uint? snapshot tick shown by the last render
 --- @field pinning boolean
 --- @field return_to (LuaEntity|LuaGuiElement)? the GUI a manager link opened; closing it hands player.opened back (nav.open_entity)
 --- @field map_from {controller: defines.controllers, position: MapPosition, surface: uint}? the view "show on map" left, for Back
---- @field selected_tab string? "overview_tab"|"inventory_tab"|"stations_tab"|"trains_tab"|"utilization_tab"|"delivery_breakdown_tab"
+--- @field selected_tab string? a ManagerTab name, see scripts/gui/utils/tabs.lua
 --- @field previous_tab string?
---- @field inventory_cache table? inventory tab aggregate + top stations for one snapshot pass and filter set; dropped on close
---- @field inventory_version integer? bumped per inventory_cache rebuild, see inventory.get_cache
+--- @field focus_open true? the next manager_open comes from manager.focus: it keeps the focus's filters (no surface default)
 --- @field layout ManagerLayout? window size for the player's screen, see manager.layout
 --- @field location {x: int, y: int}? window position in physical pixels, from on_gui_location_changed
 --- @field filter_row_open true? the filter row is open (the title bar's filter button is lit); closing it clears its filters
 --- @field search_open true? the title bar's search toggle
 --- @field markers uint[]? render object ids of the player's show-on-map marker pair
---- @field chip_sig string? item filter the chips show
---- @field collecting_shown int? progress the subheaders show, -1 = none
---- @field trains_badge int? alert count on the Trains tab
+--- @field analytics_notice_tick uint? when the player was told the analytics library is missing (once per player)
+--- @field confirm ConfirmState? the one armed action button of this player
+--- @field explain {r_id: uint, hash: string, sig: string?}? the open Explain frame's key
+--- @field path_trace {train_id: uint, ids: uint[], until_tick: uint, rails: int, runs: int, segments: int}? the drawn trace
+--- @field hud_on boolean? cached cybersyn-manager-hud; nil = read it again
+--- @field hud_location {x: int, y: int}? the HUD's position, physical px
 --- @field relative_open {kind: "stop"|"train", id: uint, mount: string?, narrow: true?, tick: uint?, pane_narrow: boolean?, groups: int?}? the Cybersyn panel beside an open vanilla window: `narrow` = stop panel hidden on a narrow screen; `tick`, `pane_narrow`, `groups` = the docked train pane it was placed beside, see relative.lua place_train
 --- @field remote_entered_tick uint? last tick the controller changed from the character to remote view (the train pane's width depends on it)
 --- @field relative RelativeState? that panel's render state, see scripts/gui/relative.lua
 --- @field relative_effective_open true? the stop panel's Effective config section is expanded
+--- @field relative_pane RelativeState? the train panel docked in the Trains tab's detail pane
+--- @field relative_pane_open {kind: "train", id: uint, panel: LuaGuiElement}? where that panel is mounted
+
+--- Everything here is rebuilt from the snapshot or the filters when missing, and lives in storage only so every peer
+--- renders the same. Closing the window drops all of it except `stations`, which stays as long as the snapshot it
+--- indexes is kept.
+--- @class PlayerCache
+--- @field stations table? Stations: classified and sorted rows of one snapshot and filter set; collector.release drops it
+--- @field trains table? Trains: the filtered, sorted train list and its layout strings, for one query signature
+--- @field inventory table? Inventory: aggregate and top stations for one snapshot pass and filter set
+--- @field item ItemCache? the item drill-down's model and render caches
+--- @field item_view ItemView? the drill-down's elements exist in the Inventory's content
+--- @field item_refs {[string]: LuaGuiElement}? the drill-down's named elements
+--- @field delivered {minute: int, by_period: {[int]: {[string]: int}}}? util.delivered_items' per-minute cache
+--- @field failing {fsig: string, parts: {[uint]: int}, errs: {[uint]: int}, counts: table, epoch: int, pos: int}?
+---   the Overview's failing tile: per-station flags and counts, kept up to date from the collector's change log
+--- @field utilization {tick: uint, interval_index: int, series: int, drawn: int}? the chart drawn last
+--- @field utilization_hover string? the chart state the hover buttons were made for
+--- @field breakdown {tick: uint, key: string, filtered: table, stats: table}? Breakdown's filtered deliveries
+--- @field breakdown_stats_of table|false? the stats the Stats rows were written from (false = none)
+--- @field log_cf LogCompiled? the Log's compiled filter, with the inputs it was compiled from
+--- @field status_sig string? the update-status label's last text inputs
+--- @field filter_widgets_sig string? the filters and toggles the filter widgets last showed, see manager.render
+--- @field chip_sig string? item filter the chips show
+--- @field collecting_shown int? progress the subheaders show, -1 = none
+--- @field trains_badge int? alert count on the Trains tab
+
+--- One table per ManagerTab name, created by init_player_fields.
+--- @class PlayerTabs
+--- @field overview_tab {period: int?, show_acked: true?, widths: {requester: int, provider: int, tile: int}?}
+---   period = minutes covered by the Throughput tile and the headroom minimum (10, 60 or 1440); show_acked = the
+---   acknowledged rows are listed, greyed at the bottom; widths = column widths for the current layout
+--- @field inventory_tab {sorts: {[string]: string}?, dim: true?, version: int?, item_widths: {[string]: int}?}
+---   sorts = per grid the column its sort buttons chose (a grid without one follows the tab's sort, which the
+---   Overview's Throughput tile sets); dim = Provided dims the items nobody on the same network requests; version =
+---   bumped per inventory cache rebuild, kept outside the cache so a grid's render signature never repeats a stale one;
+---   item_widths = the drill-down's flexible column widths for the current layout
+--- @field stations_tab {problems_view: true?} the Problems chip was on at the last query (its sort is set on the way in)
+--- @field trains_tab {group_by_depot: true?, expanded_depots: {[string]: true}?, selected: uint?, reveal: {train: uint?, group: string?, all: true?}?}
+---   selected = the train the detail pane shows; reveal = manager.focus: expand the group of this train (or this
+---   group, or every group holding a filtered train) once, on the first grouped build with a complete snapshot
+--- @field log_tab LogTabState
+--- @field utilization_tab {interval: int?, selected: {[string]: boolean}?}
+--- @field delivery_breakdown_tab {interval: int?}
+
+--- @class LogTabState
+--- @field filter LogFilter?
+--- @field rows LogRowsState?
+--- @field counts LogCountsState?
+--- @field badge LogBadgeState?
+--- @field summary LogSummaryState? only while Summary is on
+--- @field seen {state: string, seq: uint}? newest seq the player had the Log on screen for, in which diagnostics state
+---   (the badge counts errors after it)
+--- @field widths {station: int, message: int, rows: int}? cell widths for the current layout
+--- @field caps {[string]: any}? signatures of the subheader and caption texts last written
+--- @field expanded {[number]: true}? lint passes (model.pass_key) whose rows the player opened
+--- @field expanded_v int? bumped on every `expanded` change, so the rows know to redraw
 
 local manager_gui = {}
 manager_gui.manager = manager
@@ -135,6 +199,10 @@ local function init_player_fields(player_data)
 	player_data.page = player_data.page or {}
 	player_data.gui_state = player_data.gui_state or {}
 	player_data.filters = player_data.filters or {}
+	player_data.cache = player_data.cache or {}
+	local tab_states = player_data.tabs or {}
+	player_data.tabs = tab_states
+	for _, tab in ipairs(tabs) do tab_states[tab.name] = tab_states[tab.name] or {} end
 	if player_data.paused == nil then player_data.paused = false end
 	-- A hover names an element of the window that reset_player rebuilds next.
 	player_data.hover = nil
@@ -439,7 +507,7 @@ function manager_gui.on_surfaces_changed()
 	for i, v in pairs(manager_data.players) do
 		local player = v.is_manager_open and game.get_player(i)
 		if player then
-			v.filter_widgets_sig = nil
+			v.cache.filter_widgets_sig = nil
 			manager.render(player, v)
 		end
 	end
@@ -470,9 +538,8 @@ function manager_gui.reset_player(i, v)
 		relative.reset(player, v)
 		extras.reset(player, v)
 		explain.close(player, v)
-		v.item_view = nil
-		v.item_cache = nil
-		v.item_refs = nil
+		-- The kept snapshot's Stations rows do not reference the destroyed elements.
+		v.cache = { stations = v.cache.stations }
 		v.is_manager_open = false
 		v.gui_state = {}
 		player.set_shortcut_toggled("cybersyn-toggle-gui", false)

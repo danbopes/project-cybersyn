@@ -238,7 +238,7 @@ test("release_if_unused: keeps data while any window is open; drops it otherwise
 	manager()
 	local snap = storage.manager.snapshot
 	snap.tick = 5
-	storage.manager.players = { [1] = { is_manager_open = false }, [2] = { is_manager_open = true } }
+	storage.manager.players = { [1] = { cache = {}, is_manager_open = false }, [2] = { cache = {}, is_manager_open = true } }
 	collector.release_if_unused()
 	assert_same(storage.manager.snapshot, snap)
 	storage.manager.players[2].is_manager_open = false
@@ -255,7 +255,7 @@ end)
 
 test("wanted and tick: an open manager collects unless it is paused with data shown", function()
 	scenario()
-	storage.manager.players = { [1] = { is_manager_open = true, paused = true }, [2] = { is_manager_open = false } }
+	storage.manager.players = { [1] = { cache = {}, is_manager_open = true, paused = true }, [2] = { cache = {}, is_manager_open = false } }
 	-- Paused before its first data (reopened paused): it still needs one pass.
 	assert_true(collector.wanted())
 	storage.manager.players[1].rendered_snapshot_tick = 10
@@ -666,7 +666,7 @@ end)
 -- Opening never collects synchronously; a missing or stale snapshot gets a boosted pass instead.
 test("ensure_fresh: never collected or older than 600 ticks boosts the next passes, nothing synchronous", function()
 	scenario()
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	collector.ensure_fresh()
 	assert_nil(collector.get().tick)
 	assert_eq(storage.manager.collect_boost, 1000)
@@ -706,7 +706,7 @@ end)
 
 test("collecting: progress of the boosted pass", function()
 	scenario()
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	for id = 7, 106 do
 		storage.stations[id] = { entity_stop = stop("S" .. id), entity_comb1 = comb(WORKING, {}), network_name = "signal-A", network_mask = 1, secondary_inv_combs = {} }
 	end
@@ -729,10 +729,10 @@ test("boost_tick: a no-op without a boost or a wanted window; one step per call;
 	storage.manager.collect_boost = 999
 	assert_false(collector.boost_tick())
 	assert_nil(storage.manager.snapshot_build, "no window wants data")
-	storage.manager.players[1] = { is_manager_open = true, paused = true, rendered_snapshot_tick = 5 }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true, paused = true, rendered_snapshot_tick = 5 }
 	assert_false(collector.boost_tick())
 	assert_nil(storage.manager.snapshot_build, "paused with data shown")
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	-- The manager update neither steps nor runs the lint job while the boost runs.
 	assert_false(collector.tick())
 	assert_nil(storage.manager.snapshot_build)
@@ -765,7 +765,7 @@ end)
 
 test("collecting_note: only once a cold boost has run NOTE_TICKS, never for a quiet one", function()
 	scenario()
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	collector.ensure_fresh()
 	assert_eq(collector.collecting(), 0)
 	assert_nil(collector.collecting_note())
@@ -782,7 +782,7 @@ end)
 test("on_last_close: keeps the snapshot KEEP_TICKS, release_due frees it at the deadline, a reopen cancels it", function()
 	scenario()
 	assert_eq(collector.KEEP_TICKS, 7200)
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	collector.run_to_completion()
 	local snap = collector.get()
 	snap.boosted = true
@@ -844,7 +844,7 @@ end)
 test("on_last_close: nothing collected yet releases at once", function()
 	scenario()
 	-- A cold pass that never completed: nothing worth keeping.
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	collector.ensure_fresh()
 	collector.boost_tick(true)
 	storage.manager.players[1].is_manager_open = false
@@ -867,26 +867,26 @@ end)
 
 test("kept Stations query caches: a closed player's goes when another window reopens, every one on init", function()
 	scenario()
-	storage.manager.players[1] = { is_manager_open = true }
-	storage.manager.players[2] = { is_manager_open = false }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
+	storage.manager.players[2] = { cache = {}, is_manager_open = false }
 	collector.run_to_completion()
 	storage.manager.players[1].is_manager_open = false
 	collector.on_last_close()
-	storage.manager.players[1].stations_query = { kept = 1 }
-	storage.manager.players[2].stations_query = { kept = 2 }
+	storage.manager.players[1].cache.stations = { kept = 1 }
+	storage.manager.players[2].cache.stations = { kept = 2 }
 	-- Player 1 reopens inside the grace: its own cache stays, the other closed player's goes.
 	storage.manager.players[1].is_manager_open = true
 	collector.ensure_fresh()
-	assert_eq(storage.manager.players[1].stations_query, { kept = 1 })
-	assert_nil(storage.manager.players[2].stations_query)
+	assert_eq(storage.manager.players[1].cache.stations, { kept = 1 })
+	assert_nil(storage.manager.players[2].cache.stations)
 	-- A later open with nothing kept leaves caches alone.
-	storage.manager.players[2].stations_query = { kept = 2 }
+	storage.manager.players[2].cache.stations = { kept = 2 }
 	collector.ensure_fresh()
-	assert_eq(storage.manager.players[2].stations_query, { kept = 2 })
+	assert_eq(storage.manager.players[2].cache.stations, { kept = 2 })
 	storage.manager.settle_tick = 5
 	collector.init()
-	assert_nil(storage.manager.players[1].stations_query)
-	assert_nil(storage.manager.players[2].stations_query)
+	assert_nil(storage.manager.players[1].cache.stations)
+	assert_nil(storage.manager.players[2].cache.stations)
 	assert_nil(storage.manager.settle_tick)
 end)
 
@@ -895,11 +895,11 @@ test("live: the snapshot only while a window keeps it current", function()
 	assert_nil(collector.live())
 	collector.run_to_completion()
 	assert_nil(collector.live(), "no window")
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	assert_same(collector.live(), collector.get())
-	storage.manager.players[1] = { is_manager_open = true, paused = true, rendered_snapshot_tick = 1000 }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true, paused = true, rendered_snapshot_tick = 1000 }
 	assert_nil(collector.live(), "paused: frozen, not current")
-	storage.manager.players[1] = { is_manager_open = true }
+	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	storage.manager.snapshot = collector.empty()
 	assert_nil(collector.live(), "never collected")
 end)

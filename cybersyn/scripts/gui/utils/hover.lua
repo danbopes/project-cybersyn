@@ -75,9 +75,6 @@ function hover.hold_active(player_data, scope, ticks)
 		and player_data.hold_released_tick ~= game.tick
 end
 
---- @class PlayerData
---- @field hold_released_tick uint? the tick in which a row-changing click lifted the hover hold (hover.release_hold)
-
 --- A click whose purpose is to change the rows (an acknowledgement, a show/hide toggle) renders them in its own event.
 --- The hover stays recorded: the pointer is still on the table, so the hold protects the rows that slid under it from
 --- the next tick on.

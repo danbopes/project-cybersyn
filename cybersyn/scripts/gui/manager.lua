@@ -228,12 +228,6 @@ end
 --- @field grids true? the Inventory's grids under the focus sort: the item filter (its drill-down replaces the grids)
 --- and the grids' own sort buttons go
 
---- @class PlayerData
---- @field focus_open true? the next manager_open comes from manager.focus: it keeps the focus's filters (no surface default)
---- @field status_sig string? the update-status label's last text inputs
---- @field filter_widgets_sig string? the filters and toggles the filter widgets last showed, see manager.render
---- @field analytics_notice_tick uint? when the player was told the analytics library is missing (once per player)
-
 local FOCUS_FIELDS = { "item", "station", "train", "network", "stations_chip", "problems_scope", "trains_chip" }
 
 --- Shows `tab` with exactly the subject in it. Every chip and overlay goes, and without keep_row every row filter
@@ -257,14 +251,14 @@ function manager.focus(player, player_data, tab, focus)
 	if focus.query then player_data.search_open = true end
 	if focus.grids then
 		filters.set(player_data, "item", nil)
-		player_data.inventory_sorts = nil
+		player_data.tabs.inventory_tab.sorts = nil
 	end
 	for _, field in ipairs(FOCUS_FIELDS) do
 		if focus[field] ~= nil then filters.set(player_data, field, focus[field]) end
 	end
 	local sort = focus.sort
 	if sort then listing.set_sort(player_data, sort.tab, sort.column, sort.ascending) end
-	player_data.trains_reveal = focus.reveal
+	player_data.tabs.trains_tab.reveal = focus.reveal
 	player_data.selected_tab = tab
 	if player_data.is_manager_open then
 		nav.select_tab(player_data, tab)
@@ -447,8 +441,8 @@ function manager.refresh_chips(player_data)
 	local train = player_data.filters.train
 	local sig = (hash or "") .. "\1" .. (station and (tostring(station) .. "\1" .. (station_name or "")) or "") .. "\1"
 		.. (train or "")
-	if player_data.chip_sig == sig then return end
-	player_data.chip_sig = sig
+	if player_data.cache.chip_sig == sig then return end
+	player_data.cache.chip_sig = sig
 	refresh_station_chips(player_data, station, station_name)
 	for _, t in ipairs(tabs) do
 		local flow = t.train and refs[t.name .. "_train_chip_flow"]
@@ -547,8 +541,8 @@ function manager.update_status(player_data)
 			held = state ~= nil and state.dirty == true
 		end
 		local sig = age .. "|" .. data_age .. "|" .. (player_data.paused and "p" or "") .. (held and "h" or "")
-		if player_data.status_sig ~= sig then
-			player_data.status_sig = sig
+		if player_data.cache.status_sig ~= sig then
+			player_data.cache.status_sig = sig
 			label.tooltip = { "", { "cybersyn-gui.updated-tooltip" }, "\n", { "cybersyn-gui.data-age", data_age } }
 			local caption
 			if player_data.paused then
@@ -560,7 +554,7 @@ function manager.update_status(player_data)
 			label.caption = caption
 		end
 	else
-		player_data.status_sig = nil
+		player_data.cache.status_sig = nil
 	end
 
 	-- The placeholders show from the open (collector.collecting); the note only once a cold boost outlasts
@@ -568,8 +562,8 @@ function manager.update_status(player_data)
 	local collecting = collector.collecting_note()
 	local show = collecting ~= nil and not (player_data.paused and data_tick)
 	local percent = show and math.floor(collecting * 100) or -1
-	if player_data.collecting_shown ~= percent then
-		player_data.collecting_shown = percent
+	if player_data.cache.collecting_shown ~= percent then
+		player_data.cache.collecting_shown = percent
 		for _, t in ipairs(tabs) do
 			local note = refs[t.name .. "_collecting"]
 			if note and note.valid then
@@ -620,7 +614,7 @@ local function write_filter_widgets(player, player_data)
 	if (tonumber(mask.text) or -1) ~= (fs.mask or -1) then mask.text = tostring(fs.mask or -1) end
 	manager.rebuild_surface_dropdown(player_data)
 	manager.refresh_search_fields(player_data)
-	player_data.chip_sig = nil
+	player_data.cache.chip_sig = nil
 	manager.refresh_chips(player_data)
 	manager.refresh_filter_row(player, player_data)
 end
@@ -651,7 +645,7 @@ function manager.update(map_data, player_data)
 		inventory_tab.set_drill_down(player_data, true)
 		return
 	end
-	if player_data.item_view then item.close(nil, player_data) end
+	if player_data.cache.item_view then item.close(nil, player_data) end
 	if current_tab == "inventory_tab" then inventory_tab.set_drill_down(player_data, false) end
 
 	local m = tab_modules[current_tab]
@@ -664,8 +658,8 @@ local function refresh_badges(player_data)
 	local tab = player_data.refs.manager_trains_tab
 	if not (tab and tab.valid) then return end
 	local n = #collector.get().alerts
-	if player_data.trains_badge ~= n then
-		player_data.trains_badge = n
+	if player_data.cache.trains_badge ~= n then
+		player_data.cache.trains_badge = n
 		tab.badge_text = n > 0 and tostring(n) or ""
 		tab.tooltip = n > 0 and { "cybersyn-gui.trains-badge-tooltip", tostring(n) } or ""
 	end
@@ -683,10 +677,10 @@ function manager.render(player, player_data)
 	if filters.active(player_data) then player_data.filter_row_open = true end
 	local sig = filters.signature(player_data) .. (player_data.search_open and "\1s" or "\1")
 		.. (player_data.filter_row_open and "r" or "")
-	if player_data.filter_widgets_sig ~= sig then
+	if player_data.cache.filter_widgets_sig ~= sig then
 		player = player or game.get_player(player_data.player_index)
 		if player then
-			player_data.filter_widgets_sig = sig
+			player_data.cache.filter_widgets_sig = sig
 			write_filter_widgets(player, player_data)
 		end
 	end
@@ -716,15 +710,9 @@ manager.wrapper = util.wrapper
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_open(player, player_data, refs)
-	player_data.chip_sig = nil
-	player_data.collecting_shown = nil
-	player_data.trains_badge = nil
-	player_data.status_sig = nil
-	player_data.filter_widgets_sig = nil
 	manager.refresh_banners(player_data)
 	manager.apply_layout(player, player_data)
 	refs.manager_window.visible = true
-	player_data.visible = true
 	manager.place_window(player, player_data)
 	refs.manager_window.bring_to_front()
 

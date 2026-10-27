@@ -52,7 +52,7 @@ end
 
 local function order(pd)
 	local trains_tab = setup()
-	local rows = trains_tab.query(MAP_DATA, pd)
+	local rows = trains_tab.query(MAP_DATA, H.player_data(pd))
 	local out = {}
 	for i, r in ipairs(rows) do out[i] = r.id end
 	return out
@@ -108,7 +108,7 @@ end)
 
 test("query: the context resolves target names from the snapshot and refuelers", function()
 	local trains_tab = setup()
-	local rows, snap, ctx = trains_tab.query(MAP_DATA, { filters = {} })
+	local rows, snap, ctx = trains_tab.query(MAP_DATA, H.player_data({}))
 	assert_eq(#rows, 6)
 	assert_same(snap, require("scripts.gui.collector").get())
 	assert_eq({ ctx.names(snap.trains[2], "station", 10) }, { "Iron Mine", "iron mine" })

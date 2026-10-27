@@ -26,19 +26,6 @@ local model = require("scripts.gui.log-model")
 local name_cell = require("scripts.gui.name-cell")
 local text = require("scripts.gui.unserved-text")
 
---- @class PlayerData
---- @field log_filter LogFilter?
---- @field log_rows LogRowsState?
---- @field log_counts LogCountsState?
---- @field log_badge LogBadgeState?
---- @field log_summary LogSummaryState? only while Summary is on
---- @field log_seen {state: string, seq: uint}? newest seq the player had the Log on screen for, in which diagnostics state (the badge counts errors after it)
---- @field log_widths {station: int, message: int, rows: int}? cell widths for the current layout
---- @field log_caps {[string]: any}? signatures of the subheader and caption texts last written
---- @field log_expanded {[number]: true}? lint passes (model.pass_key) whose rows the player opened
---- @field log_expanded_v int? bumped on every log_expanded change, so the rows know to redraw
---- @field log_cf LogCompiled? the compiled filter, with the f_* inputs it was compiled from
-
 local log_tab = {}
 
 local TAB = "log_tab"
@@ -164,10 +151,10 @@ end
 --- @param player_data PlayerData
 --- @return LogFilter
 local function get_filter(player_data)
-	local f = player_data.log_filter
+	local f = player_data.tabs.log_tab.filter
 	if not f then
 		f = model.default_filter()
-		player_data.log_filter = f
+		player_data.tabs.log_tab.filter = f
 	end
 	return f
 end
@@ -190,7 +177,7 @@ local function compiled(player_data, d)
 	local f = get_filter(player_data)
 	local item = item_filter(player_data, d)
 	local station = player_data.filters.station
-	local c = player_data.log_cf
+	local c = player_data.cache.log_cf
 	local sev = f.sev
 	-- Rebuilt only when the filter changed; otherwise only the window's start moves with the clock.
 	if c and c.f_group == f.group and c.f_kind == f.kind and c.f_train == f.train and c.f_window == f.window
@@ -203,7 +190,7 @@ local function compiled(player_data, d)
 	c = model.compile(f, game.tick, item, station)
 	c.f_group, c.f_kind, c.f_train, c.f_window, c.f_item = f.group, f.kind, f.train, f.window, item
 	c.f_station = station
-	player_data.log_cf = c
+	player_data.cache.log_cf = c
 	return c
 end
 log_tab.compiled = compiled
@@ -218,10 +205,10 @@ end
 --- @param player_data PlayerData
 --- @return {[string]: any}
 local function caps(player_data)
-	local c = player_data.log_caps
+	local c = player_data.tabs.log_tab.caps
 	if not c then
 		c = {}
-		player_data.log_caps = c
+		player_data.tabs.log_tab.caps = c
 	end
 	return c
 end
@@ -464,17 +451,17 @@ function log_tab.apply_layout(player_data, layout)
 	local station = math.floor(W.station * math.min(cw, BASE_CONTENT_WIDTH) / BASE_CONTENT_WIDTH)
 	local fixed = W.age + W.dot + W.kind + W.train + station + W.item + W.count + W.print
 	local message = cw - FRAME_BORDER - ROW_PADDING - (CELLS - 1) * SPACING - fixed - SCROLLBAR
-	local old = player_data.log_widths
+	local old = player_data.tabs.log_tab.widths
 	-- Two summary frames side by side with 12 between them, inside the body's 8 px padding.
 	local summary = math.floor((cw - FRAME_BORDER - 16 - 12) / 2)
-	player_data.log_widths = { station = station, message = message, rows = rows, summary = summary }
+	player_data.tabs.log_tab.widths = { station = station, message = message, rows = rows, summary = summary }
 	for _, name in ipairs({ "log_summary_stations_frame", "log_summary_items_frame" }) do
 		local frame = refs[name]
 		if frame and frame.valid then frame.style.width = summary end
 	end
-	if player_data.log_caps then
-		player_data.log_caps.log_summary_stations = nil
-		player_data.log_caps.log_summary_items = nil
+	if player_data.tabs.log_tab.caps then
+		player_data.tabs.log_tab.caps.log_summary_stations = nil
+		player_data.tabs.log_tab.caps.log_summary_items = nil
 	end
 	-- The item chip (icon 28 + caption) is squashed to what the fixed controls leave, so the right end of the
 	-- subheader is never pushed out of the window.
@@ -917,7 +904,7 @@ end
 local function render_rows(player_data, display, size, changed, viewport, held)
 	local refs = player_data.refs
 	local parent = refs[ROWS]
-	local widths = player_data.log_widths
+	local widths = player_data.tabs.log_tab.widths
 	if not (parent and parent.valid and widths) then return end
 	local state = sync.gui_state(player_data, ROWS)
 	local memo = state.memo
@@ -998,7 +985,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 	if c[tbl.name] == sig then return end
 	c[tbl.name] = sig
 	tbl.clear()
-	local widths = player_data.log_widths
+	local widths = player_data.tabs.log_tab.widths
 	-- frame width less the table padding, the dot, the count and the spacing between them
 	local name_width = (widths and widths.summary or 600) - 14 - 16 - 60 - 2 * 8 - 8
 	for _, e in ipairs(list or {}) do
@@ -1141,7 +1128,7 @@ function log_tab.restore_widgets(player_data)
 		follow.tooltip = on and { "cybersyn-gui.log-pause-tooltip" } or { "cybersyn-gui.log-newest-tooltip" }
 	end
 	if refs.log_summary_toggle and refs.log_summary_toggle.valid then refs.log_summary_toggle.toggled = f.summary == true end
-	local c = player_data.log_caps
+	local c = player_data.tabs.log_tab.caps
 	if c then
 		for sev = 1, 3 do c["log_sev_" .. sev] = nil end
 	end
@@ -1168,13 +1155,13 @@ end
 --- Diagnostics are off: every seq the player's Log state holds belongs to a state that is gone.
 --- @param player_data PlayerData
 function log_tab.forget(player_data)
-	player_data.log_badge = nil
-	player_data.log_seen = nil
-	player_data.log_rows = nil
-	player_data.log_counts = nil
-	player_data.log_summary = nil
-	player_data.log_cf = nil
-	player_data.log_expanded = nil
+	player_data.tabs.log_tab.badge = nil
+	player_data.tabs.log_tab.seen = nil
+	player_data.tabs.log_tab.rows = nil
+	player_data.tabs.log_tab.counts = nil
+	player_data.tabs.log_tab.summary = nil
+	player_data.cache.log_cf = nil
+	player_data.tabs.log_tab.expanded = nil
 end
 
 local PREWARM_ROWS = 6
@@ -1185,7 +1172,7 @@ local PREWARM_ROWS = 6
 function log_tab.prewarm(player_data)
 	if not storage.diag or player_data.selected_tab == TAB then return end
 	local parent = player_data.refs[ROWS]
-	if not (parent and parent.valid and player_data.log_widths and collector.get().tick) then return end
+	if not (parent and parent.valid and player_data.tabs.log_tab.widths and collector.get().tick) then return end
 	local state = sync.gui_state(player_data, ROWS)
 	local have = state.keys and #state.keys or #parent.children
 	if have >= PAGE then return end
@@ -1200,12 +1187,13 @@ function log_tab.refresh_badge(player_data)
 	local d = storage.diag
 	if not (tab and tab.valid and d) then return end
 	log_tab.prewarm(player_data)
-	local bs = player_data.log_badge
+	local bs = player_data.tabs.log_tab.badge
 	if not bs then
 		bs = {}
-		player_data.log_badge = bs
+		player_data.tabs.log_tab.badge = bs
 	end
-	local n = model.update_badge(bs, d, model.seen_seq(player_data.log_seen, d), BADGE_BUDGET, diag.inherit_threshold(d))
+	local seen = model.seen_seq(player_data.tabs.log_tab.seen, d)
+	local n = model.update_badge(bs, d, seen, BADGE_BUDGET, diag.inherit_threshold(d))
 	local caption = model.badge_caption(n)
 	if tab.badge_text ~= caption then
 		tab.badge_text = caption
@@ -1219,9 +1207,9 @@ function log_tab.mark_seen(player_data, seq)
 	local d = storage.diag
 	if not d then return end
 	local id = model.state_id(d)
-	local seen = player_data.log_seen
+	local seen = player_data.tabs.log_tab.seen
 	if seen and seen.state == id and seen.seq >= seq then return end
-	player_data.log_seen = { state = id, seq = seq }
+	player_data.tabs.log_tab.seen = { state = id, seq = seq }
 end
 
 --- @param map_data MapData
@@ -1235,10 +1223,10 @@ function log_tab.build(map_data, player_data)
 	local cf = compiled(player_data, d)
 	local limit = row_limit(player_data)
 
-	local cs = player_data.log_counts
+	local cs = player_data.tabs.log_tab.counts
 	if not cs then
 		cs = {}
-		player_data.log_counts = cs
+		player_data.tabs.log_tab.counts = cs
 	end
 	local rows_flow, summary_flow, empty_flow = refs[ROWS], refs.log_summary, refs.log_empty_flow
 	local status_sig, status
@@ -1247,10 +1235,10 @@ function log_tab.build(map_data, player_data)
 	local left = SCAN_BUDGET
 	local seen = d.seq
 	if f.summary then
-		local ss = player_data.log_summary
+		local ss = player_data.tabs.log_tab.summary
 		if not ss then
 			ss = {}
-			player_data.log_summary = ss
+			player_data.tabs.log_tab.summary = ss
 		end
 		local done, used = model.update_summary(ss, d, cf, left)
 		left = left - used
@@ -1270,11 +1258,11 @@ function log_tab.build(map_data, player_data)
 			empty_sig, empty_caption = "summing", { "cybersyn-gui.log-summarising" }
 		end
 	else
-		player_data.log_summary = nil
-		local rs = player_data.log_rows
+		player_data.tabs.log_tab.summary = nil
+		local rs = player_data.tabs.log_tab.rows
 		if not rs then
 			rs = { groups = {} }
-			player_data.log_rows = rs
+			player_data.tabs.log_tab.rows = rs
 		end
 		local held = log_tab.held(player_data)
 		local rows_changed, used = model.update_rows(rs, d, cf, PAGE, f.follow ~= false, left, held)
@@ -1286,8 +1274,8 @@ function log_tab.build(map_data, player_data)
 		if rows_flow.visible ~= any then rows_flow.visible = any end
 		-- With nothing to show the row elements stay (hidden), to be reused when rows come back.
 		if any then
-			local expanded = player_data.log_expanded
-			local now_sig = player_data.log_expanded_v or 0
+			local expanded = player_data.tabs.log_tab.expanded
+			local now_sig = player_data.tabs.log_tab.expanded_v or 0
 			if rows_changed or not rs.display or rs.expanded_sig ~= now_sig then
 				rs.display = model.display(rs.groups, expanded, find_ring_group, PAGE)
 				rs.expanded_sig = now_sig
@@ -1348,7 +1336,7 @@ end
 --- @param seq uint
 --- @return LogGroup?
 local function find_group(player_data, seq)
-	local rs = player_data.log_rows
+	local rs = player_data.tabs.log_tab.rows
 	for _, g in ipairs(rs and rs.groups or {}) do
 		if g.seq == seq or g.first == seq then return g end
 	end
@@ -1459,7 +1447,7 @@ function log_tab.handle.log_summary_changed(player, player_data, refs, e)
 	f.summary = not f.summary
 	e.element.toggled = f.summary
 	-- Toggling it on again recomputes it.
-	player_data.log_summary = nil
+	player_data.tabs.log_tab.summary = nil
 	changed(player, player_data)
 end
 
@@ -1530,10 +1518,10 @@ log_tab.cell_target = cell_target
 --- @return boolean toggled
 function log_tab.toggle_pass(player_data, g)
 	if not (g and g.pass and g.n > 1) then return false end
-	local expanded = player_data.log_expanded or {}
-	player_data.log_expanded = expanded
+	local expanded = player_data.tabs.log_tab.expanded or {}
+	player_data.tabs.log_tab.expanded = expanded
 	expanded[g.pass] = not expanded[g.pass] or nil
-	player_data.log_expanded_v = (player_data.log_expanded_v or 0) + 1
+	player_data.tabs.log_tab.expanded_v = (player_data.tabs.log_tab.expanded_v or 0) + 1
 	return true
 end
 

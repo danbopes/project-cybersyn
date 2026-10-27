@@ -18,11 +18,6 @@ local logic = require("scripts.gui.tab-logic")
 
 local inventory_tab = {}
 
---- @class PlayerData
---- @field inventory_sorts {[string]: string}? per grid the column its sort buttons chose; a grid without one follows
----   the tab's sort (listing.get_sort), which the Overview's Throughput tile sets
---- @field inventory_dim true? Provided dims the items nobody on the same network requests
-
 local TAB = "inventory_tab"
 local GRIDS = { "provided", "in_transit", "requested" }
 local GRID_GAP = 12
@@ -466,7 +461,7 @@ end
 --- @return boolean? rebuilt
 local function get_cache(player_data, snapshot, f)
 	local fkey = filter_signature(f)
-	local cache = player_data.inventory_cache
+	local cache = player_data.cache.inventory
 	local same_filters = cache ~= nil and cache.fkey == fkey
 	if same_filters and cache.tick == snapshot.tick and cache.started == snapshot.started_tick then
 		return cache
@@ -479,8 +474,8 @@ local function get_cache(player_data, snapshot, f)
 	end
 	local inv, top, has_wait = aggregate_with_top(snapshot, f)
 	-- Kept outside the cache, which is dropped on close, so a grid's render signature can never repeat a stale one.
-	local version = (player_data.inventory_version or 0) + 1
-	player_data.inventory_version = version
+	local version = (player_data.tabs.inventory_tab.version or 0) + 1
+	player_data.tabs.inventory_tab.version = version
 	cache = {
 		tick = snapshot.tick,
 		started = snapshot.started_tick,
@@ -495,7 +490,7 @@ local function get_cache(player_data, snapshot, f)
 		-- A refresh nobody asked for, on a base big enough to be worth spreading over renders.
 		background = spread and same_filters,
 	}
-	player_data.inventory_cache = cache
+	player_data.cache.inventory = cache
 	return cache, true
 end
 
@@ -834,7 +829,7 @@ end
 --- @return string column
 --- @return boolean ascending
 local function grid_sort(player_data, grid)
-	local sorts = player_data.inventory_sorts
+	local sorts = player_data.tabs.inventory_tab.sorts
 	local column = sorts and sorts[grid]
 	if column and DEFAULT_ASCENDING[column] ~= nil then return column, DEFAULT_ASCENDING[column] end
 	return listing.get_sort(player_data, TAB, DEFAULT_SORT)
@@ -847,8 +842,8 @@ local function sync_buttons(player_data, columns)
 	local refs = player_data.refs
 	local state = sync.gui_state(player_data, "inventory_buttons")
 	local dim = refs.inventory_dim_button
-	local sig = (player_data.inventory_dim and "d" or "") .. "|" .. columns.provided .. "|" .. columns.in_transit .. "|"
-		.. columns.requested .. "|" .. (dim and dim.valid and dim.index or "")
+	local sig = (player_data.tabs.inventory_tab.dim and "d" or "") .. "|" .. columns.provided .. "|"
+		.. columns.in_transit .. "|" .. columns.requested .. "|" .. (dim and dim.valid and dim.index or "")
 	if state.sig == sig then return end
 	state.sig = sig
 	for _, grid in ipairs(GRIDS) do
@@ -857,14 +852,14 @@ local function sync_buttons(player_data, columns)
 			if button and button.valid then button.toggled = columns[grid] == column end
 		end
 	end
-	if dim and dim.valid then dim.toggled = player_data.inventory_dim == true end
+	if dim and dim.valid then dim.toggled = player_data.tabs.inventory_tab.dim == true end
 end
 
 --- Leaving the tab: coming back must show current totals at once, not a refresh spread over the next renders.
 ---@param map_data MapData
 ---@param player_data PlayerData
 function inventory_tab.cleanup(map_data, player_data)
-	player_data.inventory_cache = nil
+	player_data.cache.inventory = nil
 end
 
 --- The grids, while no item filter is set (with one the tab shows the item's drill-down): the other filters
@@ -904,7 +899,7 @@ function inventory_tab.build(map_data, player_data)
 	local minute = math.floor(now / 3600)
 	-- Only a refresh nobody asked for is spread out; a filter or sort change shows complete numbers at once.
 	local budget = cache.background and { n = BACKGROUND_UPDATE_BUDGET } or nil
-	local dim = player_data.inventory_dim == true
+	local dim = player_data.tabs.inventory_tab.dim == true
 	local delivered
 
 	for _, grid in ipairs(GRIDS) do
@@ -961,14 +956,14 @@ end
 function inventory_tab.set_grid_sort(player_data, grid, column)
 	local current = grid_sort(player_data, grid)
 	if current == column then column = DEFAULT_SORT end
-	local sorts = player_data.inventory_sorts or {}
+	local sorts = player_data.tabs.inventory_tab.sorts or {}
 	sorts[grid] = column
-	player_data.inventory_sorts = sorts
+	player_data.tabs.inventory_tab.sorts = sorts
 end
 
 --- @param e EventData.on_gui_click
 function inventory_tab.handle.on_dim_click(player, player_data, refs, e)
-	player_data.inventory_dim = not player_data.inventory_dim or nil
+	player_data.tabs.inventory_tab.dim = not player_data.tabs.inventory_tab.dim or nil
 	nav.rerender(player, player_data)
 end
 

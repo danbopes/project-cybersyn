@@ -27,6 +27,9 @@ end
 
 local function setup()
 	local stations_tab = H.load("scripts.gui.stations")
+	-- The cases build bare PlayerData literals.
+	local query = stations_tab.query
+	stations_tab.query = function(pd, ...) return query(H.player_data(pd), ...) end
 	local collector = require("scripts.gui.collector")
 	mod_settings = { tps = 60 }
 	storage.total_ticks = 200000
@@ -172,7 +175,7 @@ test("query: a refilled record is merged into the kept order once its pass has c
 	local stations_tab, collector, snap = setup()
 	local pd = { filters = {} }
 	stations_tab.query(pd)
-	assert_eq(pd.stations_query.sort_kind, "full")
+	assert_eq(pd.cache.stations.sort_kind, "full")
 	snap.stations[8].name, snap.stations[8].name_lower = "Aardvark", "aardvark"
 	local log = storage.manager.collect_log
 	log.ids[#log.ids + 1] = 8
@@ -185,8 +188,8 @@ test("query: a refilled record is merged into the kept order once its pass has c
 	game.tick = 21
 	rows = stations_tab.query(pd)
 	assert_eq(ids(rows), { 8, 1, 2, 3, 4, 5, 6, 7, 9 })
-	assert_eq(pd.stations_query.sort_kind, "merged")
-	assert_eq({ collector.log_position() }, { pd.stations_query.epoch, pd.stations_query.pos })
+	assert_eq(pd.cache.stations.sort_kind, "merged")
+	assert_eq({ collector.log_position() }, { pd.cache.stations.epoch, pd.cache.stations.pos })
 end)
 
 test("query: statuses the collector changed and logged update the cached counts", function()
@@ -237,20 +240,20 @@ test("query: the first build after a boosted pass is spread over the three updat
 	assert_eq(#rows, 0)
 	assert_eq(counts, {})
 	assert_true(ctx.pending)
-	assert_nil(pd.stations_query)
+	assert_nil(pd.cache.stations)
 	-- Next update: classified into the cache, not sorted yet, rows still pending.
 	game.tick = 21
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 0)
 	assert_true(ctx.pending)
-	assert_nil(pd.stations_query.order)
-	assert_eq(pd.stations_query.counts.all, 9)
+	assert_nil(pd.cache.stations.order)
+	assert_eq(pd.cache.stations.counts.all, 9)
 	-- The one after: sorted, rows still pending.
 	game.tick = 22
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 0)
 	assert_true(ctx.pending)
-	assert_eq(#pd.stations_query.order, 9)
+	assert_eq(#pd.cache.stations.order, 9)
 	game.tick = 23
 	rows, counts, ctx = stations_tab.query(pd)
 	assert_eq(#rows, 9)
@@ -378,7 +381,7 @@ test("problems chip: worst severity then check order; the sort comes and goes wi
 	local _, _, _, column2 = stations_tab.query(pd)
 	assert_eq(column2, "name")
 	-- Provided / requested stands in for Problems outside the view, and the other way round.
-	pd = { sort = { stations_tab = { column = "provided_requested", ascending = true } }, stations_problems_view = true,
+	pd = { sort = { stations_tab = { column = "provided_requested", ascending = true } }, tabs = { stations_tab = { problems_view = true } },
 		filters = { stations_chip = "problems" } }
 	local _, _, _, column3 = stations_tab.query(pd)
 	assert_eq(column3, "problems")
@@ -530,7 +533,7 @@ test("query: a refilled station that gained an inventory gets its row merged in"
 	local rows = stations_tab.query(pd)
 	assert_eq(row_ids(rows), { "1@0", "2@0", "3@0", "21@0", "21@1", "21@2", "4@0", "5@0", "6@0", "7@0", "8@0", "9@0",
 		"20@0", "20@1", "20@2" })
-	assert_eq(pd.stations_query.sort_kind, "merged")
+	assert_eq(pd.cache.stations.sort_kind, "merged")
 end)
 
 test("query: the Problems view lists a station once, on its station combinator's row", function()

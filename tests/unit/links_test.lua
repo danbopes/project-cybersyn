@@ -91,7 +91,7 @@ local function setup(pinning)
 	local player = new_player(1, manager_gui)
 	local window = H.element({ name = "manager_window" })
 	window.visible = true
-	local pd = { is_manager_open = true, pinning = pinning or false, refs = { manager_window = window }, filters = {} }
+	local pd = H.player_data({ is_manager_open = true, pinning = pinning or false, refs = { manager_window = window } })
 	storage.manager = { players = { [1] = pd } }
 	player._state.opened = not pinning and window or nil
 	game.tick = 500
@@ -209,6 +209,39 @@ test("close_manager_window: forgets a pending return and the map return", functi
 	assert_nil(pd.map_from)
 end)
 
+-- Every key, not a list of known ones: a cache a later tab adds is dropped without being named anywhere.
+local function fill_cache(pd)
+	for _, k in ipairs({ "stations", "trains", "inventory", "item", "item_view", "delivered", "failing", "utilization",
+		"breakdown", "log_cf", "status_sig", "chip_sig", "trains_badge", "a_future_tab" }) do
+		pd.cache[k] = { k }
+	end
+	pd.tabs.log_tab.filter = { kind = "lint" }
+	pd.tabs.trains_tab.selected = 5
+end
+
+test("manager_close: no view cache survives; the tabs' state does", function()
+	local _, manager, _, player, pd = setup()
+	fill_cache(pd)
+	manager.handle.manager_close(player, pd, pd.refs)
+	assert_eq(pd.cache, {})
+	assert_eq(pd.tabs.log_tab.filter, { kind = "lint" })
+	assert_eq(pd.tabs.trains_tab.selected, 5)
+end)
+
+test("manager_close: a kept snapshot keeps only the Stations rows, until collector.release_due frees both", function()
+	local _, manager, _, player, pd = setup()
+	local collector = require("scripts.gui.collector")
+	storage.manager.snapshot = { tick = 450 }
+	fill_cache(pd)
+	manager.handle.manager_close(player, pd, pd.refs)
+	assert_eq(pd.cache, { stations = { "stations" } })
+	local at = storage.manager.release_at
+	assert_not_nil(at, "the snapshot is kept")
+	game.tick = at
+	collector.release_due()
+	assert_eq(pd.cache, {})
+end)
+
 -- The train id cell is a tag button {kind = "train", id} handled by links.handle_link_click.
 local function train_case(locomotive)
 	local _, _, _, player, pd = setup()
@@ -257,7 +290,7 @@ test("right-click on a station link: no handler, no re-render, nothing set", fun
 	local player, pd, renders, texts = right_click("station", 3)
 	assert_eq(renders, 0)
 	assert_eq(texts, {})
-	assert_nil(pd.log_filter)
+	assert_nil(pd.tabs.log_tab.filter)
 	assert_nil(pd.return_to)
 	assert_same(player.opened, pd.refs.manager_window)
 	assert_eq(pd.filters.item, "iron-plate")
@@ -267,7 +300,7 @@ test("right-click on a train link: no handler, no re-render, nothing set", funct
 	local player, pd, renders, texts = right_click("train", 5)
 	assert_eq(renders, 0)
 	assert_eq(texts, {})
-	assert_nil(pd.log_filter)
+	assert_nil(pd.tabs.log_tab.filter)
 	assert_same(player.opened, pd.refs.manager_window)
 end)
 

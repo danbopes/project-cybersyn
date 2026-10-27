@@ -136,16 +136,11 @@ function nav.close_manager_window(player, player_data, refs, force)
 	end
 
 	refs.manager_window.visible = false
-	player_data.visible = false
 	-- Cleared first: releasing player.opened re-enters the close path through on_gui_closed.
 	player_data.is_manager_open = false
 	player_data.return_to = nil
 	player_data.map_from = nil
 	player_data.hover = nil
-	player_data.inventory_cache = nil
-	player_data.delivered_items = nil
-	player_data.trains_query = nil
-	player_data.overview_failing = nil
 	-- Render signatures and row memos only skip redundant updates, and the memos reference snapshot records, so
 	-- they are not worth keeping in the save while closed; a container without them updates every child once on
 	-- the next render.
@@ -166,7 +161,7 @@ function nav.close_manager_window(player, player_data, refs, force)
 	collector.on_last_close()
 	-- The Stations query cache stays with a kept snapshot: a reopen folds in what changed instead of classifying and
 	-- sorting every station in its first paint (12-15 ms on a 2,000-station base). collector.release drops it.
-	if not storage.manager.release_at then player_data.stations_query = nil end
+	player_data.cache = { stations = storage.manager.release_at and player_data.cache.stations or nil }
 end
 
 return nav

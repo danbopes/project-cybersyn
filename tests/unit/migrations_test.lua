@@ -58,6 +58,9 @@ local function storage_212()
 					delivery_times_interval = 2, delivery_times_mode = "x", delivery_times_selected = {},
 					search_query = "iron", search_network_name = "signal-A", search_network_mask = 3,
 					search_surface_idx = 1, search_item = "coal",
+					utilization_interval = 3, utilization_selected = { ["signal-A"] = false }, breakdown_interval = 2,
+					utilization_cache = { tick = 1 }, breakdown_cache = { tick = 1 }, utilization_registered = true,
+					visible = true,
 					is_manager_open = false,
 				},
 			},
@@ -104,7 +107,14 @@ test("2.1.2 -> 2.2.0 creates the new fields and drops the unread ones", function
 		assert_eq(t.state_tick, 4000)
 		assert_nil(storage.trains[2].last_state, "invalid train left alone")
 
-		assert_eq(storage.manager.players[1], { is_manager_open = false })
+		assert_eq(storage.manager.players[1], {
+			is_manager_open = false,
+			cache = {},
+			tabs = {
+				utilization_tab = { interval = 3, selected = { ["signal-A"] = false } },
+				delivery_breakdown_tab = { interval = 2 },
+			},
+		}, "choices move under pd.tabs, the 2.1.2 caches go")
 	end)
 end)
 

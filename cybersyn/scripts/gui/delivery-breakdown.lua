@@ -11,10 +11,6 @@ if not charts_available then
 	charts = nil
 end
 
---- @class PlayerData
---- @field breakdown_axis {value: number, label: string}[]? the gridlines last drawn, see replace_axis
---- @field breakdown_stats_of table|false? the stats the Stats rows were written from (false = none)
-
 local delivery_breakdown_tab = {}
 
 local CACHE_DURATION_TICKS = 300  -- 5 seconds at 60 UPS
@@ -225,15 +221,14 @@ local OVERLAY_BUTTON_OPTIONS = overlay_button_options(GRAPH_WIDTH, GRAPH_HEIGHT)
 --- @param surface LuaSurface
 --- @param chunk table
 --- @param meta table? the library's metadata: graph_left/right/bottom/height and max_total
---- @return {value: number, label: string}[]? ticks the gridlines drawn
 local function replace_axis(interval, surface, chunk, meta)
 	local ids = interval.line_ids
 	if not (meta and meta.max_total and meta.max_total > 0 and ids and #ids >= 2 * LIBRARY_GRID_LINES and chunk.coord) then
-		return nil
+		return
 	end
 	for i = 1, 2 * LIBRARY_GRID_LINES do
 		local o = ids[i]
-		if not (o and o.valid and o.type == (i % 2 == 1 and "line" or "text")) then return nil end
+		if not (o and o.valid and o.type == (i % 2 == 1 and "line" or "text")) then return end
 	end
 	local line_color, line_width, text_color = ids[1].color, ids[1].width, ids[2].color
 	for i = 1, 2 * LIBRARY_GRID_LINES do ids[i].destroy() end
@@ -250,7 +245,6 @@ local function replace_axis(interval, surface, chunk, meta)
 			alignment = "right", vertical_alignment = "middle", time_to_live = AXIS_TTL })
 	end
 	interval.line_ids = kept
-	return ticks
 end
 
 function delivery_breakdown_tab.create()
@@ -592,9 +586,9 @@ delivery_breakdown_tab.stats_rows = stats_rows
 --- @param player_data PlayerData
 local function write_stats(tbl, stats, player_data)
 	if not (tbl and tbl.valid) then return end
-	if stats and player_data.breakdown_stats_of == stats and #tbl.children > 0 then return end
-	if not stats and player_data.breakdown_stats_of == false then return end
-	player_data.breakdown_stats_of = stats or false
+	if stats and player_data.cache.breakdown_stats_of == stats and #tbl.children > 0 then return end
+	if not stats and player_data.cache.breakdown_stats_of == false then return end
+	player_data.cache.breakdown_stats_of = stats or false
 	local rows = stats and stats_rows(stats) or {}
 	tbl.clear()
 	for _, r in ipairs(rows) do
@@ -631,7 +625,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	end
 
 	-- Get selected interval
-	local interval_index = player_data.breakdown_interval or 1
+	local interval_index = player_data.tabs.delivery_breakdown_tab.interval or 1
 	if not RANGES[interval_index] then interval_index = 1 end
 
 	-- Update button styles to match current interval
@@ -658,7 +652,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 
 	-- Check cache - use cached data if still valid
 	local cache_key = string.format("%d:%s:%dx%d", interval_index, search_item or "", gw, gh)
-	local cache = player_data.breakdown_cache
+	local cache = player_data.cache.breakdown
 	local filtered, stats
 	local cache_hit = false
 
@@ -669,7 +663,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	else
 		-- Cache miss - generate fresh data with single-pass function
 		filtered, stats = gather_filter_and_stats(map_data, data, oldest_tick, search_item)
-		player_data.breakdown_cache = {
+		player_data.cache.breakdown = {
 			tick = current_tick,
 			key = cache_key,
 			filtered = filtered,
@@ -751,7 +745,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 			PHASE_COLORS, PHASE_ORDER, HATCHED_PHASES,
 			gw, gh, overlay_options
 		)
-		player_data.breakdown_axis = replace_axis(data.breakdown_interval, data.surface, chunk, meta)
+		replace_axis(data.breakdown_interval, data.surface, chunk, meta)
 
 		-- Create overlay buttons for tooltips
 		charts.create_overlay_buttons(refs.breakdown_camera, button_configs or {}, overlay_button_opts)
@@ -787,7 +781,7 @@ function delivery_breakdown_tab.cleanup(map_data, player_data)
 		end
 	end
 
-	player_data.breakdown_stats_of = nil
+	player_data.cache.breakdown_stats_of = nil
 end
 
 delivery_breakdown_tab.handle = {}
@@ -806,10 +800,10 @@ function delivery_breakdown_tab.handle.on_breakdown_interval_click(player, playe
 	if not interval_index then return end
 
 	-- Update selected interval
-	player_data.breakdown_interval = interval_index
+	player_data.tabs.delivery_breakdown_tab.interval = interval_index
 
 	-- Invalidate cache for immediate refresh with new interval
-	player_data.breakdown_cache = nil
+	player_data.cache.breakdown = nil
 
 	-- Update button styles
 	local interval_buttons = refs.breakdown_interval_buttons

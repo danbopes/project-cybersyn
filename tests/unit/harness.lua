@@ -615,6 +615,17 @@ function harness.locale(loc, file)
 	return out
 end
 
+--- Fills in the tables gui/main.lua's init_player_fields gives every PlayerData.
+--- @param pd table
+--- @return table pd
+function harness.player_data(pd)
+	pd.filters = pd.filters or {}
+	pd.cache = pd.cache or {}
+	pd.tabs = pd.tabs or {}
+	for _, tab in ipairs(require("scripts.gui.utils.tabs")) do pd.tabs[tab.name] = pd.tabs[tab.name] or {} end
+	return pd
+end
+
 --- harness.locale(loc, file) as cfg text, for tests that search it for "\nkey=" lines.
 function harness.locale_text(loc, file)
 	local parts = {}
