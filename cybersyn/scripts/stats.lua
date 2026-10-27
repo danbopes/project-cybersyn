@@ -302,15 +302,6 @@ function stats.record_fulfilment(ticks, station_id, hash)
 	add_wait(bucket(s.hour, HOUR_SLOTS, HOUR, tick), ticks, station_id, hash)
 end
 
---- Receives each slow delivery (diag registers it at load, so every Lua state has the same listener).
---- @type fun(train: Train, hash: string, ticks: uint, avg: number)?
-local slow_listener
-
---- @param fn fun(train: Train, hash: string, ticks: uint, avg: number)
-function stats.set_slow_listener(fn)
-	slow_listener = fn
-end
-
 --- The trip against its item's average: true when it is slow (judged before the trip joins the average).
 --- @param e {avg: number, n: int}? the item's average so far
 --- @param ticks uint
@@ -338,6 +329,10 @@ end
 
 --- Called when a train has finished unloading at the requester, before its manifest is cleared.
 --- @param train Train
+--- @return boolean slow the trip took more than SLOW_FACTOR times its item's average (the caller reports it)
+--- @return string? hash the manifest's first item
+--- @return uint? ticks the trip
+--- @return number? avg the average it was judged against
 function stats.record_delivery_complete(train)
 	local tick = game.tick
 	local s = get()
@@ -347,6 +342,7 @@ function stats.record_delivery_complete(train)
 	h.deliveries = h.deliveries + 1
 	local totals = s.totals
 	totals.deliveries = totals.deliveries + 1
+	local slow, slow_hash, slow_ticks, slow_avg = false, nil, nil, nil
 
 	local manifest = train.manifest
 	if manifest then
@@ -382,12 +378,12 @@ function stats.record_delivery_complete(train)
 			end
 			local e = trips[hash]
 			local avg = e and e.avg
-			local slow = stats.is_slow(e, ticks)
+			slow, slow_hash, slow_ticks, slow_avg = stats.is_slow(e, ticks), hash, ticks, avg
 			stats.add_trip(trips, hash, ticks)
-			if slow and slow_listener then slow_listener(train, hash, ticks, avg) end
 		end
 	end
 	train.dispatch_tick = nil
+	return slow, slow_hash, slow_ticks, slow_avg
 end
 
 --- @class StatsWindow

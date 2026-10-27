@@ -403,7 +403,8 @@ local function on_train_leaves_stop(map_data, mod_settings, train_id, train)
 		--complete delivery
 		-- Record delivery completion for analytics (after unloading)
 		analytics.record_delivery_complete(map_data, train_id)
-		stats.record_delivery_complete(train)
+		local slow, slow_hash, slow_ticks, slow_avg = stats.record_delivery_complete(train)
+		if slow then diag.slow_delivery(train, slow_hash, slow_ticks, slow_avg) end
 		if map_data.diag then check_cargo(map_data, train_id, train, station, true) end
 		if map_data.diag and map_data.diag.full then diag.train_event(DIAG_KIND_LEAVE_R, train_id, train, train.r_station_id) end
 		train.p_station_id = nil

@@ -1275,7 +1275,6 @@ function diag.slow_delivery(train, hash, ticks, avg)
 	diag.event(d, DIAG_KIND_SLOW_DELIVERY, DIAG_SEV_WARNING, 0, train.delivery_id or 0, train_id,
 		train.r_station_id or 0, train.p_station_id or 0, intern(d, hash), ticks, math.floor(avg + 0.5))
 end
-stats.set_slow_listener(diag.slow_delivery)
 
 --- Arrivals, departures and the return to a depot (full only).
 --- @param kind DiagKind DIAG_KIND_ARRIVE_P .. DIAG_KIND_RETURNED
