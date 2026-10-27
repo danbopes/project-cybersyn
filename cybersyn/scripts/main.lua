@@ -552,7 +552,7 @@ function combinator_update(map_data, comb, reset_display)
 
 	local op = params.operation
 	--handle the combinator's display, if it is part of a station
-	if op == MODE_PRIMARY_IO or op == MODE_PRIMARY_IO_ACTIVE or op == MODE_PRIMARY_IO_FAILED_REQUEST then
+	if is_station_op(op) then
 		--the follow is only present to fix combinators that have been copy-pasted by blueprint with the wrong operation
 		local set_control_params = true
 

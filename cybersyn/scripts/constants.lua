@@ -29,13 +29,6 @@ MODE_DEPOT = "+"
 MODE_WAGON = "-"
 MODE_REFUELER = ">>"
 
---- Both displays of an inventory combinator are one mode.
----@param op string?
----@return boolean
-function is_secondary_inventory_op(op)
-	return op == MODE_SECONDARY_INVENTORY or op == MODE_SECONDARY_INVENTORY_FAILED
-end
-
 SETTING_DISABLE_ALLOW_LIST = 2
 SETTING_IS_STACK = 3
 SETTING_ENABLE_INACTIVE = 4

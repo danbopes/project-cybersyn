@@ -1,5 +1,19 @@
 local util = require "__core__.lualib.util"
 
+--- A station combinator in any of its displays (plain, active, failed request).
+---@param op ArithmeticCombinatorParameterOperation?
+---@return boolean
+function is_station_op(op)
+	return op == MODE_PRIMARY_IO or op == MODE_PRIMARY_IO_ACTIVE or op == MODE_PRIMARY_IO_FAILED_REQUEST
+end
+
+--- An inventory combinator in either of its displays (plain, failed request).
+---@param op ArithmeticCombinatorParameterOperation?
+---@return boolean
+function is_secondary_inventory_op(op)
+	return op == MODE_SECONDARY_INVENTORY or op == MODE_SECONDARY_INVENTORY_FAILED
+end
+
 --By Mami
 ---@param v string
 ---@param h string?
