@@ -1,6 +1,7 @@
 local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
 local util = require("scripts.gui.util")
+local filters = require("scripts.gui.utils.filters")
 local logic = require("scripts.gui.tab-logic")
 local utext = require("scripts.gui.unserved-text")
 
@@ -644,7 +645,7 @@ function delivery_breakdown_tab.build(map_data, player_data)
 	end
 
 	-- Use item filter from manager toolbar (optional - shows all items when not set)
-	local search_item = util.get_filters(player_data).item
+	local search_item = filters.get_filters(player_data).item
 
 	-- Calculate time range based on interval (needed for cache key)
 	local interval_ticks = RANGES[interval_index].ticks

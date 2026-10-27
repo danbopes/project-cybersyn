@@ -21,14 +21,14 @@ function templates.frame_action_button(name, sprite, tooltip, handler, tags)
 	}
 end
 
---- A sortable column header. It starts unchecked (arrow down) on every column; util.sync_sort_header reads `column`
+--- A sortable column header. It starts unchecked (arrow down) on every column; listing.sync_sort_header reads `column`
 --- and `default_state` from its tags to restyle it from the stored sort after the window is rebuilt.
 --- @param tab string canonical tab name, e.g. "stations_tab"
 --- @param column string
 --- @param caption LocalisedString
 --- @param tooltip LocalisedString
 --- @param selected boolean whether this is the default sort column
---- @param handler GuiElemHandler on_gui_checked_state_changed handler, normally util.handle.sort_click
+--- @param handler GuiElemHandler on_gui_checked_state_changed handler, normally listing.handle.sort_click
 function templates.sort_checkbox(tab, column, caption, tooltip, selected, handler)
 	return {
 		type = "checkbox",
@@ -49,9 +49,9 @@ function templates.column_label(caption, tooltip)
 end
 
 --- Pager row `[«] [‹] "1–50 of 1,921" [›] [»]` for a tab. Element names are `<tab>_pager`, `<tab>_pager_first`,
---- `_prev`, `_label`, `_next`, `_last`; util.paginate keeps them current. Shift+‹/› moves 10 pages.
+--- `_prev`, `_label`, `_next`, `_last`; listing.paginate keeps them current. Shift+‹/› moves 10 pages.
 --- @param tab string canonical tab name, e.g. "stations_tab"
---- @param handler GuiElemHandler click handler, normally util.handle.pager_click
+--- @param handler GuiElemHandler click handler, normally listing.handle.pager_click
 function templates.pager(tab, handler)
 	local function button(action, caption)
 		return {

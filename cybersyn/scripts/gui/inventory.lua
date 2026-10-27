@@ -5,6 +5,12 @@
 local gui = require("__flib__.gui")
 
 local util = require("scripts.gui.util")
+local sync = require("scripts.gui.utils.sync")
+local filters = require("scripts.gui.utils.filters")
+local listing = require("scripts.gui.utils.listing")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local format = require("__flib__.format")
 local collector = require("scripts.gui.collector")
 local stats = require("scripts.stats")
@@ -14,7 +20,7 @@ local inventory_tab = {}
 
 --- @class PlayerData
 --- @field inventory_sorts {[string]: string}? per grid the column its sort buttons chose; a grid without one follows
----   the tab's sort (util.get_sort), which the Overview's Throughput tile sets
+---   the tab's sort (listing.get_sort), which the Overview's Throughput tile sets
 --- @field inventory_dim true? Provided dims the items nobody on the same network requests
 
 local TAB = "inventory_tab"
@@ -185,7 +191,7 @@ local function ensure_columns(player_data, grid, columns)
 	tbl.destroy()
 	local _, new = gui.add(pane, { type = "table", name = name, style = "slot_table", column_count = columns })
 	refs[name] = new
-	local state = util.gui_state(player_data, name)
+	local state = sync.gui_state(player_data, name)
 	state.keys, state.sigs, state.render_sig, state.dirty = nil, nil, nil, nil
 end
 
@@ -210,7 +216,7 @@ end
 --- @param player_data PlayerData
 --- @param drill boolean
 function inventory_tab.set_drill_down(player_data, drill)
-	local state = util.gui_state(player_data, "inventory_drill_down")
+	local state = sync.gui_state(player_data, "inventory_drill_down")
 	if state.drill == drill then return end
 	state.drill = drill
 	local refs = player_data.refs
@@ -327,8 +333,8 @@ end
 --- @param snapshot Snapshot
 --- @param f ManagerFilters
 local function aggregate_with_top(snapshot, f)
-	local filtered = util.filters_active(f, true)
-	local row_passes = util.row_passes
+	local filtered = filters.filters_active(f, true)
+	local row_passes = filters.row_passes
 	local inv = { provided = {}, requested = {}, in_transit = {} }
 	local top = { provided = {}, requested = {}, in_transit = {} }
 	local has_wait = false
@@ -443,7 +449,7 @@ local function aggregate_with_top(snapshot, f)
 end
 inventory_tab._aggregate = aggregate_with_top
 
---- Not util.filter_signature: the grids never apply the item filter (with one set the tab shows the item's drill-down
+--- Not filters.filter_signature: the grids never apply the item filter (with one set the tab shows the item's drill-down
 --- instead), so picking an item must not re-aggregate.
 --- @param f ManagerFilters
 local function filter_signature(f)
@@ -554,7 +560,7 @@ local STATIONS_KEY = {
 local function update_header(player_data, grid, n)
 	local header = player_data.refs["inventory_" .. grid .. "_header"]
 	if not (header and header.valid) then return end
-	local state = util.gui_state(player_data, header.name)
+	local state = sync.gui_state(player_data, header.name)
 	if state.n == n then return end
 	state.n = n
 	header.caption = { "cybersyn-gui.inventory-grid-caption", { "cybersyn-gui." .. string.gsub(grid, "_", "-") }, format.number(n) }
@@ -583,7 +589,7 @@ local function entry_tooltip(ctx, entry)
 	if ctx.is_requested then
 		local start = agg.earliest_wait_start
 		if start then
-			tail = { "", tail, "\n[color=yellow]", { "cybersyn-gui.waiting-for", util.format_duration(ctx.now - start) }, "[/color]" }
+			tail = { "", tail, "\n[color=yellow]", { "cybersyn-gui.waiting-for", logic.format_duration(ctx.now - start) }, "[/color]" }
 		end
 		local transit = entry.transit
 		if transit then
@@ -617,7 +623,7 @@ end
 local function entry_build(ctx, entry)
 	local hash, agg = entry.key, entry.agg
 	local sprite, quality = util.item_sprite_and_tooltip(hash)
-	return util.hoverable({
+	return hover.hoverable({
 		type = "sprite-button",
 		sprite = sprite,
 		quality = quality,
@@ -625,7 +631,7 @@ local function entry_build(ctx, entry)
 		elem_tooltip = util.elem_tooltip(hash),
 		tags = { kind = "item", id = hash },
 		mouse_button_filter = { "left", "right" },
-		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+		handler = { [defines.events.on_gui_click] = links.handle.link_click },
 		tooltip = entry_tooltip(ctx, entry),
 		{
 			type = "label",
@@ -677,18 +683,18 @@ local function reconcile(parent, ctx, entries, state, hold)
 		rebuild_mostly_new = true,
 		moved_keeps_sig = true,
 	}
-	local result = util.sync_children(parent, entries, state, hold, opts)
+	local result = sync.sync_children(parent, entries, state, hold, opts)
 	if opts.deferred then ctx.deferred = true end
 	return result
 end
 
 --- @param player_data PlayerData
 --- @param table_elem LuaGuiElement
---- @param state table from util.gui_state
+--- @param state table from sync.gui_state
 --- @param ctx table
 --- @param entries table[]
 local function render_grid(player_data, grid, table_elem, state, ctx, entries)
-	local result = reconcile(table_elem, ctx, entries, state, util.hold_active(player_data, table_elem.name))
+	local result = reconcile(table_elem, ctx, entries, state, hover.hold_active(player_data, table_elem.name))
 	-- While held the grid still shows the old set, so a new count would contradict the buttons under the cursor.
 	if result ~= "held" then update_header(player_data, grid, #entries) end
 	return result
@@ -811,7 +817,7 @@ local function render_empty_label(refs, cache, f)
 	if not cache.tick then
 		key = "cybersyn-gui.stations-collecting"
 	elseif not (next(inv.provided) or next(inv.requested) or next(inv.in_transit)) then
-		key = util.filters_active(f, true) and "cybersyn-gui.inventory-no-match" or "cybersyn-gui.inventory-empty"
+		key = filters.filters_active(f, true) and "cybersyn-gui.inventory-no-match" or "cybersyn-gui.inventory-empty"
 	end
 	local show = key ~= nil
 	if flow.visible ~= show then flow.visible = show end
@@ -831,7 +837,7 @@ local function grid_sort(player_data, grid)
 	local sorts = player_data.inventory_sorts
 	local column = sorts and sorts[grid]
 	if column and DEFAULT_ASCENDING[column] ~= nil then return column, DEFAULT_ASCENDING[column] end
-	return util.get_sort(player_data, TAB, DEFAULT_SORT)
+	return listing.get_sort(player_data, TAB, DEFAULT_SORT)
 end
 
 --- The toggled state of the grids' sort buttons and the dim button.
@@ -839,7 +845,7 @@ end
 --- @param columns {[string]: string}
 local function sync_buttons(player_data, columns)
 	local refs = player_data.refs
-	local state = util.gui_state(player_data, "inventory_buttons")
+	local state = sync.gui_state(player_data, "inventory_buttons")
 	local dim = refs.inventory_dim_button
 	local sig = (player_data.inventory_dim and "d" or "") .. "|" .. columns.provided .. "|" .. columns.in_transit .. "|"
 		.. columns.requested .. "|" .. (dim and dim.valid and dim.index or "")
@@ -861,7 +867,7 @@ end
 function inventory_tab.build(map_data, player_data)
 	local refs = player_data.refs
 	local snapshot = collector.get()
-	local f = util.get_filters(player_data)
+	local f = filters.get_filters(player_data)
 	local layout = player_data.layout
 	if layout then
 		local _, columns = grid_size(layout.content_width)
@@ -898,7 +904,7 @@ function inventory_tab.build(map_data, player_data)
 		local scope = grid_table_name(grid)
 		local table_elem = refs[scope]
 		if table_elem and table_elem.valid then
-			local state = util.gui_state(player_data, scope)
+			local state = sync.gui_state(player_data, scope)
 			local column, ascending = sorts[grid][1], sorts[grid][2]
 			-- Wait times in the requested tooltips age even when nothing else changes; delivered amounts once a minute.
 			local wait_bucket = grid == "requested" and cache.has_wait and math.floor(now / WAIT_SIG_TICKS) or ""
@@ -939,7 +945,7 @@ function inventory_tab.handle.on_grid_sort_click(player, player_data, refs, e)
 	local grid, column = tags.grid, tags.column
 	if not (grid and column) then return end
 	inventory_tab.set_grid_sort(player_data, grid, column)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- @param player_data PlayerData
@@ -956,7 +962,7 @@ end
 --- @param e EventData.on_gui_click
 function inventory_tab.handle.on_dim_click(player, player_data, refs, e)
 	player_data.inventory_dim = not player_data.inventory_dim or nil
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 gui.add_handlers(inventory_tab.handle, inventory_tab.wrapper)

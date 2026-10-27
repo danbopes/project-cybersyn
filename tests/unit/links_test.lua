@@ -9,7 +9,7 @@ local function load()
 	package.preload["__core__.lualib.mod-gui"] = function() return { get_button_flow = function() end } end
 	commands = commands or { add_command = function() end }
 	local manager_gui = H.load("scripts.gui.main")
-	return manager_gui, require("scripts.gui.manager"), require("scripts.gui.util")
+	return manager_gui, require("scripts.gui.manager"), require("scripts.gui.utils.nav")
 end
 
 local function element_or_entity(o)
@@ -87,7 +87,7 @@ local function world_open(manager_gui, player, target)
 end
 
 local function setup(pinning)
-	local manager_gui, manager, util = load()
+	local manager_gui, manager, nav = load()
 	local player = new_player(1, manager_gui)
 	local window = H.element({ name = "manager_window" })
 	window.visible = true
@@ -95,23 +95,23 @@ local function setup(pinning)
 	storage.manager = { players = { [1] = pd } }
 	player._state.opened = not pinning and window or nil
 	game.tick = 500
-	return manager_gui, manager, util, player, pd, window
+	return manager_gui, manager, nav, player, pd, window
 end
 
 local stop = { valid = true, name = "train-stop", unit_number = 77 }
 local chest = { valid = true, name = "wooden-chest", unit_number = 79 }
 
 test("open_entity: the linked GUI opens and the unpinned window stays open", function()
-	local _, _, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
+	local _, _, nav, player, pd = setup()
+	nav.open_entity(player, pd, stop)
 	assert_same(player.opened, stop)
 	assert_true(pd.is_manager_open)
 	assert_same(pd.return_to, stop)
 end)
 
 test("open_entity: Escape on the linked GUI hands player.opened back, the next Escape closes the window", function()
-	local _, _, util, player, pd, window = setup()
-	util.open_entity(player, pd, stop)
+	local _, _, nav, player, pd, window = setup()
+	nav.open_entity(player, pd, stop)
 	escape(player)
 	assert_same(player.opened, window)
 	assert_nil(pd.return_to)
@@ -122,8 +122,8 @@ test("open_entity: Escape on the linked GUI hands player.opened back, the next E
 end)
 
 test("open_entity: a GUI that replaces the linked one closes the window", function()
-	local manager_gui, _, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
+	local manager_gui, _, nav, player, pd = setup()
+	nav.open_entity(player, pd, stop)
 	world_open(manager_gui, player, chest)
 	assert_same(player.opened, chest)
 	assert_false(pd.is_manager_open)
@@ -131,18 +131,18 @@ test("open_entity: a GUI that replaces the linked one closes the window", functi
 end)
 
 test("open_entity: another GUI closing does not hand back", function()
-	local manager_gui, _, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
+	local manager_gui, _, nav, player, pd = setup()
+	nav.open_entity(player, pd, stop)
 	manager_gui.on_gui_closed({ name = defines.events.on_gui_closed, player_index = 1, entity = chest })
 	assert_same(player.opened, stop)
 	assert_same(pd.return_to, stop)
 end)
 
 test("open_entity: the combinator's own frame that replaces its entity window hands back when it closes", function()
-	local _, _, util, player, pd, window = setup()
+	local _, _, nav, player, pd, window = setup()
 	local frame = H.element({ name = COMBINATOR_NAME })
 	local comb = { valid = true, name = COMBINATOR_NAME, unit_number = 78, entity_window = frame }
-	util.open_entity(player, pd, comb)
+	nav.open_entity(player, pd, comb)
 	assert_same(player.opened, frame)
 	assert_same(pd.return_to, frame)
 	escape(player)
@@ -150,16 +150,16 @@ test("open_entity: the combinator's own frame that replaces its entity window ha
 end)
 
 test("open_entity: a GUI that does not open leaves the window holding player.opened", function()
-	local _, _, util, player, pd, window = setup()
-	util.open_entity(player, pd, { valid = true, name = "far-away", unopenable = true })
+	local _, _, nav, player, pd, window = setup()
+	nav.open_entity(player, pd, { valid = true, name = "far-away", unopenable = true })
 	assert_same(player.opened, window)
 	assert_nil(pd.return_to)
 	assert_true(pd.is_manager_open)
 end)
 
 test("open_entity: a pinned window records nothing to return to", function()
-	local _, _, util, player, pd = setup(true)
-	util.open_entity(player, pd, stop)
+	local _, _, nav, player, pd = setup(true)
+	nav.open_entity(player, pd, stop)
 	assert_same(player.opened, stop)
 	assert_nil(pd.return_to)
 	escape(player)
@@ -201,23 +201,24 @@ test("a pinned window ignores Escape and other GUIs", function()
 end)
 
 test("close_manager_window: forgets a pending return and the map return", function()
-	local _, _, util, player, pd = setup()
-	util.open_entity(player, pd, stop)
+	local _, _, nav, player, pd = setup()
+	nav.open_entity(player, pd, stop)
 	pd.map_from = { controller = defines.controllers.character, position = { x = 0, y = 0 }, surface = 1 }
-	util.close_manager_window(player, pd, pd.refs, true)
+	nav.close_manager_window(player, pd, pd.refs, true)
 	assert_nil(pd.return_to)
 	assert_nil(pd.map_from)
 end)
 
--- The train id cell is a tag button {kind = "train", id} handled by util.handle_link_click.
+-- The train id cell is a tag button {kind = "train", id} handled by links.handle_link_click.
 local function train_case(locomotive)
-	local _, _, util, player, pd = setup()
+	local _, _, _, player, pd = setup()
 	local texts = {}
 	player.create_local_flying_text = function(spec) texts[#texts + 1] = spec.text end
 	player.play_sound = function() end
 	storage.trains = { [5] = { entity = { valid = true, id = 5,
 		locomotives = { front_movers = { locomotive }, back_movers = {} } } } }
-	util.handle_link_click(player, pd, { element = { tags = { kind = "train", id = 5 } }, button = defines.mouse_button_type.left })
+	require("scripts.gui.utils.links").handle_link_click(player, pd, { element = { tags = { kind = "train", id = 5 } },
+		button = defines.mouse_button_type.left })
 	return player, pd, texts
 end
 
@@ -238,16 +239,17 @@ end)
 
 -- Right-click on a train or stop link does nothing; on an item it clears the item filter.
 local function right_click(kind, id)
-	local _, manager, util, player, pd = setup()
+	local _, manager, _, player, pd = setup()
 	local renders, texts = 0, {}
-	util.set_rerender(function() renders = renders + 1 end)
+	local render = manager.render
+	manager.render = function() renders = renders + 1 end
 	player.create_local_flying_text = function(spec) texts[#texts + 1] = spec.text end
 	storage.trains = { [5] = { entity = { valid = true, id = 5, locomotives = { front_movers = {}, back_movers = {} } } } }
 	storage.stations = {}
 	pd.search_item = "iron-plate"
-	util.handle_link_click(player, pd, { element = { tags = { kind = kind, id = id } },
+	require("scripts.gui.utils.links").handle_link_click(player, pd, { element = { tags = { kind = kind, id = id } },
 		button = defines.mouse_button_type.right })
-	util.set_rerender(manager.render)
+	manager.render = render
 	return player, pd, renders, texts
 end
 
@@ -275,7 +277,10 @@ test("right-click on an item still clears the item filter and re-renders", funct
 	assert_eq(renders, 1)
 end)
 
-test("util offers no hook that scopes the Log to a subject", function()
-	local _, _, util = load()
-	for k in pairs(util) do assert(not string.find(k, "subject", 1, true), k) end
+test("the GUI helpers offer no hook that scopes the Log to a subject", function()
+	load()
+	for _, name in ipairs({ "util", "utils.sync", "utils.filters", "utils.listing", "utils.hover", "utils.links",
+			"utils.nav" }) do
+		for k in pairs(require("scripts.gui." .. name)) do assert(not string.find(k, "subject", 1, true), name .. "." .. k) end
+	end
 end)

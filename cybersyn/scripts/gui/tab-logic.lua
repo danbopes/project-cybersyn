@@ -243,8 +243,8 @@ logic.STATE_SPRITE = {
 --- Used for "refuel" where a mod removes or hides the base signal-fuel.
 logic.REFUEL_FALLBACK = "utility/fuel_icon"
 
---- Two units at most, so it fits a narrow value column: "42s", "3m 05s", "1h 05m", "2d 03h". Lives here rather
---- than in util so the pure modules can format durations without the game API; util re-exports it.
+--- Two units at most, so it fits a narrow value column and one duration reads the same in every tab: "42s", "3m 05s",
+--- "1h 05m", "2d 03h". Lives here rather than in util so the pure modules can format durations without the game API.
 --- @param ticks number
 --- @return string
 function logic.short_duration(ticks)
@@ -257,7 +257,7 @@ function logic.short_duration(ticks)
 	return string.format("%dd %02dh", math.floor(h / 24), h % 24)
 end
 
---- Full precision for tooltips: "1h 2m 3s", "2m 3s" or "3s". util re-exports it too.
+--- Full precision for tooltips: "1h 2m 3s", "2m 3s" or "3s".
 --- @param ticks number
 --- @return string
 function logic.format_duration(ticks)

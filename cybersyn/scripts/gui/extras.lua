@@ -5,6 +5,7 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local nav = require("scripts.gui.utils.nav")
 local logic = require("scripts.gui.extras-logic")
 local utext = require("scripts.gui.unserved-text")
 local diag = require("scripts.diag")
@@ -25,14 +26,6 @@ local TRACE_COLOR = { 0.25, 0.8, 1, 0.9 }
 -- Not a multiple of the usual manager intervals (60, 30, 20, ... ticks), so a HUD refresh seldom shares their tick.
 local HUD_TICKS = 301
 extras.HUD_TICKS = HUD_TICKS
-
-local open_manager_fn
-
---- Lets gui/main.lua hand in the manager's open without a require cycle (manager -> overview -> extras).
---- @param fn fun(player: LuaPlayer, player_data: PlayerData, tab: string)
-function extras.set_open_manager(fn)
-	open_manager_fn = fn
-end
 
 --- The subject of the relative panel an element sits in ({kind, id} tags of relative.build's frame).
 --- @param elem LuaGuiElement
@@ -233,7 +226,7 @@ function extras.handle.extras_path_trace(player, pd, refs, e)
 	local kind, id = extras.panel_subject(e.element)
 	if kind ~= "train" then return end
 	extras.toggle_path_trace(player, pd, id)
-	util.rerender(player, pd)
+	nav.rerender(player, pd)
 	if extras.on_change then extras.on_change(player, pd) end
 end
 
@@ -274,7 +267,7 @@ function extras.reset_trains_anchor(player)
 end
 
 function extras.handle.extras_trains_gui_open(player, pd)
-	if open_manager_fn then open_manager_fn(player, pd, "trains_tab") end
+	nav.open_manager_on(player, pd, "trains_tab")
 end
 
 -- ---------------------------------------------------------------- HUD line
@@ -394,7 +387,7 @@ function extras.handle.extras_hud_moved(player, pd, refs, e)
 end
 
 function extras.handle.extras_hud_click(player, pd)
-	if open_manager_fn then open_manager_fn(player, pd, "overview_tab") end
+	nav.open_manager_on(player, pd, "overview_tab")
 end
 
 -- ---------------------------------------------------------------- manager tick
@@ -422,6 +415,5 @@ end
 extras.wrapper = util.wrapper
 
 gui.add_handlers(extras.handle, extras.wrapper, "cybersyn_extras")
-util.set_pin(extras.add_pin)
 
 return extras

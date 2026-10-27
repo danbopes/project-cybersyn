@@ -5,6 +5,7 @@
 local gui = require("__flib__.gui")
 local analytics = require("scripts.analytics")
 local util = require("scripts.gui.util")
+local nav = require("scripts.gui.utils.nav")
 
 local charts_available, charts = pcall(require, "__factorio-charts__.charts")
 if not charts_available then
@@ -417,7 +418,7 @@ function utilization_tab.handle.on_utilization_interval_click(player, player_dat
 	utilization_tab.cleanup(storage, player_data)
 	player_data.utilization_interval = interval_index
 	style_interval_buttons(refs, interval_index)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 ---@param player LuaPlayer
@@ -435,7 +436,7 @@ function utilization_tab.handle.on_utilization_legend_checkbox_changed(player, p
 	end
 	player_data.utilization_selected[series_name] = element.state
 	player_data.utilization_cache = nil
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 gui.add_handlers(utilization_tab.handle, utilization_tab.wrapper)

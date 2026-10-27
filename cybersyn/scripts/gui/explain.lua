@@ -7,6 +7,7 @@
 local gui = require("__flib__.gui")
 
 local util = require("scripts.gui.util")
+local logic = require("scripts.gui.tab-logic")
 local templates = require("scripts.gui.templates")
 local utext = require("scripts.gui.unserved-text")
 local rtext = require("scripts.gui.relative-text")
@@ -115,7 +116,7 @@ local function body_defs(r_id, hash, e)
 		out[#out + 1] = label({ "cybersyn-gui.unserved-why", utext.why(e.reason, e.a, e.b, network, e.rej, util.surface_name) })
 		out[#out + 1] = label({ "cybersyn-gui.unserved-fix", utext.fix(e.reason, network) }, true)
 		out[#out + 1] = label({ inherited and "cybersyn-gui.unserved-since-load" or "cybersyn-gui.unserved-since",
-			util.format_duration(wait), tostring(e.n or 0) }, true)
+			logic.format_duration(wait), tostring(e.n or 0) }, true)
 		if e.p_station_id and e.reason ~= REASON_NO_PROVIDER then
 			out[#out + 1] = label({ "cybersyn-gui.explain-provider", stop_name(e.p_station_id) }, true)
 		end
@@ -126,7 +127,7 @@ local function body_defs(r_id, hash, e)
 			out[#out + 1] = label({ "cybersyn-gui.explain-history-none" }, true)
 		end
 		for k = #changes, math.max(1, #changes - CHANGES + 1), -1 do
-			out[#out + 1] = label({ "cybersyn-gui.explain-change", util.format_duration(now - changes[k]),
+			out[#out + 1] = label({ "cybersyn-gui.explain-change", logic.format_duration(now - changes[k]),
 				utext.chip_caption(reasons[k] or e.reason) })
 		end
 		if e.lost_to and e.lost_n > 0 then

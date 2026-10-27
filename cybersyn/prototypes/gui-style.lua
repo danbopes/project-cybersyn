@@ -480,7 +480,7 @@ styles.cybersyn_chip_acked.default_font_color = { 0.22, 0.22, 0.22 }
 styles.cybersyn_chip_acked.hovered_font_color = { 0.22, 0.22, 0.22 }
 styles.cybersyn_chip_acked.clicked_font_color = { 0.22, 0.22, 0.22 }
 
--- A link cell: text that opens what it names (scripts/gui/util.lua util.handle_link_click).
+-- A link cell: text that opens what it names (scripts/gui/utils/links.lua links.handle_link_click).
 styles.cybersyn_link_button = {
 	type = "button_style",
 	parent = "transparent_button",

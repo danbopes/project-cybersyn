@@ -11,6 +11,8 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local rich_text = require("scripts.gui.rich-text")
 local collector = require("scripts.gui.collector")
 local manager = require("scripts.gui.manager")
@@ -99,7 +101,7 @@ relative.handle = {}
 -- ---------------------------------------------------------------- small helpers
 
 local function short_age(ticks)
-	return util.short_duration(rtext.age_step(ticks))
+	return logic.short_duration(rtext.age_step(ticks))
 end
 
 local function label(caption, extra)
@@ -189,7 +191,7 @@ local function stop_name(kind, id)
 	return stop and stop.valid and stop.backer_name or nil
 end
 
---- A link cell to a station, depot or refueler (util.handle_link_click semantics).
+--- A link cell to a station, depot or refueler (links.handle_link_click semantics).
 local function stop_link(kind, id, max_width)
 	local name = id and stop_name(kind, id)
 	return {
@@ -198,10 +200,10 @@ local function stop_link(kind, id, max_width)
 		style_mods = { maximal_width = max_width or INNER, height = 24 },
 		caption = name or utext.NO_VALUE,
 		enabled = name ~= nil,
-		tooltip = name and { "", "[font=default-semibold]", name, "[/font]\n", util.LINK_FOOTER } or nil,
+		tooltip = name and { "", "[font=default-semibold]", name, "[/font]\n", links.LINK_FOOTER } or nil,
 		tags = name and { kind = kind, id = id } or {},
 		mouse_button_filter = { "left" },
-		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+		handler = { [defines.events.on_gui_click] = links.handle.link_click },
 	}
 end
 
@@ -222,7 +224,7 @@ local function slot(hash, count, color, tooltip, station, flight)
 		tags = { kind = "item", id = hash, station = station, flight = flight },
 		-- Right-click clears the manager's item filter, which a stop panel does not show.
 		mouse_button_filter = station and { "left" } or { "left", "right" },
-		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+		handler = { [defines.events.on_gui_click] = links.handle.link_click },
 		{
 			type = "label",
 			style = "ltnm_label_signal_count",
@@ -1214,7 +1216,7 @@ local function render_unserved(state, body, m, compact)
 						elem_tooltip = util.elem_tooltip(r.hash),
 						tags = { kind = "item", id = r.hash, station = state.id },
 						mouse_button_filter = { "left" },
-						handler = { [defines.events.on_gui_click] = util.handle.link_click },
+						handler = { [defines.events.on_gui_click] = links.handle.link_click },
 					} or label(r.hash),
 					{
 						type = "label",
@@ -1540,7 +1542,7 @@ local function render_events(state, body, kind, id, shown)
 				if i > shown then break end
 				shown_ages[i] = short_age(now - ev.tick)
 				local row = line(event_caption(ev, now, d), { "cybersyn-gui.relative-event-tooltip",
-					util.format_duration(ev.tick), tostring(ev.seq) }, sev_color(ev.sev))
+					logic.format_duration(ev.tick), tostring(ev.seq) }, sev_color(ev.sev))
 				row.name = "ev" .. i
 				out[#out + 1] = row
 			end
@@ -1724,9 +1726,9 @@ end
 
 local function render_train_head(state, body, m)
 	local now = game.tick
-	-- Time in state as the Trains row beside the pane shows it (util.short_duration of the exact age): one rule.
+	-- Time in state as the Trains row beside the pane shows it (logic.short_duration of the exact age): one rule.
 	local since = m.state_since and (now - m.state_since) or -1
-	local since_caption = since >= 0 and util.short_duration(since) or ""
+	local since_caption = since >= 0 and logic.short_duration(since) or ""
 	local kind, target = status_target(m)
 	local sig = table.concat({ m.status or -1, kind, tostring(target), tostring(target and stop_name(kind, target)) }, "|")
 	-- A moving train changes state at every signal: the state and its age are rewritten in place.
@@ -1742,7 +1744,7 @@ local function render_train_head(state, body, m)
 					row.state_chip.caption = state_label_caption(sc)
 				end
 				row.in_state.caption = since >= 0 and { "cybersyn-gui.relative-in-state", since_caption } or ""
-				row.in_state.tooltip = m.state_since and util.format_duration(since) or ""
+				row.in_state.tooltip = m.state_since and logic.format_duration(since) or ""
 			end
 			ages.head, ages.head_since = state_now, since_caption
 		end
@@ -1772,7 +1774,7 @@ local function render_train_head(state, body, m)
 					caption = state_label_caption(sc),
 				},
 				label(since >= 0 and { "cybersyn-gui.relative-in-state", since_caption } or "",
-					{ name = "in_state", tooltip = m.state_since and util.format_duration(since) or nil }),
+					{ name = "in_state", tooltip = m.state_since and logic.format_duration(since) or nil }),
 			}
 			return out
 		end)
@@ -1840,10 +1842,10 @@ local function render_route(state, body, m)
 			ages.route, ages.refuel = dispatched, refuel
 			local flow = body.route
 			if flow and flow.dispatched and dispatched >= 0 then
-				flow.dispatched.caption = { "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) }
+				flow.dispatched.caption = { "cybersyn-gui.relative-dispatched", logic.short_duration(dispatched) }
 			end
 			if flow and flow.refuel and refuel >= 0 then
-				flow.refuel.caption = { "cybersyn-gui.relative-refuel", { "cybersyn-gui.time-ago", util.short_duration(refuel) } }
+				flow.refuel.caption = { "cybersyn-gui.relative-refuel", { "cybersyn-gui.time-ago", logic.short_duration(refuel) } }
 			end
 		end
 	else
@@ -1872,12 +1874,12 @@ local function render_route(state, body, m)
 				}
 			end
 			if dispatched >= 0 then
-				local row = line({ "cybersyn-gui.relative-dispatched", util.short_duration(dispatched) })
+				local row = line({ "cybersyn-gui.relative-dispatched", logic.short_duration(dispatched) })
 				row.name = "dispatched"
 				out[#out + 1] = row
 			end
 			local row = line({ "cybersyn-gui.relative-refuel",
-				refuel >= 0 and { "cybersyn-gui.time-ago", util.short_duration(refuel) } or { "cybersyn-gui.never" } })
+				refuel >= 0 and { "cybersyn-gui.time-ago", logic.short_duration(refuel) } or { "cybersyn-gui.never" } })
 			row.name = "refuel"
 			out[#out + 1] = row
 			return out
@@ -2660,7 +2662,7 @@ function relative.handle.relative_comb(player, pd, refs, e)
 		comb = record and record.entity_comb
 	end
 	if comb and comb.valid then
-		util.open_entity(player, pd, comb)
+		nav.open_entity(player, pd, comb)
 	else
 		util.error_flying_text(player, { "cybersyn-message.error-cybernetic-combinator-not-found" })
 	end
@@ -2671,7 +2673,7 @@ function relative.handle.relative_locate_train(player, pd, refs, e)
 	local train = state and state.kind == "train" and storage.trains[state.id]
 	local entity = train and train.entity
 	local front = entity and entity.valid and entity.front_stock
-	if front then util.show_on_map(player, pd, front, front) end
+	if front then links.show_on_map(player, pd, front, front) end
 end
 
 function relative.handle.relative_locate_signal(player, pd, refs, e)
@@ -2679,7 +2681,7 @@ function relative.handle.relative_locate_signal(player, pd, refs, e)
 	local train = state and state.kind == "train" and storage.trains[state.id]
 	local entity = train and train.entity
 	local signal = entity and entity.valid and entity.signal
-	if signal and signal.valid then util.show_on_map(player, pd, signal) end
+	if signal and signal.valid then links.show_on_map(player, pd, signal) end
 end
 
 -- The footer tool buttons find their subject from the panel's tags (mountable anywhere) and repaint the panel

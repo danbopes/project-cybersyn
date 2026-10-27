@@ -33,11 +33,11 @@ end)
 
 test("station_tooltip: bold name, the optional line, the link footer", function()
 	local n = nc()
-	local util = require("scripts.gui.util")
+	local links = require("scripts.gui.utils.links")
 	assert_eq(n.station_tooltip(nil), "")
 	assert_eq(n.station_tooltip({ name = "A" }, "x"),
-		{ "", "[font=default-semibold]", "A", "[/font]", "\n", "x", "\n", util.LINK_FOOTER })
-	assert_eq(n.station_tooltip({ name = "A" }), { "", "[font=default-semibold]", "A", "[/font]", "\n", util.LINK_FOOTER })
+		{ "", "[font=default-semibold]", "A", "[/font]", "\n", "x", "\n", links.LINK_FOOTER })
+	assert_eq(n.station_tooltip({ name = "A" }), { "", "[font=default-semibold]", "A", "[/font]", "\n", links.LINK_FOOTER })
 end)
 
 test("unknown icon qualities are dropped, so a sprite-button never gets one the game lacks", function()

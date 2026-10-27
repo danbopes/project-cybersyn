@@ -13,6 +13,11 @@ local delivery_breakdown_tab = require("scripts.gui.delivery-breakdown")
 local item = require("scripts.gui.item")
 local explain = require("scripts.gui.explain")
 local util = require("scripts.gui.util")
+local logic = require("scripts.gui.tab-logic")
+local filters = require("scripts.gui.utils.filters")
+local listing = require("scripts.gui.utils.listing")
+local hover = require("scripts.gui.utils.hover")
+local nav = require("scripts.gui.utils.nav")
 local collector = require("scripts.gui.collector")
 local analytics = require("scripts.analytics")
 local sizing = require("scripts.gui.sizing")
@@ -229,7 +234,7 @@ local function clear_row_filters(player_data)
 	player_data.stations_chip = nil
 	player_data.stations_problems_scope = nil
 	player_data.trains_chip = nil
-	util.reset_pages(player_data)
+	listing.reset_pages(player_data)
 end
 
 --- Every open starts on the player's surface (player.surface, which follows remote view), or on All when
@@ -238,7 +243,7 @@ end
 --- @param player_data PlayerData
 function manager.apply_surface_default(player, player_data)
 	local index = player.surface.index
-	if #game.surfaces > 1 and util.surface_has_station(index) then
+	if #game.surfaces > 1 and filters.surface_has_station(index) then
 		player_data.search_surface_idx = index
 	else
 		player_data.search_surface_idx = nil
@@ -282,29 +287,29 @@ function manager.focus(player, player_data, tab, focus)
 		player_data.stations_chip = nil
 		player_data.stations_problems_scope = nil
 		player_data.trains_chip = nil
-		util.reset_pages(player_data)
+		listing.reset_pages(player_data)
 	else
 		player_data.filter_row_open = nil
 		clear_row_filters(player_data)
 	end
-	util.set_search_query(player_data, focus.query)
+	filters.set_search_query(player_data, focus.query)
 	if focus.query then player_data.search_open = true end
 	if focus.grids then
-		util.set_item_filter(player_data, nil)
+		filters.set_item_filter(player_data, nil)
 		player_data.inventory_sorts = nil
 	end
-	if focus.item then util.set_item_filter(player_data, focus.item) end
-	if focus.station then util.set_station_filter(player_data, focus.station) end
+	if focus.item then filters.set_item_filter(player_data, focus.item) end
+	if focus.station then filters.set_station_filter(player_data, focus.station) end
 	if focus.network then player_data.search_network_name = focus.network end
 	player_data.stations_chip = focus.stations_chip
 	player_data.stations_problems_scope = focus.stations_problems_scope
 	player_data.trains_chip = focus.trains_chip
 	local sort = focus.sort
-	if sort then util.set_sort(player_data, sort.tab, sort.column, sort.ascending) end
+	if sort then listing.set_sort(player_data, sort.tab, sort.column, sort.ascending) end
 	player_data.trains_reveal = focus.reveal
 	player_data.selected_tab = tab
 	if player_data.is_manager_open then
-		util.select_tab(player_data, tab)
+		nav.select_tab(player_data, tab)
 		manager.restore_filter_widgets(player_data)
 		local window = player_data.refs.manager_window
 		if not player_data.pinning and window and window.valid and player.opened ~= window then player.opened = window end
@@ -489,7 +494,7 @@ function manager.refresh_chips(player_data)
 	local refs = player_data.refs
 	local hash = player_data.search_item
 	if hash and not util.signal_hash_valid(hash) then hash = nil end
-	local station = util.valid_station_filter(player_data)
+	local station = filters.valid_station_filter(player_data)
 	local station_name = station and station_chip_name(station)
 	local sig = (hash or "") .. "\1" .. (station and (tostring(station) .. "\1" .. (station_name or "")) or "")
 	if player_data.chip_sig == sig then return end
@@ -557,11 +562,8 @@ function manager.refresh_toggles(player_data)
 		pin.hovered_sprite = sprite
 		pin.clicked_sprite = sprite
 	end
-	local back = refs.manager_back_button
-	if back and back.valid then back.visible = player_data.map_from ~= nil end
+	nav.refresh_back(player_data)
 end
-
-util.set_refresh_toggles(manager.refresh_toggles)
 
 --- The title-bar age (only once the last render is STALE_TICKS old, or while paused) and the subheaders'
 --- "Collecting… n %"; cheap enough to run every manager update, paused or not.
@@ -578,12 +580,12 @@ function manager.update_status(player_data)
 	if label.visible ~= stale then label.visible = stale end
 	-- Hidden while renders are recent (nearly always): nothing to write then. Shown, written when its text changed.
 	if stale then
-		local age = render_tick and util.format_duration(game.tick - render_tick) or "-"
-		local data_age = data_tick and util.format_duration(game.tick - data_tick) or "-"
+		local age = render_tick and logic.format_duration(game.tick - render_tick) or "-"
+		local data_age = data_tick and logic.format_duration(game.tick - data_tick) or "-"
 		local held = false
-		local hover = player_data.hover
-		if not player_data.paused and hover and util.hold_active(player_data, hover.scope) then
-			local state = player_data.gui_state and player_data.gui_state[hover.scope]
+		local cur = player_data.hover
+		if not player_data.paused and cur and hover.hold_active(player_data, cur.scope) then
+			local state = player_data.gui_state and player_data.gui_state[cur.scope]
 			held = state ~= nil and state.dirty == true
 		end
 		local sig = age .. "|" .. data_age .. "|" .. (player_data.paused and "p" or "") .. (held and "h" or "")
@@ -660,7 +662,7 @@ function manager.restore_filter_widgets(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
-	util.valid_station_filter(player_data)
+	filters.valid_station_filter(player_data)
 	-- Every path that sets a filter ends here or in manager.render: the row opens with it.
 	if row_filters_active(player_data) then player_data.filter_row_open = true end
 	refs.manager_item_filter.elem_value = player_data.search_item and util.signalid_from_hash(player_data.search_item) or nil
@@ -736,7 +738,7 @@ end
 function manager.render(player, player_data)
 	if not player_data.is_manager_open then return end
 	-- A stop removed while the window is open: drop its chip before the tabs filter on a dead id.
-	util.valid_station_filter(player_data)
+	filters.valid_station_filter(player_data)
 	-- A filter set from outside the row (a shift-click on an item, a tile jump) opens the row before the tab renders.
 	if row_filters_active(player_data) then player_data.filter_row_open = true end
 	local row = player_data.refs.manager_filter_row
@@ -754,15 +756,13 @@ function manager.render(player, player_data)
 	log_tab.refresh_badge(player_data)
 end
 
-util.set_rerender(manager.render)
-util.set_window_fns({
+nav.set_window_fns({
+	render = function(player, player_data) manager.render(player, player_data) end,
 	open = function(player, player_data) manager.handle.manager_open(player, player_data, player_data.refs) end,
 	close = function(player, player_data) manager.handle.manager_close(player, player_data, player_data.refs) end,
 	focus = function(player, player_data, tab, focus) manager.focus(player, player_data, tab, focus) end,
 })
 manager.log_tab = log_tab
-overview_tab.manager = manager
-item.manager = manager
 
 manager.handle = {}
 
@@ -802,8 +802,8 @@ function manager.handle.manager_open(player, player_data, refs)
 	manager.refresh_toggles(player_data)
 	log_tab.restore_widgets(player_data)
 	log_tab.refresh_visibility(player_data)
-	if not util.select_tab(player_data, player_data.selected_tab or DEFAULT_TAB) then
-		util.select_tab(player_data, DEFAULT_TAB)
+	if not nav.select_tab(player_data, player_data.selected_tab or DEFAULT_TAB) then
+		nav.select_tab(player_data, DEFAULT_TAB)
 	end
 
 	collector.ensure_fresh()
@@ -833,7 +833,7 @@ function manager.handle.manager_close(player, player_data, refs)
 	player_data.search_open = nil
 	item.close(player, player_data)
 	explain.close(player, player_data)
-	util.close_manager_window(player, player_data, refs, true)
+	nav.close_manager_window(player, player_data, refs, true)
 end
 
 -- ---------------------------------------------------------------- overlays and Escape
@@ -875,7 +875,7 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_closed_by_game(player, player_data, refs)
-	if not player_data.is_manager_open or player_data.pinning or util.switching(player.index) then return end
+	if not player_data.is_manager_open or player_data.pinning or nav.switching(player.index) then return end
 	if peel_overlay(player, player_data) then
 		manager.render(player, player_data)
 		-- The API has a single opened slot and no overlay stack, so layered Escape re-takes it inside the close event.
@@ -889,7 +889,7 @@ end
 --- world, the game's own windows, another mod), so the window closes as the game's windows do.
 --- @param e EventData.on_gui_opened
 function manager.on_other_gui_opened(e)
-	if util.switching(e.player_index) then return end
+	if nav.switching(e.player_index) then return end
 	local player_data = storage.manager and storage.manager.players[e.player_index]
 	if not (player_data and player_data.is_manager_open) or player_data.pinning then return end
 	local window = player_data.refs and player_data.refs.manager_window
@@ -898,14 +898,14 @@ function manager.on_other_gui_opened(e)
 	if player then manager.handle.manager_close(player, player_data, player_data.refs) end
 end
 
---- on_gui_closed of the GUI a manager link opened (util.open_entity): the window takes player.opened back, so the
+--- on_gui_closed of the GUI a manager link opened (nav.open_entity): the window takes player.opened back, so the
 --- next Escape closes it. Called before the combinator's handler destroys its frame, which `e.element` may be.
 --- @param e EventData.on_gui_closed
 function manager.on_linked_gui_closed(e)
 	local player_data = storage.manager and storage.manager.players[e.player_index]
 	local linked = player_data and player_data.return_to
 	-- The action dialog stands in front of the linked GUI for a while (repair.lua) and hands it back.
-	if not linked or util.switching(e.player_index) then return end
+	if not linked or nav.switching(e.player_index) then return end
 	if linked.valid and e.entity ~= linked and e.element ~= linked then return end
 	player_data.return_to = nil
 	if not player_data.is_manager_open or player_data.pinning then return end
@@ -915,7 +915,7 @@ function manager.on_linked_gui_closed(e)
 end
 
 --- Leaving the remote view that "show on map" opened, by the game's own means: Back has nothing to return to. The
---- event comes after the switch that raised it, so it is told apart by where the player is, not by util.switching.
+--- event comes after the switch that raised it, so it is told apart by where the player is, not by nav.switching.
 --- @param player LuaPlayer
 --- @param player_data PlayerData
 function manager.on_controller_changed(player, player_data)
@@ -932,7 +932,7 @@ function manager.handle.manager_back(player, player_data, refs)
 	local from = player_data.map_from
 	if not from then return end
 	player_data.map_from = nil
-	util.switch_opened(player, function()
+	nav.switch_opened(player, function()
 		local surface = game.get_surface(from.surface)
 		if from.controller == defines.controllers.remote then
 			-- A platform's own view is remote: Back returns to where they looked from.
@@ -1017,7 +1017,7 @@ function manager.focus_search(player, player_data)
 	-- The Inventory's drill-down has no search field (it ignores the station search): the search goes to Stations,
 	-- which keeps the item filter.
 	if not search_tab(player_data) then
-		util.select_tab(player_data, "stations_tab")
+		nav.select_tab(player_data, "stations_tab")
 	end
 	player_data.search_open = true
 	manager.refresh_search_fields(player_data)
@@ -1036,8 +1036,8 @@ function manager.handle.manager_toggle_search(player, player_data, refs)
 	if search_shown(player_data) and search_tab(player_data) then
 		player_data.search_open = nil
 		if player_data.search_query then
-			util.set_search_query(player_data, nil)
-			util.reset_pages(player_data)
+			filters.set_search_query(player_data, nil)
+			listing.reset_pages(player_data)
 		end
 		manager.refresh_search_fields(player_data)
 		manager.render(player, player_data)
@@ -1068,8 +1068,8 @@ end
 --- @param refs table<string, LuaGuiElement>
 --- @param e EventData.on_gui_text_changed
 function manager.handle.manager_search_changed(player, player_data, refs, e)
-	util.set_search_query(player_data, e.element.text)
-	util.reset_pages(player_data)
+	filters.set_search_query(player_data, e.element.text)
+	listing.reset_pages(player_data)
 	manager.refresh_search_fields(player_data)
 	manager.render(player, player_data)
 end
@@ -1081,8 +1081,8 @@ end
 function manager.cancel_search(player, player_data)
 	if not (search_shown(player_data) and search_tab(player_data)) then return false end
 	player_data.search_open = nil
-	util.set_search_query(player_data, nil)
-	util.reset_pages(player_data)
+	filters.set_search_query(player_data, nil)
+	listing.reset_pages(player_data)
 	manager.refresh_search_fields(player_data)
 	manager.render(player, player_data)
 	return true
@@ -1092,9 +1092,9 @@ end
 --- @param e EventData.on_gui_click
 function manager.handle.manager_chip_click(player, player_data, refs, e)
 	if e.element and e.element.tags.chip == "station" then
-		util.set_station_filter(player_data, nil)
+		filters.set_station_filter(player_data, nil)
 	else
-		util.set_item_filter(player_data, nil)
+		filters.set_item_filter(player_data, nil)
 	end
 	manager.restore_filter_widgets(player_data)
 	manager.render(player, player_data)
@@ -1131,7 +1131,7 @@ end
 --- @param player_data PlayerData
 --- @param refs table<string, LuaGuiElement>
 function manager.handle.manager_clear_filters(player, player_data, refs)
-	util.set_search_query(player_data, nil)
+	filters.set_search_query(player_data, nil)
 	-- The row's own reset leaves what the filter button leaves: the row closed with its filters gone.
 	player_data.filter_row_open = nil
 	clear_row_filters(player_data)
@@ -1153,7 +1153,7 @@ function manager.handle.manager_update_item_search(player, player_data, refs, e)
 	else
 		player_data.search_item = nil
 	end
-	util.reset_pages(player_data)
+	listing.reset_pages(player_data)
 	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
@@ -1167,7 +1167,7 @@ function manager.handle.manager_update_network_name(player, player_data, refs, e
 	if not element then return end
 	local signal = element.elem_value --[[@as SignalID?]]
 	player_data.search_network_name = signal and signal.name or nil
-	util.reset_pages(player_data)
+	listing.reset_pages(player_data)
 	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
@@ -1178,7 +1178,7 @@ end
 --- @param e EventData.on_gui_text_changed
 function manager.handle.manager_update_network_mask(player, player_data, refs, e)
 	player_data.search_network_mask = tonumber(e.text) or -1
-	util.reset_pages(player_data)
+	listing.reset_pages(player_data)
 	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end
@@ -1196,7 +1196,7 @@ function manager.handle.manager_update_surface(player, player_data, refs, e)
 		surface_index = nil
 	end
 	player_data.search_surface_idx = surface_index
-	util.reset_pages(player_data)
+	listing.reset_pages(player_data)
 	manager.refresh_filter_row(player, player_data)
 	manager.render(player, player_data)
 end

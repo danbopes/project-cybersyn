@@ -61,7 +61,7 @@ test("gps_text: an entity's position, empty for an invalid one", function()
 	assert_eq(gps_text(nil), "")
 end)
 
-test("templates.sort_checkbox carries the tags util.sync_sort_header and util.handle.sort_click read", function()
+test("templates.sort_checkbox carries the tags listing.sync_sort_header and listing.handle.sort_click read", function()
 	local templates = H.load("scripts.gui.templates")
 	local handler = function() end
 	local def = templates.sort_checkbox("stations_tab", "name", { "a" }, { "b" }, true, handler)

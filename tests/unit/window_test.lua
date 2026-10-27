@@ -1,4 +1,4 @@
--- The window size from the screen (scripts/gui/sizing.lua) and the search normaliser (util).
+-- The window size from the screen (scripts/gui/sizing.lua) and the search normaliser (utils/filters).
 
 local H = require("harness")
 
@@ -136,19 +136,19 @@ end)
 
 -- ------------------------------------------------------------------ search
 
-local function util()
-	return H.load("scripts.gui.util")
+local function filters()
+	return H.load("scripts.gui.utils.filters")
 end
 
 test("search_terms: lowercase, split on whitespace, nil for blank", function()
-	local u = util()
+	local u = filters()
 	assert_eq(u.search_terms("  Iron  PLATE "), { "iron", "plate" })
 	assert_nil(u.search_terms("   "))
 	assert_nil(u.search_terms(nil))
 end)
 
 test("search_terms: the normaliser is helpers.multilingual_to_lower", function()
-	local u = util()
+	local u = filters()
 	local seen
 	helpers.multilingual_to_lower = function(s) seen = s; return string.lower(s) end
 	assert_eq(u.search_terms("ÄB"), { string.lower("ÄB") })
@@ -157,7 +157,7 @@ test("search_terms: the normaliser is helpers.multilingual_to_lower", function()
 end)
 
 test("search: [, %, - and . are plain characters, never patterns", function()
-	local u = util()
+	local u = filters()
 	local function match(name, query)
 		return u.terms_match(helpers.multilingual_to_lower(name), u.search_terms(query))
 	end
@@ -175,7 +175,7 @@ test("search: [, %, - and . are plain characters, never patterns", function()
 end)
 
 test("station_passes: rich text and pattern characters in the query", function()
-	local u = util()
+	local u = filters()
 	local st = { name_lower = "[item=coal] coal 100% (east)", surface_index = 1, network_name = "signal-A", network_mask = 1,
 		provided = {}, requested = {}, deliveries = {} }
 	local f = { terms = u.search_terms("[item=coal] 100% (east)"), mask = -1 }

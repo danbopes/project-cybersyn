@@ -14,6 +14,11 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local logic = require("scripts.gui.tab-logic")
+local sync = require("scripts.gui.utils.sync")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
 local diag = require("scripts.diag")
@@ -43,7 +48,7 @@ local PAGE = model.PAGE
 -- The scroll pane always shows its vertical bar, so the rows' width does not change with their number.
 local SCROLLBAR = metrics.SCROLLBAR
 -- The pointer resting on the rows holds Follow this long without a new hover event (a lost leave event cannot hold it
--- for ever). Longer than util.HOVER_HOLD_TICKS: hover fires only on entering a row, and a reader rests on one row
+-- for ever). Longer than hover.HOVER_HOLD_TICKS: hover fires only on entering a row, and a reader rests on one row
 -- while reading it.
 local HOLD_TICKS = 3600
 -- Rows built in the first update of an empty page (that one update may take up to 6 ms; a row costs about
@@ -266,7 +271,7 @@ end
 -- ---------------------------------------------------------------- build
 
 local function hoverable(def)
-	return util.hoverable(def, ROWS)
+	return hover.hoverable(def, ROWS)
 end
 
 --- Severity toggle: "[dot] 12", toggled while that severity is shown.
@@ -489,7 +494,7 @@ function log_tab.apply_layout(player_data, layout)
 	if not old or old.station ~= station or old.message ~= message then
 		local parent = refs[ROWS]
 		if parent and parent.valid then parent.clear() end
-		local state = util.gui_state(player_data, ROWS)
+		local state = sync.gui_state(player_data, ROWS)
 		-- New widths rebuild the page in one update, as the first fill does (a resolution or scale change is rare).
 		state.keys, state.sigs, state.memo, state.elems, state.filled_once = nil, nil, nil, nil, nil
 	end
@@ -518,7 +523,7 @@ end
 --- @param player_data PlayerData
 --- @return boolean
 function log_tab.held(player_data)
-	return player_data.paused or util.hold_active(player_data, ROWS, HOLD_TICKS)
+	return player_data.paused or hover.hold_active(player_data, ROWS, HOLD_TICKS)
 end
 
 
@@ -671,7 +676,7 @@ end
 local row_tags
 
 local function hover_tags(handlers)
-	local h = { [defines.events.on_gui_hover] = util.handle.hover_enter, [defines.events.on_gui_leave] = util.handle.hover_leave }
+	local h = { [defines.events.on_gui_hover] = hover.handle.hover_enter, [defines.events.on_gui_leave] = hover.handle.hover_leave }
 	for k, v in pairs(handlers or {}) do h[k] = v end
 	return gui.format_handlers(h, { hover_scope = ROWS })
 end
@@ -711,7 +716,7 @@ local function build_row(parent, index, widths)
 	row.add({ type = "sprite", style = "cybersyn_log_dot", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "sprite", style = "cybersyn_log_kind", raise_hover_events = true, tags = t.plain })
 	row.add({ type = "button", style = "cybersyn_log_link", mouse_button_filter = LEFT,
-		tooltip = util.LINK_FOOTER, raise_hover_events = true, tags = t.train }).style.width = W.train
+		tooltip = links.LINK_FOOTER, raise_hover_events = true, tags = t.train }).style.width = W.train
 	name_cell.pooled_add(row, widths.station, "cybersyn_log_cell_flow", { type = "button", style = "cybersyn_log_link",
 		mouse_button_filter = LEFT, raise_hover_events = true, tags = t.station })
 	row.add({ type = "sprite-button", style = "cybersyn_log_item", mouse_button_filter = LEFT_RIGHT,
@@ -822,13 +827,13 @@ local ROW_SYNC = {
 --- element's memo says what it shows, so a write touches only the cells that differ.
 --- @param parent LuaGuiElement
 --- @param entries {key: number, g: LogGroup?, x: boolean?}[]
---- @param state table util.gui_state of the rows
+--- @param state table sync.gui_state of the rows
 --- @param build_left int rows that may be built in this call; the rest of a long fill waits for the next update
 --- @param viewport int rows from the top written now, with their ages
 local function sync_rows(parent, entries, state, build_left, viewport)
 	r_viewport, r_defer = viewport, false
 	ROW_SYNC.build_budget = build_left
-	util.sync_children(parent, entries, state, false, ROW_SYNC)
+	sync.sync_children(parent, entries, state, false, ROW_SYNC)
 	if r_defer then state.defer_from = viewport + 1 end
 end
 
@@ -914,7 +919,7 @@ local function render_rows(player_data, display, size, changed, viewport, held)
 	local parent = refs[ROWS]
 	local widths = player_data.log_widths
 	if not (parent and parent.valid and widths) then return end
-	local state = util.gui_state(player_data, ROWS)
+	local state = sync.gui_state(player_data, ROWS)
 	local memo = state.memo
 	if not memo then
 		memo = {}
@@ -1015,7 +1020,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 					elem_tooltip = hash and util.elem_tooltip(hash) or nil,
 					tags = hash and { kind = "item", id = hash } or {},
 					mouse_button_filter = { "left", "right" },
-					handler = { [defines.events.on_gui_click] = util.handle.link_click },
+					handler = { [defines.events.on_gui_click] = links.handle.link_click },
 				},
 				{ type = "label", style = "cybersyn_log_message", style_mods = { width = name_width - 32 },
 					caption = item_name or hash or "?" },
@@ -1031,7 +1036,7 @@ local function render_summary_table(player_data, tbl, list, is_item)
 				tooltip = station_tooltip(view, nil),
 				tags = view and { kind = view.kind, id = e.id } or {},
 				mouse_button_filter = { "left" },
-				handler = { [defines.events.on_gui_click] = util.handle.link_click },
+				handler = { [defines.events.on_gui_click] = links.handle.link_click },
 			})
 		end
 		gui.add(tbl, { type = "label", style = "cybersyn_log_count", style_mods = { width = 60 }, caption = format.number(e.n),
@@ -1068,12 +1073,12 @@ end
 local function header_line(d)
 	local now = game.tick
 	local _, ticks = diag.horizon()
-	local covering = util.short_duration(ticks)
+	local covering = logic.short_duration(ticks)
 	local mode, basic_covering = { "cybersyn-gui.log-mode-basic" }, ""
 	local rb, rf = model.rings(d)
 	if rf then
 		local basic_start = rb.count > 0 and rb.tick[diag.ring_at(rb, 0)] or now
-		basic_covering = util.short_duration(now - basic_start)
+		basic_covering = logic.short_duration(now - basic_start)
 		mode = { "cybersyn-gui.log-mode-full-reach", basic_covering }
 	end
 	local per_cycle, cycle_ticks = cycle_figures()
@@ -1156,7 +1161,7 @@ function log_tab.refresh_visibility(player_data)
 	if not on then
 		if tab.badge_text ~= "" then tab.badge_text = "" end
 		log_tab.forget(player_data)
-		if player_data.selected_tab == TAB then util.select_tab(player_data, "overview_tab") end
+		if player_data.selected_tab == TAB then nav.select_tab(player_data, "overview_tab") end
 	end
 end
 
@@ -1181,7 +1186,7 @@ function log_tab.prewarm(player_data)
 	if not storage.diag or player_data.selected_tab == TAB then return end
 	local parent = player_data.refs[ROWS]
 	if not (parent and parent.valid and player_data.log_widths and collector.get().tick) then return end
-	local state = util.gui_state(player_data, ROWS)
+	local state = sync.gui_state(player_data, ROWS)
 	local have = state.keys and #state.keys or #parent.children
 	if have >= PAGE then return end
 	render_rows(player_data, {}, math.min(PAGE, have + PREWARM_ROWS), true, row_limit(player_data))
@@ -1256,7 +1261,7 @@ function log_tab.build(map_data, player_data)
 		if summary_flow.visible ~= (any == true) then summary_flow.visible = any == true end
 		render_summary(player_data, ss, done)
 		if done then
-			local age = util.short_duration(game.tick - ss.as_of_tick)
+			local age = logic.short_duration(game.tick - ss.as_of_tick)
 			status_sig = "sum" .. ss.scanned .. "|" .. age
 			status = { "cybersyn-gui.log-summary-status", format.number(ss.scanned), age, tostring(ss.scanned) }
 			if not any then empty_sig, empty_caption = "sum-empty", { "cybersyn-gui.log-empty" } end
@@ -1316,11 +1321,11 @@ function log_tab.build(map_data, player_data)
 
 	local show_empty = empty_caption ~= nil
 	if empty_flow.visible ~= show_empty then empty_flow.visible = show_empty end
-	if show_empty then util.set_if_changed(caps(player_data), refs.log_empty, empty_sig, empty_caption) end
-	util.set_if_changed(caps(player_data), refs.log_status, status_sig, status)
+	if show_empty then sync.set_if_changed(caps(player_data), refs.log_empty, empty_sig, empty_caption) end
+	sync.set_if_changed(caps(player_data), refs.log_status, status_sig, status)
 
 	local header, header_sig = header_line(d)
-	util.set_if_changed(caps(player_data), refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
+	sync.set_if_changed(caps(player_data), refs.log_header, header_sig, header, { "cybersyn-gui.log-header-tooltip" })
 	if seen then log_tab.mark_seen(player_data, seen) end
 end
 
@@ -1375,7 +1380,7 @@ function log_tab.chat_line(player, g)
 		gps = { x = front.position.x, y = front.position.y, surface = front.surface.name }
 	end
 	local tags = model.chat_tags(train_unit, stop_unit, gps, group_item(g))
-	return { "cybersyn-gui.log-chat", util.format_duration(game.tick - g.tick),
+	return { "cybersyn-gui.log-chat", logic.format_duration(game.tick - g.tick),
 		{ "cybersyn-diag.kind-" .. (DIAG_KIND_KEYS[g.kind] or "alert") }, tags, log_tab.message(g) }
 end
 
@@ -1398,7 +1403,7 @@ log_tab.handle = {}
 log_tab.wrapper = util.wrapper
 
 local function changed(player, player_data)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- @param e EventData.on_gui_click
@@ -1472,7 +1477,7 @@ local function row_group(player_data, elem)
 	local rows = player_data.refs[ROWS]
 	while elem and elem.valid and elem.parent and elem.parent ~= rows do elem = elem.parent end
 	if not (elem and elem.valid and elem.parent == rows) then return nil end
-	local state = util.gui_state(player_data, ROWS)
+	local state = sync.gui_state(player_data, ROWS)
 	local key = state.keys and state.keys[elem.get_index_in_parent()]
 	if not key then return nil end
 	-- The memo keeps the group a row shows, also one the rows have dropped while the hover hold kept it on screen.
@@ -1499,20 +1504,20 @@ local function cell_target(g, cell)
 	return nil, nil
 end
 
---- A train, station or item cell of a row: the shared link semantics (util.handle_link_click) on the row's target.
+--- A train, station or item cell of a row: the shared link semantics (links.handle_link_click) on the row's target.
 --- @param e EventData.on_gui_click
 function log_tab.handle.log_link_click(player, player_data, refs, e)
-	util.touch_hover(e)
+	hover.touch_hover(e)
 	local g = row_group(player_data, e.element)
 	if not g then return end
 	local kind, id = cell_target(g, e.element.tags.cell)
 	if not kind then return end
-	util.handle_link_click(player, player_data, e, kind, id)
+	links.handle_link_click(player, player_data, e, kind, id)
 end
 
 --- @param e EventData.on_gui_click
 function log_tab.handle.log_print_click(player, player_data, refs, e)
-	util.touch_hover(e)
+	hover.touch_hover(e)
 	local g = row_group(player_data, e.element)
 	if g then log_tab.print_row(player, player_data, g.seq) end
 end
@@ -1534,7 +1539,7 @@ end
 
 --- @param e EventData.on_gui_click
 function log_tab.handle.log_row_click(player, player_data, refs, e)
-	util.touch_hover(e)
+	hover.touch_hover(e)
 	if log_tab.toggle_pass(player_data, row_group(player_data, e.element)) then changed(player, player_data) end
 end
 

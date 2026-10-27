@@ -189,7 +189,7 @@ end
 --- @field filtered boolean the rows and totals are limited by the manager's place filters or the station chip
 
 --- @class ItemKeep the manager's filters as item.lua's get_cache passes them
---- @field row fun(row: SnapshotInventory): boolean util.row_passes without the item
+--- @field row fun(row: SnapshotInventory): boolean filters.row_passes without the item
 --- @field train fun(tr: table): boolean
 
 --- Every inventory row and train of the snapshot that provides, requests, carries or has a delivery of `hash` (as the

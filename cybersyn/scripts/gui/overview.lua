@@ -7,6 +7,12 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local pm = require("scripts.gui.problems-model")
+local sync = require("scripts.gui.utils.sync")
+local filters = require("scripts.gui.utils.filters")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local rich_text = require("scripts.gui.rich-text")
 local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
@@ -341,7 +347,7 @@ function overview_tab.apply_layout(player_data, layout)
 			local children = tbl.children
 			for i = #children, TABLE_COLUMNS + 1, -1 do children[i].destroy() end
 		end
-		local state = util.gui_state(player_data, TABLE)
+		local state = sync.gui_state(player_data, TABLE)
 		state.keys, state.sigs, state.hide = nil, nil, nil
 		if tbl and tbl.valid then
 			tbl.children[5].style.width = W.stock
@@ -400,7 +406,7 @@ end
 --- pass over the unserved entries, never over the stations; the place filters are decided once per requester. The
 --- tile's station count is not taken here: it comes from the snapshot records (station_part), the Unserved chip's rule.
 --- @param d DiagState
---- @param f ManagerFilters util.overview_filters
+--- @param f ManagerFilters filters.overview_filters
 --- @param stations {[uint]: SnapshotStation}
 --- @param rows int
 --- @param threshold int ticks a request must have waited for the tile
@@ -419,7 +425,7 @@ local function unserved_model(d, f, stations, rows, threshold, now)
 	local acks = storage.acks
 	local ack_requests = acks and acks.request
 	local reasons = out.reasons
-	local passes = util.requester_passes
+	local passes = filters.requester_passes
 	local none = {}
 	for r_id, by_item in pairs(d.unserved) do
 		local by_ack = ack_requests and ack_requests[r_id]
@@ -457,7 +463,7 @@ local F_NO_POWER, F_DISABLED, F_THROTTLING = logic.FLAG_NO_POWER, logic.FLAG_DIS
 local F_UNSERVED, FAILING = logic.FLAG_UNSERVED, logic.FAILING
 local COUNTED = bit32.bor(FAILING, F_UNSERVED)
 
-local lint_error_mask = util.lint_error_mask
+local lint_error_mask = pm.error_mask
 
 --- One station's part of tiles 1 and 3: its Failing and Unserved flags (tab-logic, the flags the Stations tab's
 --- Failing and Unserved chips list) and its error lint bits, or nil when it does not count or does not pass the
@@ -470,7 +476,7 @@ local function station_part(st, f)
 	if not st then return nil, 0 end
 	local flags = band(logic.station_flags(st), COUNTED)
 	if flags == 0 then return nil, 0 end
-	if not util.station_passes(st, f) then return nil, 0 end
+	if not filters.station_passes(st, f) then return nil, 0 end
 	return flags, band(st.lint or 0, lint_error_mask())
 end
 
@@ -518,7 +524,7 @@ end
 local function failing_model(player_data, snapshot, f)
 	local cache = player_data.overview_failing
 	local epoch, pos = collector.log_position()
-	local fsig = util.filter_signature(f)
+	local fsig = filters.filter_signature(f)
 	local ids, first, last
 	if cache and cache.fsig == fsig then
 		ids, first, last = collector.changed_since(cache.epoch, cache.pos)
@@ -614,7 +620,7 @@ end
 function overview_tab.model(player_data)
 	local snapshot = collector.get()
 	local now = game.tick
-	local f = util.overview_filters(player_data)
+	local f = filters.overview_filters(player_data)
 	local item = f.item
 	local period = get_period(player_data)
 	local minutes = UNSERVED_MINUTES
@@ -632,7 +638,7 @@ function overview_tab.model(player_data)
 		now = now,
 		item = item,
 		filters = f,
-		filtered = util.place_filters_active(f),
+		filtered = filters.place_filters_active(f),
 		lint_pending = lint.progress(),
 		period = period,
 		minutes = minutes,
@@ -660,7 +666,7 @@ end
 
 -- ---------------------------------------------------------------- render: tiles
 
-local set_caption = util.set_if_changed
+local set_caption = sync.set_if_changed
 
 --- Whether set_tooltip would write `sig` (so the tooltip is built only then).
 --- @param cache table
@@ -686,7 +692,7 @@ end
 --- @param player_data PlayerData
 --- @return table
 local function caption_cache(player_data)
-	local state = util.gui_state(player_data, "overview_captions")
+	local state = sync.gui_state(player_data, "overview_captions")
 	state.captions = state.captions or {}
 	return state.captions
 end
@@ -803,7 +809,7 @@ local function render_fleet_tile(refs, cache, model)
 	end
 	if f.busy then
 		tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-fleet-littles-law", string.format("%.1f", f.per_minute),
-			util.short_duration(f.trip * 60), busy } }
+			logic.short_duration(f.trip * 60), busy } }
 	end
 	tooltip[#tooltip + 1] = { "", "\n\n", { "cybersyn-gui.overview-fleet-scope" } }
 	set_tooltip(cache, refs.overview_tile_fleet, sig, tooltip)
@@ -897,14 +903,14 @@ local function render_throughput_tile(refs, cache, model)
 			{ "cybersyn-gui.overview-all-networks" } })
 	set_caption(cache, refs.overview_throughput_note, "", "")
 	set_caption(cache, refs.overview_throughput_headline, tostring(t.deliveries), count_text(t.deliveries))
-	local trip = t.trip and util.short_duration(t.trip * 60) or NO_VALUE
-	local wait_avg = t.wait_avg and util.short_duration(t.wait_avg) or NO_VALUE
-	local wait_max = t.wait_max and util.short_duration(t.wait_max) or NO_VALUE
+	local trip = t.trip and logic.short_duration(t.trip * 60) or NO_VALUE
+	local wait_avg = t.wait_avg and logic.short_duration(t.wait_avg) or NO_VALUE
+	local wait_max = t.wait_max and logic.short_duration(t.wait_max) or NO_VALUE
 	set_line(refs, cache, "throughput", 1, "trip", { "cybersyn-gui.overview-throughput-trip" }, trip)
 	set_line(refs, cache, "throughput", 2, "wavg", { "cybersyn-gui.overview-throughput-wait-avg" }, wait_avg)
 	set_line(refs, cache, "throughput", 3, "wmax", { "cybersyn-gui.overview-throughput-wait-max" }, wait_max)
 	-- A body row at every width: beside the caption it would be cut to "Recorded so far: 2m 1…".
-	local recorded = t.recorded and util.short_duration(t.recorded) or ""
+	local recorded = t.recorded and logic.short_duration(t.recorded) or ""
 	if t.recorded then
 		set_line(refs, cache, "throughput", 4, "recorded", { "cybersyn-gui.overview-recorded-line" }, recorded)
 	else
@@ -976,7 +982,7 @@ local station_tooltip = name_cell.station_tooltip
 --- @param def flib.GuiElemDef
 --- @return flib.GuiElemDef
 local function hoverable(def)
-	return util.hoverable(def, TABLE)
+	return hover.hoverable(def, TABLE)
 end
 
 --- A station cell drawn as on the other tabs (name-cell.lua: lead icons · text · tail icons, the lead giving way first
@@ -1081,7 +1087,7 @@ local surface_name = util.surface_name
 --- @param row {r_id: uint, hash: string, e: DiagEntry}
 --- @param acked boolean
 --- @param ctx table
---- @return table? entry for util.sync_table_rows
+--- @return table? entry for sync.sync_table_rows
 local function row_entry(row, acked, ctx)
 	local hash, e, r_id = row.hash, row.e, row.r_id
 	local sprite, quality, item_tooltip = util.item_sprite_and_tooltip(hash)
@@ -1128,7 +1134,7 @@ local function row_entry(row, acked, ctx)
 		if not acked then return { "cybersyn-gui.unserved-ack-tooltip" }, false end
 		local a = diag.is_acked("request", r_id, hash)
 		local who = a and a.player_index and game.get_player(a.player_index)
-		local until_text = a and a.until_tick and util.format_duration(a.until_tick - now) or nil
+		local until_text = a and a.until_tick and logic.format_duration(a.until_tick - now) or nil
 		return { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
 			until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.unserved-ack-reason" } },
 			until_text ~= nil
@@ -1191,7 +1197,7 @@ local function row_entry(row, acked, ctx)
 		build = function()
 			content_sigs[key] = content_sig
 			local chip, r_tip, p_tip, l_tip, ack, item_tip = tooltips()
-			local link = { [defines.events.on_gui_click] = util.handle.link_click }
+			local link = { [defines.events.on_gui_click] = links.handle.link_click }
 			return {
 				hoverable({
 					type = "sprite-button",
@@ -1263,7 +1269,7 @@ local function row_entry(row, acked, ctx)
 				}),
 			}
 		end,
-		-- A row of another key reused at this position (util.sync_table_rows): the key's own cells first, then
+		-- A row of another key reused at this position (sync.sync_table_rows): the key's own cells first, then
 		-- every other cell as an update writes them.
 		rebind = function(cells, entry)
 			local item = cells[1]
@@ -1353,7 +1359,7 @@ local function render_table(player_data, model)
 	local entries = {}
 	local shown_total = 0
 	if u and not model.collecting then
-		local state = util.gui_state(player_data, TABLE)
+		local state = sync.gui_state(player_data, TABLE)
 		local content_sigs = state.content_sigs
 		-- Keys that left the table leave their entry behind; dropped wholesale now and then.
 		if not content_sigs or table_size(content_sigs) > 4 * model.rows + 64 then
@@ -1375,7 +1381,7 @@ local function render_table(player_data, model)
 			if text.stock_caption(e.reason, e.a, e.b) ~= NO_VALUE then any_stock = true end
 			if e.lost_n > 0 and e.lost_to then any_lost = true end
 		end
-		if #picked > 0 and (hide.stock == any_stock or hide.lost == any_lost) and not util.hold_active(player_data, TABLE) then
+		if #picked > 0 and (hide.stock == any_stock or hide.lost == any_lost) and not hover.hold_active(player_data, TABLE) then
 			hide = { stock = not any_stock, lost = not any_lost }
 			state.hide = hide
 			ctx.hide = hide
@@ -1404,8 +1410,8 @@ local function render_table(player_data, model)
 		shown_total = u.total + (player_data.overview_show_acked and u.acked_total or 0)
 	end
 	-- Rows key on (requester, item), so a wait that reorders them is a structural change the hover hold defers.
-	util.sync_table_rows(tbl, TABLE_COLUMNS, TABLE_COLUMNS, entries, util.gui_state(player_data, TABLE),
-		util.hold_active(player_data, TABLE))
+	sync.sync_table_rows(tbl, TABLE_COLUMNS, TABLE_COLUMNS, entries, sync.gui_state(player_data, TABLE),
+		hover.hold_active(player_data, TABLE))
 
 	local empty_flow, empty = refs.overview_unserved_empty_flow, refs.overview_unserved_empty
 	local show_empty = #entries == 0
@@ -1464,14 +1470,14 @@ function overview_tab.handle.overview_period_changed(player, player_data, refs, 
 	local minutes = PERIODS[element.selected_index]
 	if not minutes or minutes == player_data.overview_period then return end
 	player_data.overview_period = minutes
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- @param e EventData.on_gui_checked_state_changed
 function overview_tab.handle.overview_show_acked(player, player_data, refs, e)
 	player_data.overview_show_acked = e.element.state or nil
-	util.release_hold(player_data)
-	util.rerender(player, player_data)
+	hover.release_hold(player_data)
+	nav.rerender(player, player_data)
 end
 
 --- A tile or line jump to the Stations tab: the target lists under exactly the filters the Overview counted with,
@@ -1483,7 +1489,7 @@ end
 --- @param sort {tab: string, column: string, ascending: boolean}?
 --- @param scope "errors"?
 local function jump_stations(player, player_data, chip, sort, scope)
-	overview_tab.manager.focus(player, player_data, "stations_tab", { keep_row = true, stations_chip = chip,
+	nav.focus(player, player_data, "stations_tab", { keep_row = true, stations_chip = chip,
 		stations_problems_scope = scope, sort = sort })
 end
 
@@ -1502,12 +1508,12 @@ function overview_tab.handle.overview_tile_click(player, player_data, refs, e)
 		-- Fleet headroom counts by network name alone: every other filter goes, or an item filter alone would
 		-- empty the Parked list (parked trains carry no manifest).
 		local worst = overview_tab.model(player_data).fleet.worst
-		overview_tab.manager.focus(player, player_data, "trains_tab", { network = worst, trains_chip = "parked",
+		nav.focus(player, player_data, "trains_tab", { network = worst, trains_chip = "parked",
 			sort = FLEET_SORT })
 	elseif tile == "failing" then
 		jump_stations(player, player_data, "failing", FAILING_SORT)
 	elseif tile == "throughput" then
-		overview_tab.manager.focus(player, player_data, "inventory_tab", { keep_row = true, grids = true,
+		nav.focus(player, player_data, "inventory_tab", { keep_row = true, grids = true,
 			sort = THROUGHPUT_SORT })
 	end
 end
@@ -1527,7 +1533,7 @@ end
 --- The Why chip: Explain for that row (scripts/gui/explain.lua), a second click closes it.
 --- @param e EventData.on_gui_click
 function overview_tab.handle.overview_explain_click(player, player_data, refs, e)
-	util.touch_hover(e)
+	hover.touch_hover(e)
 	local tags = e.element.tags
 	if not (tags.r_id and tags.hash) then return end
 	explain.open(player, player_data, tags.r_id, tags.hash)
@@ -1545,8 +1551,8 @@ function overview_tab.handle.overview_ack_click(player, player_data, refs, e)
 	else
 		diag.ack("request", r_id, hash, player.index, util.ack_until_tick(e))
 	end
-	util.release_hold(player_data)
-	util.rerender(player, player_data)
+	hover.release_hold(player_data)
+	nav.rerender(player, player_data)
 end
 
 gui.add_handlers(overview_tab.handle, overview_tab.wrapper)

@@ -700,7 +700,7 @@ test("marker: an inventory row names its combinator, links it and says when its 
 end)
 
 test("network filter: a station shows under every bit any of its rows advertises on", function()
-	local u = H.load("scripts.gui.util")
+	local u = H.load("scripts.gui.utils.filters")
 	local n = F.naphtha(20)
 	local f = { mask = 4, network = "signal-A" }
 	assert_true(u.station_passes(n, f), "bit 3 comes from Inventory 2")

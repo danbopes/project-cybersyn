@@ -3,7 +3,7 @@
 
 local H = require("harness")
 
-local function util() return H.load("scripts.gui.util") end
+local function filters() return H.load("scripts.gui.utils.filters") end
 
 local function station(id, over)
 	local st = {
@@ -21,7 +21,7 @@ local function station(id, over)
 end
 
 test("get_filters carries the chip as f.station; filters_active and filter_signature see it", function()
-	local u = util()
+	local u = filters()
 	local f = u.get_filters({ search_station = 12 })
 	assert_eq(f.station, 12)
 	assert_true(u.filters_active({ mask = -1, station = 12 }))
@@ -32,7 +32,7 @@ test("get_filters carries the chip as f.station; filters_active and filter_signa
 end)
 
 test("station_passes: only the chip's station, by id, whatever the name", function()
-	local u = util()
+	local u = filters()
 	assert_true(u.station_passes(station(12), { mask = -1, station = 12 }))
 	assert_false(u.station_passes(station(13), { mask = -1, station = 12 }))
 	assert_true(u.station_passes(station(13), { mask = -1 }))
@@ -41,7 +41,7 @@ test("station_passes: only the chip's station, by id, whatever the name", functi
 end)
 
 test("train_passes: a train whose provider or requester is the chip's station", function()
-	local u = util()
+	local u = filters()
 	storage.manager = { players = {}, snapshot = require("scripts.gui.collector").empty() }
 	local function tr(p, r)
 		return { surface_index = 1, network_name = "signal-A", network_mask = 1, manifest_hashes = {},
@@ -56,14 +56,14 @@ test("train_passes: a train whose provider or requester is the chip's station", 
 end)
 
 test("overview_filters drops the chip (the Overview ignores it)", function()
-	local u = util()
+	local u = filters()
 	local f = u.overview_filters({ search_station = 12, search_network_mask = -1 })
 	assert_nil(f.station)
 	assert_eq(u.get_filters({ search_station = 12 }).station, 12)
 end)
 
 test("empty_filter_suffix: '-filtered' with a place filter or the chip, '' otherwise", function()
-	local u = util()
+	local u = filters()
 	assert_eq(u.empty_filter_suffix({ mask = -1 }), "")
 	assert_eq(u.empty_filter_suffix({ mask = -1, terms = { "a" }, item = "coal" }), "")
 	assert_eq(u.empty_filter_suffix({ mask = -1, station = 3 }), "-filtered")
@@ -84,7 +84,7 @@ test("the empty-text strings exist in en for every drill-down table", function()
 end)
 
 test("set_station_filter: a known id sets the chip, opens the row, resets pages; unknown or nil clears", function()
-	local u = util()
+	local u = filters()
 	storage.stations = { [12] = {} }
 	local pd = { page = { stations_tab = 3 } }
 	u.set_station_filter(pd, 12)
@@ -99,7 +99,7 @@ test("set_station_filter: a known id sets the chip, opens the row, resets pages;
 end)
 
 test("valid_station_filter drops a removed station", function()
-	local u = util()
+	local u = filters()
 	storage.stations = { [12] = {} }
 	local pd = { search_station = 12 }
 	assert_eq(u.valid_station_filter(pd), 12)
@@ -111,12 +111,13 @@ end)
 -- ---------------------------------------------------------------- stop panel slot clicks
 
 local function click_setup(open)
-	local u = util()
+	local nav, u = H.isolated("scripts.gui.utils.nav", "scripts.gui.utils.links")
 	-- Defined by scripts/main.lua's remote interface, which the host tests do not load.
 	interface_raise_item_selected = function() end
 	storage.stations = { [12] = {} }
 	local calls = {}
-	u.set_window_fns({
+	nav.set_window_fns({
+		render = function() end,
 		open = function(_, pd) calls[#calls + 1] = "open-window"; pd.is_manager_open = true end,
 		close = function(_, pd) calls[#calls + 1] = "close-window"; pd.is_manager_open = false end,
 		focus = function(_, _, tab, focus)
@@ -124,7 +125,6 @@ local function click_setup(open)
 			calls.focus = focus
 		end,
 	})
-	u.set_rerender(function() end)
 	local pd = { is_manager_open = open, selected_tab = "overview_tab", refs = {} }
 	return u, pd, calls, { index = 1 }
 end

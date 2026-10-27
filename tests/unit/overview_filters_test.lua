@@ -1,16 +1,16 @@
--- The predicates in scripts/gui/util.lua (the Overview's filters, the surface default's station check),
+-- The predicates in scripts/gui/utils/filters.lua (the Overview's filters, the surface default's station check),
 -- name_cell.fit and the tile count format.
 
 local H = require("harness")
 
-local function util() return H.load("scripts.gui.util") end
+local function filters() return H.load("scripts.gui.utils.filters") end
 
 local function station(surface, network, mask)
 	return { entity_stop = { valid = true, surface_index = surface }, network_name = network, network_mask = mask }
 end
 
 test("overview_filters: the station search never applies, the rest maps from player_data", function()
-	local u = util()
+	local u = filters()
 	local f = u.overview_filters({ search_query = "iron", search_network_name = "signal-A", search_network_mask = 2,
 		search_surface_idx = 3, search_item = nil })
 	assert_eq(f.terms, nil)
@@ -22,7 +22,7 @@ test("overview_filters: the station search never applies, the rest maps from pla
 end)
 
 test("filter_signature: differs for every field, equal for equal filters", function()
-	local u = util()
+	local u = filters()
 	local base = { mask = -1 }
 	local sigs = {}
 	for _, f in ipairs({ base, { mask = 2 }, { mask = -1, surface = 1 }, { mask = -1, network = "signal-A" },
@@ -35,7 +35,7 @@ test("filter_signature: differs for every field, equal for equal filters", funct
 end)
 
 test("requester_passes: the snapshot record decides, the live station while collecting, a gone one only unfiltered", function()
-	local u = util()
+	local u = filters()
 	storage.stations = { [7] = station(2, "signal-B", 1) }
 	local stations = { [5] = { surface_index = 1, network_name = "signal-A", network_mask = 1 } }
 	local all = { mask = -1 }
@@ -54,7 +54,7 @@ test("requester_passes: the snapshot record decides, the live station while coll
 end)
 
 test("surface_has_station: any valid stop on the surface", function()
-	local u = util()
+	local u = filters()
 	storage.stations = { [1] = station(2, "signal-A", 1), [2] = { entity_stop = { valid = false, surface_index = 3 } } }
 	assert_true(u.surface_has_station(2))
 	assert_false(u.surface_has_station(1))

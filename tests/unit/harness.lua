@@ -533,6 +533,21 @@ function harness.load(name)
 	return require(name)
 end
 
+--- Fresh instances of the named modules, loaded in order so a later one requires the earlier ones, with
+--- package.loaded put back afterwards: whatever a test stubs on them cannot reach another test.
+--- @return table ...
+function harness.isolated(...)
+	local names = { ... }
+	local saved, out = {}, {}
+	for i, name in ipairs(names) do
+		saved[i] = package.loaded[name]
+		package.loaded[name] = nil
+	end
+	for i, name in ipairs(names) do out[i] = require(name) end
+	for i, name in ipairs(names) do package.loaded[name] = saved[i] end
+	return table.unpack(out)
+end
+
 --- Deep copy of plain data.
 function harness.copy(t)
 	if type(t) ~= "table" then return t end

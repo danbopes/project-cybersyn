@@ -10,6 +10,11 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local sync = require("scripts.gui.utils.sync")
+local filters = require("scripts.gui.utils.filters")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local rich_text = require("scripts.gui.rich-text")
 local metrics = require("scripts.gui.metrics")
 local collector = require("scripts.gui.collector")
@@ -201,7 +206,7 @@ local function section_def(t, flex)
 			style_mods = { vertical_spacing = 0 },
 			header,
 			-- Hover-aware like the rows, so the hold also covers the scroll bar and the pane's blank space.
-			util.hoverable({
+			hover.hoverable({
 				type = "scroll-pane",
 				name = "item_" .. t .. "_scroll",
 				style = "cybersyn_item_scroll_pane",
@@ -255,7 +260,7 @@ local function view_def(layout)
 				style = "cybersyn_item_chip_icon",
 				mouse_button_filter = { "left", "right" },
 				tags = { kind = "item" },
-				handler = { [defines.events.on_gui_click] = util.handle.link_click },
+				handler = { [defines.events.on_gui_click] = links.handle.link_click },
 			},
 			{ type = "label", name = "item_name", style = "subheader_caption_label", caption = "" },
 			-- The station chip as the tab subheader shows it: the drill-down's subheader takes that one's place.
@@ -371,7 +376,7 @@ local network_caption = util.network_caption
 local TAG = "item_net_tag"
 
 local function tag_def(v, scope)
-	return util.hoverable({
+	return hover.hoverable({
 		type = "label",
 		name = TAG,
 		style = "cybersyn_subheader_note",
@@ -442,7 +447,7 @@ local function cell_def(col, v, width, scope)
 		end
 		return def
 	elseif kind == "train" then
-		return util.hoverable({
+		return hover.hoverable({
 			type = "button",
 			style = "cybersyn_item_train_button",
 			style_mods = { width = width },
@@ -450,7 +455,7 @@ local function cell_def(col, v, width, scope)
 			tooltip = v.tooltip,
 			tags = { kind = "train", id = v.id },
 			mouse_button_filter = { "left" },
-			handler = { [defines.events.on_gui_click] = util.handle.link_click },
+			handler = { [defines.events.on_gui_click] = links.handle.link_click },
 		}, scope)
 	elseif kind == "chip" then
 		return {
@@ -458,7 +463,7 @@ local function cell_def(col, v, width, scope)
 			direction = "horizontal",
 			style = "cybersyn_unserved_cell_flow",
 			style_mods = { width = width },
-			util.hoverable({
+			hover.hoverable({
 				type = "label",
 				style = label_style(v.style),
 				style_mods = { maximal_width = width },
@@ -477,7 +482,7 @@ local function cell_def(col, v, width, scope)
 			{ type = "label", style = "cybersyn_unserved_cell", caption = v.caption, tooltip = v.tooltip },
 		}
 	end
-	return util.hoverable({
+	return hover.hoverable({
 		type = "label",
 		style = kind == "value" and "cybersyn_unserved_value" or "cybersyn_unserved_cell",
 		style_mods = { width = width },
@@ -541,7 +546,7 @@ local function cell_update(col, cell, v, width, scope)
 	end
 end
 
---- A row entry for util.sync_table_rows: `values()` builds the cells' values only when the row's sig changed, and a
+--- A row entry for sync.sync_table_rows: `values()` builds the cells' values only when the row's sig changed, and a
 --- cell is written only when its own sig (`value.sig`) differs from the one memorised for that row position.
 --- @param t string
 --- @param key int row position
@@ -642,7 +647,7 @@ local function requester_entry(r, ctx, i)
 	local chip_sig = table.concat({ r.id, name, network, r.group, r.requested, e_sig, e and e.n or "" }, "\1")
 	return row_entry("requesters", i, r.key .. "@" .. network .. "#" .. sig, function()
 		local network_tip, tag = row_network(r, st)
-		local last = age and { "cybersyn-gui.time-ago", util.short_duration(age - age % AGE_STEP) }
+		local last = age and { "cybersyn-gui.time-ago", logic.short_duration(age - age % AGE_STEP) }
 			or { "cybersyn-gui.item-last-served-never" }
 		local queue
 		if r.position then
@@ -692,8 +697,8 @@ local function requester_entry(r, ctx, i)
 			{ caption = count(r.requested), tooltip = format.number(r.requested), sig = tostring(r.requested) },
 			{ caption = count(r.threshold), tooltip = format.number(r.threshold), sig = tostring(r.threshold) },
 			-- The seconds are wait_clock's; this cell is written when the row gains or loses a wait.
-			{ caption = wait and util.short_duration(wait) or NO_VALUE,
-				tooltip = wait and { "cybersyn-gui.waiting-for", util.format_duration(wait) } or { "cybersyn-gui.item-wait-none" },
+			{ caption = wait and logic.short_duration(wait) or NO_VALUE,
+				tooltip = wait and { "cybersyn-gui.waiting-for", logic.format_duration(wait) } or { "cybersyn-gui.item-wait-none" },
 				sig = wait and "w" or "-" },
 			chip,
 			{ caption = r.incoming > 0 and count(r.incoming) or NO_VALUE, sig = tostring(r.incoming) },
@@ -715,7 +720,7 @@ local function train_entry(r, ctx, i)
 		local route_sig = (from and from.name or "") .. "\1" .. (to and to.name or "")
 		return {
 			{ caption = tostring(r.id), id = r.id, tooltip = { "", { "cybersyn-gui.item-train-tooltip", tostring(r.id) }, "\n",
-				route, "\n", util.LINK_FOOTER }, sig = r.id .. "\1" .. route_sig },
+				route, "\n", links.LINK_FOOTER }, sig = r.id .. "\1" .. route_sig },
 			{ caption = status, tooltip = status_tip, sig = tostring(r.status) },
 			{ caption = count(r.amount), tooltip = format.number(r.amount), sig = tostring(r.amount) },
 			{ st = to, id = r.to, tooltip = station_tooltip(to, route), sig = tostring(r.to) .. "\1" .. route_sig },
@@ -740,10 +745,10 @@ local function wait_clock(tbl, rows, n, view, from, now)
 		local start = rows[i] and rows[i].wait_start
 		if not start then return end
 		local cell = tbl[wait_name(i)]
-		local caption = util.short_duration(now - start)
+		local caption = logic.short_duration(now - start)
 		if cell and cell.caption ~= caption then
 			cell.caption = caption
-			cell.tooltip = { "cybersyn-gui.waiting-for", util.format_duration(now - start) }
+			cell.tooltip = { "cybersyn-gui.waiting-for", logic.format_duration(now - start) }
 		end
 	end
 	for i = 1, math.min(n, view) do write(i) end
@@ -856,7 +861,7 @@ end
 --- @param player_data PlayerData
 --- @return ManagerFilters
 local function view_filters(player_data)
-	local f = util.get_filters(player_data)
+	local f = filters.get_filters(player_data)
 	f.terms, f.item = nil, nil
 	return f
 end
@@ -867,11 +872,11 @@ end
 local function get_cache(player_data, hash)
 	local snapshot = collector.get()
 	local f = view_filters(player_data)
-	local filtered = util.filters_active(f, true)
-	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. util.filter_signature(f)
+	local filtered = filters.filters_active(f, true)
+	local key = tostring(snapshot.tick) .. ":" .. tostring(snapshot.pass) .. ":" .. filters.filter_signature(f)
 	local cache = player_data.item_cache
 	if cache and cache.hash == hash and cache.key == key then return cache, false end
-	local row_passes, train_passes = util.row_passes, util.train_passes
+	local row_passes, train_passes = filters.row_passes, filters.train_passes
 	local keep = filtered and {
 		row = function(row) return row_passes(row, f, true) end,
 		train = function(tr) return train_passes(tr, f, true) end,
@@ -879,7 +884,7 @@ local function get_cache(player_data, hash)
 	-- Records the running pass refilled since the snapshot completed may name the item where the snapshot's index
 	-- does not (the Stations tab, filtered to the item, reads those records too).
 	local m = item_model.build(snapshot, hash, SIGNAL_PRIORITY, collector.changed_this_pass(), keep, collector.inventories)
-	m.empty_suffix = util.empty_filter_suffix(f)
+	m.empty_suffix = filters.empty_filter_suffix(f)
 	if cache and cache.hash == hash then
 		cache.key, cache.model, cache.header_sig = key, m, nil
 		return cache, true
@@ -913,8 +918,8 @@ function item.build(map_data, player_data, hash)
 	local held, any_held = {}, false
 	for _, t in ipairs(item_model.TABLES) do
 		local name = table_name(t)
-		local state = util.gui_state(player_data, name)
-		held[t] = state.keys ~= nil and #state.keys > 0 and util.hold_active(player_data, name)
+		local state = sync.gui_state(player_data, name)
+		held[t] = state.keys ~= nil and #state.keys > 0 and hover.hold_active(player_data, name)
 		any_held = any_held or held[t]
 	end
 	-- A new split changes the three body heights at once, so every table follows it in the same update; it waits
@@ -947,7 +952,7 @@ function item.build(map_data, player_data, hash)
 	}
 	ctx.memo = {}
 	for _, t in ipairs(item_model.TABLES) do
-		local state = util.gui_state(player_data, table_name(t))
+		local state = sync.gui_state(player_data, table_name(t))
 		-- The cell memo belongs to the rows the state's keys describe; without keys the rows are rebuilt anyway.
 		if not (state.cells and state.keys) then state.cells = {} end
 		ctx.memo[t] = state.cells
@@ -962,7 +967,7 @@ function item.build(map_data, player_data, hash)
 		local n = math.min(#rows, MAX_ROWS)
 		local name = table_name(t)
 		local tbl = refs[name]
-		local state = util.gui_state(player_data, name)
+		local state = sync.gui_state(player_data, name)
 		if tbl and tbl.valid then
 			local built = state.keys and #state.keys or 0
 			local sigs = state.keys and state.sigs
@@ -1057,7 +1062,7 @@ function item.build(map_data, player_data, hash)
 		local entries = p.entries
 		-- New rows are signed only once it is known how many this update keeps.
 		for i = p.built + 1, keep do entries[i] = p.make(p.rows[i], ctx, i) end
-		util.sync_table_rows(p.tbl, #COLUMNS[p.t], 0, entries, p.state)
+		sync.sync_table_rows(p.tbl, #COLUMNS[p.t], 0, entries, p.state)
 		p.state.shown, p.state.shown_n = p.rows, n
 		p.state.model_key = cache.key
 		p.state.held_key = nil
@@ -1065,7 +1070,7 @@ function item.build(map_data, player_data, hash)
 	for _, t in ipairs(RENDER_ORDER) do
 		local name = table_name(t)
 		local tbl = refs[name]
-		local state = util.gui_state(player_data, name)
+		local state = sync.gui_state(player_data, name)
 		-- Wait clock, count and empty state follow the rows the table shows, not the model it may not show yet.
 		local shown = state.shown
 		if t == "requesters" and shown and tbl and tbl.valid then
@@ -1117,7 +1122,7 @@ function item.apply_layout(player_data, layout)
 				if not col.width then children[i].style.width = widths[t] end
 			end
 		end
-		local state = util.gui_state(player_data, table_name(t))
+		local state = sync.gui_state(player_data, table_name(t))
 		state.keys, state.sigs = nil, nil
 	end
 end
@@ -1130,14 +1135,14 @@ item.wrapper = util.wrapper
 
 --- Back clears the item filter, as the filter chip's x does: the Inventory shows its grids again.
 function item.handle.item_back(player, player_data, refs, e)
-	util.set_item_filter(player_data, nil)
-	util.rerender(player, player_data)
+	filters.set_item_filter(player_data, nil)
+	nav.rerender(player, player_data)
 end
 
 --- The station chip in the drill-down's subheader: any click removes it, as on the tab subheader's chip.
 function item.handle.item_station_chip(player, player_data, refs, e)
-	util.set_station_filter(player_data, nil)
-	util.rerender(player, player_data)
+	filters.set_station_filter(player_data, nil)
+	nav.rerender(player, player_data)
 end
 
 gui.add_handlers(item.handle, item.wrapper)

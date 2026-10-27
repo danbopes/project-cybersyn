@@ -8,6 +8,12 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local sync = require("scripts.gui.utils.sync")
+local filters = require("scripts.gui.utils.filters")
+local listing = require("scripts.gui.utils.listing")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local rich_text = require("scripts.gui.rich-text")
 local collector = require("scripts.gui.collector")
 local sizing = require("scripts.gui.sizing")
@@ -28,7 +34,7 @@ local stations_tab = {}
 --- @field stations_chip string? the toggled chip: one of STATUSES, or "unserved"|"problems"|"stuck"|"failing"
 --- @field stations_problems_view boolean? the Problems chip was on at the last query (its sort is set on the way in)
 --- @field stations_query table? classified and sorted rows of one snapshot and filter set; it can outlive a close
----   while the snapshot is kept, see util.close_manager_window
+---   while the snapshot is kept, see nav.close_manager_window
 
 local TAB = "stations_tab"
 -- The row list (a flow, despite the name).
@@ -179,7 +185,7 @@ local function header_cell(column, width, selected)
 		type = "flow",
 		direction = "horizontal",
 		style_mods = { width = width, horizontal_align = RIGHT[column] and "right" or "left", vertical_align = "center" },
-		templates.sort_checkbox(TAB, column, caption, tooltip, selected, util.handle.sort_click),
+		templates.sort_checkbox(TAB, column, caption, tooltip, selected, listing.handle.sort_click),
 	}
 end
 
@@ -234,7 +240,7 @@ function stations_tab.create()
 				style = "cybersyn_list_subfooter",
 				{ type = "label", name = "manager_stations_summary", style = "cybersyn_subheader_note" },
 				{ type = "empty-widget", style = "flib_horizontal_pusher" },
-				templates.pager(TAB, util.handle.pager_click),
+				templates.pager(TAB, listing.handle.pager_click),
 			},
 		},
 	}
@@ -372,7 +378,7 @@ end
 
 -- Everything the filtered set depends on besides the data itself. The chip is left out: it is applied after the
 -- cached order, so a station changing status mid-pass shows up at once, matching the chip counts.
-local filter_sig = util.filter_signature
+local filter_sig = filters.filter_signature
 
 local function view_sig(f, column, ascending)
 	return column .. "\1" .. (ascending and "+" or "-") .. "\1" .. filter_sig(f)
@@ -441,7 +447,7 @@ end
 local NO_KEYS = {}
 
 --- Rewrites the cached rows of one station: drops the keys it listed, then adds each of its rows the filters let
---- through (util.row_passes) with its sort key. Every key dropped or added is marked changed.
+--- through (filters.row_passes) with its sort key. Every key dropped or added is marked changed.
 --- @param cache table
 --- @param id uint
 --- @param st SnapshotStation? nil or failing the filters: the station lists no rows
@@ -455,7 +461,7 @@ local function refill_rows(cache, id, st, f, key_fn, ctx)
 	local old = rows_of[id] or NO_KEYS
 	local moved, relisted = false, false
 	local rows = st and collector.inventories(st) or NO_KEYS
-	local row_passes = util.row_passes
+	local row_passes = filters.row_passes
 	-- A station seen for the first time (every station of a rebuild) builds its list in this one walk.
 	local fresh = #old == 0
 	local new
@@ -516,7 +522,7 @@ local function rebuild_query(player_data, snapshot, f, fsig, column, epoch, pos)
 		epoch = epoch, pos = pos, fsig = fsig, column = column, status = status, keys = {}, rec = {}, index = {},
 		rows_of = {}, flags = flags, nat = nat, counts = counts, dirty = true, changed = {},
 	}
-	local station_flags, passes = logic.station_flags, util.station_passes
+	local station_flags, passes = logic.station_flags, filters.station_passes
 	local shown, is_acked = pm.shown_status, diag.is_acked
 	local all, unserved, setup, failing = 0, 0, 0, 0
 	for id, st in pairs(stations) do
@@ -554,7 +560,7 @@ local function apply_changes(cache, snapshot, f, ids, first, last)
 		local id = ids[i]
 		local st = stations[id]
 		local old = status[id]
-		local new = st and util.station_passes(st, f) and pm.shown_status(st.status, id, st.lint, diag.is_acked) or nil
+		local new = st and filters.station_passes(st, f) and pm.shown_status(st.status, id, st.lint, diag.is_acked) or nil
 		local old_flags = flags[id] or 0
 		local new_flags = new and logic.station_flags(st) or 0
 		if old ~= new then
@@ -706,7 +712,7 @@ end
 function stations_tab.query(player_data)
 	local snapshot = collector.get()
 	local stations = snapshot.stations
-	local f = util.get_filters(player_data)
+	local f = filters.get_filters(player_data)
 	local wanted = active_chip(player_data)
 	local problems = wanted == "problems"
 	-- The Overview's Misconfigured jump narrows the Problems view to the stations its line counts (p1's contract).
@@ -715,14 +721,14 @@ function stations_tab.query(player_data)
 	if problems ~= (player_data.stations_problems_view == true) then
 		-- The Problems view opens worst first; leaving it drops its sort.
 		player_data.stations_problems_view = problems or nil
-		local current = util.get_sort(player_data, TAB, "name")
+		local current = listing.get_sort(player_data, TAB, "name")
 		if problems then
-			util.set_sort(player_data, TAB, "problems", true)
+			listing.set_sort(player_data, TAB, "problems", true)
 		elseif current == "problems" then
-			util.set_sort(player_data, TAB, "name", true)
+			listing.set_sort(player_data, TAB, "name", true)
 		end
 	end
-	local column, ascending = util.get_sort(player_data, TAB, "name")
+	local column, ascending = listing.get_sort(player_data, TAB, "name")
 	column = view_column(column, problems)
 	if not sort_keys[column] then column = "name" end
 	-- The first pass after opening is still filling records: rows and counts from part of the stations would change
@@ -902,7 +908,7 @@ end
 --- @return LocalisedString
 local function acked_line(a, now)
 	local who = a.player_index and game.get_player(a.player_index)
-	local until_text = a.until_tick and util.format_duration(a.until_tick - now) or nil
+	local until_text = a.until_tick and logic.format_duration(a.until_tick - now) or nil
 	return { "cybersyn-gui.unserved-ack-tooltip-acked", who and who.name or "-",
 		until_text and { "cybersyn-gui.unserved-ack-for", until_text } or { "cybersyn-gui.problems-ack-until-clear" } }
 end
@@ -1041,7 +1047,7 @@ local function registry_rows(px, f)
 		-- Without its entity a row cannot tell its surface: a surface filter hides it.
 		local pass = not (f.surface and (not entity or entity.surface_index ~= f.surface))
 		if pass and f.terms then
-			pass = util.terms_match(helpers.multilingual_to_lower(parts and parts.text or name), f.terms)
+			pass = filters.terms_match(helpers.multilingual_to_lower(parts and parts.text or name), f.terms)
 		end
 		if pass then out[#out + 1] = { e = e, entity = entity, name = name, parts = parts } end
 		::continue::
@@ -1090,7 +1096,7 @@ local function registry_model(row, ctx)
 	m.name_sig = row.name .. "\1" .. kind .. f.id
 	m.name_tooltip = function()
 		return { "", "[font=default-semibold]", row.name, "[/font]\n", { "cybersyn-gui.stations-registry-tooltip" }, "\n",
-			util.LINK_FOOTER }
+			links.LINK_FOOTER }
 	end
 	m.status_tooltip = function() return { "cybersyn-gui.stations-registry-tooltip" } end
 	m.network = function() return "", "", "" end
@@ -1233,17 +1239,17 @@ end
 --- @param marker table marker_model
 --- @return flib.GuiElemDef
 local function marker_def(marker)
-	return util.hoverable({
+	return hover.hoverable({
 		type = "sprite-button",
 		style = "cybersyn_name_icon",
 		style_mods = { size = MARKER_SIZE },
 		sprite = MARKER_SPRITE,
 		hovered_sprite = "item/" .. COMBINATOR_NAME,
 		tooltip = marker.tooltip(),
-		-- The combinator by unit number: util.handle_link_click's "entity" kind opens it.
+		-- The combinator by unit number: links.handle_link_click's "entity" kind opens it.
 		tags = { kind = "entity", id = marker.unit, marker = true },
 		mouse_button_filter = { "left" },
-		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+		handler = { [defines.events.on_gui_click] = links.handle.link_click },
 	}, SCROLL)
 end
 
@@ -1311,7 +1317,7 @@ local function row_model(row, ctx)
 			tip[#tip + 1] = text.read_ago(read_age)
 		end
 		tip[#tip + 1] = "\n"
-		tip[#tip + 1] = util.LINK_FOOTER
+		tip[#tip + 1] = links.LINK_FOOTER
 		return tip
 	end
 
@@ -1350,23 +1356,23 @@ local function row_model(row, ctx)
 
 	local start = row_wait_start(row)
 	if start then
-		m.wait_caption = util.short_duration(now - start)
+		m.wait_caption = logic.short_duration(now - start)
 		m.wait_sig = m.wait_caption
 	else
 		m.wait_caption, m.wait_sig = NONE_CAPTION, ""
 	end
-	m.wait_full = start and util.format_duration(now - start) or nil
+	m.wait_full = start and logic.format_duration(now - start) or nil
 
 	local age = collector.delivery_age(st)
 	if age and never_dispatched(st) then
 		m.last_caption, m.last_sig, m.last_never = NEVER_CAPTION, "never", true
 	elseif age then
-		m.last_caption = util.short_duration(age)
+		m.last_caption = logic.short_duration(age)
 		m.last_sig = m.last_caption
 	else
 		m.last_caption, m.last_sig = NONE_CAPTION, ""
 	end
-	m.last_full = age and util.format_duration(age) or nil
+	m.last_full = age and logic.format_duration(age) or nil
 	return m
 end
 
@@ -1397,9 +1403,9 @@ local function decorate_slots(defs)
 		if hash then
 			def.enabled = true
 			def.mouse_button_filter = { "left", "right" }
-			-- The one item click of every view (util.handle_link_click -> util.item_button_click).
-			def.handler = { [defines.events.on_gui_click] = util.handle.link_click }
-			util.hoverable(def, SCROLL)
+			-- The one item click of every view (links.handle_link_click -> links.item_button_click).
+			def.handler = { [defines.events.on_gui_click] = links.handle.link_click }
+			hover.hoverable(def, SCROLL)
 			def.tooltip = { "", def.tooltip, "\n", { "cybersyn-gui.item-click-hint" } }
 		end
 	end
@@ -1479,11 +1485,11 @@ local function sync_slots(table_elem, defs, state, hold, minute)
 			update = update_slot,
 		}
 	end
-	return util.sync_children(table_elem, entries, state, hold)
+	return sync.sync_children(table_elem, entries, state, hold)
 end
 
 -- A registry row (no station) has empty slot tables. Each row shows its own combinator's provides and requests; the
--- station's deliveries sit on its station combinator's row, as util.row_passes counts them.
+-- station's deliveries sit on its station combinator's row, as filters.row_passes counts them.
 local SLOT_TABLES = {
 	pr = function(row, item, w)
 		if not row then return {} end
@@ -1671,7 +1677,7 @@ local function update_row(row, inv, m, cell, item, hold, minute, sigs, w)
 		local sig = sigs[name]
 		if table_elem and sig_of[name] ~= sig then
 			local result = sync_slots(table_elem, build(inv, item, w), slot_state(slots, name), hold, minute)
-			-- A hold deferred a structural change (util.hoverable), so the table is retried next update.
+			-- A hold deferred a structural change (hover.hoverable), so the table is retried next update.
 			sig_of[name] = result ~= "held" and sig or nil
 		end
 	end
@@ -1727,7 +1733,7 @@ local function row_def(inv, m, color, item, w)
 			{ type = "table", style = "slot_table", column_count = w.pr_slots, children = defs.pr },
 		}
 	end
-	return util.hoverable({
+	return hover.hoverable({
 		type = "frame",
 		style = "cybersyn_station_row_" .. color,
 		direction = "horizontal",
@@ -1907,7 +1913,7 @@ local function sync_chip_line(flow, keys, counts, wanted, state, pending)
 			end,
 		}
 	end
-	util.sync_children(flow, entries, state, false)
+	sync.sync_children(flow, entries, state, false)
 end
 
 --- Chips: counts over the filtered set, click to show only that set, click again for all.
@@ -1922,12 +1928,12 @@ local function render_chips(player_data, counts)
 	local cw = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
 	local line1, line2 = stations_tab.chip_lines(counts, wanted, stations_tab.chip_space(player_data, TAB), cw - 24,
 		pending and { problems = true } or nil)
-	sync_chip_line(flow, line1, counts, wanted, util.gui_state(player_data, CHIPS), pending)
+	sync_chip_line(flow, line1, counts, wanted, sync.gui_state(player_data, CHIPS), pending)
 	local row, flow2 = refs[CHIP_ROW], refs[CHIPS2]
 	if not (row and row.valid and flow2 and flow2.valid) then return false end
 	local wrapped = #line2 > 0
 	if row.visible ~= wrapped then row.visible = wrapped end
-	sync_chip_line(flow2, line2, counts, wanted, util.gui_state(player_data, CHIPS2), pending)
+	sync_chip_line(flow2, line2, counts, wanted, sync.gui_state(player_data, CHIPS2), pending)
 	return wrapped
 end
 
@@ -1941,7 +1947,7 @@ end
 local function sync_header(player_data, w, column, ascending)
 	local header = player_data.refs[HEADER]
 	if not (header and header.valid) then return false end
-	local state = util.gui_state(player_data, HEADER)
+	local state = sync.gui_state(player_data, HEADER)
 	-- A rebuilt window has a new header built with the default widths.
 	if state.index ~= header.index then
 		state.cw, state.sort, state.index = nil, nil, header.index
@@ -1965,7 +1971,7 @@ local function sync_header(player_data, w, column, ascending)
 	end
 	local sig = column .. (ascending and "+" or "-")
 	if changed or state.sort ~= sig then
-		for _, cell in ipairs(header.children) do util.sync_sort_header(cell, column, ascending) end
+		for _, cell in ipairs(header.children) do listing.sync_sort_header(cell, column, ascending) end
 		state.sort = sig
 	end
 	return changed
@@ -1984,7 +1990,7 @@ local function view_registry(player_data, rows, ctx)
 	ctx.lint = problem_index(cache)
 	-- The Misconfigured jump's scope counts stations only.
 	if player_data.stations_problems_scope == "errors" then return {} end
-	return registry_rows(ctx.lint, util.get_filters(player_data))
+	return registry_rows(ctx.lint, filters.get_filters(player_data))
 end
 
 --- @param map_data MapData
@@ -1997,11 +2003,11 @@ function stations_tab.build(map_data, player_data)
 	local rows, counts, ctx, column, ascending = stations_tab.query(player_data)
 	local registry = view_registry(player_data, rows, ctx)
 	local problems = ctx.problems_view
-	local state = util.gui_state(player_data, SCROLL)
+	local state = sync.gui_state(player_data, SCROLL)
 	local wrapped = render_chips(player_data, counts)
-	local size = math.max(1, util.page_size(player_data, TAB) - (wrapped and 1 or 0))
+	local size = math.max(1, listing.page_size(player_data, TAB) - (wrapped and 1 or 0))
 	local n_rows = #rows
-	local first, last = util.paginate(player_data, TAB, n_rows + #registry, size)
+	local first, last = listing.paginate(player_data, TAB, n_rows + #registry, size)
 	-- A column the page leaves empty gives its width to the name, unless it carries the sort.
 	local hide_wait = not ctx.pending and column ~= "wait"
 	for i = first, math.min(last, n_rows) do
@@ -2044,9 +2050,9 @@ function stations_tab.build(map_data, player_data)
 	local minute = math.floor(ctx.now / 3600)
 	-- A hold must only defer data-driven reshuffles; a filter, sort, chip or page change the user just made (often
 	-- by clicking inside a hovered row) has to apply at once.
-	local view = view_sig(util.get_filters(player_data), column, ascending) .. "\1"
+	local view = view_sig(filters.get_filters(player_data), column, ascending) .. "\1"
 		.. (active_chip(player_data) or "") .. "\1" .. tostring(player_data.page and player_data.page[TAB])
-	local hold = state.view == view and util.hold_active(player_data, SCROLL)
+	local hold = state.view == view and hover.hold_active(player_data, SCROLL)
 	state.view = view
 	local old_cells = state.cells or {}
 	local cells = {}
@@ -2109,7 +2115,7 @@ function stations_tab.build(map_data, player_data)
 	if not state.cells and #entries > FIRST_UPDATE_ROWS then
 		for i = FIRST_UPDATE_ROWS + 1, #entries do entries[i].update = nil end
 	end
-	local result = util.sync_children(list, entries, state, hold, true)
+	local result = sync.sync_children(list, entries, state, hold, true)
 	if result == "held" then
 		-- Rows that left the page keep their memo until the hold ends and they are rebuilt.
 		for id, cell in pairs(old_cells) do
@@ -2160,7 +2166,7 @@ function stations_tab.build(map_data, player_data)
 		if empty then
 			local caption
 			local pending = problems and lint_pending()
-			local filtered = util.filters_active(util.get_filters(player_data))
+			local filtered = filters.filters_active(filters.get_filters(player_data))
 			if pending then
 				caption = { "cybersyn-gui.problems-pending-progress", tostring(pending) }
 			elseif problems then
@@ -2215,7 +2221,7 @@ stations_tab.wrapper = util.wrapper
 --- @param e EventData.on_gui_click
 function stations_tab.handle.on_status_chip_click(player, player_data, refs, e)
 	stations_tab.set_chip(player_data, e.element.tags.station_chip)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- Acknowledge a row's findings: click = 24 h, shift = 1 h, control = until they clear; a click on a row whose
@@ -2253,8 +2259,8 @@ function stations_tab.handle.on_lint_ack_click(player, player_data, refs, e)
 		for _, t in ipairs(targets) do diag.unack("lint", t[1], t[2], player.index) end
 	end
 	-- The click is the change the player asked for: the row updates now, not once the cursor leaves.
-	util.release_hold(player_data)
-	util.rerender(player, player_data)
+	hover.release_hold(player_data)
+	nav.rerender(player, player_data)
 end
 
 --- Toggles a chip: a status, "unserved", "problems", "stuck", "failing"; "all" or the active chip again clears it.
@@ -2265,7 +2271,7 @@ function stations_tab.set_chip(player_data, chip)
 	player_data.stations_problems_scope = nil
 	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
 	player_data.stations_chip = chip
-	util.reset_page(player_data, TAB)
+	listing.reset_page(player_data, TAB)
 end
 
 gui.add_handlers(stations_tab.handle, stations_tab.wrapper)

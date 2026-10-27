@@ -10,6 +10,12 @@ local gui = require("__flib__.gui")
 local format = require("__flib__.format")
 
 local util = require("scripts.gui.util")
+local sync = require("scripts.gui.utils.sync")
+local filters = require("scripts.gui.utils.filters")
+local listing = require("scripts.gui.utils.listing")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
+local nav = require("scripts.gui.utils.nav")
 local rich_text = require("scripts.gui.rich-text")
 local templates = require("scripts.gui.templates")
 local collector = require("scripts.gui.collector")
@@ -131,7 +137,7 @@ function trains_tab.create()
 		local inner
 		if SORTABLE[column] then
 			inner = templates.sort_checkbox(TAB, column, { "cybersyn-gui.trains-col-" .. locale },
-				{ "cybersyn-gui.trains-sort-" .. locale }, column == DEFAULT_COLUMN, util.handle.sort_click)
+				{ "cybersyn-gui.trains-sort-" .. locale }, column == DEFAULT_COLUMN, listing.handle.sort_click)
 		else
 			inner = templates.column_label({ "cybersyn-gui.trains-col-" .. locale },
 				{ "cybersyn-gui.trains-col-" .. locale .. "-tooltip" })
@@ -228,7 +234,7 @@ function trains_tab.create()
 						style = "cybersyn_subheader_note",
 					},
 					{ type = "empty-widget", style = "flib_horizontal_pusher" },
-					templates.pager(TAB, util.handle.pager_click),
+					templates.pager(TAB, listing.handle.pager_click),
 				},
 			},
 		},
@@ -542,12 +548,12 @@ end
 --- @return table ctx
 function trains_tab.query(map_data, player_data)
 	local snapshot = collector.get()
-	local f = util.get_filters(player_data)
-	local column, ascending = util.get_sort(player_data, TAB, DEFAULT_COLUMN)
+	local f = filters.get_filters(player_data)
+	local column, ascending = listing.get_sort(player_data, TAB, DEFAULT_COLUMN)
 	if not SORTABLE[column] then column = DEFAULT_COLUMN end
 	local names = new_name_cache(snapshot)
 	local qsig = table.concat({
-		tostring(snapshot.trains_version), tostring(snapshot.tick), util.filter_signature(f), column,
+		tostring(snapshot.trains_version), tostring(snapshot.tick), filters.filter_signature(f), column,
 		ascending and "+" or "-",
 	}, "\1")
 	local cache = player_data.trains_query
@@ -555,7 +561,7 @@ function trains_tab.query(map_data, player_data)
 		local layout_keys, comps, icons, runs = layout_strings(map_data)
 		local all = {}
 		for _, tr in pairs(snapshot.trains) do
-			if util.train_passes(tr, f) then all[#all + 1] = tr end
+			if filters.train_passes(tr, f) then all[#all + 1] = tr end
 		end
 		util.sort_by(all, key_fn_for(column, names, layout_keys), ascending, train_id_of)
 		cache = { sig = qsig, all = all, layout_keys = layout_keys, comps = comps, icons = icons, runs = runs }
@@ -783,7 +789,7 @@ local function shipment_children(tr, filter_item, capacity)
 		local hash = hashes[i]
 		local sprite, quality, name_tooltip = util.item_sprite_and_tooltip(hash)
 		local count = tr.manifest_hashes[hash]
-		children[#children + 1] = util.hoverable({
+		children[#children + 1] = hover.hoverable({
 			type = "sprite-button",
 			sprite = sprite,
 			quality = quality,
@@ -792,7 +798,7 @@ local function shipment_children(tr, filter_item, capacity)
 			tooltip = { "", name_tooltip, "\n", { "cybersyn-gui.amount", format.number(count) }, "\n", { "cybersyn-gui.item-click-hint" } },
 			elem_tooltip = util.elem_tooltip(hash),
 			tags = { kind = "item", id = hash },
-			handler = { [defines.events.on_gui_click] = util.handle.link_click },
+			handler = { [defines.events.on_gui_click] = links.handle.link_click },
 			{
 				type = "label",
 				style = "cybersyn_slot_32_count",
@@ -881,7 +887,7 @@ local function row_view(tr, ctx, alerts, filter_item, fuel, w)
 		chip = chip,
 		chip_sig = chip and (chip.key .. "|" .. chip.style) or "",
 		state = state,
-		in_state = util.short_duration(in_state),
+		in_state = logic.short_duration(in_state),
 		refuel = logic.age_caption(now, tr.refuel_tick),
 		refuel_overdue = has_refueler(tr, ctx.to_refuelers) and logic.not_refuelled(now, tr.refuel_tick, ctx.hours, tr.refuel_from),
 		fuel = fuel,
@@ -903,7 +909,7 @@ local function alert_tooltip(view)
 end
 
 local function stop_tooltip(name)
-	return { "", "[font=default-semibold]", name or "", "[/font]\n", util.LINK_FOOTER }
+	return { "", "[font=default-semibold]", name or "", "[/font]\n", links.LINK_FOOTER }
 end
 
 --- Rich-name parts of a depot or refueler name, parsed once per name while the snapshot lives (station names come
@@ -1026,12 +1032,12 @@ local function build_row(view, color, w)
 		def.visible = w[column] ~= nil
 		return def
 	end
-	return util.hoverable({
+	return hover.hoverable({
 		type = "frame",
 		style = "cybersyn_train_row_" .. color,
 		style_mods = { height = ROW_HEIGHT },
 		tags = { train_id = view.id },
-		util.hoverable({
+		hover.hoverable({
 			type = "button",
 			style = "cybersyn_train_id_button",
 			style_mods = { width = w.train_id },
@@ -1039,7 +1045,7 @@ local function build_row(view, color, w)
 			tooltip = { "cybersyn-gui.trains-open-train-tooltip" },
 			tags = { kind = "train", id = view.id },
 			mouse_button_filter = { "left" },
-			handler = { [defines.events.on_gui_click] = util.handle.link_click },
+			handler = { [defines.events.on_gui_click] = links.handle.link_click },
 		}, SCROLL),
 		{
 			type = "flow",
@@ -1075,7 +1081,7 @@ local function build_row(view, color, w)
 			style_mods = { width = w.state },
 			{ type = "sprite", sprite = "utility/warning_icon", resize_to_sprite = false, style_mods = { size = 20 },
 				visible = view.alert ~= nil, tooltip = alert_tooltip(view) },
-			util.hoverable({
+			hover.hoverable({
 				type = "sprite-button",
 				style = state_style(view),
 				sprite = view.chip and state_sprite(view.chip) or nil,
@@ -1525,7 +1531,7 @@ end
 --- @param ctx table
 --- @return flib.GuiElemDef[]
 local function group_children(view, w, ctx)
-	local toggle = util.hoverable({
+	local toggle = hover.hoverable({
 		type = "sprite-button",
 		style = "cybersyn_sort_tool_button",
 		sprite = view.expanded and "utility/collapse" or "utility/expand",
@@ -1543,7 +1549,7 @@ local function group_children(view, w, ctx)
 		}
 	end
 	local tooltip = { "", "[font=default-semibold]", view.name, "[/font]\n",
-		{ "cybersyn-gui.trains-group-tooltip", tostring(view.depots) }, "\n", util.LINK_FOOTER }
+		{ "cybersyn-gui.trains-group-tooltip", tostring(view.depots) }, "\n", links.LINK_FOOTER }
 	-- The stats read as one run beside the name, not as cells under the train columns' headers.
 	local dot = { type = "label", style = "cybersyn_subheader_note", caption = "·", style_mods = { left_padding = 6, right_padding = 6 } }
 	local out = {
@@ -1646,7 +1652,7 @@ end
 --- @param counts {[string]: int}
 --- @param wanted string
 --- @param hours number
---- @return table[] entries for util.sync_children
+--- @return table[] entries for sync.sync_children
 local function chip_entries(keys, counts, wanted, hours)
 	local entries = {}
 	for i, key in ipairs(keys) do
@@ -1705,12 +1711,12 @@ local function render_chips(player_data, counts, hours)
 	local content_width = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
 	local strip_space = logic.table_width(content_width, player_data.selected_train ~= nil) - 24
 	local line1, rest = logic.chip_lines(list, wanted, stations_tab.chip_space(player_data, TAB) - 32, strip_space)
-	util.sync_children(flow, chip_entries(line1, counts, wanted, hours), util.gui_state(player_data, CHIPS), false)
+	sync.sync_children(flow, chip_entries(line1, counts, wanted, hours), sync.gui_state(player_data, CHIPS), false)
 	local strip, wrapped_flow = refs[CHIP_STRIP], refs[CHIPS_WRAPPED]
 	if not (strip and strip.valid and wrapped_flow and wrapped_flow.valid) then return false end
 	local wrapped = #rest > 0
 	if strip.visible ~= wrapped then strip.visible = wrapped end
-	util.sync_children(wrapped_flow, chip_entries(rest, counts, wanted, hours), util.gui_state(player_data, CHIPS_WRAPPED), false)
+	sync.sync_children(wrapped_flow, chip_entries(rest, counts, wanted, hours), sync.gui_state(player_data, CHIPS_WRAPPED), false)
 	return wrapped
 end
 
@@ -1762,7 +1768,7 @@ local function widths_for(player_data, hidden)
 		if hidden[c] then mask = mask + 2 ^ i end
 	end
 	local key = mask * 2 ^ 20 + content_width * 2 + (pane and 1 or 0)
-	local state = util.gui_state(player_data, HEADER)
+	local state = sync.gui_state(player_data, HEADER)
 	local cached = state.widths
 	if cached and cached.key == key then return cached end
 	local w = logic.train_widths(content_width, hidden, pane)
@@ -1788,7 +1794,7 @@ end
 local function sync_header(player_data, w, hidden, values, ctx, tip_sig, column, ascending)
 	local header = player_data.refs[HEADER]
 	if not (header and header.valid) then return false end
-	local state = util.gui_state(player_data, HEADER)
+	local state = sync.gui_state(player_data, HEADER)
 	-- A rebuilt window has a new header built without widths.
 	if state.index ~= header.index then
 		state.hidden, state.wsig, state.sort, state.tip, state.index = nil, nil, nil, nil, header.index
@@ -1805,7 +1811,7 @@ local function sync_header(player_data, w, hidden, values, ctx, tip_sig, column,
 	end
 	local sig = column .. (ascending and "+" or "-")
 	if changed or resized or state.sort ~= sig then
-		for _, cell in ipairs(header.children) do util.sync_sort_header(cell, column, ascending) end
+		for _, cell in ipairs(header.children) do listing.sync_sort_header(cell, column, ascending) end
 		state.sort = sig
 	end
 	if state.tip ~= tip_sig then
@@ -1859,7 +1865,7 @@ local function sync_pane(player_data, selected, front)
 	local refs = player_data.refs
 	local pane = refs[PANE]
 	if not (pane and pane.valid) then return end
-	local state = util.gui_state(player_data, PANE)
+	local state = sync.gui_state(player_data, PANE)
 	if not (selected and front and relative) then
 		if pane.visible then pane.visible = false end
 		if player_data.relative_pane_open and relative then relative.unmount(player_data) end
@@ -1938,7 +1944,7 @@ local function build_sequence(player_data, rows, snapshot, ctx, grouped)
 	-- Members follow the chip rows (recounted once a second), the numbers the filtered trains (once a pass).
 	local chips, cache = ctx.chips, ctx.cache
 	if not chips.groups then
-		local filtering = util.filters_active(util.get_filters(player_data)) or active_chip(player_data) ~= nil
+		local filtering = filters.filters_active(filters.get_filters(player_data)) or active_chip(player_data) ~= nil
 		local names, members = depot_groups(rows, snapshot, filtering)
 		chips.groups = { names = names, members = members }
 	end
@@ -2038,7 +2044,7 @@ local function group_entry(item, is_expanded, snapshot, ctx, w, cells)
 			local def = { type = "frame", style = "cybersyn_group_row", style_mods = { height = ROW_HEIGHT },
 				tags = { depot_group = item.group }, tooltip = view.tip }
 			for k, child in ipairs(group_children(view, w, ctx)) do def[k] = child end
-			return util.hoverable(def, SCROLL)
+			return hover.hoverable(def, SCROLL)
 		end,
 		update = function(elem)
 			if cells[key] == view.struct_w then
@@ -2072,12 +2078,12 @@ function trains_tab.build(map_data, player_data)
 	local wrapped = render_chips(player_data, ctx.counts, ctx.hours)
 	local alerts = ctx.alerts
 	local filter_item = player_data.search_item
-	local state = util.gui_state(player_data, SCROLL)
+	local state = sync.gui_state(player_data, SCROLL)
 	local grouped = player_data.trains_group_by_depot == true
 
 	local seq = build_sequence(player_data, rows, snapshot, ctx, grouped)
 	-- Grouped, the pager counts rows (group rows too) and says so; the summary beside it counts trains.
-	local first, last = util.paginate(player_data, TAB, #seq, nil, wrapped and 1 or 0,
+	local first, last = listing.paginate(player_data, TAB, #seq, nil, wrapped and 1 or 0,
 		grouped and "cybersyn-gui.pager-range-rows" or nil)
 
 	local page, new_fuel = refresh_fuel(state, seq, first, last, grouped)
@@ -2111,7 +2117,7 @@ function trains_tab.build(map_data, player_data)
 		local empty_key
 		if not snapshot.tick then
 			empty_key = "cybersyn-gui.trains-collecting"
-		elseif (util.filters_active(util.get_filters(player_data)) or active_chip(player_data)) and next(snapshot.trains) then
+		elseif (filters.filters_active(filters.get_filters(player_data)) or active_chip(player_data)) and next(snapshot.trains) then
 			empty_key = "cybersyn-gui.trains-no-match"
 		else
 			empty_key = "cybersyn-gui.no-trains"
@@ -2168,7 +2174,7 @@ function trains_tab.build(map_data, player_data)
 			state.building = true
 		end
 	end
-	local result = util.sync_children(list, entries, state, util.hold_active(player_data, SCROLL))
+	local result = sync.sync_children(list, entries, state, hover.hold_active(player_data, SCROLL))
 	state.last_result = result
 	state.last_rewrites = REWRITE_ROWS - budget.rewrites
 	state.placeholder = (last < first and not snapshot.tick) or nil
@@ -2197,7 +2203,7 @@ trains_tab.wrapper = util.wrapper
 --- The pane's × button.
 function trains_tab.handle.on_pane_close(player, player_data)
 	trains_tab.select(player_data, nil)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- Whether the detail pane shows: a train selected on the Trains tab.
@@ -2226,7 +2232,7 @@ end
 --- @param player_data PlayerData
 function trains_tab.on_pane_gone(player, player_data)
 	trains_tab.select(player_data, nil)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- A left click on a train row that no element handler took (scripts/main.lua): anywhere on the row but its links
@@ -2250,7 +2256,7 @@ function trains_tab.on_row_click(e)
 			if not id then return false end
 			trains_tab.select(player_data, player_data.selected_train ~= id and id or nil)
 			local player = game.get_player(e.player_index)
-			util.rerender(player, player_data)
+			nav.rerender(player, player_data)
 			return true
 		end
 		elem = parent
@@ -2261,7 +2267,7 @@ end
 --- @param e EventData.on_gui_click
 function trains_tab.handle.on_state_click(player, player_data, refs, e)
 	if e.shift and e.button == defines.mouse_button_type.left then
-		util.handle_link_click(player, player_data, e, "train", e.element.tags.state_train)
+		links.handle_link_click(player, player_data, e, "train", e.element.tags.state_train)
 		return
 	end
 	trains_tab.on_row_click(e)
@@ -2272,31 +2278,31 @@ end
 function trains_tab.set_chip(player_data, chip)
 	if chip == "all" or chip == active_chip(player_data) then chip = nil end
 	player_data.trains_chip = chip
-	util.reset_page(player_data, TAB)
+	listing.reset_page(player_data, TAB)
 end
 
 --- @param e EventData.on_gui_click
 function trains_tab.handle.on_chip_click(player, player_data, refs, e)
 	trains_tab.set_chip(player_data, e.element.tags.trains_chip)
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 --- @param e EventData.on_gui_click
 function trains_tab.handle.on_group_by_depot(player, player_data, refs, e)
 	player_data.trains_group_by_depot = not player_data.trains_group_by_depot or nil
-	util.reset_page(player_data, TAB)
-	util.rerender(player, player_data)
+	listing.reset_page(player_data, TAB)
+	nav.rerender(player, player_data)
 end
 
 --- @param e EventData.on_gui_click
 function trains_tab.handle.on_group_toggle(player, player_data, refs, e)
 	local name = e.element.tags.depot_group
 	if not name then return end
-	util.touch_hover(e)
+	hover.touch_hover(e)
 	local expanded = player_data.expanded_depots or {}
 	expanded[name] = not expanded[name] or nil
 	player_data.expanded_depots = expanded
-	util.rerender(player, player_data)
+	nav.rerender(player, player_data)
 end
 
 gui.add_handlers(trains_tab.handle, trains_tab.wrapper)

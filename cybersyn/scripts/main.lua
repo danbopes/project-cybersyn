@@ -1098,7 +1098,7 @@ local function main()
 	-- Every GUI event is registered here and only here: on_event keeps one handler per event, so each entry is the
 	-- whole chain for its event.
 	local flib_gui = require("__flib__.gui")
-	local manager_util = require("scripts.gui.util")
+	local manager_hover = require("scripts.gui.utils.hover")
 	local function hover(e)
 		if not utilization_tab.forward_hover(e) then flib_gui.dispatch(e) end
 	end
@@ -1106,7 +1106,7 @@ local function main()
 		[defines.events.on_gui_opened] = manager.on_gui_opened,
 		[defines.events.on_gui_closed] = manager.on_gui_closed,
 		[defines.events.on_gui_click] = function(e)
-			manager_util.touch_hover(e)
+			manager_hover.touch_hover(e)
 			if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
 		end,
 		[defines.events.on_gui_hover] = hover,

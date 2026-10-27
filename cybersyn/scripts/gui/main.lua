@@ -2,6 +2,7 @@
 local manager = require("scripts.gui.manager")
 local collector = require("scripts.gui.collector")
 local util = require("scripts.gui.util")
+local filters = require("scripts.gui.utils.filters")
 local relative = require("scripts.gui.relative")
 local trains_tab = require("scripts.gui.trains")
 local extras = require("scripts.gui.extras")
@@ -41,17 +42,17 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field search_network_mask int
 --- @field search_surface_idx uint?
 --- @field search_item string? item hash (name or name|quality)
---- @field search_station uint? station id of the station chip; dropped by util.valid_station_filter once the stop is gone
+--- @field search_station uint? station id of the station chip; dropped by filters.valid_station_filter once the stop is gone
 --- @field surface_dropdown_ids {[integer]: uint}? drop-down index -> surface index
---- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see util.get_sort
---- @field page {[string]: integer}? current page per tab, see util.paginate
---- @field gui_state {[string]: {keys: (string|number)[]?, dirty: true?}}? per container, see util.sync_children
---- @field hover {tick: uint, scope: string?, index: uint}? element under the cursor, see util.hold_active
+--- @field sort {[string]: {column: string, ascending: boolean}}? per tab, see listing.get_sort
+--- @field page {[string]: integer}? current page per tab, see listing.paginate
+--- @field gui_state {[string]: {keys: (string|number)[]?, dirty: true?}}? per container, see sync.sync_children
+--- @field hover {tick: uint, scope: string?, index: uint}? element under the cursor, see hover.hold_active
 --- @field paused boolean? title-bar pause: no renders and no collection for this player
 --- @field last_update_tick uint? game tick of the last render
 --- @field rendered_snapshot_tick uint? snapshot tick shown by the last render
 --- @field pinning boolean
---- @field return_to (LuaEntity|LuaGuiElement)? the GUI a manager link opened; closing it hands player.opened back (util.open_entity)
+--- @field return_to (LuaEntity|LuaGuiElement)? the GUI a manager link opened; closing it hands player.opened back (nav.open_entity)
 --- @field map_from {controller: defines.controllers, position: MapPosition, surface: uint}? the view "show on map" left, for Back
 --- @field selected_tab string? "overview_tab"|"inventory_tab"|"stations_tab"|"trains_tab"|"utilization_tab"|"delivery_breakdown_tab"
 --- @field previous_tab string?
@@ -72,24 +73,6 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 
 local manager_gui = {}
 manager_gui.manager = manager
-
---- Opens the manager on `tab` (the trains-window button, a HUD click), or switches an open one to it.
---- @param player LuaPlayer
---- @param pd PlayerData
---- @param tab string
-local function open_manager_on(player, pd, tab)
-	pd.selected_tab = tab
-	if pd.is_manager_open then
-		util.select_tab(pd, tab)
-		local window = pd.refs and pd.refs.manager_window
-		if not pd.pinning and window and window.valid then player.opened = window end
-		manager.render(player, pd)
-	else
-		manager.handle.manager_open(player, pd, pd.refs)
-	end
-end
-extras.set_open_manager(open_manager_on)
-manager_gui.open_manager_on = open_manager_on
 
 --- The remote interface's toggle_gui (scripts/remote-interface.lua), the same as the shortcut.
 --- @param player_index uint
@@ -170,9 +153,9 @@ local function init_player_fields(player_data)
 	if player_data.search_network_name and not util.signal_hash_valid(player_data.search_network_name) then
 		player_data.search_network_name = nil
 	end
-	util.valid_station_filter(player_data)
+	filters.valid_station_filter(player_data)
 	if player_data.search_query and not player_data.search_terms then
-		util.set_search_query(player_data, player_data.search_query)
+		filters.set_search_query(player_data, player_data.search_query)
 	end
 end
 

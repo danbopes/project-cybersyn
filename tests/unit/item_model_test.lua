@@ -271,7 +271,7 @@ test("build: an item nobody handles gives empty tables and zero totals", functio
 end)
 
 -- The manager's filters as item.lua's get_cache passes them: the item filter and the station search are dropped, every
--- inventory row and train goes through util's own predicates (place filters and the station chip).
+-- inventory row and train goes through utils/filters' own predicates (place filters and the station chip).
 local function place_keep(u, f)
 	f.mask = f.mask or -1
 	return {
@@ -321,7 +321,7 @@ local function ids_of(rows)
 end
 
 test("build with place filters: a network keeps that network's rows, totals summed from them", function()
-	local m, u = model(), H.load("scripts.gui.util")
+	local m, u = model(), H.load("scripts.gui.utils.filters")
 	local H_, snapshot = filter_snapshot()
 	local r = build(m, snapshot, H_, PRIORITY, nil, place_keep(u, { network = "signal-B", mask = -1 }))
 	assert_true(r.filtered)
@@ -333,7 +333,7 @@ test("build with place filters: a network keeps that network's rows, totals summ
 end)
 
 test("build with place filters: a network ID and a surface each drop the right rows and totals", function()
-	local m, u = model(), H.load("scripts.gui.util")
+	local m, u = model(), H.load("scripts.gui.utils.filters")
 	local H_, snapshot = filter_snapshot()
 	local r = build(m, snapshot, H_, PRIORITY, nil, place_keep(u, { mask = 1 }))
 	assert_eq(ids_of(r.providers), { 10 })
@@ -457,7 +457,7 @@ test("build rows: a plain station keeps one row with no inventory tag", function
 end)
 
 test("build rows with filters: a network ID keeps the rows on it, totals count those, a station once", function()
-	local m, u = model(), H.load("scripts.gui.util")
+	local m, u = model(), H.load("scripts.gui.utils.filters")
 	local st = SF.coal_both(200)
 	-- The station combinator is on A1, so a station-wide filter would have dropped the whole station.
 	local r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY, nil, place_keep(u, { mask = 2 }))
@@ -480,7 +480,7 @@ test("build rows with filters: a network ID keeps the rows on it, totals count t
 end)
 
 test("build rows: the station chip keeps that station's rows and the trains to or from it", function()
-	local m, u = model(), H.load("scripts.gui.util")
+	local m, u = model(), H.load("scripts.gui.utils.filters")
 	local a, b = SF.coal_both(200), SF.plain(7, "Plain", 1, { [SF.COAL] = 40 })
 	local snapshot = rows_snapshot({ a, b })
 	snapshot.trains = {

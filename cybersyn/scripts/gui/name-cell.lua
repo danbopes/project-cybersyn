@@ -1,10 +1,12 @@
 -- A link cell for a stop name in a list row: up to three icons parsed from the front of the rich-text
 -- name, the plain text as a link button, up to three icons from its end, each run with a "+n" when the name holds more.
--- Every part is a button tagged {kind, id} with util.handle.link_click, so a click anywhere on the name opens the stop.
+-- Every part is a button tagged {kind, id} with links.handle.link_click, so a click anywhere on the name opens the stop.
 -- The parts are direct children of one flow (no nested flows): a Trains page builds two of these per row.
 
 local gui = require("__flib__.gui")
 local util = require("scripts.gui.util")
+local hover = require("scripts.gui.utils.hover")
+local links = require("scripts.gui.utils.links")
 local rich_name = require("scripts.gui.rich-name")
 
 local name_cell = {}
@@ -45,7 +47,7 @@ local function add_side(out, parts, side, tags, tooltip, scope)
 	if list then
 		local quality = parts[side .. "_quality"]
 		for i, sprite in ipairs(list) do
-			out[#out + 1] = util.hoverable({
+			out[#out + 1] = hover.hoverable({
 				type = "sprite-button",
 				style = "cybersyn_name_icon",
 				sprite = util.valid_sprite(sprite, "utility/questionmark"),
@@ -53,7 +55,7 @@ local function add_side(out, parts, side, tags, tooltip, scope)
 				tooltip = tooltip,
 				tags = { kind = tags.kind, id = tags.id },
 				mouse_button_filter = { "left" },
-				handler = { [defines.events.on_gui_click] = util.handle.link_click },
+				handler = { [defines.events.on_gui_click] = links.handle.link_click },
 			}, scope)
 		end
 	end
@@ -76,7 +78,7 @@ end
 local function children(parts, name, tags, width, tooltip, scope)
 	local out = {}
 	add_side(out, parts, "lead", tags, tooltip, scope)
-	out[#out + 1] = util.hoverable({
+	out[#out + 1] = hover.hoverable({
 		type = "button",
 		style = "cybersyn_link_button",
 		style_mods = { maximal_width = math.max(width - icons_width(parts) - 4, 24) },
@@ -84,7 +86,7 @@ local function children(parts, name, tags, width, tooltip, scope)
 		tooltip = tooltip,
 		tags = { kind = tags.kind, id = tags.id },
 		mouse_button_filter = { "left" },
-		handler = { [defines.events.on_gui_click] = util.handle.link_click },
+		handler = { [defines.events.on_gui_click] = links.handle.link_click },
 	}, scope)
 	add_side(out, parts, "tail", tags, tooltip, scope)
 	return out
@@ -344,7 +346,7 @@ function name_cell.station_tooltip(view, extra)
 		tooltip[#tooltip + 1] = extra
 	end
 	tooltip[#tooltip + 1] = "\n"
-	tooltip[#tooltip + 1] = util.LINK_FOOTER
+	tooltip[#tooltip + 1] = links.LINK_FOOTER
 	return tooltip
 end
 
