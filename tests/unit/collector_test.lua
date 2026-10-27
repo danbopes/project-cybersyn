@@ -36,6 +36,7 @@ end
 
 local function manager()
 	storage.manager = { players = {} }
+	storage.economy = { starved = {} }
 	collector.init()
 end
 
@@ -43,6 +44,9 @@ end
 local function scenario()
 	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30 }
 	manager()
+	-- What the planner's last poll publishes for these stations: each-network station 4 requests coal on both of
+	-- its networks.
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-B:coal"] = true, ["signal-A:copper-ore"] = true }
 	storage.stations = {
 		[1] = {
 			entity_stop = stop("Iron Mine"),
@@ -168,8 +172,6 @@ test("empty: the snapshot shape", function()
 		inventory_all = { provided = {}, requested = {}, in_transit = {} },
 		starved = {},
 		starved_items = {},
-		starved_count = 0,
-		starved_source = "snapshot",
 		starved_version = 0,
 		-- The hour's minimum from stats; the fleet facts, depot groups and provider masks the lint engine reads.
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
@@ -408,17 +410,16 @@ test("full pass: inventory_all sums active requests and incoming deliveries only
 	assert_eq(inv.in_transit, { ["iron-ore"] = { count = 400, stations = 1 } })
 end)
 
-test("full pass: starved keys per network, each-network stations on all their networks", function()
+test("full pass: the starved set is the one the planner published, whatever its phase", function()
 	scenario()
+	storage.tick_state = STATE_DISPATCH
+	-- The economy the planner is consuming plays no part.
+	storage.economy.all_r_stops = { ["signal-A:stone"] = {} }
+	storage.economy.all_p_stops = {}
 	collector.run_to_completion()
 	local snap = collector.get()
-	assert_eq(snap.starved, {
-		["signal-A:coal"] = true,
-		["signal-B:coal"] = true,
-		["signal-A:copper-ore"] = true,
-	})
+	assert_same(snap.starved, storage.economy.starved)
 	assert_eq(snap.starved_items, { coal = true, ["copper-ore"] = true })
-	assert_eq(snap.starved_source, "snapshot")
 	assert_eq(snap.starved_version, 1)
 end)
 
@@ -544,6 +545,8 @@ test("passes: change log, removed stations, stable starved set", function()
 	assert_eq(log, { epoch = 1, base = 0, ids = { 1, 2, 3, 4, 6 } })
 	assert_eq({ collector.log_position() }, { 1, 5 })
 	local starved = collector.get().starved
+	-- The next cycle publishes an equal set in a new table: the snapshot keeps its own.
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-B:coal"] = true, ["signal-A:copper-ore"] = true }
 	game.tick = 1100
 	collector.run_to_completion()
 	log = storage.manager.collect_log
@@ -562,25 +565,12 @@ test("passes: change log, removed stations, stable starved set", function()
 	assert_eq(snap.station_count, 4)
 	assert_eq(snap.starved_version, 1)
 	storage.stations[2] = nil
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-B:coal"] = true }
 	collector.run_to_completion()
 	snap = collector.get()
 	assert_eq(snap.starved, { ["signal-A:coal"] = true, ["signal-B:coal"] = true })
-	assert_eq(snap.starved_version, 2)
-end)
-
-test("economy: while dispatching, the planner's own r/p stops define starved", function()
-	scenario()
-	storage.tick_state = STATE_DISPATCH
-	storage.economy = {
-		all_r_stops = { ["signal-A:coal"] = {}, ["signal-A:iron-ore"] = {} },
-		all_p_stops = { ["signal-A:iron-ore"] = {} },
-	}
-	collector.run_to_completion()
-	local snap = collector.get()
-	assert_eq(snap.starved, { ["signal-A:coal"] = true })
 	assert_eq(snap.starved_items, { coal = true })
-	assert_eq(snap.starved_source, "economy")
-	assert_eq(snap.starved_version, 1)
+	assert_eq(snap.starved_version, 2)
 end)
 
 test("empty starved sets compare equal, so the version stays 0", function()
@@ -991,6 +981,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 	s2.request_start_ticks = { stone = 900, ["iron-ore"] = 60 }
 	s2.network_mask = 3
 	s3.is_warming_up = nil
+	storage.economy.starved = { ["signal-A:iron-ore"] = true, ["signal-A:stone"] = true, ["signal-A:coal"] = true,
+		["signal-B:coal"] = true }
 	game.tick = 1100
 	collector.run_to_completion()
 	local snap = collector.get()
@@ -1209,13 +1201,12 @@ test("merge: each-network secondaries key on their own network signals, not on s
 	local snap = collector.get()
 	-- The primary's iron-ore request is below threshold, so only the secondary's signal-B request is keyed; its
 	-- priority signal is a setting, not a network.
-	assert_eq(snap.starved, {
+	assert_eq(snap.request_keys, {
 		["signal-B:iron-ore"] = true,
 		["signal-B:water"] = true,
 		["signal-A:stone"] = true,
 		["signal-A:coal"] = true,
 	})
-	assert_eq(snap.starved_items, { ["iron-ore"] = true, water = true, stone = true, coal = true })
 end)
 
 test("control combinator: stack stations multiply item thresholds, an unpowered one reads nothing", function()
@@ -1449,6 +1440,7 @@ test("status: set once per pass, and a changed starved set reclassifies and logs
 	assert_eq(collector.get().stations[2].status, "starved")
 	-- Providers of coal and copper ore on signal-A appear: the finish of that pass sees the new set and reclassifies.
 	storage.stations[1].entity_comb1.signals = { sig("coal", 5000), sig("iron-ore", 500), sig("copper-ore", 500) }
+	storage.economy.starved = { ["signal-B:coal"] = true }
 	game.tick = 1200
 	collector.run_to_completion()
 	snap = collector.get()
@@ -1519,14 +1511,13 @@ test("secondary combinator on one network: its own mask for what it provides and
 	assert_eq(snap.stations[6].requested["copper-plate"].mask, 2)
 end)
 
-test("economy_starved: this stop's active requests nobody provides, only while dispatching", function()
+test("economy_starved: this stop's active requests in the published set, whatever the planner's phase", function()
 	local collector = H.load("scripts.gui.collector")
 	local st = { requested = { a = { active = true }, b = { active = true }, c = { active = false } } }
 	local nets = { { name = "signal-A" } }
-	storage.economy = { all_r_stops = { ["signal-A:a"] = {}, ["signal-A:b"] = {}, ["signal-A:c"] = {} },
-		all_p_stops = { ["signal-A:b"] = {} } }
+	storage.economy = { starved = { ["signal-A:a"] = true, ["signal-A:c"] = true, ["signal-B:b"] = true } }
 	storage.tick_state = STATE_INIT
-	assert_nil(collector.economy_starved(st, nets))
+	assert_eq(collector.economy_starved(st, nets), { ["signal-A:a"] = true })
 	storage.tick_state = STATE_DISPATCH
 	assert_eq(collector.economy_starved(st, nets), { ["signal-A:a"] = true })
 	storage.economy, storage.tick_state = nil, nil
@@ -1536,6 +1527,9 @@ end)
 local function inventories_scenario()
 	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30, priority = 0 }
 	manager()
+	-- Station 16 provides sulfur and coke on signal-A only.
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-A:stone"] = true, ["signal-A:copper-plate"] = true,
+		["signal-B:sulfur"] = true }
 	storage.stations = {
 		-- (a) one network, no secondaries.
 		[11] = {
@@ -1845,11 +1839,10 @@ test("economy_starved: a row's own network counts, whatever networks the caller 
 			{ network_name = NETWORK_EACH, networks = { ["signal-B"] = 2 }, requested = { sulfur = sulfur } },
 		},
 	}
-	storage.economy = { all_r_stops = { ["signal-A:coal"] = {}, ["signal-B:sulfur"] = {} }, all_p_stops = {} }
-	storage.tick_state = STATE_DISPATCH
+	storage.economy = { starved = { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true } }
 	assert_eq(collector.economy_starved(st, { { name = "signal-A" } }), { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true })
 	assert_eq(collector.economy_starved(st), { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true })
-	storage.economy, storage.tick_state = nil, nil
+	storage.economy = nil
 end)
 
 test("mask labels: the value", function()

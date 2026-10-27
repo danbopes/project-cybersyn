@@ -184,10 +184,9 @@ collector.UNLIMITED = UNLIMITED
 --- @field trains {[uint]: SnapshotTrain}
 --- @field item_stations {[string]: uint[]}? stations providing, requesting or with a delivery of each item (complete pass)
 --- @field inventory_all {provided: {[string]: {count: int, stations: int}}, requested: {[string]: {count: int, stations: int, earliest_wait_start: uint?}}, in_transit: {[string]: {count: int, stations: int}}}
---- @field starved {[string]: true} "network:hash" request keys with no provider on that network
+--- @field starved {[string]: true} "network:hash" request keys with no provider on that network, as the planner
+---   published them at the end of its last poll
 --- @field starved_items {[string]: true}
---- @field starved_count int number of keys in starved
---- @field starved_source "economy"|"snapshot"
 --- @field starved_version int bumped only when the contents of `starved` change; equal sets keep their table
 --- @field fleet SnapshotFleet
 --- @field depots {total: int, parked: int}
@@ -232,8 +231,6 @@ function collector.empty()
 		inventory_all = new_inventory(),
 		starved = {},
 		starved_items = {},
-		starved_count = 0,
-		starved_source = "snapshot",
 		starved_version = 0,
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
 			capability = {}, mask_or = {}, in_interrupt_count = {}, group_depots = {} },
@@ -1012,7 +1009,7 @@ local SECONDARY_SETTINGS = {
 --- Mirrors tick_poll_station: negative = request when is_r, positive = provide when is_p; a signal the switch rules
 --- out is ignored. Writes the merged record and, unless they are the record's own tables, `src`'s lists. With `b`,
 --- also records which network:item pairs this combinator provides or actively requests, under the networks in
---- `nets`: the planner registers each combinator under its own networks, for the starved derivation.
+--- `nets`: the planner registers each combinator under its own networks.
 --- @param src SnapshotSource the combinator `signals` came from
 local function classify(station, signals, st, base_item, base_fluid, control, b, src)
 	local network_name = station.network_name
@@ -1553,45 +1550,21 @@ local function hash_of_key(key)
 	return s and string.sub(key, s + 1) or key
 end
 
---- The planner's economy is only complete between polling and the next init, i.e. while dispatching.
-local function capture_economy_starved(b)
-	if storage.tick_state ~= STATE_DISPATCH then return end
-	local economy = storage.economy
-	if not economy then return end
-	local p_stops = economy.all_p_stops
-	local starved, items, n = {}, {}, 0
-	for key in pairs(economy.all_r_stops) do
-		if not p_stops[key] then
-			starved[key] = true
-			items[hash_of_key(key)] = true
-			n = n + 1
-		end
-	end
-	b.starved = starved
-	b.starved_items = items
-	b.starved_count = n
-	b.starved_source = "economy"
-end
-
 local NO_NETWORKS = {}
 
---- This station's active request keys that nobody on `networks` or on its rows' networks provides, from the
---- planner's economy; nil while the economy is incomplete (outside dispatch). For a stop read live, when no pass is
---- running to capture the set.
+--- This station's active request keys on `networks` or on its rows' networks that the planner published as starved;
+--- for a stop read live.
 --- @param st SnapshotStation
 --- @param networks {name: string}[]?
---- @return {[string]: true}?
+--- @return {[string]: true}
 function collector.economy_starved(st, networks)
-	if storage.tick_state ~= STATE_DISPATCH then return nil end
-	local economy = storage.economy
-	if not economy then return nil end
-	local r_stops, p_stops = economy.all_r_stops, economy.all_p_stops
+	local published = storage.economy.starved
 	local starved = {}
 	for _, net in ipairs(networks or NO_NETWORKS) do
 		for hash, req in pairs(st.requested) do
 			if req.active then
 				local key = net.name .. ":" .. hash
-				if r_stops[key] and not p_stops[key] then starved[key] = true end
+				if published[key] then starved[key] = true end
 			end
 		end
 	end
@@ -1607,11 +1580,11 @@ function collector.economy_starved(st, networks)
 						if nets then
 							for net in pairs(nets) do
 								local key = net .. ":" .. hash
-								if r_stops[key] and not p_stops[key] then starved[key] = true end
+								if published[key] then starved[key] = true end
 							end
 						else
 							local key = name .. ":" .. hash
-							if r_stops[key] and not p_stops[key] then starved[key] = true end
+							if published[key] then starved[key] = true end
 						end
 					end
 				end
@@ -1619,37 +1592,6 @@ function collector.economy_starved(st, networks)
 		end
 	end
 	return starved
-end
-
---- Request keys without a provider, unless they equal the live set: then the live tables are kept, so an unchanged
---- set allocates nothing.
-local function derive_starved(b, live)
-	local r_keys, p_keys, old = b.r_keys, b.p_keys, live.starved
-	local n, equal = 0, true
-	for key in pairs(r_keys) do
-		if not p_keys[key] then
-			n = n + 1
-			if not old[key] then
-				equal = false
-				break
-			end
-		end
-	end
-	if equal and n == (live.starved_count or table_size(old)) then
-		b.starved, b.starved_items, b.starved_count = old, live.starved_items, n
-	else
-		local starved, items = {}, {}
-		n = 0
-		for key in pairs(r_keys) do
-			if not p_keys[key] then
-				starved[key] = true
-				items[hash_of_key(key)] = true
-				n = n + 1
-			end
-		end
-		b.starved, b.starved_items, b.starved_count = starved, items, n
-	end
-	b.starved_source = "snapshot"
 end
 
 --- After the starved set changed, the status of stations with an active request for an item that became or stopped
@@ -1685,15 +1627,17 @@ end
 
 local function finish_pass(manager, b)
 	local live = collector.get()
-	if b.starved_source ~= "economy" then
-		derive_starved(b, live)
-	end
+	local starved = storage.economy.starved
 	local changed = false
-	if b.starved == live.starved or same_keys(b.starved, live.starved) then
+	if starved == live.starved or same_keys(starved, live.starved) then
 		b.starved = live.starved
 		b.starved_items = live.starved_items
 		b.starved_version = live.starved_version
 	else
+		local items = {}
+		for key in pairs(starved) do items[hash_of_key(key)] = true end
+		b.starved = starved
+		b.starved_items = items
 		b.starved_version = (live.starved_version or 0) + 1
 		changed = true
 	end
@@ -1789,9 +1733,6 @@ function collector.step(budget, scale)
 		if depot then collect_depot(by_name, id, depot) end
 	end
 	b.di = di
-	if b.starved_source ~= "economy" then
-		capture_economy_starved(b)
-	end
 	if i >= n and di >= nd then
 		finish_pass(manager, b)
 		return true

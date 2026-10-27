@@ -1082,6 +1082,13 @@ local function tick_poll_station(map_data, mod_settings)
 		tick_data.i = (tick_data.i or 0) + 1
 		if tick_data.i > #map_data.active_station_ids then
 			tick_data.i = nil
+			-- For the manager, once per cycle: the economy is complete only now, and dispatch consumes all_names.
+			local starved = {}
+			for i = 1, #all_names, 2 do
+				local key = all_names[i]
+				if not all_p_stops[key] then starved[key] = true end
+			end
+			map_data.economy.starved = starved
 			map_data.tick_state = STATE_DISPATCH
 			return true
 		end

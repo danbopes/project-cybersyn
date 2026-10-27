@@ -461,7 +461,7 @@ local migrations_table = {
 		-- warmup_station_cycles holds every warming station on its own.
 		map_data.warmup_station_ids = nil
 		-- tick_init refills the economy under the per-stop keys; the per-station ones would only linger.
-		map_data.economy = { all_r_stops = {}, all_p_stops = {}, all_names = {} }
+		map_data.economy = { all_r_stops = {}, all_p_stops = {}, all_names = {}, starved = {} }
 
 		for _, station in pairs(map_data.stations) do
 			station.secondary_inv_combs = station.secondary_inv_combs or {}

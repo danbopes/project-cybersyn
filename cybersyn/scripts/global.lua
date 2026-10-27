@@ -169,6 +169,7 @@
 ---@field public all_r_stops {[Cybersyn.Economy.ItemNetworkName]: StopInfo[]} Maps item network names to the requester stops (station or secondary inventory combinators) wanting matching items.
 ---@field public all_p_stops {[Cybersyn.Economy.ItemNetworkName]: StopInfo[]} Maps item network names to the provider stops (station or secondary inventory combinators) having matching items.
 ---@field public all_names (Cybersyn.Economy.ItemNetworkName|SignalID)[] A flattened list of pairs. Each pair is of the form `[item_network_name, item_signal]` where `item_signal` is the signal for the named item. The dispatch logic iterates over these pairs to brute-force match providers to requesters.
+---@field public starved {[Cybersyn.Economy.ItemNetworkName]: true} The keys requested and provided by no stop, as of the last completed poll; the manager's starved set.
 
 ---@class Cybersyn.AnalyticsInterval
 ---@field public name string Interval name ("5s", "1m", "10m", etc.)
@@ -238,6 +239,7 @@ function init_global()
 		all_r_stops = {},
 		all_p_stops = {},
 		all_names = {},
+		starved = {},
 	}
 	storage.to_comb = {}
 	storage.to_comb_params = {}

@@ -378,8 +378,7 @@ end
 
 --- This station's active request keys nobody on its networks provides, each combinator's requests on that
 --- combinator's own networks (collector.station_status then marks each row's starved set). With diagnostics on, from
---- the reason the dispatcher recorded (NO_PROVIDER), which holds between cycles; else from the planner's economy, which
---- is complete only while it dispatches (between those ticks the last answer stands).
+--- the reason the dispatcher recorded (NO_PROVIDER); else from the starved set the planner published.
 --- @return boolean updated
 local function update_starved(state, st)
 	if not st then return false end
@@ -411,9 +410,7 @@ local function update_starved(state, st)
 		return true
 	end
 	-- The collector scans each row on its own networks; a record without rows names the station's.
-	local starved = collector.economy_starved(st, not st.rows and networks_of(st.network_name, st.network_mask) or nil)
-	if not starved then return false end
-	state.starved = starved
+	state.starved = collector.economy_starved(st, not st.rows and networks_of(st.network_name, st.network_mask) or nil)
 	return true
 end
 
