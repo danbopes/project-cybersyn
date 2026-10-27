@@ -1245,6 +1245,8 @@ function log_tab.build(map_data, player_data)
 		left = left - used
 		-- The Summary is a count up to as_of, not a view of the newest rows.
 		seen = nil
+		-- The scroll pane keeps the body's full height even when empty, so it must go too or the Summary is clipped.
+		if refs.log_scroll.visible then refs.log_scroll.visible = false end
 		if rows_flow.visible then rows_flow.visible = false end
 		local any = done and (#ss.top_stations > 0 or #ss.top_items > 0)
 		if summary_flow.visible ~= (any == true) then summary_flow.visible = any == true end
