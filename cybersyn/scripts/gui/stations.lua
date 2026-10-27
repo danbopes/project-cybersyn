@@ -1846,6 +1846,7 @@ function stations_tab.chip_space(player_data, tab)
 	-- The item chip and the collecting note size to localised text: their figures are English estimates.
 	if shown("_search_field") then space = space - metrics.SEARCH_FIELD_WIDTH - metrics.SUBHEADER_SPACING end
 	if shown("_chip_flow") then space = space - 260 end
+	if shown("_train_chip_flow") then space = space - 140 end
 	if shown("_collecting") then space = space - 160 end
 	return space
 end

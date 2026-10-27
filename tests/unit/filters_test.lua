@@ -64,8 +64,8 @@ end)
 test("clear: chips, row and all scopes", function()
 	local u = filters()
 	local function full()
-		return { filters = { query = "a", terms = { "a" }, item = "coal", station = 3, network = "signal-A", mask = 2,
-			surface = 1, stations_chip = "problems", problems_scope = "errors", trains_chip = "parked" },
+		return { filters = { query = "a", terms = { "a" }, item = "coal", station = 3, train = 5, network = "signal-A",
+			mask = 2, surface = 1, stations_chip = "problems", problems_scope = "errors", trains_chip = "parked" },
 			page = { stations_tab = 2 } }
 	end
 	local pd = full()
@@ -84,7 +84,7 @@ test("active: the row's filters only, not the search or the tab chips", function
 	local u = filters()
 	assert_false(u.active({ filters = {} }))
 	assert_false(u.active({ filters = { query = "a", terms = { "a" }, stations_chip = "ok", trains_chip = "parked" } }))
-	for _, field in ipairs({ "item", "station", "network", "mask", "surface" }) do
+	for _, field in ipairs({ "item", "station", "train", "network", "mask", "surface" }) do
 		assert_true(u.active({ filters = { [field] = 1 } }), field)
 	end
 end)
@@ -103,7 +103,8 @@ end)
 
 test("get: each tab gets the stored filters less those it does not apply", function()
 	local u = filters()
-	local pd = { filters = { terms = { "a" }, item = "coal", station = 3, network = "signal-A", mask = 2, surface = 1 } }
+	local pd = { filters = { terms = { "a" }, item = "coal", station = 3, train = 5, network = "signal-A", mask = 2,
+		surface = 1 } }
 	local place = { network = "signal-A", mask = 2, surface = 1 }
 	local function with(extra)
 		local f = H.copy(place)
@@ -113,7 +114,7 @@ test("get: each tab gets the stored filters less those it does not apply", funct
 	local all = with({ terms = { "a" }, item = "coal", station = 3 })
 	assert_eq(u.get(pd, "inventory_tab"), all)
 	assert_eq(u.get(pd, "stations_tab"), all)
-	assert_eq(u.get(pd, "trains_tab"), all)
+	assert_eq(u.get(pd, "trains_tab"), with({ terms = { "a" }, item = "coal", station = 3, train = 5 }))
 	assert_eq(u.get(pd, "overview_tab"), with({ item = "coal" }))
 	assert_eq(u.get(pd, "log_tab"), with({ item = "coal", station = 3 }))
 	assert_eq(u.get(pd, "utilization_tab"), place)
@@ -127,7 +128,7 @@ end)
 test("signature: differs for every stored field", function()
 	local u = filters()
 	local sigs = { [u.signature({ filters = {} })] = true }
-	for _, field in ipairs({ "query", "item", "station", "network", "mask", "surface", "stations_chip",
+	for _, field in ipairs({ "query", "item", "station", "train", "network", "mask", "surface", "stations_chip",
 		"problems_scope", "trains_chip" }) do
 		local s = u.signature({ filters = { [field] = "1" } })
 		assert_nil(sigs[s], field)
@@ -303,4 +304,26 @@ test("train_passes: surface, network, manifest item, terms", function()
 	assert_true(u.train_passes(tr, { mask = -1, item = "coal" }, true))
 	assert_true(u.train_passes(tr, { mask = -1, terms = { "mine" } }))
 	assert_false(u.train_passes(tr, { mask = -1, terms = { "smelter" } }))
+end)
+
+test("the train chip: set validates against Cybersyn's trains, only that train passes, no '#<id>' search", function()
+	local u = filters()
+	storage.trains = { [5] = {} }
+	local pd = { filters = {} }
+	u.set(pd, "train", 7)
+	assert_nil(pd.filters.train, "not a Cybersyn train")
+	u.set(pd, "train", 5)
+	assert_eq(pd.filters.train, 5)
+	assert_true(pd.filter_row_open, "a train chip opens the row, so closing the row clears it")
+	with_snapshot_stations({})
+	local function tr(id) return { id = id, manifest_hashes = {}, depot_name = "Depot" } end
+	local f = u.get(pd, "trains_tab")
+	assert_true(u.filters_active(f))
+	assert_true(u.train_passes(tr(5), f))
+	assert_false(u.train_passes(tr(6), f))
+	assert_true(u.filter_signature(f) ~= u.filter_signature({ mask = -1 }))
+	assert_false(u.train_terms_pass(tr(5), { "#5" }), "the search is text only")
+	storage.trains[5] = nil
+	u.validate(pd)
+	assert_nil(pd.filters.train, "a train that is gone drops its chip")
 end)

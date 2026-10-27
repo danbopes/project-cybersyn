@@ -85,18 +85,18 @@ function templates.pager(tab, handler)
 end
 
 --- The strips at the top of every tab: the dispatch-paused banner, then the subheader with the
---- station-name search field (left), the item filter chip, the station chip, the collecting progress and
---- `right` (right-aligned).
+--- station-name search field (left, on a tab that applies it), the item filter chip, the station chip, the train chip
+--- (on a tab that applies it), the collecting progress and `right` (right-aligned).
 --- Element names are `<tab>_banner`, `<tab>_banner_label`, `<tab>_search_field`, `<tab>_chip_flow`,
 --- `<tab>_chip_icon`, `<tab>_chip`, `<tab>_station_chip_flow`, `<tab>_station_chip_icon`, `<tab>_station_chip`,
---- `<tab>_collecting`.
---- @param tab string canonical tab name, e.g. "stations_tab"
+--- `<tab>_train_chip_flow`, `<tab>_train_chip_icon`, `<tab>_train_chip`, `<tab>_collecting`.
+--- @param entry ManagerTab
 --- @param handlers {search_changed: function, chip_click: function}
 --- @param right flib.GuiElemDef[]? subheader children after the pusher
---- @param search boolean? false = no search field (a tab the search does not apply to)
 --- @return flib.GuiElemDef banner
 --- @return flib.GuiElemDef subheader
-function templates.tab_header(tab, handlers, right, search)
+function templates.tab_header(entry, handlers, right)
+	local tab = entry.name
 	local banner = {
 		type = "frame",
 		name = tab .. "_banner",
@@ -109,7 +109,7 @@ function templates.tab_header(tab, handlers, right, search)
 		name = tab .. "_subheader",
 		style = "cybersyn_tab_subheader",
 	}
-	if search ~= false then
+	if entry.search then
 		subheader[#subheader + 1] = {
 			type = "textfield",
 			name = tab .. "_search_field",
@@ -169,6 +169,34 @@ function templates.tab_header(tab, handlers, right, search)
 			handler = { [defines.events.on_gui_click] = handlers.chip_click },
 		},
 	}
+	if entry.train then
+		subheader[#subheader + 1] = {
+			type = "flow",
+			name = tab .. "_train_chip_flow",
+			direction = "horizontal",
+			visible = false,
+			style_mods = { horizontal_spacing = 0, vertical_align = "center" },
+			{
+				type = "sprite-button",
+				name = tab .. "_train_chip_icon",
+				style = "cybersyn_item_chip_icon",
+				sprite = "item/locomotive",
+				tooltip = { "cybersyn-gui.train-chip-tooltip" },
+				tags = { chip = "train" },
+				mouse_button_filter = { "left", "right" },
+				handler = { [defines.events.on_gui_click] = handlers.chip_click },
+			},
+			{
+				type = "button",
+				name = tab .. "_train_chip",
+				style = "cybersyn_item_chip",
+				tooltip = { "cybersyn-gui.train-chip-tooltip" },
+				tags = { chip = "train" },
+				mouse_button_filter = { "left", "right" },
+				handler = { [defines.events.on_gui_click] = handlers.chip_click },
+			},
+		}
+	end
 	subheader[#subheader + 1] = {
 		type = "label",
 		name = tab .. "_collecting",

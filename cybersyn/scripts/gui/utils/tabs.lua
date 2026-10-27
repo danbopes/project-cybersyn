@@ -11,6 +11,7 @@
 --- @field search true? has the station-name search, and applies it
 --- @field station true? applies the station chip (the chip shows on every tab; the others say they ignore it)
 --- @field item true? applies the item filter
+--- @field train true? applies the train chip, which shows only on such tabs
 --- @field item_tooltip string? locale key of the item chip's tooltip, when the tab applies it differently
 
 --- @type ManagerTab[]
@@ -22,7 +23,7 @@ local tabs = {
 	{ name = "stations_tab", module = "scripts.gui.stations", content = "manager_stations_content_frame",
 		search = true, station = true, item = true },
 	{ name = "trains_tab", module = "scripts.gui.trains", content = "manager_trains_tab_content_frame",
-		search = true, station = true, item = true },
+		search = true, station = true, item = true, train = true },
 	{ name = "log_tab", module = "scripts.gui.log", content = "manager_log_content_frame", station = true, item = true },
 	{ name = "utilization_tab", module = "scripts.gui.utilization", analytics = true },
 	{ name = "delivery_breakdown_tab", module = "scripts.gui.delivery-breakdown", analytics = true, item = true },

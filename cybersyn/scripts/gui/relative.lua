@@ -2622,14 +2622,14 @@ end
 
 --- Opens the manager on the Stations tab with the station chip on this stop (by id, so a name that is a
 --- substring of other names, "R", shows only this stop; a depot or refueler: the Trains tab searching its name), or on
---- the Trains tab searching "#<id>" for a train; manager.focus clears everything else that could hide it.
+--- the Trains tab with the train chip on a train; manager.focus clears everything else that could hide it.
 --- @param player LuaPlayer
 --- @param pd PlayerData
 function relative.open_manager(player, pd, state)
 	state = state or pd.relative
 	if not state then return end
 	if state.kind == "train" then
-		manager.focus(player, pd, "trains_tab", { query = "#" .. state.id, reveal = { train = state.id } })
+		manager.focus(player, pd, "trains_tab", { train = state.id, reveal = { train = state.id } })
 		return
 	end
 	local station = storage.stations[state.id]

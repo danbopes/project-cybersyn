@@ -45,7 +45,7 @@ end
 --- @param handlers table
 --- @param right flib.GuiElemDef[]?
 local function add_header(def, tab, handlers, right)
-	local banner, subheader = templates.tab_header(tab.name, handlers, right, tab.search == true)
+	local banner, subheader = templates.tab_header(tab, handlers, right)
 	local content = def.content
 	local children = content.children or content
 	table.insert(children, 1, subheader)
@@ -212,11 +212,12 @@ function manager.apply_surface_default(player, player_data)
 end
 
 --- @class ManagerFocus what manager.focus shows; the filter fields are FilterState's
---- @field query string? the search that names the subject ("#<id>", a stop or depot name); nil clears the search
+--- @field query string? the search that names the subject (a depot or refueler name); nil clears the search
 --- @field keep_row true? leave network, network ID, surface and item as they are (the Overview's Stations jumps: the
 --- tile counted under them)
 --- @field item string? item hash to filter by
 --- @field station uint? station id for the station chip
+--- @field train uint? train id for the train chip
 --- @field network string? network name to filter by
 --- @field stations_chip string? a Stations flag chip ("unserved"|"failing"|"problems")
 --- @field problems_scope "errors"?
@@ -233,7 +234,7 @@ end
 --- @field filter_widgets_sig string? the filters and toggles the filter widgets last showed, see manager.render
 --- @field analytics_notice_tick uint? when the player was told the analytics library is missing (once per player)
 
-local FOCUS_FIELDS = { "item", "station", "network", "stations_chip", "problems_scope", "trains_chip" }
+local FOCUS_FIELDS = { "item", "station", "train", "network", "stations_chip", "problems_scope", "trains_chip" }
 
 --- Shows `tab` with exactly the subject in it. Every chip and overlay goes, and without keep_row every row filter
 --- too, so nothing set earlier can hide what the player asked for. Every entry point resets through here, so a chip
@@ -443,10 +444,19 @@ function manager.refresh_chips(player_data)
 	local hash = player_data.filters.item
 	local station = player_data.filters.station
 	local station_name = station and station_chip_name(station)
-	local sig = (hash or "") .. "\1" .. (station and (tostring(station) .. "\1" .. (station_name or "")) or "")
+	local train = player_data.filters.train
+	local sig = (hash or "") .. "\1" .. (station and (tostring(station) .. "\1" .. (station_name or "")) or "") .. "\1"
+		.. (train or "")
 	if player_data.chip_sig == sig then return end
 	player_data.chip_sig = sig
 	refresh_station_chips(player_data, station, station_name)
+	for _, t in ipairs(tabs) do
+		local flow = t.train and refs[t.name .. "_train_chip_flow"]
+		if flow and flow.valid then
+			flow.visible = train ~= nil
+			if train then refs[t.name .. "_train_chip"].caption = { "cybersyn-gui.train-chip", tostring(train) } end
+		end
+	end
 	local sprite, quality, _, item_name
 	if hash then sprite, quality, _, _, item_name = util.item_sprite_and_tooltip(hash) end
 	local shown = sprite ~= nil
@@ -1011,10 +1021,10 @@ function manager.cancel_search(player, player_data)
 	return true
 end
 
---- The item chip or the station chip (either half): any click removes that filter.
+--- The item, station or train chip (either half): any click removes that filter.
 --- @param e EventData.on_gui_click
 function manager.handle.manager_chip_click(player, player_data, refs, e)
-	filters.set(player_data, e.element and e.element.tags.chip == "station" and "station" or "item", nil)
+	filters.set(player_data, e.element and e.element.tags.chip or "item", nil)
 	manager.render(player, player_data)
 end
 

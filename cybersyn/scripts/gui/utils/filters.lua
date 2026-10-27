@@ -40,6 +40,7 @@ end
 --- @field terms string[]? lowercase terms of `query`
 --- @field item string? item hash (name or name|quality)
 --- @field station uint? station id of the station chip
+--- @field train uint? train id of the train chip (a train panel's "Open in manager")
 --- @field network string? network signal name
 --- @field mask int? network ID; nil = any
 --- @field surface uint? surface index
@@ -56,19 +57,19 @@ local VALID = {
 	item = function(hash) return util.signal_hash_valid(hash) end,
 	network = function(name) return util.signal_hash_valid(name) end,
 	station = function(id) return storage.stations[id] ~= nil end,
+	train = function(id) return storage.trains[id] ~= nil end,
 	surface = function(index) return game.get_surface(index) ~= nil end,
 }
 
 -- The filter row's own filters: any of them set opens the row, and closing the row clears them.
-local ROW = { "item", "station", "network", "mask", "surface" }
--- What a jump to a subject drops even when it keeps the row (manager.focus keep_row): the station chip and the
--- tabs' own chips.
-local CHIPS = { "station", "stations_chip", "problems_scope", "trains_chip" }
+local ROW = { "item", "station", "train", "network", "mask", "surface" }
+-- What a jump to a subject drops even when it keeps the row (manager.focus keep_row): the station and train chips
+-- and the tabs' own chips.
 local SCOPES = {
-	chips = CHIPS,
-	row = { "item", "station", "network", "mask", "surface", "stations_chip", "problems_scope", "trains_chip" },
-	all = { "query", "terms", "item", "station", "network", "mask", "surface", "stations_chip", "problems_scope",
-		"trains_chip" },
+	chips = { "station", "train", "stations_chip", "problems_scope", "trains_chip" },
+	row = { "item", "station", "train", "network", "mask", "surface", "stations_chip", "problems_scope", "trains_chip" },
+	all = { "query", "terms", "item", "station", "train", "network", "mask", "surface", "stations_chip",
+		"problems_scope", "trains_chip" },
 }
 local IS_ROW = {}
 for _, field in ipairs(ROW) do IS_ROW[field] = true end
@@ -131,7 +132,7 @@ end
 --- @return string
 function filters.signature(player_data)
 	local fs = player_data.filters
-	return table.concat({ fs.query or "", fs.item or "", fs.station or "", fs.network or "", fs.mask or "",
+	return table.concat({ fs.query or "", fs.item or "", fs.station or "", fs.train or "", fs.network or "", fs.mask or "",
 		fs.surface or "", fs.stations_chip or "", fs.problems_scope or "", fs.trains_chip or "" }, "\1")
 end
 
@@ -142,6 +143,7 @@ end
 --- @field mask int -1 = any
 --- @field surface uint? surface index
 --- @field station uint? station id (the station chip): only that station's rows pass
+--- @field train uint? train id (the train chip): only that train passes
 
 --- The filters `tab` applies: the stored ones less those its tabs.lua entry does not apply, so a tab cannot filter
 --- by something its chip tooltip says it ignores.
@@ -158,6 +160,7 @@ function filters.get(player_data, tab)
 		mask = fs.mask or -1,
 		surface = fs.surface,
 		station = t.station and fs.station or nil,
+		train = t.train and fs.train or nil,
 	}
 end
 
@@ -166,7 +169,7 @@ end
 --- @return boolean
 function filters.filters_active(f, ignore_item)
 	return f.terms ~= nil or f.network ~= nil or f.mask ~= -1 or f.surface ~= nil or f.station ~= nil
-		or (not ignore_item and f.item ~= nil)
+		or f.train ~= nil or (not ignore_item and f.item ~= nil)
 end
 
 local btest = bit32.btest
@@ -259,7 +262,7 @@ end
 function filters.filter_signature(f)
 	return table.concat({
 		f.terms and table.concat(f.terms, " ") or "", f.item or "", f.network or "", f.mask, f.surface or "",
-		f.station or "",
+		f.station or "", f.train or "",
 	}, "\1")
 end
 
@@ -318,6 +321,7 @@ end
 --- @param ignore_item boolean?
 --- @return boolean
 function filters.train_passes(tr, f, ignore_item)
+	if f.train and tr.id ~= f.train then return false end
 	local station = f.station
 	if station and tr.p_station_id ~= station and tr.r_station_id ~= station then return false end
 	if f.surface and tr.surface_index ~= f.surface then return false end
@@ -328,8 +332,7 @@ function filters.train_passes(tr, f, ignore_item)
 end
 
 --- Text search on trains matches the names of the depot and of the current provider and requester, so searching
---- for a station also finds the trains serving it; a term "#<id>" also matches the train with that id (the stop
---- panel's "Open in manager").
+--- for a station also finds the trains serving it.
 --- @param tr SnapshotTrain
 --- @param terms string[] lowercase
 --- @return boolean
@@ -340,10 +343,9 @@ function filters.train_terms_pass(tr, terms)
 	local r = tr.r_station_id and stations[tr.r_station_id]
 	p = p and p.name_lower
 	r = r and r.name_lower
-	local id_term = "#" .. tostring(tr.id)
 	for i = 1, #terms do
 		local term = terms[i]
-		if not (term == id_term or (depot and string.find(depot, term, 1, true))
+		if not ((depot and string.find(depot, term, 1, true))
 				or (p and string.find(p, term, 1, true))
 				or (r and string.find(r, term, 1, true))) then
 			return false

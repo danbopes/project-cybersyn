@@ -160,8 +160,7 @@ function extras.add_pin(player, kind, id)
 	if kind == "train" then
 		local train = lua_train(id)
 		entity = train and train.front_stock
-		-- A pin's label is a plain string (no LocalisedString), so not a word of any language: "#<id>", the form the
-		-- Trains tab's search takes for a train id.
+		-- A pin's label is a plain string (no LocalisedString), so not a word of any language: "#<id>".
 		label = "#" .. tostring(id)
 	else
 		entity = stop_record(id)

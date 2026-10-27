@@ -49,3 +49,48 @@ test("chip tooltips: a tab that does not apply the station chip or the item filt
 	assert_eq(refs.overview_tab_chip.tooltip[1], "cybersyn-gui.filter-chip-overview-tooltip")
 	assert_eq(refs.stations_tab_station_chip.caption, { "cybersyn-gui.station-chip", "Mine", "12" })
 end)
+
+test("the train chip shows only on the tabs that apply it", function()
+	local manager, tabs = load_manager()
+	local refs = {}
+	for _, t in ipairs(tabs) do
+		for _, suffix in ipairs({ "_train_chip_flow", "_train_chip" }) do refs[t.name .. suffix] = H.element({}) end
+	end
+	local pd = { refs = refs, filters = { train = 5 } }
+	manager.refresh_chips(pd)
+	for _, t in ipairs(tabs) do
+		assert_eq(refs[t.name .. "_train_chip_flow"].visible == true, t.train == true, t.name)
+	end
+	assert_eq(refs.trains_tab_train_chip.caption, { "cybersyn-gui.train-chip", "5" })
+	local templates = require("scripts.gui.templates")
+	local _, with = templates.tab_header(tabs.by_name.trains_tab, {}, nil)
+	local _, without = templates.tab_header(tabs.by_name.stations_tab, {}, nil)
+	local function has(sub, name)
+		for _, c in ipairs(sub) do if c.name == name then return true end end
+		return false
+	end
+	assert_true(has(with, "trains_tab_train_chip_flow"))
+	assert_false(has(without, "stations_tab_train_chip_flow"))
+end)
+
+test("Open in manager on a train panel: the Trains tab with the train chip, the search cleared", function()
+	local manager = load_manager()
+	local relative = require("scripts.gui.relative")
+	storage.trains = { [5] = {} }
+	storage.stations = { [3] = {} }
+	local renders = 0
+	local render = manager.render
+	manager.render = function() renders = renders + 1 end
+	local pd = { is_manager_open = true, pinning = true, refs = {}, page = { trains_tab = 2 },
+		filters = { query = "depot", terms = { "depot" }, station = 3, trains_chip = "parked" } }
+	local player = { index = 1, gui = { screen = {} } }
+	local ok, err = pcall(relative.open_manager, player, pd, { kind = "train", id = 5 })
+	manager.render = render
+	assert_true(ok, err)
+	assert_eq(pd.filters, { train = 5 })
+	assert_true(pd.filter_row_open)
+	assert_eq(pd.trains_reveal, { train = 5 })
+	assert_eq(pd.selected_tab, "trains_tab")
+	assert_eq(pd.page, {})
+	assert_eq(renders, 1)
+end)
