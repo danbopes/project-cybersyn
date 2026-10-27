@@ -515,7 +515,7 @@ end
 
 ---@param ad {cycle: int, sent: int, keys: {[string]: NoTrainAlert}}
 ---@param key string item_network_name
----@param code int DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
+---@param code DiagAlert DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
 ---@param wait number seconds the requester has waited
 local function note_no_train_alert(ad, key, code, r_station_id, p_station_id, wait)
 	local e = ad.keys[key]

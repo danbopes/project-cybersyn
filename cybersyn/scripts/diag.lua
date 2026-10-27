@@ -85,10 +85,23 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field size int
 --- @field head int
 --- @field count int
+--- @field filled true? the columns are preallocated to `size`
+--- @field seq uint[]
+--- @field tick uint[]
+--- @field kind int[]
+--- @field sev int[]
+--- @field code int[]
+--- @field delivery int[]
+--- @field train int[]
+--- @field station int[]
+--- @field station2 int[]
+--- @field item int[]
+--- @field a int[]
+--- @field b int[]
 
 --- @class DiagEntry one failing (requester, item) key
---- @field reason int confirmed REASON_*
---- @field pending int? a different reason seen since pending_since, not yet confirmed
+--- @field reason DiagReason confirmed
+--- @field pending DiagReason? a different reason seen since pending_since, not yet confirmed
 --- @field pending_since uint?
 --- @field pending_n int consecutive evaluations that returned `pending`
 --- @field first_tick uint first failing evaluation
@@ -103,7 +116,7 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field lost_n int evaluations that found the providers locked by an earlier requester of the same call
 --- @field lost_to uint? that requester, at the latest loss
 --- @field changes uint[] ticks of the last confirmed changes (at most FLAP_CHANGES)
---- @field change_reasons int[] the reason each of those changes confirmed
+--- @field change_reasons DiagReason[] the reason each of those changes confirmed
 --- @field suppressed_until uint? flapping: no transition events before this tick
 
 --- @class DiagState
@@ -131,6 +144,9 @@ diag.rej = { 0, 0, 0, 0, 0, 0, 0, 0 }
 --- @field id int which state this is (seqs restart in a new one)
 --- @field inherit_cycles int? planner cycle starts seen since creation, while the inherited window is open
 --- @field inherit_until uint? start of the second planner cycle after creation; see diag.inherit_threshold
+--- @field edit_rows table? open group schedule-edit rows by "player|group"; see diag.schedule_edited
+--- @field export_name_tick uint? tick of the latest diag.export, so two exports in one tick get distinct names
+--- @field export_name_n int? exports in that tick
 
 -- ---------------------------------------------------------------- state
 
@@ -147,6 +163,7 @@ end
 --- @param filled boolean? preallocate the columns now (the full ring waits until full mode is on)
 --- @return DiagRing
 local function new_ring(size, filled)
+	--- @type table<string, any> the columns are added below, so this is not a DiagRing until the loop ends
 	local r = { size = size, head = 0, count = 0, filled = filled or nil }
 	for _, c in ipairs(COLUMNS) do
 		local col = {}
@@ -298,8 +315,8 @@ end
 
 --- Writes one event to the ring its kind belongs to; full-only kinds are dropped unless the mode is full.
 --- @param d DiagState
---- @param kind int DIAG_KIND_*
---- @param sev int DIAG_SEV_*
+--- @param kind DiagKind
+--- @param sev DiagSev
 --- @return uint? seq
 function diag.event(d, kind, sev, code, delivery, train, station, station2, item, a, b)
 	if SCHEMA[kind].full then
@@ -345,10 +362,10 @@ local function step(rb, rf, kb, kf, dir)
 end
 
 --- @class DiagEventFilter
---- @field kind int? DIAG_KIND_*
+--- @field kind DiagKind?
 --- @field kinds {[int]: true}? any of these kinds (with `alerts`: or an alert row whose code is in `alerts`)
 --- @field alerts {[int]: true}? DIAG_ALERT_* codes an alert row may have when `kinds` does not name the alert kind
---- @field sev int? at most this DIAG_SEV_* (1 = errors only)
+--- @field sev DiagSev? at most this severity (1 = errors only)
 --- @field sevs {[int]: true}? exactly these DIAG_SEV_*
 --- @field station uint? subject station: the station column, or station2 where that column names a station
 --- @field train uint?
@@ -594,7 +611,7 @@ end
 --- @field player_index uint
 --- @field tick uint
 --- @field until_tick uint? nil = until the reason changes
---- @field reason int? confirmed reason when acknowledged (requests)
+--- @field reason DiagReason? confirmed reason when acknowledged (requests)
 
 --- One shape for every kind: acks[kind][id][sub], sub = the item hash (request), the check (lint) or 0 (station).
 --- @return {request: {[uint]: {[string]: DiagAck}}, station: {[uint]: {[0]: DiagAck}}, lint: {[uint]: {[int]: DiagAck}}, n: int, lint_version: int?} n counts the acknowledgements; lint_version counts every change to the lint ones
@@ -619,11 +636,11 @@ local function each_ack(acks, fn)
 end
 
 local function log_ack(verb, kind, id, sub, player_index, until_tick)
-	log({ "", "Cybersyn diagnostics: ", verb, " ", DIAG_ACK_KINDS[kind] or "?", " ", tostring(id), " ",
-		tostring(sub or ""), " by player ", tostring(player_index or "-"), " until ", tostring(until_tick or "reason change") })
+	log("Cybersyn diagnostics: " .. verb .. " " .. (DIAG_ACK_KINDS[kind] or "?") .. " " .. tostring(id) .. " " ..
+		tostring(sub or "") .. " by player " .. tostring(player_index or "-") .. " until " .. tostring(until_tick or "reason change"))
 end
 
---- @param kind int DIAG_ACK_*
+--- @param kind DiagAckKind
 local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 	local d = storage.diag
 	if not d then return end
@@ -637,7 +654,7 @@ local function ack_event(kind_event, kind, id, sub, player_index, a, b)
 end
 
 --- Removes one acknowledgement and writes the unacknowledged event.
---- @param kind int DIAG_ACK_*
+--- @param kind DiagAckKind
 local function end_ack(kind, id, sub, cause, player_index)
 	local acks = storage.acks
 	local t = acks[DIAG_ACK_KINDS[kind]]
@@ -672,7 +689,7 @@ end
 --- @param sub string|int?
 --- @param player_index uint?
 --- @param until_tick uint? nil = until the confirmed reason changes
---- @param reason int? defaults to the request's confirmed reason
+--- @param reason DiagReason? defaults to the request's confirmed reason
 --- @return DiagAck
 function diag.ack(kind, id, sub, player_index, until_tick, reason)
 	local code = ACK_KIND[kind]
@@ -747,7 +764,7 @@ end
 
 --- @param r_id uint
 --- @param hash string
---- @param cause int DIAG_ACK_END_*
+--- @param cause DiagAckEnd
 local function end_request_ack(r_id, hash, cause)
 	if find_ack("request", r_id, hash) then end_ack(DIAG_ACK_REQUEST, r_id, hash, cause, nil) end
 end
@@ -852,7 +869,7 @@ end
 --- @param d DiagState
 --- @param r_id uint requester station id (its stop's unit number)
 --- @param hash string item hash
---- @param reason int REASON_*
+--- @param reason DiagReason
 --- @param a int? payload
 --- @param b int?
 --- @param p_id uint? best provider
@@ -1059,7 +1076,7 @@ end
 
 --- @param r_id uint
 --- @return int count
---- @return int? worst_reason
+--- @return DiagReason? worst_reason
 --- @return uint? oldest_first_tick
 function diag.unserved_summary(r_id)
 	local d = storage.diag
@@ -1092,7 +1109,7 @@ end
 --- @field entry DiagEntry read only
 
 --- The `limit` longest-waiting entries (oldest first_tick first; ties by requester id, then item index).
---- @param filter {item: string?, reason: int?, requester: uint?, limit: int?}?
+--- @param filter {item: string?, reason: DiagReason?, requester: uint?, limit: int?}?
 --- @return DiagUnservedRow[]
 function diag.unserved_rows(filter)
 	local d = storage.diag
@@ -1103,11 +1120,11 @@ function diag.unserved_rows(filter)
 	if filter and filter.item and not want_ix then return out end
 	local want_reason = filter and filter.reason
 	local item_hash = d.item_hash
-	local function before(t, r_id, ix, row)
-		local rt = row.entry.first_tick
+	local function before(t, r_id, ix, other)
+		local rt = other.entry.first_tick
 		if t ~= rt then return t < rt end
-		if r_id ~= row.r_station_id then return r_id < row.r_station_id end
-		return ix < row.item
+		if r_id ~= other.r_station_id then return r_id < other.r_station_id end
+		return ix < other.item
 	end
 	local function scan(r_id, by_item)
 		for ix, e in pairs(by_item) do
@@ -1146,7 +1163,7 @@ local function unit(stop)
 end
 
 --- Every send_alert_* in factorio-api.lua.
---- @param code int DIAG_ALERT_*
+--- @param code DiagAlert
 --- @param train LuaTrain?
 --- @param stop LuaEntity?
 --- @param stop2 LuaEntity?
@@ -1168,7 +1185,7 @@ end
 
 --- An alert about a requester sent from inside the planner, which already holds storage.diag and the stop ids.
 --- @param d DiagState
---- @param code int DIAG_ALERT_*
+--- @param code DiagAlert
 --- @param station uint requester stop unit number
 --- @param station2 uint? provider
 function diag.alert_ids(d, code, station, station2)
@@ -1181,7 +1198,7 @@ function diag.alert_ids(d, code, station, station2)
 end
 
 --- The create_delivery exits that give up on a chosen train.
---- @param code int DIAG_DISPATCH_*
+--- @param code DiagDispatch DIAG_DISPATCH_*
 --- @param manifest Manifest? its first item fills the item column
 --- @param state defines.train_state? stored as state + DIAG_STATE_OFFSET in a (0 = not recorded)
 function diag.dispatch_failed(code, train_id, r_id, p_id, manifest, state)
@@ -1194,7 +1211,7 @@ function diag.dispatch_failed(code, train_id, r_id, p_id, manifest, state)
 end
 
 --- on_failed_delivery: a delivery ended without being completed.
---- @param cause int DIAG_FAIL_*
+--- @param cause DiagFail?
 --- @param train Train
 function diag.delivery_failed(cause, train_id, train, p_id, r_id, is_p, is_r)
 	local d = storage.diag
@@ -1261,7 +1278,7 @@ end
 stats.set_slow_listener(diag.slow_delivery)
 
 --- Arrivals, departures and the return to a depot (full only).
---- @param kind int DIAG_KIND_ARRIVE_P .. DIAG_KIND_RETURNED
+--- @param kind DiagKind DIAG_KIND_ARRIVE_P .. DIAG_KIND_RETURNED
 --- @param train Train
 function diag.train_event(kind, train_id, train, station_id)
 	local d = storage.diag
@@ -1287,13 +1304,13 @@ local STATE_SEV = {
 --- @param train Train
 --- @param old_state defines.train_state?
 --- @param since uint? tick old_state began
---- @param new_state defines.train_state
-function diag.train_state(train_id, train, old_state, since, new_state)
+--- @param state defines.train_state the state entered
+function diag.train_state(train_id, train, old_state, since, state)
 	local d = storage.diag
 	if not (d and d.full) then return end
-	local sev = STATE_SEV[new_state]
+	local sev = STATE_SEV[state]
 	if sev then
-		diag.event(d, DIAG_KIND_TRAIN_STATE, sev, new_state, train.delivery_id, train_id, 0, 0, 0, 0, 0)
+		diag.event(d, DIAG_KIND_TRAIN_STATE, sev, state, train.delivery_id, train_id, 0, 0, 0, 0, 0)
 	end
 	if old_state == TS.wait_signal and since then
 		local waited = game.tick - since
@@ -1318,7 +1335,7 @@ end
 
 --- Amount of a manifest entry aboard: items by name and quality from get_contents(), fluids by name.
 --- @param m ManifestEntry
---- @param contents ItemWithQualityCounts
+--- @param contents ItemWithQualityCount[]
 --- @param fluids {[string]: number}
 --- @return number
 local function aboard(m, contents, fluids)
@@ -1347,7 +1364,7 @@ end
 --- residual (fluids: above `tolerance` percent of the planned amount, or any amount the manifest did not name).
 --- Pure: the caller reads the contents. Returns at most one finding per kind, the largest.
 --- @param manifest Manifest
---- @param contents ItemWithQualityCounts LuaTrain.get_contents()
+--- @param contents ItemWithQualityCount[] LuaTrain.get_contents()
 --- @param fluids {[string]: number} LuaTrain.get_fluid_contents()
 --- @param tolerance number percent
 --- @param at_r boolean
@@ -1502,7 +1519,7 @@ end
 local HEADER = "seq,tick,kind,severity,code,delivery,train,station,station2,item,a,b\n"
 
 --- Name of the event's code column, or the number where its kind names none.
---- @param kind int
+--- @param kind DiagKind
 --- @param code int
 --- @return string
 local function code_name(kind, code)

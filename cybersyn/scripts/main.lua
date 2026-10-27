@@ -249,14 +249,14 @@ end
 ---@return string? op
 function combinator_build_init(map_data, comb, tags)
 	local control = get_comb_control(comb)
-	local params = control.parameters
+	local params = control.parameters --[[@as ArithmeticCombinatorParameters]]
 	local op = params.operation
 
 	if op == MODE_DEFAULT then
 		op = MODE_PRIMARY_IO
 		params.operation = op
 		params.first_signal = NETWORK_SIGNAL_DEFAULT
-		
+
 		-- Apply defaults to freshly placed combinators only
 		-- use centralized constant so defaults are changed in one place
 		if (params.second_constant or 0) == 0 then
@@ -539,7 +539,7 @@ end
 function combinator_update(map_data, comb, reset_display)
 	local unit_number = comb.unit_number --[[@as uint]]
 	local control = get_comb_control(comb)
-	local params = control.parameters
+	local params = control.parameters --[[@as ArithmeticCombinatorParameters]]
 	local old_params = map_data.to_comb_params[unit_number]
 	local has_changed = false
 	local type, id, entity = nil, 0, nil

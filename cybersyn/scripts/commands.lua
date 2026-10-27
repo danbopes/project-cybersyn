@@ -195,7 +195,7 @@ local function abolish_same_depot()
 end
 
 --- A command that changes game state: refused without the right, audited when it ran.
---- @param action int ACTION_*
+--- @param action DiagAction
 --- @param fn fun()
 --- @return fun(command: CustomCommandData)
 local function gated(action, fn)

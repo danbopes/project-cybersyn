@@ -15,7 +15,7 @@
 ---@field public trains {[uint]: Train}
 ---@field public available_trains {[string]: {[uint]: true?}} --{[network_name]: {[train_id]: true}}
 ---@field public to_refuelers {[string]: {[uint]: true?}} --{[network_name]: {[refeuler_id]: true}}
----@field public layouts {[uint]: (0|1|2)[]}
+---@field public layouts {[uint]: TrainWagonKind[]}
 ---@field public layout_train_count {[uint]: int}
 ---@field public tick_state uint
 ---@field public tick_data {}
@@ -36,7 +36,7 @@
 
 ---@class NoTrainAlert the worst failing evaluation of one item and network in a planner cycle
 ---@field public cycle int the alert_dedupe cycle that noted it
----@field public code int DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
+---@field public code DiagAlert DIAG_ALERT_MISSING_TRAIN or DIAG_ALERT_TRAINS_FILTERED
 ---@field public r_id uint requester station id
 ---@field public p_id uint provider station id
 ---@field public wait number seconds the requester had waited
@@ -98,7 +98,7 @@
 ---@field public wagon_combs {[int]: LuaEntity}?--NOTE: allowed to be invalid entities or combinators with the wrong operation, these must be checked and lazy deleted when found
 ---@field public deliveries {[string]: int}
 ---@field public accepted_layouts {[uint]: true?}
----@field public layout_pattern (0|1|2|3)[]?
+---@field public layout_pattern StopWagonSupport[]?
 ---@field public item_thresholds {[string]: int}? --transient
 ---@field public display_state int
 ---@field public inv_failed {[uint]: true}? inventory combinators (by unit number) whose own request went unserved: their red I; nil when none, and on saves from before it existed
@@ -114,7 +114,7 @@
 ---@field public entity_comb LuaEntity
 ---@field public trains_total int
 ---@field public accepted_layouts {[uint]: true?}
----@field public layout_pattern (0|1|2|3)[]?
+---@field public layout_pattern StopWagonSupport[]?
 ---@field public wagon_combs {[int]: LuaEntity}?--NOTE: allowed to be invalid entities or combinators with the wrong operation, these must be checked and lazy deleted when found
 ---@field public allows_all_trains true?
 ---@field public priority int

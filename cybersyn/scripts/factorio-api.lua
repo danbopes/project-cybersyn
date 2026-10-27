@@ -539,7 +539,7 @@ end
 ---@param surface_connections Cybersyn.SurfaceConnection[]
 ---@param start_at_depot boolean?
 ---@return boolean dispatched
----@return int? why DIAG_DISPATCH_* when not dispatched
+---@return DiagDispatch? why DIAG_DISPATCH_* when not dispatched
 function set_manifest_schedule(
 		map_data,
 		train,
@@ -1292,7 +1292,7 @@ function send_alert_unexpected_cargo(map_data, train, stop)
 
 	-- Only the owning force, like the alert: other forces must not learn where its stops are.
 	if stop and stop.valid then
-		stop.force.print({ "cybersyn-messages.unexpected-cargo-at", stop.backer_name, gps_text(stop) })
+		stop.force.print({ "cybersyn-messages.unexpected-cargo-at", stop.backer_name or "", gps_text(stop) } --[[@as LocalisedString]])
 	else
 		local loco = get_any_train_entity(train)
 		if loco then loco.force.print({ "cybersyn-messages.unexpected-cargo" }) end

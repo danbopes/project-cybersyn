@@ -98,7 +98,7 @@ end
 ---@param map_data MapData
 ---@param train_id uint
 ---@param train Train
----@param cause int? DIAG_FAIL_* for the diagnostics log
+---@param cause DiagFail? DIAG_FAIL_* for the diagnostics log
 function on_failed_delivery(map_data, train_id, train, cause)
 	--NOTE: must either change this train's status or remove it after this call
 	local p_station_id = train.p_station_id --[[@as uint]]

@@ -208,13 +208,13 @@ function interface.update_train_layout(train_id)
 	assert(train)
 	update_train_layout(storage, train)
 end
----@param layout_pattern (0|1|2|3)[]
----@param layout (0|1|2)[]
+---@param layout_pattern StopWagonSupport[]
+---@param layout TrainWagonKind[]
 function interface.is_layout_accepted(layout_pattern, layout)
 	return is_layout_accepted(layout_pattern, layout)
 end
----@param layout_pattern (0|1|2|3)[]
----@param layout (0|1|2)[]
+---@param layout_pattern StopWagonSupport[]
+---@param layout TrainWagonKind[]
 function interface.is_refuel_layout_accepted(layout_pattern, layout)
 	return is_refuel_layout_accepted(layout_pattern, layout)
 end

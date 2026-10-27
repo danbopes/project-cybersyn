@@ -151,9 +151,9 @@ end
 
 -- ---------------------------------------------------------------- pure checks (no API calls; unit tested)
 
---- @param out LintFinding[]
 local NO_LAYOUTS = {}
 
+--- @param out LintFinding[]
 local function find(out, mask, subject, id, check, a, b, network, item)
 	out[#out + 1] = { subject = subject, id = id, check = check, a = a, b = b, network = network, item = item }
 	return bor(mask, LINT_BIT[check])
@@ -230,7 +230,7 @@ end
 --- The reason code a check predicts for a station in `role`, nil when the dispatcher has none for it.
 --- @param check int LINT_*
 --- @param role "r"|"p"
---- @return int? REASON_*
+--- @return DiagReason?
 function lint.predicts(check, role)
 	return role == "p" and LINT_PREDICTS_P[check] or LINT_PREDICTS[check]
 end

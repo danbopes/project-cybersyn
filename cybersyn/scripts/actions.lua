@@ -46,7 +46,7 @@ function actions.check(player, what)
 end
 
 --- Records an action that changed game state.
---- @param action int ACTION_*
+--- @param action DiagAction
 --- @param target uint? the entity or train it applied to; nil = all of them
 --- @param player LuaPlayer?
 --- @param what LocalisedString the command or action, as the player typed or saw it

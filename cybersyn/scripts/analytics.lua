@@ -37,11 +37,11 @@ function analytics.format_layout_name(layout, layout_id)
 	local cargo = 0
 	local fluid = 0
 	for i = 1, #layout do
-		if layout[i] == 0 then
+		if layout[i] == WAGON_LOCO then
 			locos = locos + 1
-		elseif layout[i] == 1 then
+		elseif layout[i] == WAGON_CARGO then
 			cargo = cargo + 1
-		elseif layout[i] == 2 then
+		elseif layout[i] == WAGON_FLUID then
 			fluid = fluid + 1
 		end
 	end
@@ -148,7 +148,7 @@ function analytics.is_enabled()
 		return false
 	end
 	local setting = settings.global["cybersyn-enable-analytics"]
-	return setting and setting.value
+	return setting and setting.value --[[@as boolean]]
 end
 
 ---Check if the charts library is available
@@ -251,9 +251,9 @@ local EMA_ALPHA = 0.2
 ---@param train_id uint
 function analytics.record_delivery_complete(map_data, train_id)
 	if not analytics.is_enabled() then return end
-	if not map_data.analytics then return end
-
 	local data = map_data.analytics
+	if not data then return end
+
 	local start_info = data.delivery_starts[train_id]
 	if not start_info then return end
 

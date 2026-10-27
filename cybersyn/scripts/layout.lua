@@ -12,42 +12,51 @@ local defines_back = defines.rail_direction.back
 local defines_straight = defines.rail_connection_direction.straight
 local search_type = { "straight-rail", "curved-rail" }
 
----@param layout_pattern (0|1|2|3)[]
----@param layout (0|1|2)[]
+---Whether a stop position can load a wagon of this kind. Locomotives are never loaded.
+---@param p StopWagonSupport
+---@param v TrainWagonKind
+local function pattern_serves(p, v)
+	if v == WAGON_CARGO then return p == PATTERN_CARGO or p == PATTERN_BOTH end
+	if v == WAGON_FLUID then return p == PATTERN_FLUID or p == PATTERN_BOTH end
+	return false
+end
+
+---@param layout_pattern StopWagonSupport[]
+---@param layout TrainWagonKind[]
 function is_refuel_layout_accepted(layout_pattern, layout)
 	local valid = true
 	for i, v in ipairs(layout) do
-		local p = layout_pattern[i] or 0
-		if (v == 1 and (p == 1 or p == 3)) or (v == 2 and (p == 2 or p == 3)) then
+		local p = layout_pattern[i] or PATTERN_NONE
+		if pattern_serves(p, v) then
 			valid = false
 			break
 		end
 	end
 	if valid or not layout[0] then return valid end
 	for i, v in irpairs(layout) do
-		local p = layout_pattern[i] or 0
-		if (v == 1 and (p == 1 or p == 3)) or (v == 2 and (p == 2 or p == 3)) then
+		local p = layout_pattern[i] or PATTERN_NONE
+		if pattern_serves(p, v) then
 			valid = false
 			break
 		end
 	end
 	return valid
 end
----@param layout_pattern (0|1|2|3)[]
----@param layout (0|1|2)[]
+---@param layout_pattern StopWagonSupport[]
+---@param layout TrainWagonKind[]
 function is_layout_accepted(layout_pattern, layout)
 	local valid = true
 	for i, v in ipairs(layout) do
-		local p = layout_pattern[i] or 0
-		if (v == 1 and not (p == 1 or p == 3)) or (v == 2 and not (p == 2 or p == 3)) then
+		local p = layout_pattern[i] or PATTERN_NONE
+		if v ~= WAGON_LOCO and not pattern_serves(p, v) then
 			valid = false
 			break
 		end
 	end
 	if valid or not layout[0] then return valid end
 	for i, v in irpairs(layout) do
-		local p = layout_pattern[i] or 0
-		if (v == 1 and not (p == 1 or p == 3)) or (v == 2 and not (p == 2 or p == 3)) then
+		local p = layout_pattern[i] or PATTERN_NONE
+		if v ~= WAGON_LOCO and not pattern_serves(p, v) then
 			valid = false
 			break
 		end
@@ -115,11 +124,11 @@ function set_train_layout(map_data, train)
 	local i = 1
 	for _, carriage in pairs(carriages) do
 		if carriage.type == "cargo-wagon" then
-			layout[#layout + 1] = 1
+			layout[#layout + 1] = WAGON_CARGO
 		elseif carriage.type == "fluid-wagon" then
-			layout[#layout + 1] = 2
+			layout[#layout + 1] = WAGON_FLUID
 		else
-			layout[#layout + 1] = 0
+			layout[#layout + 1] = WAGON_LOCO
 		end
 		i = i + 1
 	end
@@ -537,7 +546,7 @@ function reset_stop_layout(map_data, stop, is_station_or_refueler, forbidden_ent
 	local length = 1
 	---@type LuaEntity?
 	local pre_rail = stop_rail
-	local layout_pattern = { 0 }
+	local layout_pattern = { PATTERN_NONE }
 	local wagon_number = 0
 	for i = 1, 112 do
 		if pre_rail then
@@ -682,12 +691,12 @@ function reset_stop_layout(map_data, stop, is_station_or_refueler, forbidden_ent
 
 			if supports_cargo then
 				if supports_fluid then
-					layout_pattern[wagon_number] = 3
+					layout_pattern[wagon_number] = PATTERN_BOTH
 				else
-					layout_pattern[wagon_number] = 1
+					layout_pattern[wagon_number] = PATTERN_CARGO
 				end
 			elseif supports_fluid then
-				layout_pattern[wagon_number] = 2
+				layout_pattern[wagon_number] = PATTERN_FLUID
 			else
 				--layout_pattern[wagon_number] = nil
 			end

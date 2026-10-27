@@ -59,7 +59,7 @@ combinator_entity.and_symbol_sprites = create_combinator_display(CYBERSYN_DISPLA
 combinator_entity.or_symbol_sprites = create_combinator_display(CYBERSYN_DISPLAYS, 0, 2)
 combinator_entity.multiply_symbol_sprites = combinator_entity.divide_symbol_sprites
 
-combinator_out_entity = flib.copy_prototype(data.raw["constant-combinator"]["constant-combinator"], COMBINATOR_OUT_NAME) --[[@as data.ConstantCombinatorPrototype]]
+combinator_out_entity = flib.copy_prototype(data.raw["constant-combinator"]["constant-combinator"], COMBINATOR_OUT_NAME) --[[@as ConstantCombinatorPrototype]]
 combinator_out_entity.icon = nil
 combinator_out_entity.icon_size = nil
 combinator_out_entity.next_upgrade = nil
