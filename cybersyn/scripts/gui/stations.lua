@@ -65,13 +65,13 @@ local CHIP_ICON = {
 	stuck = "item/locomotive",
 	failing = "utility/danger_icon",
 }
--- Widths of the chips with their names and a one-digit count at UI scale 1.0, the widest any shipped locale renders
--- (tests/unit/chip_width_test.lua measures them with the game's fonts). They are the buttons' maximal_width and what
--- chip_lines reserves, so the chips that do not fit beside the search field go to the second line instead of
--- overflowing.
+-- Widths of the chips with their names and a one-digit count in unscaled GUI px, the widest any shipped locale renders
+-- at any UI scale (tests/unit/chip_width_test.lua measures them with the game's fonts). They are the buttons'
+-- maximal_width and what chip_lines reserves, so the chips that do not fit beside the search field go to the second
+-- line instead of overflowing.
 local CHIP_WIDTH = {
-	all = 52, no_power = 117, disabled = 112, warming_up = 133, starved = 106, setup = 95, saturated = 119, idle = 82, ok = 76,
-	unserved = 117, problems = 117, stuck = 155, failing = 98,
+	all = 52, no_power = 118, disabled = 112, warming_up = 133, starved = 106, setup = 95, saturated = 119, idle = 82, ok = 76,
+	unserved = 117, problems = 117, stuck = 155, failing = 99,
 }
 -- Each further digit of a count, separators included.
 local DIGIT_WIDTH = 8

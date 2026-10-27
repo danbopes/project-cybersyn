@@ -1,16 +1,16 @@
 -- The filter chips' captions fit the maximal_width the tabs give them, in every shipped locale (en's text where a
--- locale has no translation of its own), measured with the fonts Factorio renders button captions in at UI scale 1.0.
--- A chip that fails here would show clipped in game: widen it in its tab's CHIP_WIDTH or shorten the English source.
+-- locale has no translation of its own), at every UI scale in font_advances.lua, measured the way Factorio lays out
+-- button captions (gen_font_advances.py). A chip that fails here would show "…" in game: widen it in its tab's
+-- CHIP_WIDTH or shorten the English source.
 
 local H = require("harness")
 local FONTS = require("fixtures.font_advances")
 
--- Measured in game at UI scale 1.0 (a chip button is its text plus the style's paddings plus this) and the size of an
--- [img=] icon in a 14 px caption. Both reproduce the Stations subheader to within 1 px; see SLACK.
+-- Measured in game, in unscaled GUI px like every style width: a chip button is its text plus the style's paddings
+-- (each floored after scaling) plus BUTTON_EXTRA, and an [img=] icon in the caption takes ICON. Probe buttons at UI
+-- scales 1.0 to 2.0 matched this to the pixel, or the estimate was up to 1 px long.
 local BUTTON_EXTRA = 8
 local ICON = 20
--- The estimate came out 1 px short on four of seven chips in the calibration screenshot, never long.
-local SLACK = 1
 
 local function style_padding()
 	local f = assert(io.open(H.mod_root .. "/prototypes/gui-style.lua", "r"))
@@ -19,7 +19,7 @@ local function style_padding()
 	local block = assert(src:match("styles%.cybersyn_filter_chip = (%b{})"), "cybersyn_filter_chip style")
 	-- Another font would need another advance table.
 	assert(block:match('parent = "button"') and not block:match("font"), "the chip keeps the button style's font")
-	return tonumber(block:match("left_padding = (%d+)")) + tonumber(block:match("right_padding = (%d+)"))
+	return tonumber(block:match("left_padding = (%d+)")), tonumber(block:match("right_padding = (%d+)"))
 end
 
 local function locales()
@@ -72,17 +72,24 @@ local function utf8_codepoints(s)
 	return cps
 end
 
-local function text_width(text, advance)
-	local icons = 0
-	text = text:gsub("%[img=[^%]]+%]", function()
-		icons = icons + 1
+-- Each run of text between icons rounds up on its own; the probes could not tell this from rounding the sum, and it
+-- only ever errs long.
+local function text_width(text, advance, scale)
+	local w = 0
+	local function run(s)
+		local sum = 0
+		for _, cp in ipairs(utf8_codepoints(s)) do
+			sum = sum + assert(advance[cp], string.format("U+%04X is not in font_advances.lua: rerun gen_font_advances.py", cp))
+		end
+		w = w + math.ceil(sum * scale.size / scale.raster - 1e-9)
+	end
+	local rest = text:gsub("([^%[]*)%[img=[^%]]+%]", function(s)
+		run(s)
+		w = w + ICON * scale.scale
 		return ""
 	end)
-	assert(not text:find("[%[%]]"), "unhandled rich text in " .. text)
-	local w = icons * ICON
-	for _, cp in ipairs(utf8_codepoints(text)) do
-		w = w + assert(advance[cp], string.format("U+%04X is not in font_advances.lua: rerun gen_font_advances.py", cp))
-	end
+	assert(not rest:find("[%[%]]"), "unhandled rich text in " .. text)
+	run(rest)
 	return w
 end
 
@@ -96,25 +103,30 @@ for digits = 1, 7 do
 end
 
 local function check(tab, keys, caption)
-	local padding = style_padding()
+	local left, right = style_padding()
 	local over, n = {}, 0
 	for _, loc in ipairs(locales()) do
 		local chain = assert(FONTS.chains[FONTS.locales[loc]], "no font chain for locale " .. loc .. ": rerun gen_font_advances.py")
 		local dict = strings(loc)
-		for _, key in ipairs(keys) do
-			local worst
-			for _, count in ipairs(COUNTS) do
-				local c = count or nil
-				local need = text_width(localise(caption(key, c), dict), chain.advance) + padding + BUTTON_EXTRA + SLACK
-				local have = tab.chip_max_width(key, c or 0)
-				n = n + 1
-				if need > have and (not worst or need - have > worst.by) then
-					worst = { by = need - have, need = need, have = have, count = c }
+		for i, scale in ipairs(FONTS.scales) do
+			local s = scale.scale
+			local frame = math.floor(left * s) + math.floor(right * s) + BUTTON_EXTRA * s
+			for _, key in ipairs(keys) do
+				local worst
+				for _, count in ipairs(COUNTS) do
+					local c = count or nil
+					local need = text_width(localise(caption(key, c), dict), chain.advance[i], scale) + frame
+					-- Style widths are unscaled; the engine multiplies them by the UI scale.
+					local have = math.floor(tab.chip_max_width(key, c or 0) * s)
+					n = n + 1
+					if need > have and (not worst or need - have > worst.by) then
+						worst = { by = need - have, need = need, have = have, count = c }
+					end
 				end
-			end
-			if worst then
-				over[#over + 1] = string.format("%s %s count %s: %d px > %d", loc, key, worst.count and tostring(worst.count) or "-",
-					worst.need, worst.have)
+				if worst then
+					over[#over + 1] = string.format("%s x%s %s count %s: %d px > %d", loc, s, key,
+						worst.count and tostring(worst.count) or "-", worst.need, worst.have)
+				end
 			end
 		end
 	end

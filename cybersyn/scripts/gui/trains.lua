@@ -84,9 +84,9 @@ local NETWORK_COLUMNS = 3
 local TRAIN_CHIPS = logic.TRAIN_CHIPS
 local NO_FINDINGS = {}
 -- Widths of the chips with their names and a one-digit count, without the icon, as stations.lua CHIP_WIDTH (the widest
--- any shipped locale renders at UI scale 1.0); each further digit adds DIGIT_WIDTH. The group toggle takes 32 more.
+-- any shipped locale renders at any UI scale); each further digit adds DIGIT_WIDTH. The group toggle takes 32 more.
 local CHIP_WIDTH = {
-	all = 51, parked = 78, to_p = 103, loading = 83, to_r = 111, unloading = 97, returning = 96, refuel = 94,
+	all = 51, parked = 78, to_p = 105, loading = 83, to_r = 113, unloading = 97, returning = 96, refuel = 94,
 	interrupt = 105, not_refuelled = 145, in_group = 129, trouble = 95, problems = 94,
 }
 local DIGIT_WIDTH = 8
