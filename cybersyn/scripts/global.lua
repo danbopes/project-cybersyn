@@ -90,7 +90,7 @@
 ---@field public priority int --transient
 ---@field public primary_stop StopInfo? the station combinator's stop from the latest poll, which lets the remote create_manifest take station ids --transient
 ---@field public inv_stops {[uint]: StopInfo}? the inventory combinators' stops from the latest poll, by unit number; the manager reads these and primary_stop instead of the combinators --transient
----@field public comb2_signals Signal[]? the control combinator's signals as of the latest poll --transient
+---@field public comb2_signals Signal[]? the control combinator's signals as of the latest poll, nil when the station combinator had no input --transient
 ---@field public item_priority int? --transient
 ---@field public r_threshold int >= 0 --transient
 ---@field public r_fluid_threshold int? --transient

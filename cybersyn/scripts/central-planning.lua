@@ -1261,7 +1261,8 @@ local function tick_poll_station(map_data, mod_settings)
 	end
 	station.primary_stop = nil
 	station.inv_stops = nil
-	station.comb2_signals = comb2_signals
+	-- Without station combinator input the poll ignores the control combinator and keeps stale item thresholds.
+	station.comb2_signals = comb1_signals and comb2_signals
 
 	-- The S clears when the whole station requests nothing; each inventory's I when that inventory does.
 	local is_requesting_nothing = true

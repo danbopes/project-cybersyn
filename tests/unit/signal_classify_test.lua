@@ -70,6 +70,7 @@ local function stations()
 		{ is_p = false })
 	local idle = station(600, { list = {} }, { [651] = { list = { sig("iron-plate", -5000) } } })
 	quiet(idle.entity_comb1)
+	idle.entity_comb2 = control_comb(602, { sig(SIGNAL_PRIORITY, 4, V), sig("iron-plate", 3) })
 	local provider = station(900, { list = {
 		sig(NET, 1, V), sig("coal", 50000), sig("stone", 50000), sig("iron-plate", 50000), sig("iron-ore", 50000),
 		sig("water", 100000, "fluid"),
@@ -258,6 +259,9 @@ test("classify: inventories count only while the station combinator has input", 
 	local src = sources(snap.stations[600])
 	assert_eq(#src, 2)
 	assert_eq({ src[2].read, src[2].ok, src[2].r }, { false, true, {} })
+	-- The control combinator too: the poll did not read its overrides.
+	assert_eq(snap.stations[600].control2, {})
+	assert_eq(snap.stations[600].thresholds, {})
 end)
 
 test("classify: in-flight deliveries and warming up: the manager shows what the planner registered", function()
