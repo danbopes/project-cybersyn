@@ -204,7 +204,7 @@ test("close_manager_window: forgets a pending return and the map return", functi
 	local _, _, nav, player, pd = setup()
 	nav.open_entity(player, pd, stop)
 	pd.map_from = { controller = defines.controllers.character, position = { x = 0, y = 0 }, surface = 1 }
-	nav.close_manager_window(player, pd, pd.refs, true)
+	nav.close_manager_window(player, pd, pd.refs)
 	assert_nil(pd.return_to)
 	assert_nil(pd.map_from)
 end)

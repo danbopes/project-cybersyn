@@ -762,7 +762,7 @@ function manager.handle.manager_close(player, player_data, refs)
 	player_data.search_open = nil
 	item.close(player, player_data)
 	explain.close(player, player_data)
-	nav.close_manager_window(player, player_data, refs, true)
+	nav.close_manager_window(player, player_data, refs)
 end
 
 -- ---------------------------------------------------------------- overlays and Escape

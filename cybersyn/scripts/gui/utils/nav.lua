@@ -129,12 +129,11 @@ function nav.open_entity(player, player_data, entity)
 	end
 end
 
---- @param force boolean? Close even when pinned (close button, toggle shortcut).
-function nav.close_manager_window(player, player_data, refs, force)
-	if player_data.pinning and not force then
-		return
-	end
-
+--- Hides the window and drops what only an open window needs, pinned or not (manager.handle.manager_close).
+--- @param player LuaPlayer
+--- @param player_data PlayerData
+--- @param refs {[string]: LuaGuiElement}
+function nav.close_manager_window(player, player_data, refs)
 	refs.manager_window.visible = false
 	-- Cleared first: releasing player.opened re-enters the close path through on_gui_closed.
 	player_data.is_manager_open = false
