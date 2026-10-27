@@ -998,17 +998,6 @@ local function add_request(requested, hash, count, threshold, mask)
 	return active
 end
 
-local function item_threshold(station, hash, name, item_type, base_item, base_fluid)
-	local threshold = station.item_thresholds and station.item_thresholds[hash]
-	if not threshold then
-		threshold = item_type == "fluid" and (base_fluid or base_item) or base_item
-	end
-	if station.is_stack and item_type == "item" then
-		threshold = threshold * (get_stack_size(nil, name) or 1)
-	end
-	return threshold
-end
-
 -- Virtual signals a secondary inventory combinator consumes as settings, and locked slots, which only the station
 -- combinator sets; every other virtual signal on a NETWORK_EACH station's secondary is one of its networks
 -- (tick_poll_station).
@@ -1044,7 +1033,7 @@ local function classify(station, signals, st, base_item, base_fluid, control, b,
 			elseif item_type == "item" or item_type == "fluid" then
 				local hash = hash_signal(signal)
 				if count < 0 and station.is_r then
-					local threshold = item_threshold(station, hash, name, item_type, base_item, base_fluid)
+					local threshold = get_item_threshold(nil, station, hash, name, item_type, base_item, base_fluid)
 					local active = add_request(requested, hash, count, threshold,
 						network_name ~= NETWORK_EACH and nets_n == 1 and net_masks[1] or nil)
 					if own then add_request(sr, hash, count, threshold, src_mask) end
@@ -1062,9 +1051,8 @@ local function classify(station, signals, st, base_item, base_fluid, control, b,
 							local key = nets[i] .. ":" .. hash
 							p_keys[key] = bor(p_keys[key] or 0, net_masks[i])
 						end
-						local over = overrides and overrides[hash]
+						local over = overrides and get_item_threshold(nil, station, hash, name, item_type)
 						if over then
-							if station.is_stack and item_type == "item" then over = over * (get_stack_size(nil, name) or 1) end
 							for i = 1, nets_n do
 								local key = nets[i] .. ":" .. hash
 								local prev = p_over[key]

@@ -97,3 +97,25 @@ test("harness: serpent.line sorts keys", function()
 	assert_eq(table_size({ a = 1, b = 2, 3 }), 3)
 	assert_eq(H.keys({ b = 1, a = 2, [2] = 0 }), { 2, "a", "b" })
 end)
+
+test("get_item_threshold: override, else fluid or item base; stack stations count items in stacks", function()
+	local plain = { item_thresholds = { ["iron-ore"] = 7, water = 300 } }
+	assert_eq(get_item_threshold(nil, plain, "iron-ore", "iron-ore", "item", 1000, 5000), 7)
+	assert_eq(get_item_threshold(nil, plain, "water", "water", "fluid", 1000, 5000), 300)
+	assert_eq(get_item_threshold(nil, plain, "iron-plate", "iron-plate", "item", 1000, 5000), 1000)
+	assert_eq(get_item_threshold(nil, plain, "steam", "steam", "fluid", 1000, 5000), 5000)
+	-- No fluid threshold set: fluids use the item one.
+	assert_eq(get_item_threshold(nil, plain, "steam", "steam", "fluid", 1000, nil), 1000)
+	assert_eq(get_item_threshold(nil, {}, "iron-plate", "iron-plate", "item", 1000), 1000)
+
+	local stack = { is_stack = true, item_thresholds = { ["iron-ore"] = 2, water = 300 } }
+	assert_eq(get_item_threshold(nil, stack, "iron-ore", "iron-ore", "item", 4, 5000), 100)
+	assert_eq(get_item_threshold(nil, stack, "iron-plate", "iron-plate", "item", 4, 5000), 400)
+	assert_eq(get_item_threshold(nil, stack, "water", "water", "fluid", 4, 5000), 300)
+	assert_eq(get_item_threshold(nil, stack, "steam", "steam", "fluid", 4, 5000), 5000)
+
+	-- Without bases: the provider override alone, scaled the same way, or nil.
+	assert_eq(get_item_threshold(nil, stack, "iron-ore", "iron-ore", "item"), 100)
+	assert_nil(get_item_threshold(nil, stack, "iron-plate", "iron-plate", "item"))
+	assert_nil(get_item_threshold(nil, {}, "iron-plate", "iron-plate", "item"))
+end)

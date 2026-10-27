@@ -418,20 +418,13 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 		local r_effective_adjustment = r_station.enable_manual_inventory and 0 or (r_station.deliveries[item_hash] or 0)
 		local r_effective_item_count = r_item_count + r_effective_adjustment
 		if r_effective_item_count < 0 and r_item_count < 0 then
-			local r_threshold = r_station.item_thresholds and r_station.item_thresholds[item_hash] or
-					item_type == "fluid" and r_stop.r_fluid_threshold or
-					r_stop.r_threshold
-			if r_station.is_stack and item_type == "item" then
-				r_threshold = r_threshold * get_stack_size(map_data, item_name)
-			end
+			local r_threshold = get_item_threshold(map_data, r_station, item_hash, item_name, item_type,
+				r_stop.r_threshold, r_stop.r_fluid_threshold) --[[@as int]]
 
 			local p_effective_item_count = p_stop.item_p_counts[item_hash]
 			--could be an item that is not present at the station
 			local effective_threshold
-			local override_threshold = p_station.item_thresholds and p_station.item_thresholds[item_hash]
-			if override_threshold and p_station.is_stack and item_type == "item" then
-				override_threshold = override_threshold * get_stack_size(map_data, item_name)
-			end
+			local override_threshold = get_item_threshold(map_data, p_station, item_hash, item_name, item_type)
 			if override_threshold and override_threshold <= r_threshold then
 				effective_threshold = override_threshold
 			else
@@ -668,7 +661,6 @@ local function tick_dispatch(map_data, mod_settings)
 	while true do
 		-- Locate the best matching requester amongst the possible requesters matching the `item_network_name`.
 		local r_stop_i = nil
-		local r_threshold = nil
 		local best_r_prior = -INF
 		local best_timestamp = INF
 		for i, stop in ipairs(r_stops) do
@@ -689,14 +681,9 @@ local function tick_dispatch(map_data, mod_settings)
 				goto continue
 			end
 
-			local threshold = item_type == "fluid" and stop.r_fluid_threshold or stop.r_threshold
 			local prior = station.priority
-			local item_threshold = station.item_thresholds and station.item_thresholds[item_hash] or nil
-			if item_threshold then
-				threshold = item_threshold
-				if station.item_priority then
-					prior = station.item_priority --[[@as int]]
-				end
+			if station.item_priority and station.item_thresholds and station.item_thresholds[item_hash] then
+				prior = station.item_priority --[[@as int]]
 			end
 			if prior < best_r_prior then
 				goto continue
@@ -708,7 +695,6 @@ local function tick_dispatch(map_data, mod_settings)
 			end
 
 			r_stop_i = i
-			r_threshold = threshold
 			best_r_prior = prior
 			best_timestamp = station.last_delivery_tick
 			::continue::
@@ -737,9 +723,8 @@ local function tick_dispatch(map_data, mod_settings)
 		end
 		local trains = map_data.available_trains[network_name]
 		local is_fluid = item_type == "fluid"
-		if not is_fluid and r_station.is_stack then
-			r_threshold = r_threshold * get_stack_size(map_data, item_name)
-		end
+		local r_threshold = get_item_threshold(map_data, r_station, item_hash, item_name, item_type,
+			r_stop.r_threshold, r_stop.r_fluid_threshold) --[[@as int]]
 		--no train exists with layout accepted by both provide and request stations
 		local correctness = 0
 		local closest_to_correct_p_station = nil
@@ -804,10 +789,7 @@ local function tick_dispatch(map_data, mod_settings)
 			end
 
 			effective_count = p_stop.item_p_counts[item_hash] or 0
-			override_threshold = p_station.item_thresholds and p_station.item_thresholds[item_hash]
-			if override_threshold and p_station.is_stack and not is_fluid then
-				override_threshold = override_threshold * get_stack_size(map_data, item_name)
-			end
+			override_threshold = get_item_threshold(map_data, p_station, item_hash, item_name, item_type)
 			if override_threshold and override_threshold <= r_threshold then
 				effective_threshold = override_threshold
 			else
@@ -1293,13 +1275,8 @@ local function tick_poll_station(map_data, mod_settings)
 						-- For secondary inventory mode, negative signals are requests, positive are provides
 						local is_not_requesting = true
 						if station.is_r and item_count < 0 then
-							local r_threshold = station.item_thresholds and station.item_thresholds[item_hash] or
-								item_type == "fluid" and stop.r_fluid_threshold or stop.r_threshold
-
-							if station.is_stack and item_type == "item" then
-								r_threshold = r_threshold * get_stack_size(map_data, item_name)
-							end
-
+							local r_threshold = get_item_threshold(map_data, station, item_hash, item_name, item_type,
+								stop.r_threshold, stop.r_fluid_threshold) --[[@as int]]
 							if -effective_item_count >= r_threshold and -item_count >= r_threshold then
 								is_not_requesting = false
 								is_requesting_nothing = false
@@ -1384,13 +1361,10 @@ local function tick_poll_station(map_data, mod_settings)
 			-- For each item in the combinator input, check if we should provide or request the given item. Requesting takes priority.
 			local is_not_requesting = true
 			if station.is_r then
-				local r_threshold = station.item_thresholds and station.item_thresholds[item_hash] or
-				  item_type == "fluid" and station.r_fluid_threshold or
-					station.r_threshold
-				if station.is_stack and item_type == "item" then
-					r_threshold = r_threshold * get_stack_size(map_data, item_name)
-				end
-				if -effective_item_count >= r_threshold and -item_count >= r_threshold then
+				-- Only a negative count can pass the threshold test, so a provided item skips the lookup.
+				local r_threshold = item_count < 0 and get_item_threshold(map_data, station, item_hash, item_name,
+					item_type, station.r_threshold, station.r_fluid_threshold)
+				if r_threshold and -effective_item_count >= r_threshold and -item_count >= r_threshold then
 					is_not_requesting = false
 					is_requesting_nothing = false
 
