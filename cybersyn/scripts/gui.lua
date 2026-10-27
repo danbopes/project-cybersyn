@@ -162,10 +162,10 @@ local function generate_stop_layout_text(combId)
 end
 
 local LAYOUT_ITEM_MAP = {
-	[0] = "item/locomotive",
-	[1] = "item/cargo-wagon",
-	[2] = "item/fluid-wagon",
-	[3] = "cybersyn-both-wagon",
+	[PATTERN_NONE] = "item/locomotive",
+	[PATTERN_CARGO] = "item/cargo-wagon",
+	[PATTERN_FLUID] = "item/fluid-wagon",
+	[PATTERN_BOTH] = "cybersyn-both-wagon",
 	unknown = "utility/questionmark",
 }
 
@@ -212,14 +212,14 @@ local function generate_stop_layout_items(combId)
 
 	local last_i = 1
 	for i, type in pairs(stopLayout) do
-		if type ~= 0 and type ~= 1 and type ~= 2 and type ~= 3 then
+		if LAYOUT_ITEM_MAP[type] == nil then
 			type = "unknown"
 		end
 		if i - last_i > 1 then
 			for _ = 1, i - last_i - 1 do
 				table.insert(items, {
 					type = "sprite",
-					sprite = LAYOUT_ITEM_MAP[0],
+					sprite = LAYOUT_ITEM_MAP[PATTERN_NONE],
 					style_mods = { size = 32 },
 					resize_to_sprite = false,
 					ignored_by_interaction = true,
