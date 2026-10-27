@@ -1116,7 +1116,7 @@ end
 ---@param map_data MapData
 ---@param station Station
 ---@param stop StopInfo
----@param inv_requested {[string]: true}? on the station combinator's stop: items an inventory requests, whose waits stay
+---@param inv_requested {[string]: true}? station combinator's stop only: items an inventory requests, whose waits stay
 ---@return {[string]: int}? requested item hash -> threshold, also kept as stop.requested
 local function register_items(map_data, station, stop, inv_requested)
 	local economy = map_data.economy
