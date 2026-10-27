@@ -298,6 +298,7 @@ function utilization_tab.build(map_data, player_data)
 	end
 
 	local selected_series = player_data.tabs.utilization_tab.selected or {}
+	local zoom = camera_info and camera_info.zoom
 	local current_tick = game.tick
 	local cache = player_data.cache.utilization
 	local legend_table = refs.utilization_legend_table
