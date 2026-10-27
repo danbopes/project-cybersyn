@@ -21,6 +21,22 @@ local REJ_P_LIMIT, REJ_P_REQUESTING, REJ_MASK, REJ_SURFACE, REJ_BELOW = REJ_P_AT
 local REJ_T_MASK, REJ_T_MANUAL, REJ_T_SURFACE = REJ_TRAIN_MASK, REJ_TRAIN_MANUAL, REJ_TRAIN_SURFACE
 local REJ_N = REJ_COUNT
 
+-- Diagnostics: the furthest provider check that rejected the current requester, with its provider and payload.
+local rej_best = { site = 0, p = nil, a = 0, b = 0 }
+
+--- Counts a provider rejection and keeps the furthest site; among below-threshold providers, the one holding most.
+---@param site int REJ_P_*
+---@param p_id uint
+---@param a number
+---@param b number
+local function note_rej(site, p_id, a, b)
+	diag_rej[site] = diag_rej[site] + 1
+	local best = rej_best
+	if best.site < site or (best.site == site and (site ~= REJ_BELOW or a > best.a)) then
+		best.site, best.p, best.a, best.b = site, p_id, a, b
+	end
+end
+
 local HASH_STRING = "|"
 
 -- Request tracking functions
@@ -719,12 +735,11 @@ local function tick_dispatch(map_data, mod_settings)
 		--no train exists with layout accepted by both provide and request stations
 		local correctness = 0
 		local closest_to_correct_p_station = nil
-		-- Diagnostics (on only): the furthest provider site that rejected this requester and its payload, and the
-		-- largest capacity among trains rejected for capacity with the slots they lacked.
-		local rej_site, rej_p, rej_a, rej_b = 0, nil, 0, 0
+		-- Diagnostics (on only): the largest capacity among trains rejected for capacity with the slots they lacked.
 		local cap_need, cap_max = 0, -1
 		if d then
 			for k = 1, REJ_N do diag_rej[k] = 0 end
+			rej_best.site, rej_best.p, rej_best.a, rej_best.b = 0, nil, 0, 0
 		end
 
 		local r_surface_id = r_station.entity_stop.surface_index
@@ -745,10 +760,7 @@ local function tick_dispatch(map_data, mod_settings)
 			local p_station = stations[p_stop.station_id]
 			if not p_station or p_station.deliveries_total >= p_station.trains_limit then
 				if d and p_station then
-					diag_rej[REJ_P_LIMIT] = diag_rej[REJ_P_LIMIT] + 1
-					if rej_site <= REJ_P_LIMIT then
-						rej_site, rej_p, rej_a, rej_b = REJ_P_LIMIT, p_stop.station_id, p_station.deliveries_total, p_station.trains_limit
-					end
+					note_rej(REJ_P_LIMIT, p_stop.station_id, p_station.deliveries_total, p_station.trains_limit)
 				end
 				goto p_continue
 			end
@@ -756,12 +768,7 @@ local function tick_dispatch(map_data, mod_settings)
 			--don't provide when already requesting
 			item_deliveries = p_station.deliveries[item_hash]
 			if item_deliveries and item_deliveries > 0 then
-				if d then
-					diag_rej[REJ_P_REQUESTING] = diag_rej[REJ_P_REQUESTING] + 1
-					if rej_site <= REJ_P_REQUESTING then
-						rej_site, rej_p, rej_a, rej_b = REJ_P_REQUESTING, p_stop.station_id, item_deliveries, 0
-					end
-				end
+				if d then note_rej(REJ_P_REQUESTING, p_stop.station_id, item_deliveries, 0) end
 				goto p_continue
 			end
 
@@ -769,12 +776,7 @@ local function tick_dispatch(map_data, mod_settings)
 			r_flag = get_network_mask(r_stop, network_name)
 			netand = band(p_flag, r_flag)
 			if netand == 0 then
-				if d then
-					diag_rej[REJ_MASK] = diag_rej[REJ_MASK] + 1
-					if rej_site <= REJ_MASK then
-						rej_site, rej_p, rej_a, rej_b = REJ_MASK, p_stop.station_id, r_flag, p_flag
-					end
-				end
+				if d then note_rej(REJ_MASK, p_stop.station_id, r_flag, p_flag) end
 				goto p_continue
 			end
 
@@ -789,12 +791,7 @@ local function tick_dispatch(map_data, mod_settings)
 				r_station.entity_stop.surface_index,
 				network_name, netand)
 			if not surface_connections then
-				if d then
-					diag_rej[REJ_SURFACE] = diag_rej[REJ_SURFACE] + 1
-					if rej_site <= REJ_SURFACE then
-						rej_site, rej_p, rej_a, rej_b = REJ_SURFACE, p_stop.station_id, p_surface_id, r_surface_id
-					end
-				end
+				if d then note_rej(REJ_SURFACE, p_stop.station_id, p_surface_id, r_surface_id) end
 				goto p_continue
 			end
 
@@ -818,10 +815,7 @@ local function tick_dispatch(map_data, mod_settings)
 					update_display(map_data, p_station)
 				end
 				if d then
-					diag_rej[REJ_BELOW] = diag_rej[REJ_BELOW] + 1
-					if rej_site < REJ_BELOW or effective_count > rej_a then
-						rej_site, rej_p, rej_a, rej_b = REJ_BELOW, p_stop.station_id, effective_count, effective_threshold
-					end
+					note_rej(REJ_BELOW, p_stop.station_id, effective_count, effective_threshold)
 					lock_r, lock_p, lock_stop, lock_count, lock_override =
 						r_station_id, p_stop.station_id, p_stop, effective_count, override_threshold
 				end
@@ -1031,8 +1025,8 @@ local function tick_dispatch(map_data, mod_settings)
 			if correctness == 0 then
 				failure_reason = FAILURE_REASON_NO_PROVIDER_STOCK
 				if d then
-					if rej_site > 0 then
-						reason, a, b, p_station_id = REJ_REASON[rej_site], rej_a, rej_b, rej_p
+					if rej_best.site > 0 then
+						reason, a, b, p_station_id = REJ_REASON[rej_best.site], rej_best.a, rej_best.b, rej_best.p
 					elseif lock_r then
 						-- Every provider left was locked by an earlier requester of this call. The latest lock is tested
 						-- against this requester's own mask and threshold: only a provider that would have served it was
