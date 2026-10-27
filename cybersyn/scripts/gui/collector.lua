@@ -39,8 +39,6 @@ local WAIT_SIGNAL = defines.train_state.wait_signal
 local bor = bit32.bor
 local WORKING = defines.entity_status.working
 local LOW_POWER = defines.entity_status.low_power
-local RED = defines.wire_connector_id.circuit_red
-local GREEN = defines.wire_connector_id.circuit_green
 
 --- Station statuses in severity order: the Stations status sort and chips follow it.
 collector.STATUSES = { "no_power", "disabled", "warming_up", "starved", "saturated", "idle", "ok" }
@@ -965,22 +963,19 @@ local function collect_depot(by_name, id, depot)
 	if depot.available_train_id then g.parked = g.parked + 1 end
 end
 
-local function read_signals(entity)
+--- @return boolean? working nil for a missing or invalid combinator
+local function working(entity)
 	if entity and entity.valid then
 		local status = entity.status
-		if status == WORKING or status == LOW_POWER then
-			return entity.get_signals(RED, GREEN), true
-		end
-		return nil, false
+		return status == WORKING or status == LOW_POWER
 	end
-	return nil, nil
+	return nil
 end
 
 --- Adds one source's request into a record whose old requests are marked with count 0 (see mark_requests).
+--- @param active boolean the planner registered the request
 --- @param mask int? the requesting combinator's network mask (one network; nil on a NETWORK_EACH station)
---- @return boolean active
-local function add_request(requested, hash, count, threshold, mask)
-	local active = -count >= threshold
+local function add_request(requested, hash, count, threshold, active, mask)
 	local req = requested[hash]
 	if req and req.count ~= 0 then
 		req.count = req.count + count
@@ -992,34 +987,27 @@ local function add_request(requested, hash, count, threshold, mask)
 	else
 		requested[hash] = { count = count, threshold = threshold, active = active, mask = mask }
 	end
-	return active
 end
 
--- Virtual signals a secondary inventory combinator consumes as settings, and locked slots, which only the station
--- combinator sets; every other virtual signal on a NETWORK_EACH station's secondary is one of its networks
--- (tick_poll_station).
-local SECONDARY_SETTINGS = {
-	[SIGNAL_PRIORITY] = true,
-	[REQUEST_THRESHOLD] = true,
-	[REQUEST_FLUID_THRESHOLD] = true,
-	[RESERVED_FLUID_CAPACITY] = true,
-	[LOCKED_SLOTS] = true,
-}
-
---- Mirrors tick_poll_station: negative = request when is_r, positive = provide when is_p; a signal the switch rules
---- out is ignored. Writes the merged record and, unless they are the record's own tables, `src`'s lists. With `b`,
---- also records which network:item pairs this combinator provides or actively requests, under the networks in
---- `nets`: the planner registers each combinator under its own networks.
---- @param src SnapshotSource the combinator `signals` came from
-local function classify(station, signals, st, base_item, base_fluid, control, b, src)
+--- Sorts one combinator's signals, as the planner's last poll kept them on its stop, into the record: negative on a
+--- requester is requested (active when the poll registered it), positive on a provider is provided, anything else the
+--- switches rule out is ignored. Writes the merged record and, unless they are the record's own tables, `src`'s lists.
+--- With `b`, also records the network:item pairs the stop registered, under the networks in `nets`.
+--- @param stop StopInfo
+--- @param src SnapshotSource the combinator `stop` belongs to
+local function classify(station, stop, st, control, b, src)
 	local network_name = station.network_name
+	local is_r, is_p = station.is_r, station.is_p
+	local registered, p_counts = stop.requested, stop.item_p_counts
+	local base_item, base_fluid = stop.r_threshold, stop.r_fluid_threshold
 	local r_keys, p_keys, p_over = b and b.r_keys, b and b.p_keys, b and b.p_over
 	local overrides = station.item_thresholds
 	local provided, requested, ignored = st.provided, st.requested, st.ignored
 	local sp, sr, si = src.provided, src.requested, src.ignored
 	local own = sp ~= provided
 	local src_mask = src.mask
-	for _, v in pairs(signals) do
+	local req_mask = network_name ~= NETWORK_EACH and nets_n == 1 and net_masks[1] or nil
+	for _, v in pairs(stop.tick_signals) do
 		local signal = v.signal
 		local name = signal.name
 		local item_type = signal.type or "item"
@@ -1029,20 +1017,23 @@ local function classify(station, signals, st, base_item, base_fluid, control, b,
 				if control then control[name] = count end
 			elseif item_type == "item" or item_type == "fluid" then
 				local hash = hash_signal(signal)
-				if count < 0 and station.is_r then
-					local threshold = get_item_threshold(nil, station, hash, name, item_type, base_item, base_fluid)
-					local active = add_request(requested, hash, count, threshold,
-						network_name ~= NETWORK_EACH and nets_n == 1 and net_masks[1] or nil)
-					if own then add_request(sr, hash, count, threshold, src_mask) end
+				if count < 0 and is_r then
+					local threshold = registered and registered[hash]
+					local active = threshold ~= nil
+					if not active then
+						threshold = get_item_threshold(nil, station, hash, name, item_type, base_item, base_fluid)
+					end
+					add_request(requested, hash, count, threshold, active, req_mask)
+					if own then add_request(sr, hash, count, threshold, active, src_mask) end
 					if active and r_keys then
 						for i = 1, nets_n do
 							r_keys[nets[i] .. ":" .. hash] = true
 						end
 					end
-				elseif count > 0 and station.is_p then
+				elseif count > 0 and is_p then
 					provided[hash] = (provided[hash] or 0) + count
 					if own then sp[hash] = (sp[hash] or 0) + count end
-					if p_keys then
+					if p_keys and p_counts[hash] then
 						-- The provider's masks, OR-ed per key: the lint's requester-vs-provider mask check reads them.
 						for i = 1, nets_n do
 							local key = nets[i] .. ":" .. hash
@@ -1182,12 +1173,13 @@ end
 
 local function by_unit(a, b) return (a.unit_number or 0) < (b.unit_number or 0) end
 
--- The valid secondary combinators of the station being read, by unit number, and their signals (false = not read).
+-- The valid secondary combinators of the station being read, by unit number, and their stops (false = not read).
 local sec_list = {}
-local sec_signals = {}
+local sec_stops = {}
 
---- Refills a station record from the station and its combinators. With `b`, also records the pass's provide and
---- request keys (see classify).
+--- Refills a station record from the station and what the planner's last poll kept of its combinators: the manager
+--- never reads combinator signals itself, so it can lag the circuit network by one planner cycle. With `b`, also
+--- records the pass's provide and request keys (see classify).
 --- @param st SnapshotStation
 --- @param station Station
 --- @param stop LuaEntity
@@ -1196,9 +1188,6 @@ local sec_signals = {}
 --- @param parse fun(name: string): RichNameParts
 local function fill_station(st, id, station, stop, comb1, b, parse)
 	local name = stop.backer_name
-	local default_item = station.r_threshold or mod_settings.r_threshold or 1
-	local default_fluid = station.r_fluid_threshold or (mod_settings.r_fluid_threshold and mod_settings.r_fluid_threshold > 0 and mod_settings.r_fluid_threshold) or nil
-
 	if st.name ~= name or not st.name_parts then
 		st.name = name
 		st.name_lower = helpers.multilingual_to_lower(name)
@@ -1256,31 +1245,29 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 	mark_signals(st.control2)
 	mark_signals(st.thresholds)
 
-	-- The planner skips warming-up stations and stations without a network, so they neither provide nor starve.
-	local keyed = not st.warming_up and st.network_name ~= nil and b or nil
-	local is_each = st.network_name == NETWORK_EACH
-
-	local signals1, ok1 = read_signals(comb1)
-	st.comb_ok = ok1 == true
+	-- The planner skips warming-up stations and stations without a network: they neither provide nor starve, and a stop
+	-- kept from before would show signals it no longer reads.
+	local polled = not st.warming_up and st.network_name ~= nil
+	local keyed = polled and b or nil
+	local p_stop = polled and station.primary_stop or nil
+	st.comb_ok = working(comb1) == true
 
 	local comb2 = station.entity_comb2
 	if comb2 then
-		local signals2, ok2 = read_signals(comb2)
-		st.comb2_ok = ok2 == true
+		st.comb2_ok = working(comb2) == true
+		local signals2 = polled and station.comb2_signals
 		if signals2 then
 			local control2, thresholds = st.control2, st.thresholds
 			for _, v in pairs(signals2) do
 				local signal = v.signal
+				local name = signal.name
 				local item_type = signal.type or "item"
-				if signal.name then
+				if name then
 					if item_type == "virtual" then
-						control2[signal.name] = v.count
+						control2[name] = v.count
 					elseif item_type == "item" or item_type == "fluid" then
-						local threshold = math.abs(v.count)
-						if station.is_stack and item_type == "item" then
-							threshold = threshold * (get_stack_size(nil, signal.name) or 1)
-						end
-						thresholds[hash_signal(signal)] = threshold
+						local hash = hash_signal(signal)
+						thresholds[hash] = get_item_threshold(nil, station, hash, name, item_type)
 					end
 				end
 			end
@@ -1309,26 +1296,21 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 
 	-- The planner reads secondaries only while the station combinator has input signals (a working combinator with
 	-- an empty input reads as nil too): the rest stay in st.sources with empty lists.
+	local inv_stops = p_stop and station.inv_stops
 	local n_read = 0
 	for i = 1, n_sec do
 		local sec = sec_list[i]
 		local src = source_at(sources, i + 1)
-		src.index, src.unit, src.priority = i, sec.unit_number, station_priority
+		local inv = inv_stops and inv_stops[sec.unit_number]
+		src.index, src.unit, src.priority = i, sec.unit_number, inv and inv.priority or station_priority
 		src.failed = inv_failed ~= nil and inv_failed[sec.unit_number] == true or nil
-		local signals, ok
-		if signals1 then
-			signals, ok = read_signals(sec)
-		else
-			local status = sec.status
-			ok = status == WORKING or status == LOW_POWER
-		end
-		src.ok = ok == true
-		src.read = signals1 ~= nil
-		if signals then
+		src.ok = working(sec) == true
+		src.read = p_stop ~= nil
+		if inv then
 			n_read = n_read + 1
-			sec_signals[i] = signals
+			sec_stops[i] = inv
 		else
-			sec_signals[i] = false
+			sec_stops[i] = false
 			src.network_mask = nil
 			set_source_network(src, st.network_name, nil)
 		end
@@ -1351,57 +1333,23 @@ local function fill_station(st, id, station, stop, comb1, b, parse)
 		end
 	end
 
-	if signals1 then
+	if p_stop then
 		set_networks(st.network_name, st.network_mask)
-		classify(station, signals1, st, default_item, default_fluid, st.control, keyed, src0)
+		classify(station, p_stop, st, st.control, keyed, src0)
 	end
 	for i = 1, n_sec do
-		local signals = sec_signals[i]
-		if signals then
+		local inv = sec_stops[i]
+		if inv then
 			local src = sources[i + 1]
-			local sec_item, sec_fluid = default_item, default_fluid
-			-- A secondary on one network may carry that network's signal: its own mask, as the planner reads it.
-			local sec_mask
-			if is_each then nets_n = 0 end
-			for _, v in pairs(signals) do
-				local signal = v.signal
-				if signal.type == "virtual" then
-					local name = signal.name
-					if name == SIGNAL_PRIORITY then
-						src.priority = v.count
-					elseif name == REQUEST_THRESHOLD then
-						sec_item = math.abs(v.count)
-					elseif name == REQUEST_FLUID_THRESHOLD then
-						sec_fluid = math.abs(v.count)
-					elseif is_each and name and not SECONDARY_SETTINGS[name] then
-						nets_n = nets_n + 1
-						nets[nets_n] = name
-						net_masks[nets_n] = v.count
-					elseif not is_each and name == st.network_name then
-						sec_mask = v.count
-					end
-				end
-			end
-			if is_each then
-				local own = src.network_mask
-				if type(own) ~= "table" then
-					own = {}
-					src.network_mask = own
-				end
-				for k in pairs(own) do own[k] = nil end
-				for k = 1, nets_n do own[nets[k]] = net_masks[k] end
-				set_source_network(src, NETWORK_EACH, own)
-			else
-				set_networks(st.network_name, sec_mask or st.network_mask)
-				local mask = nets_n == 1 and net_masks[1] or nil
-				src.network_mask = mask
-				set_source_network(src, st.network_name, mask)
-			end
-			classify(station, signals, st, sec_item, sec_fluid, nil, keyed, src)
+			local mask = mask_of(src.network_mask, inv.network_mask)
+			src.network_mask = mask
+			set_source_network(src, st.network_name, mask)
+			set_networks(st.network_name, mask)
+			classify(station, inv, st, nil, keyed, src)
 			st.secondary_count = st.secondary_count + 1
 			st.secondary = true
 		end
-		sec_signals[i] = nil
+		sec_stops[i] = nil
 	end
 	for i = 1, n_sec do sec_list[i] = nil end
 

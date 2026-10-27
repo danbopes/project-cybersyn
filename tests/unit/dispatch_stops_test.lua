@@ -58,7 +58,8 @@ local function manifest_for(p_stop_reserved, p_station_reserved)
 			},
 		},
 	}
-	local r_stop = { station_id = 1, tick_signals = requests, r_threshold = 100, r_fluid_threshold = 1000 }
+	local r_stop = { station_id = 1, tick_signals = requests, r_threshold = 100, r_fluid_threshold = 1000,
+		requested = { ["iron-plate"] = 100, water = 1000 } }
 	local p_stop = { station_id = 2, item_p_counts = { ["iron-plate"] = 500, water = 100000 },
 		reserved_fluid_capacity = p_stop_reserved }
 	local out = {}

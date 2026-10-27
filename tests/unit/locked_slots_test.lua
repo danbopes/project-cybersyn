@@ -12,7 +12,11 @@ end
 local function manifest_for(requests, locked_slots, per_item)
 	mod_settings = { locked_slots_per_item = per_item }
 	local p_counts = {}
-	for _, r in ipairs(requests) do p_counts[hash_signal(r.signal)] = 100000 end
+	local requested = {}
+	for _, r in ipairs(requests) do
+		p_counts[hash_signal(r.signal)] = 100000
+		requested[hash_signal(r.signal)] = 1
+	end
 	local map_data = {
 		stations = {
 			[1] = { deliveries = {}, r_threshold = 1, r_fluid_threshold = 1 },
@@ -26,7 +30,7 @@ local function manifest_for(requests, locked_slots, per_item)
 			},
 		},
 	}
-	local r_stop = { station_id = 1, tick_signals = requests, r_threshold = 1, r_fluid_threshold = 1 }
+	local r_stop = { station_id = 1, tick_signals = requests, r_threshold = 1, r_fluid_threshold = 1, requested = requested }
 	local p_stop = { station_id = 2, item_p_counts = p_counts }
 	local out = {}
 	for _, item in ipairs(create_manifest(map_data, r_stop, p_stop, 7, "iron-plate")) do out[item.name] = item.count end

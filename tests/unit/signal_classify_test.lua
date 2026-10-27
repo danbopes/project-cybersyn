@@ -260,23 +260,23 @@ test("classify: inventories count only while the station combinator has input", 
 	assert_eq({ src[2].read, src[2].ok, src[2].r }, { false, true, {} })
 end)
 
-test("classify: in-flight deliveries and warming up, where the planner and the manager disagree", function()
-	local map_data, snap = run()
-	-- 300 requested with 200 on the way leaves 100, below the 200 threshold; 100 provided with 100 leaving is 0.
-	assert_eq(registered(map_data.economy.all_r_stops, 110), {})
-	assert_eq(registered(map_data.economy.all_p_stops, 110), {})
-	assert_eq(sources(snap.stations[110])[1].r, { coal = "-300/200/true" })
+test("classify: in-flight deliveries and warming up: the manager shows what the planner registered", function()
+	local _, snap = run()
+	-- 300 requested with 200 on the way leaves 100, below the 200 threshold; 100 provided with 100 leaving is 0. The
+	-- stock still shows as provided, but neither key is registered.
+	assert_eq(sources(snap.stations[110])[1].r, { coal = "-300/200/false" })
 	assert_eq(sources(snap.stations[110])[1].p, { ["iron-plate"] = 100 })
-	assert_true(snap.request_keys["signal-A:coal"] == true)
-	assert_not_nil(snap.provider_masks["signal-A:iron-plate"])
-	-- The planner skips a warming-up station; the manager shows what its combinator reads as an active request.
-	assert_eq(registered(map_data.economy.all_r_stops, 120), {})
-	assert_eq(sources(snap.stations[120])[1].r, { coal = "-5000/1000/true" })
+	local _, alone = run({ [100] = true, [200] = true, [300] = true, [400] = true, [500] = true, [510] = true,
+		[600] = true, [900] = true })
+	assert_eq(alone.request_keys, {})
+	assert_eq(alone.provider_masks, {})
+	-- The planner skips a warming-up station and keeps nothing for it.
+	assert_eq(sources(snap.stations[120])[1].r, {})
 end)
 
 test("classify: the manager's request keys and provider keys are the planner's registrations", function()
-	-- Without the two stations above, where they disagree.
-	local map_data, snap = run({ [110] = true, [120] = true })
+	local map_data, snap = run()
 	assert_eq(sorted_keys(snap.request_keys), sorted_keys(map_data.economy.all_r_stops))
 	assert_eq(sorted_keys(snap.provider_masks), sorted_keys(map_data.economy.all_p_stops))
+	assert_same(snap.starved, map_data.economy.starved)
 end)

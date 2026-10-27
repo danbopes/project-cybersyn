@@ -68,7 +68,8 @@
 ---@field public r_fluid_threshold int? --transient
 ---@field public reserved_fluid_capacity int? an inventory's own reservation; nil uses the station's --transient
 ---@field public item_p_counts {[string]: int} --transient
----@field public tick_signals {[uint]: Signal}? --transient
+---@field public requested {[string]: int}? item hash -> threshold of each item the poll registered as a request; nil when none --transient
+---@field public tick_signals {[uint]: Signal}? the combinator's signals as read; item_p_counts and requested say what the poll registered --transient
 
 ---@class (exact) Station: Cybersyn.StationScheduleSettings
 ---@field public entity_stop LuaEntity
@@ -88,6 +89,8 @@
 ---@field public trains_limit int --transient
 ---@field public priority int --transient
 ---@field public primary_stop StopInfo? the station combinator's stop from the latest poll, which lets the remote create_manifest take station ids --transient
+---@field public inv_stops {[uint]: StopInfo}? the inventory combinators' stops from the latest poll, by unit number; the manager reads these and primary_stop instead of the combinators --transient
+---@field public comb2_signals Signal[]? the control combinator's signals as of the latest poll --transient
 ---@field public item_priority int? --transient
 ---@field public r_threshold int >= 0 --transient
 ---@field public r_fluid_threshold int? --transient

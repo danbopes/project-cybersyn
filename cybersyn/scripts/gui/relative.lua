@@ -3,8 +3,8 @@
 -- vanilla window (see "mounting") once per player and kind, and only shows it for a Cybersyn stop or train. While a panel is open it is refreshed on the manager tick: each section is rebuilt only when
 -- its signature changes, and ages are rounded to 10 s so an idle panel rebuilds nothing.
 --
--- Data: the manager snapshot's station record while a manager window keeps one; otherwise one live read of this
--- stop's combinators per refresh (collector.read_station). The fleet counts of the Effective config section come from
+-- Data: the manager snapshot's station record while a manager window keeps one; otherwise one read of this stop's
+-- planner state per refresh (collector.read_station). The fleet counts of the Effective config section come from
 -- a walk over storage.trains in chunks, only while that section is open.
 
 local gui = require("__flib__.gui")
