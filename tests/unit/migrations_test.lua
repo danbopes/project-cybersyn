@@ -91,7 +91,7 @@ test("2.1.2 -> 2.2.0 creates the new fields and drops the unread ones", function
 		assert_nil(storage.recent_external_items)
 		assert_nil(storage.warmup_station_ids)
 		assert_eq(storage.warmup_station_cycles, { [7] = 1 })
-		assert_eq(storage.economy, { all_r_stops = {}, all_p_stops = {}, all_names = {} })
+		assert_eq(storage.economy, { all_r_stops = {}, all_p_stops = {}, all_names = {}, starved = {} })
 		assert_eq(storage.available_trains, { ["signal-B"] = { [1] = true } }, "empty network tables dropped")
 
 		for id, station in pairs(storage.stations) do

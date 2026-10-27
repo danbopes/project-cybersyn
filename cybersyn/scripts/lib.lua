@@ -14,6 +14,26 @@ function is_secondary_inventory_op(op)
 	return op == MODE_SECONDARY_INVENTORY or op == MODE_SECONDARY_INVENTORY_FAILED
 end
 
+--- A station's threshold for one item, in items: its per-item override, else the stop's fluid or item threshold (a
+--- nil fluid threshold means the item one). A stack station counts in stacks, fluids have none. Without bases it is
+--- the override alone, or nil: how a provider's override is read.
+---@param map_data MapData?
+---@param station Station
+---@param item_hash string
+---@param item_name string
+---@param item_type string
+---@param base_item int?
+---@param base_fluid int?
+---@return int?
+function get_item_threshold(map_data, station, item_hash, item_name, item_type, base_item, base_fluid)
+	local thresholds = station.item_thresholds
+	local threshold = thresholds and thresholds[item_hash] or item_type == "fluid" and base_fluid or base_item
+	if threshold and station.is_stack and item_type == "item" then
+		return threshold * get_stack_size(map_data, item_name)
+	end
+	return threshold
+end
+
 --By Mami
 ---@param v string
 ---@param h string?

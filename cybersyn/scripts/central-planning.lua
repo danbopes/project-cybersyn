@@ -409,29 +409,28 @@ function create_manifest(map_data, r_stop, p_stop, train_id, primary_item_name)
 	---@type Manifest
 	local manifest = {}
 
-	for k, v in pairs(r_stop.tick_signals) do
+	local requested = r_stop.requested
+	-- An inventory's stop offers every item it is short of; the station combinator's only what it registered.
+	local inventory = r_stop.unit ~= nil
+	local network_name = r_stop.network_name
+	for _, v in pairs(r_stop.tick_signals) do
 		---@type string
 		local item_name = v.signal.name
 		local item_type = v.signal.type or "item"
-		local item_hash = hash_signal(v.signal)
+		local item_hash = item_name and hash_signal(v.signal)
+		local wanted = item_hash and item_name ~= network_name and (item_type == "item" or item_type == "fluid")
+			and (inventory or requested ~= nil and requested[item_hash] ~= nil)
 		local r_item_count = v.count
 		local r_effective_adjustment = r_station.enable_manual_inventory and 0 or (r_station.deliveries[item_hash] or 0)
 		local r_effective_item_count = r_item_count + r_effective_adjustment
-		if r_effective_item_count < 0 and r_item_count < 0 then
-			local r_threshold = r_station.item_thresholds and r_station.item_thresholds[item_hash] or
-					item_type == "fluid" and r_stop.r_fluid_threshold or
-					r_stop.r_threshold
-			if r_station.is_stack and item_type == "item" then
-				r_threshold = r_threshold * get_stack_size(map_data, item_name)
-			end
+		if wanted and r_effective_item_count < 0 and r_item_count < 0 then
+			local r_threshold = get_item_threshold(map_data, r_station, item_hash, item_name, item_type,
+				r_stop.r_threshold, r_stop.r_fluid_threshold) --[[@as int]]
 
 			local p_effective_item_count = p_stop.item_p_counts[item_hash]
 			--could be an item that is not present at the station
 			local effective_threshold
-			local override_threshold = p_station.item_thresholds and p_station.item_thresholds[item_hash]
-			if override_threshold and p_station.is_stack and item_type == "item" then
-				override_threshold = override_threshold * get_stack_size(map_data, item_name)
-			end
+			local override_threshold = get_item_threshold(map_data, p_station, item_hash, item_name, item_type)
 			if override_threshold and override_threshold <= r_threshold then
 				effective_threshold = override_threshold
 			else
@@ -668,7 +667,6 @@ local function tick_dispatch(map_data, mod_settings)
 	while true do
 		-- Locate the best matching requester amongst the possible requesters matching the `item_network_name`.
 		local r_stop_i = nil
-		local r_threshold = nil
 		local best_r_prior = -INF
 		local best_timestamp = INF
 		for i, stop in ipairs(r_stops) do
@@ -689,14 +687,9 @@ local function tick_dispatch(map_data, mod_settings)
 				goto continue
 			end
 
-			local threshold = item_type == "fluid" and stop.r_fluid_threshold or stop.r_threshold
 			local prior = station.priority
-			local item_threshold = station.item_thresholds and station.item_thresholds[item_hash] or nil
-			if item_threshold then
-				threshold = item_threshold
-				if station.item_priority then
-					prior = station.item_priority --[[@as int]]
-				end
+			if station.item_priority and station.item_thresholds and station.item_thresholds[item_hash] then
+				prior = station.item_priority --[[@as int]]
 			end
 			if prior < best_r_prior then
 				goto continue
@@ -708,7 +701,6 @@ local function tick_dispatch(map_data, mod_settings)
 			end
 
 			r_stop_i = i
-			r_threshold = threshold
 			best_r_prior = prior
 			best_timestamp = station.last_delivery_tick
 			::continue::
@@ -737,9 +729,8 @@ local function tick_dispatch(map_data, mod_settings)
 		end
 		local trains = map_data.available_trains[network_name]
 		local is_fluid = item_type == "fluid"
-		if not is_fluid and r_station.is_stack then
-			r_threshold = r_threshold * get_stack_size(map_data, item_name)
-		end
+		local r_threshold = get_item_threshold(map_data, r_station, item_hash, item_name, item_type,
+			r_stop.r_threshold, r_stop.r_fluid_threshold) --[[@as int]]
 		--no train exists with layout accepted by both provide and request stations
 		local correctness = 0
 		local closest_to_correct_p_station = nil
@@ -804,10 +795,7 @@ local function tick_dispatch(map_data, mod_settings)
 			end
 
 			effective_count = p_stop.item_p_counts[item_hash] or 0
-			override_threshold = p_station.item_thresholds and p_station.item_thresholds[item_hash]
-			if override_threshold and p_station.is_stack and not is_fluid then
-				override_threshold = override_threshold * get_stack_size(map_data, item_name)
-			end
+			override_threshold = get_item_threshold(map_data, p_station, item_hash, item_name, item_type)
 			if override_threshold and override_threshold <= r_threshold then
 				effective_threshold = override_threshold
 			else
@@ -1085,6 +1073,124 @@ local function tick_dispatch(map_data, mod_settings)
 		table_remove(r_stops, r_stop_i)
 	end
 end
+--- Reads a combinator's settings signals into `t`: the station for its station combinator, the stop for an inventory
+--- combinator. Locked slots come from the station combinator only; on NETWORK_EACH every other virtual signal is a
+--- network.
+---@param t Station|StopInfo
+---@param signals Signal[]
+---@param is_each boolean
+---@param primary boolean
+local function read_settings(t, signals, is_each, primary)
+	local network_name = t.network_name
+	for _, v in pairs(signals) do
+		local signal = v.signal
+		local item_name = signal.name
+		if item_name then
+			local item_count = v.count
+			if signal.type == "virtual" then
+				if item_name == SIGNAL_PRIORITY then
+					t.priority = item_count
+				elseif item_name == REQUEST_THRESHOLD then
+					--NOTE: thresholds must be >0 or they can cause a crash
+					t.r_threshold = abs(item_count)
+				elseif item_name == REQUEST_FLUID_THRESHOLD then
+					t.r_fluid_threshold = abs(item_count)
+				elseif item_name == LOCKED_SLOTS then
+					if primary then t.locked_slots = max(item_count, 0) end
+				elseif item_name == RESERVED_FLUID_CAPACITY then
+					t.reserved_fluid_capacity = max(item_count, 0)
+				elseif is_each then
+					t.network_mask[item_name] = item_count
+				end
+			end
+			if item_name == network_name then
+				t.network_mask = item_count
+			end
+		end
+	end
+end
+
+--- Registers a stop's items on its networks: requested when the count and the count after in-flight deliveries both
+--- reach the threshold, else provided when both are positive. tick_signals stays as read: create_manifest and the
+--- manager skip what the stop did not register.
+---@param map_data MapData
+---@param station Station
+---@param stop StopInfo
+---@param inv_requested {[string]: true}? station combinator's stop only: items an inventory requests, whose waits stay
+---@return {[string]: int}? requested item hash -> threshold, also kept as stop.requested
+local function register_items(map_data, station, stop, inv_requested)
+	local economy = map_data.economy
+	local all_r_stops, all_p_stops, all_names = economy.all_r_stops, economy.all_p_stops, economy.all_names
+	local is_r, is_p = station.is_r, station.is_p
+	local deliveries = not station.enable_manual_inventory and station.deliveries or nil
+	local network_name, network_mask = stop.network_name, stop.network_mask
+	local base_item, base_fluid = stop.r_threshold, stop.r_fluid_threshold
+	local item_p_counts = stop.item_p_counts
+	local primary = stop.unit == nil
+	---@type {[string]: int}?
+	local requested = nil
+	for _, v in pairs(stop.tick_signals) do
+		local signal = v.signal
+		local item_name = signal.name
+		local item_type = signal.type or "item"
+		if item_name and item_name ~= network_name and (item_type == "item" or item_type == "fluid") then
+			local item_hash = hash_signal(signal)
+			local item_count = v.count
+			local effective_item_count = item_count + (deliveries and deliveries[item_hash] or 0)
+			-- Only a negative count can pass the threshold test, so a provided item skips the lookup.
+			local r_threshold = is_r and item_count < 0 and get_item_threshold(map_data, station, item_hash, item_name,
+				item_type, base_item, base_fluid)
+			if r_threshold and -effective_item_count >= r_threshold and -item_count >= r_threshold then
+				if not requested then requested = {} end
+				requested[item_hash] = r_threshold
+				track_request_start(station, item_hash)
+				local f, a
+				if network_name == NETWORK_EACH then
+					f, a = pairs(network_mask --[[@as {[string]: int}]])
+				else
+					f, a = once, network_name
+				end
+				for net, _ in f, a do
+					-- `item_hash` used here since matching algorithm should only match same quality.
+					local item_network_name = create_item_network_name(net, item_hash)
+					local stops = all_r_stops[item_network_name]
+					if stops == nil then
+						stops = {}
+						all_r_stops[item_network_name] = stops
+						all_names[#all_names + 1] = item_network_name
+						all_names[#all_names + 1] = signal
+					end
+					stops[#stops + 1] = stop
+				end
+			else
+				if is_r and primary and not (inv_requested and inv_requested[item_hash]) then
+					clear_request_tracking(station, item_hash)
+				end
+				if is_p and effective_item_count > 0 and item_count > 0 then
+					local f, a
+					if network_name == NETWORK_EACH then
+						f, a = pairs(network_mask --[[@as {[string]: int}]])
+					else
+						f, a = once, network_name
+					end
+					for net, _ in f, a do
+						local item_network_name = create_item_network_name(net, item_hash)
+						local stops = all_p_stops[item_network_name]
+						if stops == nil then
+							stops = {}
+							all_p_stops[item_network_name] = stops
+						end
+						stops[#stops + 1] = stop
+						item_p_counts[item_hash] = effective_item_count
+					end
+				end
+			end
+		end
+	end
+	if requested then stop.requested = requested end
+	return requested
+end
+
 ---@param map_data MapData
 ---@param mod_settings CybersynModSettings
 local function tick_poll_station(map_data, mod_settings)
@@ -1100,6 +1206,13 @@ local function tick_poll_station(map_data, mod_settings)
 		tick_data.i = (tick_data.i or 0) + 1
 		if tick_data.i > #map_data.active_station_ids then
 			tick_data.i = nil
+			-- For the manager, once per cycle: the economy is complete only now, and dispatch consumes all_names.
+			local starved = {}
+			for i = 1, #all_names, 2 do
+				local key = all_names[i]
+				if not all_p_stops[key] then starved[key] = true end
+			end
+			map_data.economy.starved = starved
 			map_data.tick_state = STATE_DISPATCH
 			return true
 		end
@@ -1147,6 +1260,9 @@ local function tick_poll_station(map_data, mod_settings)
 		diag.station_power(d, station_id, comb1_working)
 	end
 	station.primary_stop = nil
+	station.inv_stops = nil
+	-- Without station combinator input the poll ignores the control combinator and keeps stale item thresholds.
+	station.comb2_signals = comb1_signals and comb2_signals
 
 	-- The S clears when the whole station requests nothing; each inventory's I when that inventory does.
 	local is_requesting_nothing = true
@@ -1173,186 +1289,39 @@ local function tick_poll_station(map_data, mod_settings)
 		else
 			station.item_thresholds = nil
 		end
-		-- Process and remove station combinator input signals corresponding to station metadata.
-		for k, v in pairs(comb1_signals) do
-			local item_name = v.signal.name
-			local item_count = v.count
-			local item_type = v.signal.type or "item"
-			-- No need to consider quality in this loop, as the only signals handled here are setting networks and thresholds.
-			if item_name then
-				if item_type == "virtual" then
-					if item_name == SIGNAL_PRIORITY then
-						station.priority = item_count
-					elseif item_name == REQUEST_THRESHOLD then
-						--NOTE: thresholds must be >0 or they can cause a crash
-						station.r_threshold = abs(item_count)
-					elseif item_name == REQUEST_FLUID_THRESHOLD then
-						--NOTE: thresholds must be >0 or they can cause a crash
-						station.r_fluid_threshold = abs(item_count)
-					elseif item_name == LOCKED_SLOTS then
-						station.locked_slots = max(item_count, 0)
-					elseif item_name == RESERVED_FLUID_CAPACITY then
-						station.reserved_fluid_capacity = max(item_count, 0)
-					elseif is_each then
-						station.network_mask[item_name] = item_count
-					end
-					comb1_signals[k] = nil
-				end
-				if item_name == station.network_name then
-					station.network_mask = item_count
-					comb1_signals[k] = nil
-				end
-				-- After cherry picking all the control signals for the station,
-				-- we can now filter out non-item, non-fluid signals as they don't
-				-- represent deliverable objects.
-				if item_type ~= "item" and item_type ~= "fluid" then
-					-- TODO: just ignoring the signals to fix the crash for now.
-					-- It might be nice to attach a warning to the station telling
-					-- the user they mistakenly requested a recipe/asteroid/etc.
-					-- instead of an item.
-					comb1_signals[k] = nil
-				end
-			else
-				comb1_signals[k] = nil
-			end
-		end
+		read_settings(station, comb1_signals, is_each, true)
 
 		-- Hashes an inventory combinator requests this poll. The station combinator's pass below and the cleanup after it
 		-- must not clear their waits; nil at a station without inventory requests, so those poll exactly as before.
 		---@type {[string]: true}?
 		local inv_requested = nil
 
-		-- Process secondary inventory combinator signals
 		if secondary_inv_signals then
+			local inv_stops = {}
+			station.inv_stops = inv_stops
 			for unit_number, signals in pairs(secondary_inv_signals) do
-				if signals then
-					---@type StopInfo
-					local stop = {
-						station_id = station_id,
-						unit = unit_number,
-						tick_signals = signals,
-						network_name = station.network_name,
-						network_mask = is_each and {} or station.network_mask,
-						priority = station.priority,
-						r_threshold = station.r_threshold,
-						r_fluid_threshold = station.r_fluid_threshold,
-						reserved_fluid_capacity = station.reserved_fluid_capacity,
-						item_p_counts = {},
-					}
-
-					-- Process control signals for this combinator
-					for k, v in pairs(signals) do
-						local item_name = v.signal.name
-						local item_count = v.count
-						local item_type = v.signal.type or "item"
-
-						if item_name then
-							if item_type == "virtual" then
-								if item_name == SIGNAL_PRIORITY then
-									stop.priority = item_count
-								elseif item_name == REQUEST_THRESHOLD then
-									stop.r_threshold = abs(item_count)
-								elseif item_name == REQUEST_FLUID_THRESHOLD then
-									stop.r_fluid_threshold = abs(item_count)
-								elseif item_name == RESERVED_FLUID_CAPACITY then
-									stop.reserved_fluid_capacity = max(item_count, 0)
-								elseif item_name == LOCKED_SLOTS then
-									-- Not a network: locked slots are read from the station combinator only.
-								elseif is_each then
-									stop.network_mask[item_name] = item_count
-								end
-
-								-- Remove control signals from processing later
-								signals[k] = nil
-							end
-
-							if item_name == stop.network_name then
-								stop.network_mask = item_count
-								signals[k] = nil
-							end
-
-							-- Filter out non-item, non-fluid signals
-							if item_type ~= "item" and item_type ~= "fluid" then
-								signals[k] = nil
-							end
-						else
-							signals[k] = nil
-						end
-					end
-
-					-- Process the remaining signals (items/fluids)
-					for k, v in pairs(signals) do
-						local item_name = v.signal.name
-						local item_hash = hash_signal(v.signal)
-						local item_type = v.signal.type or "item"
-						local item_count = v.count
-						local effective_adjustment = station.enable_manual_inventory and 0 or (station.deliveries[item_hash] or 0)
-						local effective_item_count = item_count + effective_adjustment
-
-						-- Secondary inventory uses parent station's is_r/is_p settings
-						-- For secondary inventory mode, negative signals are requests, positive are provides
-						local is_not_requesting = true
-						if station.is_r and item_count < 0 then
-							local r_threshold = station.item_thresholds and station.item_thresholds[item_hash] or
-								item_type == "fluid" and stop.r_fluid_threshold or stop.r_threshold
-
-							if station.is_stack and item_type == "item" then
-								r_threshold = r_threshold * get_stack_size(map_data, item_name)
-							end
-
-							if -effective_item_count >= r_threshold and -item_count >= r_threshold then
-								is_not_requesting = false
-								is_requesting_nothing = false
-								if not inv_requesting then inv_requesting = {} end
-								inv_requesting[unit_number] = true
-
-								if not inv_requested then inv_requested = {} end
-								inv_requested[item_hash] = true
-								track_request_start(station, item_hash)
-
-								-- Register this stop in the appropriate networks
-								local f, a
-								if stop.network_name == NETWORK_EACH then
-									f, a = pairs(stop.network_mask --[[@as {[string]: int}]])
-								else
-									f, a = once, stop.network_name
-								end
-
-								for network_name, _ in f, a do
-									local item_network_name = create_item_network_name(network_name, item_hash)
-									local stops = all_r_stops[item_network_name]
-									if stops == nil then
-										stops = {}
-										all_r_stops[item_network_name] = stops
-										all_names[#all_names + 1] = item_network_name
-										all_names[#all_names + 1] = v.signal
-									end
-									stops[#stops + 1] = stop
-								end
-							end
-						end
-
-						if is_not_requesting and station.is_p and effective_item_count > 0 and item_count > 0 then
-							-- If item count is positive and station is a provider, it provides
-							local f, a
-							if stop.network_name == NETWORK_EACH then
-								f, a = pairs(stop.network_mask --[[@as {[string]: int}]])
-							else
-								f, a = once, stop.network_name
-							end
-
-							for network_name, _ in f, a do
-								local item_network_name = create_item_network_name(network_name, item_hash)
-								local stops = all_p_stops[item_network_name]
-								if stops == nil then
-									stops = {}
-									all_p_stops[item_network_name] = stops
-								end
-								stops[#stops + 1] = stop
-								stop.item_p_counts[item_hash] = effective_item_count
-							end
-						end
-					end
+				---@type StopInfo
+				local stop = {
+					station_id = station_id,
+					unit = unit_number,
+					tick_signals = signals,
+					network_name = station.network_name,
+					network_mask = is_each and {} or station.network_mask,
+					priority = station.priority,
+					r_threshold = station.r_threshold,
+					r_fluid_threshold = station.r_fluid_threshold,
+					reserved_fluid_capacity = station.reserved_fluid_capacity,
+					item_p_counts = {},
+				}
+				read_settings(stop, signals, is_each, false)
+				inv_stops[unit_number] = stop
+				local requested = register_items(map_data, station, stop, nil)
+				if requested then
+					is_requesting_nothing = false
+					if not inv_requesting then inv_requesting = {} end
+					inv_requesting[unit_number] = true
+					if not inv_requested then inv_requested = {} end
+					for item_hash in pairs(requested) do inv_requested[item_hash] = true end
 				end
 			end
 		end
@@ -1368,102 +1337,21 @@ local function tick_poll_station(map_data, mod_settings)
 			r_fluid_threshold = station.r_fluid_threshold,
 			item_p_counts = {},
 		}
-
 		station.primary_stop = stop
+		local requested = register_items(map_data, station, stop, inv_requested)
+		if requested then is_requesting_nothing = false end
 
-		-- Process remaining station combinator inputs, which will correspond to items requested/provided
-		for k, v in pairs(comb1_signals) do
-			---@type string
-			local item_name = v.signal.name
-			local item_hash = hash_signal(v.signal)
-			local item_type = v.signal.type or "item"
-			local item_count = v.count
-			local effective_adjustment = station.enable_manual_inventory and 0 or (station.deliveries[item_hash] or 0)
-			local effective_item_count = item_count + effective_adjustment
-
-			-- For each item in the combinator input, check if we should provide or request the given item. Requesting takes priority.
-			local is_not_requesting = true
-			if station.is_r then
-				local r_threshold = station.item_thresholds and station.item_thresholds[item_hash] or
-				  item_type == "fluid" and station.r_fluid_threshold or
-					station.r_threshold
-				if station.is_stack and item_type == "item" then
-					r_threshold = r_threshold * get_stack_size(map_data, item_name)
-				end
-				if -effective_item_count >= r_threshold and -item_count >= r_threshold then
-					is_not_requesting = false
-					is_requesting_nothing = false
-
-					-- Track when this item request started
-					track_request_start(station, item_hash)
-
-					local f, a
-					if station.network_name == NETWORK_EACH then
-						f, a = pairs(station.network_mask --[[@as {[string]: int}]])
-					else
-						f, a = once, station.network_name
-					end
-					for network_name, _ in f, a do
-						-- `item_hash` used here since matching algorithm should only match same quality.
-						local item_network_name = create_item_network_name(network_name, item_hash)
-						local stops = all_r_stops[item_network_name]
-						if stops == nil then
-							stops = {}
-							all_r_stops[item_network_name] = stops
-							all_names[#all_names + 1] = item_network_name
-							all_names[#all_names + 1] = v.signal
-						end
-						stops[#stops + 1] = stop
-					end
-				elseif not (inv_requested and inv_requested[item_hash]) then
-					-- Request no longer needed, clear the tracking
-					clear_request_tracking(station, item_hash)
-				end
-			end
-			if is_not_requesting then
-				if station.is_p and effective_item_count > 0 and item_count > 0 then
-					local f, a
-					if station.network_name == NETWORK_EACH then
-						f, a = pairs(station.network_mask --[[@as {[string]: int}]])
-					else
-						f, a = once, station.network_name
-					end
-					for network_name, _ in f, a do
-						-- `item_hash` used here since matching algorithm should only match same quality.
-						local item_network_name = create_item_network_name(network_name, item_hash)
-						local stops = all_p_stops[item_network_name]
-						if stops == nil then
-							stops = {}
-							all_p_stops[item_network_name] = stops
-						end
-						stops[#stops + 1] = stop
-						stop.item_p_counts[item_hash] = effective_item_count
-					end
-				else
-					comb1_signals[k] = nil
-				end
-			end
-		end
-
-		-- Clean up request_start_ticks for items no longer being requested
-		if station.request_start_ticks and next(station.request_start_ticks) then
+		local start_ticks = station.request_start_ticks
+		if start_ticks and next(start_ticks) then
 			local requested_items = inv_requested or {}
-			-- Build set of currently requested items
-			for k, v in pairs(comb1_signals) do
-				if v.count < 0 then  -- Negative means requesting
-					local item_hash = hash_signal(v.signal)
-					requested_items[item_hash] = true
-				end
+			if requested then
+				for item_hash in pairs(requested) do requested_items[item_hash] = true end
 			end
-
-			-- Remove tracking for items no longer requested
-			for item_hash, _ in pairs(station.request_start_ticks) do
+			for item_hash in pairs(start_ticks) do
 				if not requested_items[item_hash] then
 					clear_request_tracking(station, item_hash)
 				end
 			end
-
-			-- If no items are being requested, clear all tracking
 			if not next(requested_items) then
 				clear_all_request_tracking(station)
 			end

@@ -3,8 +3,8 @@
 -- vanilla window (see "mounting") once per player and kind, and only shows it for a Cybersyn stop or train. While a panel is open it is refreshed on the manager tick: each section is rebuilt only when
 -- its signature changes, and ages are rounded to 10 s so an idle panel rebuilds nothing.
 --
--- Data: the manager snapshot's station record while a manager window keeps one; otherwise one live read of this
--- stop's combinators per refresh (collector.read_station). The fleet counts of the Effective config section come from
+-- Data: the manager snapshot's station record while a manager window keeps one; otherwise one read of this stop's
+-- planner state per refresh (collector.read_station). The fleet counts of the Effective config section come from
 -- a walk over storage.trains in chunks, only while that section is open.
 
 local gui = require("__flib__.gui")
@@ -376,8 +376,7 @@ end
 
 --- This station's active request keys nobody on its networks provides, each combinator's requests on that
 --- combinator's own networks (collector.station_status then marks each row's starved set). With diagnostics on, from
---- the reason the dispatcher recorded (NO_PROVIDER), which holds between cycles; else from the planner's economy, which
---- is complete only while it dispatches (between those ticks the last answer stands).
+--- the reason the dispatcher recorded (NO_PROVIDER); else from the starved set the planner published.
 --- @return boolean updated
 local function update_starved(state, st)
 	if not st then return false end
@@ -409,9 +408,7 @@ local function update_starved(state, st)
 		return true
 	end
 	-- The collector scans each row on its own networks; a record without rows names the station's.
-	local starved = collector.economy_starved(st, not st.rows and networks_of(st.network_name, st.network_mask) or nil)
-	if not starved then return false end
-	state.starved = starved
+	state.starved = collector.economy_starved(st, not st.rows and networks_of(st.network_name, st.network_mask) or nil)
 	return true
 end
 

@@ -34,8 +34,47 @@ local function without_rows(st)
 	return out
 end
 
+--- The planner's poll over storage.stations: the manager reads only what it keeps. Settings come from mod_settings, as
+--- the planner's own copy would; the economy it builds stays apart from storage.economy, whose starved set the tests
+--- choose themselves.
+local function poll()
+	local settings = {
+		enable_planner = true, update_rate = 1000, tps = 60, network_mask = 1, locked_slots = 0,
+		reserved_fluid_capacity = 0, r_threshold = mod_settings.r_threshold or 2000,
+		r_fluid_threshold = mod_settings.r_fluid_threshold or 0, priority = mod_settings.priority or 0,
+	}
+	local ids = {}
+	for id, station in pairs(storage.stations or {}) do
+		local stop, comb1, comb2 = station.entity_stop, station.entity_comb1, station.entity_comb2
+		if stop.valid and comb1 and comb1.valid and not (comb2 and not comb2.valid) then
+			ids[#ids + 1] = id
+			station.deliveries = station.deliveries or {}
+			station.display_state = station.display_state or 0
+			stop.trains_limit = station.trains_limit or 0
+		end
+	end
+	table.sort(ids)
+	local map_data = {
+		tick_data = {}, active_station_ids = ids, stations = storage.stations, tick_state = STATE_POLL_STATIONS,
+		economy = { all_r_stops = {}, all_p_stops = {}, all_names = {} }, total_ticks = 1, trains = {},
+		each_refuelers = {}, refuelers = {}, to_comb = {}, available_trains = {}, layouts = {},
+	}
+	for _ = 1, 100 do
+		if map_data.tick_state ~= STATE_POLL_STATIONS then return end
+		tick(map_data, settings)
+	end
+	error("the planner did not finish polling")
+end
+
+--- One planner poll, then one whole collector pass.
+local function pass()
+	poll()
+	collector.run_to_completion()
+end
+
 local function manager()
 	storage.manager = { players = {} }
+	storage.economy = { starved = {} }
 	collector.init()
 end
 
@@ -43,6 +82,9 @@ end
 local function scenario()
 	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30 }
 	manager()
+	-- What the planner's last poll publishes for these stations: each-network station 4 requests coal on both of
+	-- its networks.
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-B:coal"] = true, ["signal-A:copper-ore"] = true }
 	storage.stations = {
 		[1] = {
 			entity_stop = stop("Iron Mine"),
@@ -50,7 +92,7 @@ local function scenario()
 			entity_comb1 = comb(WORKING, {
 				sig("iron-ore", 500),
 				sig("signal-A", 1, "virtual"),
-				sig("cybersyn-priority", 3, "virtual"),
+				sig("cybersyn-priority", 5, "virtual"),
 				sig("coal", -100),
 				sig("water", 2000, "fluid"),
 			}),
@@ -67,6 +109,7 @@ local function scenario()
 			entity_stop = stop("Smelter"),
 			secondary_inv_combs = {},
 			entity_comb1 = comb(WORKING, {
+				sig(REQUEST_THRESHOLD, 500, "virtual"),
 				sig("iron-ore", -1000),
 				sig("copper-ore", -100),
 				sig("coal", -800),
@@ -77,12 +120,11 @@ local function scenario()
 				sig("cybersyn-request-threshold", 7, "virtual"),
 				sig("iron-ore", -300),
 				sig("copper-ore", 20, "item", "rare"),
+				sig("copper-ore", 50),
 			}),
 			network_name = "signal-A",
 			network_mask = 1,
 			is_r = true,
-			r_threshold = 500,
-			item_thresholds = { ["copper-ore"] = 50 },
 			deliveries = { ["iron-ore"] = 400 },
 			request_start_ticks = { ["iron-ore"] = 50, coal = 20, ["copper-ore"] = 5 },
 		},
@@ -98,12 +140,14 @@ local function scenario()
 		[4] = {
 			entity_stop = stop("Each", 2),
 			secondary_inv_combs = {},
-			entity_comb1 = comb(WORKING, { sig("stone", -60), sig("coal", -200), sig("signal-B", 1, "virtual") }),
+			entity_comb1 = comb(WORKING, {
+				sig("stone", -60), sig("coal", -200), sig("signal-A", 1, "virtual"), sig("signal-B", 2, "virtual"),
+				sig(REQUEST_THRESHOLD, 2, "virtual"),
+			}),
 			network_name = NETWORK_EACH,
 			network_mask = { ["signal-A"] = 1, ["signal-B"] = 2 },
 			is_r = true,
 			is_stack = true,
-			r_threshold = 2,
 		},
 		[5] = {
 			entity_stop = stop("No combinator"),
@@ -168,8 +212,6 @@ test("empty: the snapshot shape", function()
 		inventory_all = { provided = {}, requested = {}, in_transit = {} },
 		starved = {},
 		starved_items = {},
-		starved_count = 0,
-		starved_source = "snapshot",
 		starved_version = 0,
 		-- The hour's minimum from stats; the fleet facts, depot groups and provider masks the lint engine reads.
 		fleet = { total = 0, by_status = {}, available_by_network = {}, by_layout = {}, min_available_by_network = {},
@@ -272,7 +314,7 @@ end)
 
 test("full pass: provider record", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local source = { kind = "station", index = 0, ok = true, priority = 5, network_mask = 1, network_name = "signal-A",
 		mask = 1, provided = { ["iron-ore"] = 500, water = 2000 }, requested = {}, ignored = { coal = -100 } }
@@ -298,7 +340,7 @@ test("full pass: provider record", function()
 		provided = { ["iron-ore"] = 500, water = 2000 },
 		requested = {},
 		deliveries = { ["iron-ore"] = -400 },
-		control = { ["cybersyn-priority"] = 3 },
+		control = { ["cybersyn-priority"] = 5 },
 		control2 = {},
 		thresholds = {},
 		wait = {},
@@ -332,19 +374,19 @@ end)
 
 test("full pass: requester record with thresholds, control combinator and waits", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[2]
 	assert_eq(st.requested, {
-		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 1 },
+		["iron-ore"] = { count = -1000, threshold = 300, active = true, mask = 1 },
 		["copper-ore"] = { count = -100, threshold = 50, active = true, mask = 1 },
 		coal = { count = -800, threshold = 500, active = true, mask = 1 },
 		-- No fluid threshold anywhere: the item threshold applies to fluids.
 		water = { count = -50, threshold = 500, active = false, mask = 1 },
 	})
 	assert_eq(st.provided, {})
-	assert_eq(st.control, {})
+	assert_eq(st.control, { [REQUEST_THRESHOLD] = 500 })
 	assert_eq(st.control2, { [REQUEST_THRESHOLD] = 7 })
-	assert_eq(st.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20 })
+	assert_eq(st.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20, ["copper-ore"] = 50 })
 	assert_true(st.comb2_ok)
 	assert_eq(st.wait, { ["iron-ore"] = 50, coal = 20, ["copper-ore"] = 5 })
 	assert_eq(st.longest_wait_start, 5)
@@ -355,19 +397,20 @@ end)
 
 test("full pass: warming up, each-network stack station, skipped and secondary stations", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local warm = snap.stations[3]
 	assert_true(warm.warming_up)
 	assert_true(warm.comb_ok)
-	assert_eq(warm.requested, { stone = { count = -5000, threshold = 2000, active = true, mask = 1 } })
+	-- The planner keeps nothing for a warming-up station, so neither does the manager.
+	assert_eq(warm.requested, {})
 	local each = snap.stations[4]
 	assert_eq(each.surface_index, 2)
 	assert_eq(each.requested, {
 		stone = { count = -60, threshold = 100, active = false },
 		coal = { count = -200, threshold = 100, active = true },
 	})
-	assert_eq(each.control, { ["signal-B"] = 1 })
+	assert_eq(each.control, { ["signal-A"] = 1, ["signal-B"] = 2, [REQUEST_THRESHOLD] = 2 })
 	assert_eq(each.network_mask, { ["signal-A"] = 1, ["signal-B"] = 2 })
 	assert_true(each.network_mask ~= storage.stations[4].network_mask)
 	assert_nil(snap.stations[5])
@@ -392,7 +435,7 @@ end)
 
 test("full pass: inventory_all sums active requests and incoming deliveries only", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local inv = collector.get().inventory_all
 	assert_eq(inv.provided, {
 		["iron-ore"] = { count = 500, stations = 1 },
@@ -402,36 +445,33 @@ test("full pass: inventory_all sums active requests and incoming deliveries only
 		["iron-ore"] = { count = -1000, stations = 1, earliest_wait_start = 50 },
 		["copper-ore"] = { count = -100, stations = 1, earliest_wait_start = 5 },
 		coal = { count = -1000, stations = 2, earliest_wait_start = 20 },
-		-- Warming-up stations still count here, although they are not keyed for starvation.
-		stone = { count = -5000, stations = 1 },
 	})
 	assert_eq(inv.in_transit, { ["iron-ore"] = { count = 400, stations = 1 } })
 end)
 
-test("full pass: starved keys per network, each-network stations on all their networks", function()
+test("full pass: the starved set is the one the planner published, whatever its phase", function()
 	scenario()
-	collector.run_to_completion()
+	storage.tick_state = STATE_DISPATCH
+	-- The economy the planner is consuming plays no part.
+	storage.economy.all_r_stops = { ["signal-A:stone"] = {} }
+	storage.economy.all_p_stops = {}
+	pass()
 	local snap = collector.get()
-	assert_eq(snap.starved, {
-		["signal-A:coal"] = true,
-		["signal-B:coal"] = true,
-		["signal-A:copper-ore"] = true,
-	})
+	assert_same(snap.starved, storage.economy.starved)
 	assert_eq(snap.starved_items, { coal = true, ["copper-ore"] = true })
-	assert_eq(snap.starved_source, "snapshot")
 	assert_eq(snap.starved_version, 1)
 end)
 
 test("full pass: request keys stay with the snapshot next to the provider masks", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	for key in pairs(snap.starved) do
 		assert_true(snap.request_keys[key], key .. " is a request key")
 		assert_nil(snap.provider_masks[key], key .. " has no provider")
 	end
 	local first = snap.request_keys
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().request_keys, first, "the same keys after another pass")
 end)
 
@@ -448,7 +488,7 @@ test("throttling: an unacknowledged R_AT_LIMIT names the requester, P_AT_LIMIT t
 		item_ix = { ["iron-ore"] = 1, stone = 2 },
 	}
 	storage.acks = { request = { [4] = { ["iron-ore"] = { until_tick = 5000 } } }, station = {}, lint = {} }
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_true(snap.stations[1].throttling, "provider of a P_AT_LIMIT")
 	assert_true(snap.stations[2].throttling, "requester of an R_AT_LIMIT")
@@ -456,7 +496,7 @@ test("throttling: an unacknowledged R_AT_LIMIT names the requester, P_AT_LIMIT t
 	assert_false(snap.stations[4].throttling, "acknowledged")
 	assert_false(snap.stations[6].throttling, "another reason")
 	game.tick = 6000
-	collector.run_to_completion()
+	pass()
 	assert_true(collector.get().stations[4].throttling, "the acknowledgement expired")
 	storage.diag = nil
 	storage.acks = nil
@@ -464,7 +504,7 @@ end)
 
 test("full pass: trains, fleet, depots and alerts", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_eq(H.keys(snap.trains), { 10, 12 })
 	assert_eq(snap.trains[10], {
@@ -525,7 +565,7 @@ end)
 test("alerts: tps 0 means one tick per main tick", function()
 	scenario()
 	mod_settings.tps = 0
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().alerts[1].since_tick, 990)
 end)
 
@@ -539,13 +579,15 @@ end)
 
 test("passes: change log, removed stations, stable starved set", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local log = storage.manager.collect_log
 	assert_eq(log, { epoch = 1, base = 0, ids = { 1, 2, 3, 4, 6 } })
 	assert_eq({ collector.log_position() }, { 1, 5 })
 	local starved = collector.get().starved
+	-- The next cycle publishes an equal set in a new table: the snapshot keeps its own.
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-B:coal"] = true, ["signal-A:copper-ore"] = true }
 	game.tick = 1100
-	collector.run_to_completion()
+	pass()
 	log = storage.manager.collect_log
 	assert_eq(log, { epoch = 1, base = 5, ids = { 1, 2, 3, 4, 6 } })
 	assert_eq({ select(2, collector.changed_since(1, 5)) }, { 1, 5 })
@@ -555,39 +597,26 @@ test("passes: change log, removed stations, stable starved set", function()
 	assert_eq(snap.starved_version, 1)
 	assert_eq(snap.tick, 1100)
 	storage.stations[3] = nil
-	collector.run_to_completion()
+	pass()
 	snap = collector.get()
 	assert_eq(storage.manager.collect_log.ids, { 1, 2, 4, 6, 3 })
 	assert_nil(snap.stations[3])
 	assert_eq(snap.station_count, 4)
 	assert_eq(snap.starved_version, 1)
 	storage.stations[2] = nil
-	collector.run_to_completion()
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-B:coal"] = true }
+	pass()
 	snap = collector.get()
 	assert_eq(snap.starved, { ["signal-A:coal"] = true, ["signal-B:coal"] = true })
-	assert_eq(snap.starved_version, 2)
-end)
-
-test("economy: while dispatching, the planner's own r/p stops define starved", function()
-	scenario()
-	storage.tick_state = STATE_DISPATCH
-	storage.economy = {
-		all_r_stops = { ["signal-A:coal"] = {}, ["signal-A:iron-ore"] = {} },
-		all_p_stops = { ["signal-A:iron-ore"] = {} },
-	}
-	collector.run_to_completion()
-	local snap = collector.get()
-	assert_eq(snap.starved, { ["signal-A:coal"] = true })
 	assert_eq(snap.starved_items, { coal = true })
-	assert_eq(snap.starved_source, "economy")
-	assert_eq(snap.starved_version, 1)
+	assert_eq(snap.starved_version, 2)
 end)
 
 test("empty starved sets compare equal, so the version stays 0", function()
 	mod_settings = {}
 	manager()
 	storage.stations, storage.trains, storage.depots = {}, {}, {}
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_eq(snap.tick, 0)
 	assert_eq(snap.starved_version, 0)
@@ -630,7 +659,7 @@ test("step: stations removed mid-pass are skipped", function()
 	scenario()
 	collector.step(1)
 	storage.stations[2] = nil
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().station_count, 4)
 	assert_nil(collector.get().stations[2])
 end)
@@ -783,7 +812,7 @@ test("on_last_close: keeps the snapshot KEEP_TICKS, release_due frees it at the 
 	scenario()
 	assert_eq(collector.KEEP_TICKS, 7200)
 	storage.manager.players[1] = { cache = {}, is_manager_open = true }
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	snap.boosted = true
 	local log = storage.manager.collect_log
@@ -824,7 +853,7 @@ test("on_last_close: keeps the snapshot KEEP_TICKS, release_due frees it at the 
 	assert_nil(storage.manager.collect_spare)
 	assert_true(storage.manager.collect_log.epoch > log.epoch)
 	-- Reopened inside the grace period: the deadline goes, the kept rows are refreshed quietly.
-	collector.run_to_completion()
+	pass()
 	snap = collector.get()
 	collector.on_last_close()
 	assert_eq(storage.manager.release_at, 8200 + 7200)
@@ -869,7 +898,7 @@ test("kept Stations query caches: a closed player's goes when another window reo
 	scenario()
 	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	storage.manager.players[2] = { cache = {}, is_manager_open = false }
-	collector.run_to_completion()
+	pass()
 	storage.manager.players[1].is_manager_open = false
 	collector.on_last_close()
 	storage.manager.players[1].cache.stations = { kept = 1 }
@@ -893,7 +922,7 @@ end)
 test("live: the snapshot only while a window keeps it current", function()
 	scenario()
 	assert_nil(collector.live())
-	collector.run_to_completion()
+	pass()
 	assert_nil(collector.live(), "no window")
 	storage.manager.players[1] = { cache = {}, is_manager_open = true }
 	assert_same(collector.live(), collector.get())
@@ -950,14 +979,15 @@ test("thresholds: a request exactly at its threshold is active", function()
 		[1] = {
 			entity_stop = stop("R"),
 			secondary_inv_combs = {},
-			entity_comb1 = comb(WORKING, { sig("coal", -500), sig("stone", -499), sig("water", -40, "fluid") }),
+			entity_comb1 = comb(WORKING, {
+				sig("coal", -500), sig("stone", -499), sig("water", -40, "fluid"), sig(REQUEST_FLUID_THRESHOLD, 40, "virtual"),
+			}),
 			network_name = "signal-A",
 			network_mask = 1,
 			is_r = true,
-			r_fluid_threshold = 40,
 		},
 	}
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().stations[1].requested, {
 		coal = { count = -500, threshold = 500, active = true, mask = 1 },
 		stone = { count = -499, threshold = 500, active = false, mask = 1 },
@@ -968,7 +998,7 @@ end)
 test("alerts: tps 25 rounds ticks per main tick up", function()
 	scenario()
 	mod_settings.tps = 25
-	collector.run_to_completion()
+	pass()
 	-- ceil(60 / 25) = 3 ticks per main tick, 10 main ticks ago.
 	assert_eq(collector.get().alerts[1].since_tick, 970)
 end)
@@ -976,23 +1006,25 @@ end)
 -- A pass refills the previous record's subtables in place; every changed input must replace the old value.
 test("second pass: changed inputs replace every field of the previous record", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local s1, s2, s3 = storage.stations[1], storage.stations[2], storage.stations[3]
 	s1.entity_comb1.status = NO_POWER
 	s2.entity_comb1.signals = {
+		sig("signal-A", 3, "virtual"),
+		sig(REQUEST_THRESHOLD, 500, "virtual"),
 		sig("iron-ore", -1000),
 		sig("copper-ore", -100),
 		sig("stone", -700),
 		sig("water", -50, "fluid"),
 	}
 	s2.entity_comb2.signals = { sig(REQUEST_THRESHOLD, 9, "virtual"), sig("stone", -200) }
-	s2.item_thresholds = { stone = 300 }
 	s2.deliveries = { stone = 200 }
 	s2.request_start_ticks = { stone = 900, ["iron-ore"] = 60 }
-	s2.network_mask = 3
 	s3.is_warming_up = nil
+	storage.economy.starved = { ["signal-A:iron-ore"] = true, ["signal-A:stone"] = true, ["signal-A:coal"] = true,
+		["signal-B:coal"] = true }
 	game.tick = 1100
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 
 	assert_eq(without_rows(snap.stations[1]), {
@@ -1012,7 +1044,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		trains_limit = 2,
 		deliveries_total = 3,
 		last_delivery_tick = 700,
-		priority = 5,
+		-- With its station combinator off, the planner falls back to the priority setting.
+		priority = 0,
 		provided = {},
 		requested = {},
 		deliveries = { ["iron-ore"] = -400 },
@@ -1028,13 +1061,13 @@ test("second pass: changed inputs replace every field of the previous record", f
 		-- No unserved request at a train limit names the station.
 		throttling = false,
 		ignored = {},
-		sources = { { kind = "station", index = 0, ok = false, priority = 5, network_mask = 1, network_name = "signal-A",
+		sources = { { kind = "station", index = 0, ok = false, priority = 0, network_mask = 1, network_name = "signal-A",
 			mask = 1, provided = {}, requested = {}, ignored = {} } },
 	})
 	local smelter_requested = {
 		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
 		["copper-ore"] = { count = -100, threshold = 500, active = false, mask = 3 },
-		stone = { count = -700, threshold = 300, active = true, mask = 3 },
+		stone = { count = -700, threshold = 200, active = true, mask = 3 },
 		water = { count = -50, threshold = 500, active = false, mask = 3 },
 	}
 	-- Nobody provides either on signal-A.
@@ -1057,15 +1090,16 @@ test("second pass: changed inputs replace every field of the previous record", f
 		warming_up = false,
 		trains_limit = 0,
 		deliveries_total = 0,
+		priority = 0,
 		provided = {},
 		requested = {
 			["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 3 },
 			["copper-ore"] = { count = -100, threshold = 500, active = false, mask = 3 },
-			stone = { count = -700, threshold = 300, active = true, mask = 3 },
+			stone = { count = -700, threshold = 200, active = true, mask = 3 },
 			water = { count = -50, threshold = 500, active = false, mask = 3 },
 		},
 		deliveries = { stone = 200 },
-		control = {},
+		control = { [REQUEST_THRESHOLD] = 500 },
 		control2 = { [REQUEST_THRESHOLD] = 9 },
 		thresholds = { stone = 200 },
 		wait = { stone = 900, ["iron-ore"] = 60 },
@@ -1098,7 +1132,8 @@ test("second pass: changed inputs replace every field of the previous record", f
 		requested = {
 			["iron-ore"] = { count = -1000, stations = 1, earliest_wait_start = 60 },
 			stone = { count = -5700, stations = 2, earliest_wait_start = 900 },
-			coal = { count = -200, stations = 1 },
+			-- The poll starts the wait of a request it registers for the first time.
+			coal = { count = -200, stations = 1, earliest_wait_start = 1000 },
 		},
 		in_transit = { stone = { count = 200, stations = 1 } },
 	})
@@ -1122,9 +1157,11 @@ local function merge_scenario()
 	storage.stations = {
 		[1] = {
 			entity_stop = stop("Merge"),
-			entity_comb1 = comb(WORKING, { sig("iron-ore", -80), sig("copper-ore", 40), sig("signal-A", 1, "virtual") }),
+			entity_comb1 = comb(WORKING, {
+				sig("iron-ore", -80), sig("copper-ore", 40), sig("signal-A", 1, "virtual"), sig(REQUEST_THRESHOLD, 100, "virtual"),
+			}),
 			secondary_inv_combs = {
-				comb(WORKING, {
+				[11] = comb(WORKING, {
 					sig("iron-ore", -50),
 					sig("copper-ore", 60),
 					sig("water", -15, "fluid"),
@@ -1132,14 +1169,13 @@ local function merge_scenario()
 					sig(REQUEST_FLUID_THRESHOLD, 10, "virtual"),
 					sig(SIGNAL_PRIORITY, 2, "virtual"),
 					sig("signal-B", 1, "virtual"),
-				}),
-				comb(WORKING, { sig("iron-ore", -30), sig("copper-ore", 5) }),
+				}, 11),
+				[12] = comb(WORKING, { sig("iron-ore", -30), sig("copper-ore", 5) }, 12),
 			},
 			network_name = NETWORK_EACH,
 			network_mask = { ["signal-A"] = 1 },
 			is_p = true,
 			is_r = true,
-			r_threshold = 100,
 		},
 		[2] = {
 			entity_stop = stop("Stack"),
@@ -1155,27 +1191,24 @@ local function merge_scenario()
 			network_mask = 1,
 			is_r = true,
 			is_stack = true,
-			r_threshold = 2,
 		},
 		[3] = {
 			entity_stop = stop("Unpowered control"),
 			secondary_inv_combs = {},
-			entity_comb1 = comb(WORKING, { sig("coal", -10) }),
+			entity_comb1 = comb(WORKING, { sig("coal", -10), sig(REQUEST_THRESHOLD, 5, "virtual") }),
 			entity_comb2 = comb(NO_POWER, { sig("stone", -3), sig(REQUEST_THRESHOLD, 4, "virtual") }),
 			network_name = "signal-A",
 			network_mask = 1,
 			is_r = true,
-			r_threshold = 5,
 			request_start_ticks = { coal = 10 },
 		},
 		[4] = {
 			entity_stop = stop("Coal 2"),
 			secondary_inv_combs = {},
-			entity_comb1 = comb(WORKING, { sig("coal", -20) }),
+			entity_comb1 = comb(WORKING, { sig("coal", -20), sig(REQUEST_THRESHOLD, 5, "virtual") }),
 			network_name = "signal-A",
 			network_mask = 1,
 			is_r = true,
-			r_threshold = 5,
 			request_start_ticks = { coal = 30 },
 		},
 	}
@@ -1186,7 +1219,7 @@ end
 
 test("merge: primary and secondaries sum counts, keep the lowest threshold and OR the active flags", function()
 	merge_scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[1]
 	assert_eq(st.provided, { ["copper-ore"] = 105 })
 	assert_eq(st.requested, {
@@ -1195,7 +1228,7 @@ test("merge: primary and secondaries sum counts, keep the lowest threshold and O
 		-- The secondary's own fluid threshold applies to its fluid requests.
 		water = { count = -15, threshold = 10, active = true },
 	})
-	assert_eq(st.control, { ["signal-A"] = 1 })
+	assert_eq(st.control, { ["signal-A"] = 1, [REQUEST_THRESHOLD] = 100 })
 	assert_true(st.comb_ok)
 	assert_nil(st.comb2_ok)
 	assert_true(st.secondary)
@@ -1205,28 +1238,28 @@ end)
 
 test("merge: each-network secondaries key on their own network signals, not on settings signals", function()
 	merge_scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	-- The primary's iron-ore request is below threshold, so only the secondary's signal-B request is keyed; its
 	-- priority signal is a setting, not a network.
-	assert_eq(snap.starved, {
+	assert_eq(snap.request_keys, {
 		["signal-B:iron-ore"] = true,
 		["signal-B:water"] = true,
 		["signal-A:stone"] = true,
 		["signal-A:coal"] = true,
 	})
-	assert_eq(snap.starved_items, { ["iron-ore"] = true, water = true, stone = true, coal = true })
 end)
 
 test("control combinator: stack stations multiply item thresholds, an unpowered one reads nothing", function()
 	merge_scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local stack = snap.stations[2]
 	assert_true(stack.comb2_ok)
 	assert_eq(stack.thresholds, { stone = 150, ["iron-plate"] = 200, water = 7 })
 	assert_eq(stack.control2, { [REQUEST_THRESHOLD] = 4 })
-	assert_eq(stack.requested, { stone = { count = -150, threshold = 100, active = true, mask = 1 } })
+	-- The control combinator's 3 stacks of stone override the station's threshold.
+	assert_eq(stack.requested, { stone = { count = -150, threshold = 150, active = true, mask = 1 } })
 	local unpowered = snap.stations[3]
 	assert_false(unpowered.comb2_ok)
 	assert_eq(unpowered.thresholds, {})
@@ -1236,13 +1269,14 @@ end)
 
 test("merge: inventory_all keeps the earliest wait start across requesters", function()
 	merge_scenario()
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().inventory_all, {
 		provided = { ["copper-ore"] = { count = 105, stations = 1 } },
+		-- The poll starts the wait of a request it registers for the first time.
 		requested = {
-			["iron-ore"] = { count = -160, stations = 1 },
-			water = { count = -15, stations = 1 },
-			stone = { count = -150, stations = 1 },
+			["iron-ore"] = { count = -160, stations = 1, earliest_wait_start = 1000 },
+			water = { count = -15, stations = 1, earliest_wait_start = 1000 },
+			stone = { count = -150, stations = 1, earliest_wait_start = 1000 },
 			coal = { count = -30, stations = 2, earliest_wait_start = 10 },
 		},
 		in_transit = {},
@@ -1270,7 +1304,7 @@ test("longest_wait_start: the earliest start over active requests, whatever the 
 		[1] = requester("A", { coal = 10, stone = 20, ["iron-ore"] = 1 }),
 		[2] = requester("B", { coal = 20, stone = 10, ["iron-ore"] = 1 }),
 	}
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	-- iron-ore is below the threshold, so its earlier start does not count.
 	assert_eq(snap.stations[1].longest_wait_start, 10)
@@ -1281,7 +1315,7 @@ end)
 
 test("refill: unchanged inputs keep the record and every subtable, and allocate no new request tables", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local before = {}
 	for id, st in pairs(snap.stations) do
@@ -1296,7 +1330,7 @@ test("refill: unchanged inputs keep the record and every subtable, and allocate 
 	local trains = snap.trains
 	local train10, manifest10 = trains[10], trains[10].manifest
 	game.tick = 1100
-	collector.run_to_completion()
+	pass()
 	snap = collector.get()
 	assert_same(snap.trains, trains)
 	assert_same(snap.trains[10], train10)
@@ -1316,35 +1350,38 @@ end)
 
 test("refill: removed entries go, new ones arrive, and a changed manifest or mask is copied again", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local smelter = snap.stations[2]
 	local requested = smelter.requested
 	local each_mask = snap.stations[4].network_mask
 	local s2 = storage.stations[2]
-	s2.entity_comb1.signals = { sig("iron-ore", -1000), sig("gravel", -900) }
+	s2.entity_comb1.signals = { sig(REQUEST_THRESHOLD, 500, "virtual"), sig("iron-ore", -1000), sig("gravel", -900) }
 	s2.deliveries = { gravel = 50 }
-	storage.stations[4].network_mask = { ["signal-A"] = 1, ["signal-B"] = 4 }
+	storage.stations[4].entity_comb1.signals = {
+		sig("stone", -60), sig("coal", -200), sig("signal-A", 1, "virtual"), sig("signal-B", 4, "virtual"),
+		sig(REQUEST_THRESHOLD, 2, "virtual"),
+	}
 	storage.trains[10].manifest = { { name = "coal", count = 1 } }
 	local old_manifest = snap.trains[10].manifest
 	game.tick = 1100
-	collector.run_to_completion()
+	pass()
 	snap = collector.get()
 	assert_same(snap.stations[2], smelter)
 	assert_same(smelter.requested, requested)
 	assert_eq(smelter.requested, {
-		["iron-ore"] = { count = -1000, threshold = 500, active = true, mask = 1 },
+		["iron-ore"] = { count = -1000, threshold = 300, active = true, mask = 1 },
 		gravel = { count = -900, threshold = 500, active = true, mask = 1 },
 	})
 	assert_eq(smelter.deliveries, { gravel = 50 })
-	assert_eq(smelter.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20 })
+	assert_eq(smelter.thresholds, { ["iron-ore"] = 300, ["copper-ore|rare"] = 20, ["copper-ore"] = 50 })
 	assert_eq(snap.stations[4].network_mask, { ["signal-A"] = 1, ["signal-B"] = 4 })
 	assert_true(snap.stations[4].network_mask ~= each_mask)
 	assert_true(snap.stations[4].network_mask ~= storage.stations[4].network_mask)
 	assert_true(snap.trains[10].manifest ~= old_manifest)
 	assert_eq(snap.trains[10].manifest_hashes, { coal = 1 })
 	storage.trains[12] = nil
-	collector.run_to_completion()
+	pass()
 	assert_nil(collector.get().trains[12])
 	assert_eq(collector.get().train_count, 1)
 end)
@@ -1352,15 +1389,15 @@ end)
 test("name_parts: parsed on first sight and again only after a rename", function()
 	scenario()
 	storage.stations[1].entity_stop.backer_name = "[item=iron-ore] Iron Mine [virtual-signal=signal-P]"
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[1]
 	assert_eq(st.name_parts, { lead = { "item/iron-ore" }, text = "Iron Mine", tail = { "virtual-signal/signal-P" } })
 	assert_eq(st.name_lower, "[item=iron-ore] iron mine [virtual-signal=signal-p]")
 	local parts = st.name_parts
-	collector.run_to_completion()
+	pass()
 	assert_same(st.name_parts, parts)
 	storage.stations[1].entity_stop.backer_name = "Iron Mine 2"
-	collector.run_to_completion()
+	pass()
 	assert_eq(st.name, "Iron Mine 2")
 	assert_eq(st.name_lower, "iron mine 2")
 	assert_eq(st.name_parts.text, "Iron Mine 2")
@@ -1369,7 +1406,7 @@ end)
 test("name_parts: one shared table per distinct name, dropped with the snapshot", function()
 	scenario()
 	storage.stations[2].entity_stop.backer_name = storage.stations[1].entity_stop.backer_name
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_same(snap.stations[1].name_parts, snap.stations[2].name_parts)
 	assert_same(storage.manager.name_parts[snap.stations[1].name], snap.stations[1].name_parts)
@@ -1435,7 +1472,7 @@ end)
 
 test("status: set once per pass, and a changed starved set reclassifies and logs the affected stations", function()
 	scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local status = {}
 	for id, st in pairs(snap.stations) do status[id] = st.status end
@@ -1445,12 +1482,13 @@ test("status: set once per pass, and a changed starved set reclassifies and logs
 	storage.stations[2].trains_limit = 3
 	storage.stations[4].trains_limit = 3
 	game.tick = 1100
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().stations[2].status, "starved")
 	-- Providers of coal and copper ore on signal-A appear: the finish of that pass sees the new set and reclassifies.
 	storage.stations[1].entity_comb1.signals = { sig("coal", 5000), sig("iron-ore", 500), sig("copper-ore", 500) }
+	storage.economy.starved = { ["signal-B:coal"] = true }
 	game.tick = 1200
-	collector.run_to_completion()
+	pass()
 	snap = collector.get()
 	assert_eq(snap.stations[2].status, "ok")
 	-- Each still lacks coal on signal-B.
@@ -1468,12 +1506,12 @@ test("fleet: train groups count the depot names of their Cybersyn trains", funct
 		network_name = "signal-A", network_mask = 1, status = STATUS_D }
 	storage.depots[101].entity_stop = { valid = true, backer_name = "Depot 2", trains_limit = 1, trains_count = 0 }
 	storage.trains[13].depot_id = 101
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_eq(snap.fleet.group_depots, { G = 1, H = 1 })
 	assert_eq({ snap.trains[10].in_group, snap.trains[10].group, snap.trains[13].group }, { true, "G", "H" })
 	storage.trains[13].entity.group = "G"
-	collector.run_to_completion()
+	pass()
 	assert_eq(collector.get().fleet.group_depots, { G = 2 })
 end)
 
@@ -1481,7 +1519,7 @@ test("fleet: a Cybersyn train whose depot has no name does not count as another 
 	scenario()
 	storage.trains[10].entity.group = "G"
 	storage.trains[12].entity.group = "G"
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_eq(snap.trains[12].depot_name, "")
 	assert_eq(snap.fleet.group_depots, { G = 1 })
@@ -1489,18 +1527,17 @@ end)
 
 test("provider keys: the providers' masks OR-ed and their lowest item threshold per network:item", function()
 	scenario()
-	storage.stations[1].item_thresholds = { ["iron-ore"] = 300, water = 1500 }
-	storage.stations[5].entity_comb1 = comb(WORKING, { sig("iron-ore", 900) })
-	storage.stations[5].network_mask = 2
-	storage.stations[5].item_thresholds = { ["iron-ore"] = 200 }
-	collector.run_to_completion()
+	storage.stations[1].entity_comb2 = comb(WORKING, { sig("iron-ore", 300), sig("water", 1500, "fluid") })
+	storage.stations[5].entity_comb1 = comb(WORKING, { sig("iron-ore", 900), sig("signal-A", 2, "virtual") })
+	storage.stations[5].entity_comb2 = comb(WORKING, { sig("iron-ore", 200) })
+	pass()
 	local snap = collector.get()
 	assert_eq(snap.provider_masks["signal-A:iron-ore"], 3)
 	assert_eq(snap.provider_overrides, { ["signal-A:iron-ore"] = 200, ["signal-A:water"] = 1500 })
 	-- In stack mode an item threshold counts stacks; fluids keep their units.
 	storage.stations[5].is_stack = true
-	storage.stations[5].item_thresholds = { ["iron-ore"] = 2 }
-	collector.run_to_completion()
+	storage.stations[5].entity_comb2.signals = { sig("iron-ore", 2) }
+	pass()
 	assert_eq(collector.get().provider_overrides["signal-A:iron-ore"], 2 * get_stack_size(nil, "iron-ore"))
 end)
 
@@ -1509,24 +1546,23 @@ test("secondary combinator on one network: its own mask for what it provides and
 	-- Station 6 (signal-B, mask 1): its secondary carries signal-B = 2, as the planner reads it for that combinator.
 	storage.stations[6].entity_comb1 = comb(WORKING, { sig("iron-plate", 999) })
 	storage.stations[6].secondary_inv_combs = {
-		comb(WORKING, { sig("coal", 100), sig("copper-plate", -30), sig("signal-B", 2, "virtual"),
-			sig(REQUEST_THRESHOLD, 20, "virtual") }),
+		[61] = comb(WORKING, { sig("coal", 100), sig("copper-plate", -30), sig("signal-B", 2, "virtual"),
+			sig(REQUEST_THRESHOLD, 20, "virtual") }, 61),
 	}
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	assert_eq(snap.provider_masks["signal-B:coal"], 2)
 	assert_eq(snap.provider_masks["signal-B:iron-plate"], 1)
 	assert_eq(snap.stations[6].requested["copper-plate"].mask, 2)
 end)
 
-test("economy_starved: this stop's active requests nobody provides, only while dispatching", function()
+test("economy_starved: this stop's active requests in the published set, whatever the planner's phase", function()
 	local collector = H.load("scripts.gui.collector")
 	local st = { requested = { a = { active = true }, b = { active = true }, c = { active = false } } }
 	local nets = { { name = "signal-A" } }
-	storage.economy = { all_r_stops = { ["signal-A:a"] = {}, ["signal-A:b"] = {}, ["signal-A:c"] = {} },
-		all_p_stops = { ["signal-A:b"] = {} } }
+	storage.economy = { starved = { ["signal-A:a"] = true, ["signal-A:c"] = true, ["signal-B:b"] = true } }
 	storage.tick_state = STATE_INIT
-	assert_nil(collector.economy_starved(st, nets))
+	assert_eq(collector.economy_starved(st, nets), { ["signal-A:a"] = true })
 	storage.tick_state = STATE_DISPATCH
 	assert_eq(collector.economy_starved(st, nets), { ["signal-A:a"] = true })
 	storage.economy, storage.tick_state = nil, nil
@@ -1536,6 +1572,9 @@ end)
 local function inventories_scenario()
 	mod_settings = { r_threshold = 2000, r_fluid_threshold = 0, tps = 30, priority = 0 }
 	manager()
+	-- Station 16 provides sulfur and coke on signal-A only.
+	storage.economy.starved = { ["signal-A:coal"] = true, ["signal-A:stone"] = true, ["signal-A:copper-plate"] = true,
+		["signal-B:sulfur"] = true }
 	storage.stations = {
 		-- (a) one network, no secondaries.
 		[11] = {
@@ -1551,15 +1590,16 @@ local function inventories_scenario()
 		-- (b) the naphthalene pattern: Provide only, three masks; listed by position, not by unit number.
 		[12] = {
 			entity_stop = stop("Naphthalene"),
-			entity_comb1 = comb(WORKING, { sig("naphthalene-oil", 5000, "fluid"), sig("signal-A", 1, "virtual") }, 120),
+			entity_comb1 = comb(WORKING, {
+				sig("naphthalene-oil", 5000, "fluid"), sig("signal-A", 1, "virtual"), sig(SIGNAL_PRIORITY, 1, "virtual"),
+			}, 120),
 			secondary_inv_combs = {
-				comb(WORKING, { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 4, "virtual") }, 502),
-				comb(WORKING, { sig("liquid-fuel", 2000, "fluid"), sig("signal-A", 3, "virtual") }, 501),
+				[502] = comb(WORKING, { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 4, "virtual") }, 502),
+				[501] = comb(WORKING, { sig("liquid-fuel", 2000, "fluid"), sig("signal-A", 3, "virtual") }, 501),
 			},
 			network_name = "signal-A",
 			network_mask = 1,
 			is_p = true,
-			priority = 1,
 		},
 		-- (c) Request only with a secondary carrying positives.
 		[13] = {
@@ -1638,7 +1678,7 @@ end
 
 test("inventories (a): one network, no secondaries: one row on the record's own lists", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[11]
 	assert_same(collector.inventories(st), st.rows)
 	local coal = { count = -5000, threshold = 2000, active = true, mask = 1 }
@@ -1658,7 +1698,7 @@ end)
 
 test("inventories (b): naphthalene: one row per combinator in unit order, each with its own mask; totals are sums", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[12]
 	assert_eq(rows_of(st), {
 		{ key = "12@120", index = 0, unit = 120, kind = "station", priority = 1, ok = true, read = true,
@@ -1679,7 +1719,7 @@ end)
 
 test("inventories (c): a Request only station ignores its secondary's positives; starved per row", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[13]
 	local rows = rows_of(st)
 	assert_eq(rows[1].requested, { stone = { count = -3000, threshold = 2000, active = true, mask = 1 } })
@@ -1696,7 +1736,7 @@ end)
 
 test("inventories (d): two combinators on one mask stay two rows; the station total is their sum", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[14]
 	local rows = rows_of(st)
 	assert_eq(#rows, 2)
@@ -1709,7 +1749,7 @@ end)
 
 test("inventories (e): NETWORK_EACH: each row carries its own networks and its own starved check", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local st = snap.stations[15]
 	local rows = rows_of(st)
@@ -1729,7 +1769,7 @@ end)
 
 test("inventories (f): an invalid secondary is skipped, the live one keeps index 1", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[17]
 	local rows = rows_of(st)
 	assert_eq(#rows, 2)
@@ -1740,9 +1780,9 @@ end)
 
 test("inventories: a NETWORK_EACH station naming no network; an unpowered inventory is still a row", function()
 	inventories_scenario()
-	storage.stations[15].network_mask = {}
+	storage.stations[15].entity_comb1.signals = { sig("coke", -3000) }
 	storage.stations[15].secondary_inv_combs[801].status = NO_POWER
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[15]
 	local rows = rows_of(st)
 	assert_eq(#rows, 2)
@@ -1758,7 +1798,7 @@ test("inventories: a working station combinator without input leaves its invento
 	inventories_scenario()
 	-- get_signals returns nil for a combinator with nothing on its input wires.
 	storage.stations[12].entity_comb1.signals = nil
-	collector.run_to_completion()
+	pass()
 	local st = collector.get().stations[12]
 	assert_true(st.comb_ok)
 	local rows = rows_of(st)
@@ -1778,7 +1818,7 @@ end)
 
 test("inventories: refills keep every table; a secondary appearing or going switches the station row's lists", function()
 	inventories_scenario()
-	collector.run_to_completion()
+	pass()
 	local snap = collector.get()
 	local plain, naph = snap.stations[11], snap.stations[12]
 	local function tables()
@@ -1790,7 +1830,7 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	end
 	local keep = tables()
 	game.tick = 1100
-	collector.run_to_completion()
+	pass()
 	snap = collector.get()
 	plain, naph = snap.stations[11], snap.stations[12]
 	local again = tables()
@@ -1799,7 +1839,7 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	-- A secondary added to the plain station gives the station combinator lists of its own.
 	local plain_station = storage.stations[11]
 	plain_station.secondary_inv_combs = { [111] = comb(WORKING, { sig("iron-plate", 5) }, 111) }
-	collector.run_to_completion()
+	pass()
 	plain = collector.get().stations[11]
 	assert_eq(#plain.rows, 2)
 	assert_true(plain.rows[1].provided ~= plain.provided)
@@ -1809,7 +1849,7 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	assert_eq(plain.rows[2].key, "11@111")
 	-- And removed again, it shares them once more.
 	plain_station.secondary_inv_combs = {}
-	collector.run_to_completion()
+	pass()
 	plain = collector.get().stations[11]
 	assert_eq(#plain.rows, 1)
 	assert_same(plain.rows[1].provided, plain.provided)
@@ -1817,8 +1857,8 @@ test("inventories: refills keep every table; a secondary appearing or going swit
 	assert_eq(plain.provided, { ["iron-plate"] = 100 })
 
 	-- The naphthalene station's mask-4 inventory moves to mask 3: still its own row.
-	storage.stations[12].secondary_inv_combs[1].signals = { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 3, "virtual") }
-	collector.run_to_completion()
+	storage.stations[12].secondary_inv_combs[502].signals = { sig("liquid-fuel", -866, "fluid"), sig("signal-A", 3, "virtual") }
+	pass()
 	naph = collector.get().stations[12]
 	assert_eq(#naph.rows, 3)
 	assert_eq({ naph.rows[2].mask, naph.rows[3].mask }, { 3, 3 })
@@ -1827,6 +1867,7 @@ end)
 
 test("inventories: read_station fills the same rows for a stop read live", function()
 	inventories_scenario()
+	poll()
 	local st = collector.read_station(12)
 	assert_eq(#st.rows, 3)
 	assert_eq(st.rows[3].ignored, { ["liquid-fuel"] = -866 })
@@ -1845,11 +1886,10 @@ test("economy_starved: a row's own network counts, whatever networks the caller 
 			{ network_name = NETWORK_EACH, networks = { ["signal-B"] = 2 }, requested = { sulfur = sulfur } },
 		},
 	}
-	storage.economy = { all_r_stops = { ["signal-A:coal"] = {}, ["signal-B:sulfur"] = {} }, all_p_stops = {} }
-	storage.tick_state = STATE_DISPATCH
+	storage.economy = { starved = { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true } }
 	assert_eq(collector.economy_starved(st, { { name = "signal-A" } }), { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true })
 	assert_eq(collector.economy_starved(st), { ["signal-A:coal"] = true, ["signal-B:sulfur"] = true })
-	storage.economy, storage.tick_state = nil, nil
+	storage.economy = nil
 end)
 
 test("mask labels: the value", function()
