@@ -90,6 +90,37 @@ function F.pass(map_data)
 	error("the planner did not finish a pass")
 end
 
+--- Runs `fn` with the named globals replaced, restoring them however it ends.
+function F.with_globals(replacements, fn)
+	local saved = {}
+	for name, value in pairs(replacements) do
+		saved[name] = { _G[name] }
+		_G[name] = value
+	end
+	local ok, err = pcall(fn)
+	for name, old in pairs(saved) do _G[name] = old[1] end
+	assert(ok, err)
+end
+
+--- An available train on signal-A standing at (x, 0) on surface 1, at its depot with a base schedule: one 40-slot
+--- cargo wagon, no fluid wagon, priority 0.
+function F.train(map_data, id, x)
+	local stock = { surface_index = 1, position = { x = x or 0, y = 0 } }
+	local train = {
+		network_name = "signal-A", network_mask = 1, priority = 0, status = STATUS_D, depot_id = 9, depot_surface_id = 1,
+		layout_id = 1, item_slot_capacity = 40, fluid_capacity = 0,
+		entity = {
+			valid = true, manual_mode = false, front_stock = stock,
+			get_schedule = function() return { get_record_count = function() return 1 end } end,
+		},
+	}
+	map_data.trains[id] = train
+	local available = map_data.available_trains["signal-A"] or {}
+	map_data.available_trains["signal-A"] = available
+	available[id] = true
+	return train
+end
+
 F.NET = F.sig("signal-A", 1, "virtual")
 
 return F

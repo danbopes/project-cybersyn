@@ -5,17 +5,7 @@ local H = require("harness")
 local F = require("planner_fixtures")
 local sig, station, world, pass, NET = F.sig, F.station, F.world, F.pass, F.NET
 
---- Runs `fn` with the named globals replaced, restoring them however it ends.
-local function with_globals(replacements, fn)
-	local saved = {}
-	for name, value in pairs(replacements) do
-		saved[name] = { _G[name] }
-		_G[name] = value
-	end
-	local ok, err = pcall(fn)
-	for name, old in pairs(saved) do _G[name] = old[1] end
-	assert(ok, err)
-end
+local with_globals = F.with_globals
 
 local ANY_ROUTE = { Surfaces = { find_surface_connections_masked = function() return {} end } }
 
