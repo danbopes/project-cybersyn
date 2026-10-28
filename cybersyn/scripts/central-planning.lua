@@ -687,7 +687,7 @@ local function tick_dispatch(map_data, mod_settings)
 				goto continue
 			end
 
-			local prior = station.priority
+			local prior = stop.priority
 			if station.item_priority and station.item_thresholds and station.item_thresholds[item_hash] then
 				prior = station.item_priority --[[@as int]]
 			end

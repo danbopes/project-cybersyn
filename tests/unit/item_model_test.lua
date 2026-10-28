@@ -429,8 +429,8 @@ test("build rows: provided by one inventory and requested by another, the statio
 	assert_eq(req.requested, 2000)
 	assert_eq(req.threshold, 1000)
 	assert_eq(req.incoming, 700)
-	-- The station's priority, not Inventory 1's own 3: tick_dispatch ranks every requester stop by station.priority.
-	assert_eq(req.priority, 4)
+	-- The requesting inventory's own 3, not the station's 4: tick_dispatch ranks every stop by its own priority.
+	assert_eq(req.priority, 3)
 	assert_eq(req.group, m.QUEUED)
 	assert_eq(req.position, 1)
 	assert_eq(r.providers[1].out, 0)
@@ -515,24 +515,24 @@ test("build rows: rows of one station sort by inventory index after the station 
 	assert_eq(keys_of(r.providers), { "100@999", "100@1003" })
 end)
 
-test("provider_priority: an inventory's own priority, the item override on every row", function()
+test("row_priority: an inventory's own priority, the item override on every row", function()
 	local m = model()
 	local st = { priority = 2, thresholds = { coal = 10 }, control2 = { [PRIORITY] = 6 } }
-	assert_eq(m.provider_priority(st, { index = 0, priority = 2 }, "coal", PRIORITY), 6, "the item override")
-	assert_eq(m.provider_priority(st, { index = 0, priority = 2 }, "iron-ore", PRIORITY), 2)
-	assert_eq(m.provider_priority(st, { index = 1, priority = 9 }, "coal", PRIORITY), 6,
+	assert_eq(m.row_priority(st, { index = 0, priority = 2 }, "coal", PRIORITY), 6, "the item override")
+	assert_eq(m.row_priority(st, { index = 0, priority = 2 }, "iron-ore", PRIORITY), 2)
+	assert_eq(m.row_priority(st, { index = 1, priority = 9 }, "coal", PRIORITY), 6,
 		"tick_dispatch's override replaces p_stop.priority on an inventory's stop too")
-	assert_eq(m.provider_priority(st, { index = 1, priority = 9 }, "iron-ore", PRIORITY), 9, "the inventory's own stop")
+	assert_eq(m.row_priority(st, { index = 1, priority = 9 }, "iron-ore", PRIORITY), 9, "the inventory's own stop")
 end)
 
-test("build rows: a requesting inventory ranks at the station's priority with the item override, a providing one at its own", function()
+test("build rows: an inventory requests and provides at its own priority; the item override replaces it on both", function()
 	local m = model()
 	local st = SF.coal_both(200)
 	st.priority = 1
 	st.rows[1].priority = 1
 	st.rows[2].priority = 9
 	local r = build(m, rows_snapshot({ st }), SF.COAL, PRIORITY)
-	assert_eq(r.requesters[1].priority, 1, "Inventory 1's priority 9 does not move its request")
+	assert_eq(r.requesters[1].priority, 9, "the requesting inventory's own priority")
 	assert_eq(r.providers[1].priority, 1)
 	st.thresholds = { [SF.COAL] = 10 }
 	st.control2 = { [PRIORITY] = 7 }

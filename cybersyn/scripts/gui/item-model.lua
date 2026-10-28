@@ -4,8 +4,8 @@
 --
 -- The Requesters order is the dispatcher's (central-planning.lua tick_dispatch): among the requests it would consider
 -- this cycle, the highest priority first, and on equal priority the station whose last delivery is oldest. It reads
--- the same inputs the dispatcher sorts by (st.priority, the control combinator's priority when the item has its own
--- threshold there, st.last_delivery_tick) and never re-checks providers, trains or masks (a second eligibility model
+-- the same inputs the dispatcher sorts by (the row's priority, the control combinator's priority when the item has its
+-- own threshold there, st.last_delivery_tick) and never re-checks providers, trains or masks (a second eligibility model
 -- would drift from the dispatcher's), so it is labelled approximate. The dispatcher keeps one queue per network;
 -- sorted by the same key, the rows of any one network keep that network's order. Requests it skips this cycle follow,
 -- grouped by why.
@@ -126,17 +126,15 @@ local function by_amount(key)
 	end
 end
 
---- The priority the dispatcher compares when an inventory row provides the item. Every combinator is its own provider
---- stop at its own priority (tick_dispatch reads p_stop.priority), and the control combinator's item override replaces
---- it on every stop of the station. Requests are different: tick_dispatch ranks every requester stop by
---- station.priority, so a secondary's own priority signal never moves a request; requester rows use
---- model.effective_priority.
+--- The priority the dispatcher compares for a row, as a provider or a requester. Every combinator is its own stop at
+--- its own priority (tick_dispatch reads the stop's: an inventory's own signal, else the station combinator's), and the
+--- control combinator's item override replaces it on every stop of the station.
 --- @param st table
 --- @param row {index: int, priority: int?}
 --- @param hash string
 --- @param priority_signal string
 --- @return int
-function model.provider_priority(st, row, hash, priority_signal)
+function model.row_priority(st, row, hash, priority_signal)
 	if row.index == 0 or row.priority == nil then return model.effective_priority(st, hash, priority_signal) end
 	local override = item_override(st, hash, priority_signal)
 	if override ~= nil then return override end
@@ -151,7 +149,7 @@ end
 --- @field multi boolean? the station has more than one inventory row, so the row names its inventory
 --- @field stock int
 --- @field threshold int? the item's own threshold on the control combinator; nil = the requester's applies
---- @field priority int the dispatcher's priority for this row as a provider (model.provider_priority)
+--- @field priority int the dispatcher's priority for this row (model.row_priority)
 --- @field out int amount on its way out of this station
 --- @field status string
 
@@ -165,7 +163,7 @@ end
 --- @field threshold int
 --- @field wait_start uint? request start tick, if one was recorded
 --- @field incoming int
---- @field priority int
+--- @field priority int the dispatcher's priority for this row (model.row_priority)
 --- @field last_served number planner ticks of the last delivery
 --- @field group int
 --- @field network string?
@@ -254,7 +252,7 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 							multi = multi,
 							stock = stock,
 							threshold = st.thresholds and st.thresholds[hash] or nil,
-							priority = model.provider_priority(st, row, hash, priority_signal),
+							priority = model.row_priority(st, row, hash, priority_signal),
 							out = p_rows == 0 and d < 0 and -d or 0,
 							status = st.status,
 						}
@@ -273,7 +271,7 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 							threshold = req.threshold or 0,
 							wait_start = st.wait and st.wait[hash] or nil,
 							incoming = r_rows == 0 and d > 0 and d or 0,
-							priority = model.effective_priority(st, hash, priority_signal),
+							priority = model.row_priority(st, row, hash, priority_signal),
 							last_served = st.last_delivery_tick or 0,
 							group = model.requester_group(st, req, hash),
 							network = row.network_name,
@@ -299,11 +297,11 @@ function model.build(snapshot, hash, priority_signal, changed, keep, rows_of)
 				if p_rows == 0 and d < 0 then
 					providers[#providers + 1] = { id = id, key = first.key, index = first.index, row = first, multi = multi,
 						stock = 0, threshold = st.thresholds and st.thresholds[hash] or nil,
-						priority = model.provider_priority(st, first, hash, priority_signal), out = -d, status = st.status }
+						priority = model.row_priority(st, first, hash, priority_signal), out = -d, status = st.status }
 				end
 				if r_rows == 0 and d > 0 then
 					requesters[#requesters + 1] = { id = id, key = first.key, index = first.index, row = first, multi = multi,
-						requested = 0, threshold = 0, incoming = d, priority = model.effective_priority(st, hash, priority_signal),
+						requested = 0, threshold = 0, incoming = d, priority = model.row_priority(st, first, hash, priority_signal),
 						last_served = st.last_delivery_tick or 0, group = model.NOT_REQUESTING, network = first.network_name }
 				end
 			end
