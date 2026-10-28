@@ -87,6 +87,13 @@ local function requester_chosen(a, b, inv, b_control)
 	return m and m.r
 end
 
+test("requester: an inventory's request ranks by its own priority, not its station combinator's, against another station", function()
+	assert_eq(requester_chosen(3, 0, 5), { 500, 501 }, "5 beats 3 although its station combinator says 0")
+	assert_eq(requester_chosen(3, 9, 1), { 100 }, "1 loses to 3 although its station combinator says 9")
+	assert_eq(requester_chosen(3, 9, nil), { 500, 501 }, "without a signal of its own it requests at its station combinator's 9")
+end)
+
+
 --- Station 100 carries iron `count` on its station combinator (priority `own`) and on an inventory (priority `inv`),
 --- against station 300 in the opposite role; count > 0 makes 100 the provider, < 0 the requester. The two stops share
 --- every station-level input (distance, limit, deliveries, last delivery), so only their own priorities can decide.
@@ -104,6 +111,11 @@ end
 test("provider: at one station, the station combinator and an inventory offering the same item rank by their own priorities", function()
 	assert_eq(stop_chosen_at_one_station(9000, 0, 5), { 100, 101 })
 	assert_eq(stop_chosen_at_one_station(9000, 5, 0), { 100 })
+end)
+
+test("requester: at one station, the station combinator and an inventory asking for the same item rank by their own priorities", function()
+	assert_eq(stop_chosen_at_one_station(-5000, 0, 5), { 100, 101 })
+	assert_eq(stop_chosen_at_one_station(-5000, 5, 0), { 100 })
 end)
 
 test("a station control combinator's priority for an item overrides every stop of its station, an inventory's own included", function()

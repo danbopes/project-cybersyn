@@ -538,10 +538,7 @@ test("stop panel: red S and red I on the heads, from the combinators' display", 
 		for _, c in ipairs(d) do walk(c) end
 	end
 	for _, d in ipairs(r.slots_defs(n, { s = "red" })) do walk(d) end
-	-- An inventory's head also says its priority ranks only its provides.
-	local note = { "cybersyn-gui.inventory-priority-note" }
-	assert_eq(tips, { { "cybersyn-gui.relative-s-red" }, { "", { "cybersyn-gui.relative-i-cyan" }, "\n", note },
-		{ "", { "cybersyn-gui.relative-i-cyan" }, "\n", note } })
+	assert_eq(tips, { { "cybersyn-gui.relative-s-red" }, { "cybersyn-gui.relative-i-cyan" }, { "cybersyn-gui.relative-i-cyan" } })
 end)
 
 test("stop panel: the blocks are rebuilt only when the record or a letter changed", function()

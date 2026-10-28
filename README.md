@@ -121,7 +121,7 @@ A secondary inventory combinator reads its own request threshold, fluid request 
 
 For example, a smelting station can provide plates to the main network from its station combinator while a secondary inventory combinator on the same stop requests ore from a mining sub-network on a different mask bit, with its own request threshold of one wagon. One train stop and one train limit serve two entries in the economy.
 
-The combinator displays an I, which turns red while one of its own requests could not be dispatched. A priority signal on a secondary inventory ranks only the cargo it provides; its requests are ranked at the station's priority.
+The combinator displays an I, which turns red while one of its own requests could not be dispatched.
 
 ### Networks
 
