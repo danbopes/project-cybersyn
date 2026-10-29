@@ -1,4 +1,11 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.2.1
+Date: 2026-10-29
+  Features:
+    - (Manager) Stations tab: a Control signals column between Priority and Provided / requested, on the station combinator's row: the station combinator's signals, then the control combinator's (priority, request thresholds, locked slots and the like), then its per-item request thresholds; clicking an item sets the item filter
+    - (Manager) A toggle at the right of the Stations subheader shows or hides the Control signals column; until you choose, it shows whenever the window is wide enough for it beside the station name
+    - (Manager) Item drill-down: the Providers table has a Priority column with the priority the dispatcher compares, including the control combinator's per-item override
+---------------------------------------------------------------------------------------------------
 Version: 2.2.0
 Date: 2026-10-23
   Features:
