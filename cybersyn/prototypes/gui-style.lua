@@ -714,6 +714,12 @@ styles.cybersyn_unserved_value_acked = {
 	font_color = { 0.5, 0.5, 0.5 },
 }
 
+-- A column header that does not sort: the sort checkboxes' caption without the arrow.
+styles.cybersyn_list_header_label = {
+	type = "label_style",
+	font = "default-bold",
+}
+
 styles.cybersyn_unserved_header = {
 	type = "label_style",
 	font = "default-small-semibold",

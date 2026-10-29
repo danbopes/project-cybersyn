@@ -720,3 +720,49 @@ test("network filter: a station shows under every bit any of its rows advertises
 	local p = st(21, "Circuit Requestor", { network_mask = 3 })
 	assert_false(u.station_passes(p, { mask = 4, network = "signal-A" }), "a record without rows reads its own mask")
 end)
+
+test("column widths: no column goes negative and the row fits, at every content width and view", function()
+	local stations_tab = H.load("scripts.gui.stations")
+	local metrics = require("scripts.gui.metrics")
+	local sizing = require("scripts.gui.sizing")
+	local fixed = { "station_status", "network", "priority", "deliveries", "last_delivery" }
+	-- From the narrowest window sizing.compute gives a screen of at least MIN_WIDTH logical px to the widest.
+	for cw = sizing.MIN_WIDTH - sizing.OUTER_WIDTH, sizing.MAX_WIDTH - sizing.OUTER_WIDTH do
+		for _, problems in ipairs({ false, true }) do
+			for _, hide_wait in ipairs({ false, true }) do
+				for _, control in ipairs({ false, true }) do
+					local w = stations_tab.column_widths(cw, problems, hide_wait, control)
+					local where = cw .. (problems and " problems" or "") .. (hide_wait and " no-wait" or "")
+						.. (control and " control" or "")
+					local sum, n = w.name + (problems and w.problems or w.provided_requested), 2
+					for _, k in ipairs(fixed) do sum, n = sum + w[k], n + 1 end
+					if not hide_wait then sum, n = sum + w.wait, n + 1 end
+					if w.show_control then sum, n = sum + w.control, n + 1 end
+					for k, v in pairs(w) do
+						if type(v) == "number" then assert_true(v >= 0, where .. ": " .. k .. " = " .. v) end
+					end
+					assert_true(sum + (n - 1) * metrics.LIST_SPACING + 2 * metrics.LIST_ROW_PADDING + 16 <= cw, where .. " overflows")
+					assert_eq(w.show_control, control and not problems, where)
+				end
+			end
+		end
+	end
+end)
+
+test("column widths: the Problems view keeps the name at its minimum on the narrowest window", function()
+	local w = H.load("scripts.gui.stations").column_widths(912, true, false, false)
+	assert_eq(w.name, 160)
+	assert_true(w.problems > 0)
+end)
+
+test("control column: Auto shows it where it fits beside a full name; the toggle's choice wins", function()
+	local stations_tab = H.load("scripts.gui.stations")
+	local function pd(cw, choice)
+		return { layout = { content_width = cw }, tabs = { stations_tab = { control = choice } } }
+	end
+	assert_true(stations_tab.control_shown(pd(1392)))
+	assert_true(stations_tab.control_shown(pd(1104)))
+	assert_false(stations_tab.control_shown(pd(912)), "1080p at UI scale 1.5")
+	assert_true(stations_tab.control_shown(pd(912, true)))
+	assert_false(stations_tab.control_shown(pd(1392, false)))
+end)

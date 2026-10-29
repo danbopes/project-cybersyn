@@ -236,12 +236,30 @@ test("slot_table_build_from_control_signals: sorted virtual signals with a sprit
 	assert_eq(defs[2].tooltip, {
 		"", "[virtual-signal=signal-A] ", { "item-name.signal-A" }, "\n", { "cybersyn-gui.amount", "1" },
 	})
-	assert_nil(defs[2].tags)
+	-- A slot key of its own, not an item's: a click on it sets no filter.
+	assert_eq(defs[2].tags, { slot_key = "c1:signal-A" })
 	assert_eq(defs[3].tooltip, {
 		"",
 		{ "", "[item=stone,quality=]", " ", { "item-name.stone" } },
 		"\n", { "cybersyn-gui.request-threshold", "150" },
 	})
+end)
+
+test("slot_table_build_from_control_signals: the control combinator's signals follow, marked, with their own keys", function()
+	local u = util()
+	local st = slot_station()
+	st.control2 = { ["cybersyn-priority"] = 7 }
+	local look = { prefix = "p_", selected_prefix = "s_", count = "c" }
+	local defs = u.slot_table_build_from_control_signals(st, look)
+	assert_eq(slot_summary(defs), {
+		"virtual-signal/cybersyn-priority default 3",
+		"virtual-signal/signal-A default 1",
+		"virtual-signal/cybersyn-priority default 7",
+		"stone default 150",
+	})
+	assert_eq(defs[3].tags, { slot_key = "c2:cybersyn-priority" })
+	assert_eq(defs[3].tooltip[7], { "cybersyn-gui.control-combinator-signal" })
+	assert_eq({ defs[1].style, defs[4].style, defs[1].children[1].style }, { "p_default", "p_default", "c" })
 end)
 
 test("natural_key: digit runs compare by value, leading zeros ignored", function()

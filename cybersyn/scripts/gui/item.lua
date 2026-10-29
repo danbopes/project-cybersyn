@@ -103,6 +103,7 @@ local TABLE_SPACING = metrics.TABLE_SPACING
 local COLUMNS = {
 	providers = {
 		{ kind = "station", header = "station" },
+		{ kind = "value", width = W.priority, header = "priority" },
 		{ kind = "value", width = W.value, header = "stock" },
 		{ kind = "value", width = W.value, header = "threshold" },
 		{ kind = "value", width = W.value, header = "out" },
@@ -148,6 +149,11 @@ end
 
 -- ---------------------------------------------------------------- build
 
+local PRIORITY_TOOLTIP = {
+	providers = "cybersyn-gui.item-provider-priority-tooltip",
+	requesters = "cybersyn-gui.item-priority-tooltip",
+}
+
 local function header_cell(caption, width, right, tooltip)
 	return {
 		type = "label",
@@ -167,7 +173,7 @@ local function section_def(t, flex)
 		column_count = #COLUMNS[t],
 	}
 	for _, c in ipairs(COLUMNS[t]) do
-		local tooltip = c.header == "priority" and { "cybersyn-gui.item-priority-tooltip" } or nil
+		local tooltip = c.header == "priority" and { PRIORITY_TOOLTIP[t] } or nil
 		header[#header + 1] = header_cell({ "cybersyn-gui.item-col-" .. c.header }, c.width or flex[t],
 			c.kind == "value" or c.kind == "train", tooltip)
 	end
@@ -590,7 +596,7 @@ local function provider_entry(r, ctx, i)
 	local st = station_view(ctx.snapshot, r.id)
 	local name = st and st.name or ""
 	local status = pm.shown_status(r.status, r.id, st and st.lint, diag.is_acked)
-	local sig = table.concat({ name, r.stock, tostring(r.threshold), r.out, status }, "|")
+	local sig = table.concat({ name, r.priority, r.stock, tostring(r.threshold), r.out, status }, "|")
 	local net_sig = network_sig(r, st)
 	-- A station with several inventories has one row per inventory, so the inventory is part of the row's identity.
 	return row_entry("providers", i, r.key .. "@" .. net_sig .. "#" .. sig, function()
@@ -598,6 +604,8 @@ local function provider_entry(r, ctx, i)
 		return {
 			{ st = st, id = r.id, tooltip = station_tooltip(st, { "cybersyn-gui.item-network", network }), tag = tag,
 				sig = name .. "\1" .. r.id .. "\1" .. net_sig },
+			{ caption = tostring(r.priority), tooltip = { "cybersyn-gui.item-provider-priority-tooltip" },
+				sig = tostring(r.priority) },
 			{ caption = count(r.stock), tooltip = format.number(r.stock), sig = tostring(r.stock) },
 			r.threshold and { caption = count(r.threshold), tooltip = format.number(r.threshold), sig = tostring(r.threshold) }
 				or { caption = NO_VALUE, tooltip = { "cybersyn-gui.item-threshold-none-tooltip" }, sig = "-" },
