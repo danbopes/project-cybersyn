@@ -37,6 +37,7 @@ local HEADER = "manager_stations_header"
 local CHIPS = "manager_stations_status_flow"
 -- The second line of chips, below the subheader.
 local CHIP_ROW = "manager_stations_chip_row"
+local CONTROL_TOGGLE = "manager_stations_control_toggle"
 local CHIPS2 = "manager_stations_chip_flow2"
 local UNLIMITED = collector.UNLIMITED
 local SLOT = 32
@@ -76,14 +77,22 @@ local CHIP_WIDTH = {
 -- Each further digit of a count, separators included.
 local DIGIT_WIDTH = 8
 
-local COLUMNS = { "name", "station_status", "network", "priority", "provided_requested", "deliveries", "wait", "last_delivery" }
--- While the Problems chip is on, the fifth column shows a station's lint findings instead of its slots.
-local PROBLEM_COLUMNS = { "name", "station_status", "network", "priority", "problems", "deliveries", "wait", "last_delivery" }
-local PROBLEMS_COLUMN = 5
-local WAIT_COLUMN = 7
+local COLUMNS = { "name", "station_status", "network", "priority", "control", "provided_requested", "deliveries", "wait",
+	"last_delivery" }
+-- While the Problems chip is on, the sixth column shows a station's lint findings instead of its slots.
+local PROBLEM_COLUMNS = { "name", "station_status", "network", "priority", "control", "problems", "deliveries", "wait",
+	"last_delivery" }
+-- Control signals (not sortable) sits beside Priority, whose signal it shows with the rest. The subheader toggle hides
+-- it, and the Problems view, which needs the width, always does.
+local CONTROL_COLUMN = 5
+local PROBLEMS_COLUMN = 6
+local WAIT_COLUMN = 8
+-- Its left padding: Priority before it is right-aligned, so the spacing alone runs the two together.
+local CONTROL_GAP = 12
 local RIGHT = { priority = true, wait = true, last_delivery = true }
 -- Column captions and sort tooltips whose locale key is not the column's name.
-local CAPTION_KEY = { last_delivery = "stations-last-dispatch", problems = "stations-problems", priority = "item-col-priority" }
+local CAPTION_KEY = { last_delivery = "stations-last-dispatch", problems = "stations-problems", priority = "item-col-priority",
+	control = "stations-control" }
 local SORT_KEY = { last_delivery = "stations-sort-last-dispatch", problems = "stations-sort-problems" }
 -- Fixed widths in logical px; the name and the two slot strips share the rest (column_widths).
 local W = { station_status = 156, network = 80, priority = 64, dl_count = 40, wait = 64, last_delivery = 88 }
@@ -95,22 +104,30 @@ local PROBLEMS_MIN = 300
 local PROBLEMS_DL_SLOTS = 2
 
 --- Column widths for a tab content width: fixed columns, slot strips of whole slots (Provided / requested 5..12,
---- Deliveries 2..6), the name takes the rest. With `problems` the Problems column takes Provided / requested's place
---- and stretches: Deliveries keeps two slots, the name a quarter; a hidden Wait column gives its width to the name.
+--- Deliveries 2..6, Control signals 3..5), the name takes the rest. With `problems` the Problems column takes Provided /
+--- requested's place and stretches: Deliveries keeps two slots, the name a quarter; a hidden Wait or Control signals
+--- column gives its width to the name. On a narrow window Control signals takes its slots from Provided / requested,
+--- which keeps three: the toggle is there for a player who wants them back.
 --- @param cw int
 --- @param problems boolean?
 --- @param hide_wait boolean?
+--- @param show_control boolean?
 --- @return table
-local function column_widths(cw, problems, hide_wait)
-	-- Row padding, 16 px of frame borders and seven gaps between eight columns (one fewer with Wait hidden).
+local function column_widths(cw, problems, hide_wait, show_control)
+	show_control = show_control and not problems
+	-- Row padding, 16 px of frame borders and seven gaps between the eight columns other than Control signals (one
+	-- fewer with Wait hidden, one more with Control signals shown).
 	local avail = cw - 2 * metrics.LIST_ROW_PADDING - 16 - 7 * metrics.LIST_SPACING
 	local wait = W.wait
 	if hide_wait then
 		wait = 0
 		avail = avail + metrics.LIST_SPACING
 	end
+	if show_control then avail = avail - metrics.LIST_SPACING - CONTROL_GAP end
 	local fixed = W.station_status + W.network + W.priority + W.dl_count + 4 + wait + W.last_delivery
 	local rest = avail - fixed
+	local ctl = show_control and math.min(5, math.max(3, math.floor(rest * 0.15 / SLOT))) or 0
+	rest = rest - ctl * SLOT
 	local pr = math.min(12, math.max(5, math.floor(rest * 0.45 / SLOT)))
 	local dl = math.min(6, math.max(2, math.floor(rest * 0.2 / SLOT)))
 	local fourth, name
@@ -132,16 +149,27 @@ local function column_widths(cw, problems, hide_wait)
 		dl = dl - 1
 		name = name + SLOT
 	end
-	if problems and name < NAME_MIN and fourth > PROBLEMS_MIN then
-		local give = math.min(NAME_MIN - name, fourth - PROBLEMS_MIN)
+	while name < NAME_MIN and ctl > 3 do
+		ctl = ctl - 1
+		name = name + SLOT
+	end
+	while name < NAME_MIN and show_control and pr > 3 do
+		pr = pr - 1
+		fourth = pr * SLOT
+		name = name + SLOT
+	end
+	-- On a window too narrow for both, the Problems column gives up its minimum before the name does.
+	if problems and name < NAME_MIN then
+		local give = math.min(NAME_MIN - name, fourth)
 		fourth = fourth - give
 		name = name + give
 	end
 	return {
 		cw = cw,
-		sig = cw .. (problems and "p" or "") .. (hide_wait and "w" or ""),
+		sig = cw .. (problems and "p" or "") .. (hide_wait and "w" or "") .. (show_control and "c" or ""),
 		problems_view = problems == true,
 		hide_wait = hide_wait == true,
+		show_control = show_control == true,
 		name = name,
 		station_status = W.station_status,
 		network = W.network,
@@ -154,6 +182,8 @@ local function column_widths(cw, problems, hide_wait)
 		deliveries = W.dl_count + 4 + dl * SLOT,
 		wait = wait,
 		last_delivery = W.last_delivery,
+		ctl_slots = ctl,
+		control = show_control and ctl * SLOT + CONTROL_GAP or 0,
 	}
 end
 
@@ -163,7 +193,20 @@ end
 --- @return table
 local function widths_for(player_data, problems, hide_wait)
 	local layout = player_data.layout
-	return column_widths(layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH), problems, hide_wait)
+	local cw = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
+	return column_widths(cw, problems, hide_wait, stations_tab.control_shown(player_data))
+end
+
+--- Whether the Control signals column shows: the player's choice from the toggle, else (Auto) whenever it fits beside
+--- a name of NAME_MIN. Fit is judged with Wait shown, so the column does not come and go with the page.
+--- @param player_data PlayerData
+--- @return boolean
+function stations_tab.control_shown(player_data)
+	local choice = player_data.tabs.stations_tab.control
+	if choice ~= nil then return choice end
+	local layout = player_data.layout
+	local cw = layout and layout.content_width or (sizing.MAX_WIDTH - sizing.OUTER_WIDTH)
+	return column_widths(cw, false, false, true).name >= NAME_MIN
 end
 
 --- @param column string
@@ -177,6 +220,15 @@ end
 
 local function header_cell(column, width, selected)
 	local caption, tooltip = header_texts(column)
+	if column == "control" then
+		return {
+			type = "flow",
+			direction = "horizontal",
+			style_mods = { width = width, vertical_align = "center", left_padding = CONTROL_GAP },
+			{ type = "label", style = "cybersyn_list_header_label", caption = caption,
+				tooltip = { "cybersyn-gui.stations-control-tooltip" } },
+		}
+	end
 	return {
 		type = "flow",
 		direction = "horizontal",
@@ -1400,6 +1452,10 @@ local function decorate_slots(defs)
 			def.handler = { [defines.events.on_gui_click] = links.handle.link_click }
 			hover.hoverable(def, SCROLL)
 			def.tooltip = { "", def.tooltip, "\n", { "cybersyn-gui.item-click-hint" } }
+		elseif tags and tags.slot_key then
+			-- A control signal: nothing to click, but a disabled button greys its icon out.
+			def.enabled = true
+			hover.hoverable(def, SCROLL)
 		end
 	end
 	return defs
@@ -1494,10 +1550,16 @@ local SLOT_TABLES = {
 		if not row or row.index ~= 0 then return {} end
 		return fit_slots(decorate_slots(util.slot_table_build_from_deliveries(row.st, slot_look(item))), w.dl_slots)
 	end,
+	-- The station's own signals, on its station combinator's row as its deliveries are.
+	ctl = function(row, item, w)
+		if not (row and row.index == 0 and w.show_control) then return {} end
+		return fit_slots(decorate_slots(util.slot_table_build_from_control_signals(row.st, slot_look(item))), w.ctl_slots)
+	end,
 }
-local NO_SLOTS = { pr = "", dl = "" }
+local NO_SLOTS = { pr = "", dl = "", ctl = "" }
 
 local function count_parts(parts, prefix, map)
+	if not map then return end
 	for k, v in pairs(map) do
 		parts[#parts + 1] = prefix .. k .. "=" .. tostring(v)
 	end
@@ -1524,11 +1586,18 @@ local function slot_sigs(row, item, minute)
 	parts[#parts + 1] = item or ""
 	if waits then parts[#parts + 1] = tostring(minute) end
 	local pr = table.concat(parts, "\1")
-	if row.index ~= 0 then return { pr = pr, dl = "" } end
+	if row.index ~= 0 then return { pr = pr, dl = "", ctl = "" } end
+	local st = row.st
 	parts = {}
-	count_parts(parts, "", row.st.deliveries)
+	count_parts(parts, "", st.deliveries)
 	parts[#parts + 1] = item or ""
-	return { pr = pr, dl = table.concat(parts, "\1") }
+	local dl = table.concat(parts, "\1")
+	parts = {}
+	count_parts(parts, "c", st.control)
+	count_parts(parts, "k", st.control2)
+	count_parts(parts, "t", st.thresholds)
+	parts[#parts + 1] = item or ""
+	return { pr = pr, dl = dl, ctl = table.concat(parts, "\1") }
 end
 
 local function slot_state(slots, name)
@@ -1542,7 +1611,7 @@ local function row_refs(row, problems)
 	local c = row.children
 	local status = c[2].children
 	local net = c[3].children
-	local dl = c[6].children
+	local dl = c[7].children
 	local refs = {
 		name = c[1],
 		status_sprite = status[1],
@@ -1553,8 +1622,9 @@ local function row_refs(row, problems)
 		prio = c[4],
 		dl_count = dl[1],
 		dl = dl[2],
-		wait = c[7],
-		last = c[8],
+		wait = c[8],
+		last = c[9],
+		ctl = c[CONTROL_COLUMN].children[1],
 	}
 	if problems then
 		local p = c[PROBLEMS_COLUMN]
@@ -1708,7 +1778,8 @@ end
 --- @param item string?
 --- @param w table column widths
 local function row_def(inv, m, color, item, w)
-	local defs = { pr = w.problems_view and {} or SLOT_TABLES.pr(inv, item, w), dl = SLOT_TABLES.dl(inv, item, w) }
+	local defs = { pr = w.problems_view and {} or SLOT_TABLES.pr(inv, item, w), dl = SLOT_TABLES.dl(inv, item, w),
+		ctl = SLOT_TABLES.ctl(inv, item, w) }
 	local net_sprite, net_caption, net_tooltip = m.network()
 	local name = name_cell.def(m.parts, m.name, m.link, w.name - (m.marker and MARKER_W or 0), m.name_tooltip(), SCROLL)
 	if m.marker then
@@ -1749,6 +1820,13 @@ local function row_def(inv, m, color, item, w)
 		},
 		{ type = "label", style = "cybersyn_cell_value", caption = m.prio_caption or "", tooltip = m.prio_tooltip and m.prio_tooltip() or "",
 			style_mods = { width = w.priority } },
+		{
+			type = "flow",
+			style = "cybersyn_cell_flow",
+			style_mods = { width = w.control, left_padding = CONTROL_GAP },
+			visible = w.show_control,
+			{ type = "table", style = "slot_table", column_count = math.max(1, w.ctl_slots), children = defs.ctl },
+		},
 		fourth,
 		{
 			type = "flow",
@@ -1843,6 +1921,8 @@ function stations_tab.chip_space(player_data, tab)
 	if shown("_chip_flow") then space = space - 260 end
 	if shown("_train_chip_flow") then space = space - 140 end
 	if shown("_collecting") then space = space - 160 end
+	-- The Stations tab's Control signals toggle (the Trains tab subtracts its own group toggle).
+	if tab == TAB then space = space - 32 end
 	return space
 end
 
@@ -1925,9 +2005,24 @@ end
 --- Chips: counts over the filtered set, click to show only that set, click again for all.
 --- @return boolean wrapped the second line shows (the page has one row less)
 local function render_chips(player_data, counts)
-	local flow = stations_tab.chip_flow(player_data, TAB, CHIPS)
+	local flow, created = stations_tab.chip_flow(player_data, TAB, CHIPS)
 	if not flow then return false end
 	local refs = player_data.refs
+	if created then
+		local _, toggle = gui.add(refs[TAB .. "_subheader"], {
+			type = "sprite-button",
+			name = CONTROL_TOGGLE,
+			style = "tool_button",
+			sprite = "item/cybersyn-combinator",
+			tooltip = { "", "[font=default-bold]", { "cybersyn-gui.stations-control" }, "[/font]\n",
+				{ "cybersyn-gui.stations-control-toggle-tooltip" } },
+			handler = { [defines.events.on_gui_click] = stations_tab.handle.on_control_toggle },
+		})
+		refs[CONTROL_TOGGLE] = toggle
+	end
+	local toggle = refs[CONTROL_TOGGLE]
+	local shown = stations_tab.control_shown(player_data)
+	if toggle and toggle.valid and toggle.toggled ~= shown then toggle.toggled = shown end
 	local wanted = active_chip(player_data) or "all"
 	local pending = lint_pending()
 	local layout = player_data.layout
@@ -1964,7 +2059,7 @@ local function sync_header(player_data, w, column, ascending)
 		local cells = header.children
 		for i, cell in ipairs(cells) do
 			cell.style.width = w[columns[i]]
-			cell.visible = not (i == WAIT_COLUMN and w.hide_wait)
+			cell.visible = not (i == WAIT_COLUMN and w.hide_wait or i == CONTROL_COLUMN and not w.show_control)
 		end
 		local box = cells[PROBLEMS_COLUMN].children[1]
 		local tags = box.tags
@@ -2208,6 +2303,8 @@ function stations_tab.marker(row)
 	return { sig = marker.sig, unit = marker.unit, tooltip = marker.tooltip(), def = marker_def(marker) }
 end
 
+stations_tab.column_widths = column_widths
+
 function stations_tab.pr_slots(row, item, capacity)
 	return SLOT_TABLES.pr(row, item, { pr_slots = capacity })
 end
@@ -2278,6 +2375,13 @@ function stations_tab.set_chip(player_data, chip)
 	if chip and not (STATUS_RANK[chip] or FLAG_CHIPS[chip] or chip == "stuck") then chip = nil end
 	player_data.filters.stations_chip = chip
 	listing.reset_page(player_data, TAB)
+end
+
+--- @param e EventData.on_gui_click
+function stations_tab.handle.on_control_toggle(player, player_data, refs, e)
+	player_data.tabs.stations_tab.control = not stations_tab.control_shown(player_data)
+	hover.release_hold(player_data)
+	nav.rerender(player, player_data)
 end
 
 gui.add_handlers(stations_tab.handle, stations_tab.wrapper)

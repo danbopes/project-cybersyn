@@ -105,7 +105,9 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 ---   Overview's Throughput tile sets); dim = Provided dims the items nobody on the same network requests; version =
 ---   bumped per inventory cache rebuild, kept outside the cache so a grid's render signature never repeats a stale one;
 ---   item_widths = the drill-down's flexible column widths for the current layout
---- @field stations_tab {problems_view: true?} the Problems chip was on at the last query (its sort is set on the way in)
+--- @field stations_tab {problems_view: true?, control: boolean?} problems_view = the Problems chip was on at the last
+---   query (its sort is set on the way in); control = the toggle's choice for the Control signals column (nil = shown
+---   when it fits)
 --- @field trains_tab {group_by_depot: true?, expanded_depots: {[string]: true}?, selected: uint?, reveal: {train: uint?, group: string?, all: true?}?}
 ---   selected = the train the detail pane shows; reveal = manager.focus: expand the group of this train (or this
 ---   group, or every group holding a filtered train) once, on the first grouped build with a complete snapshot

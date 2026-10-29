@@ -401,37 +401,59 @@ function util.slot_table_build_from_deliveries(st, look)
 	return children
 end
 
---- Virtual control signals (station combinator) and per-item thresholds (control combinator).
---- @param st SnapshotStation
---- @return GuiElemDef[]
-function util.slot_table_build_from_control_signals(st)
-	local children = {}
-	local names = {}
-	for name in pairs(st.control) do
-		names[#names + 1] = name
+--- @param name string
+--- @param count int
+--- @param look SlotLook
+--- @param source LocalisedString? which combinator, for a signal of the control combinator
+--- @return GuiElemDef?
+local function virtual_slot(name, count, look, source)
+	local sprite = "virtual-signal/" .. name
+	if not util.valid_sprite(sprite) then return nil end
+	local proto = prototypes.virtual_signal[name]
+	local tooltip = { "", "[virtual-signal=" .. name .. "] ", proto and proto.localised_name or name, "\n",
+		{ "cybersyn-gui.amount", format.number(count) } }
+	if source then
+		tooltip[#tooltip + 1] = "\n"
+		tooltip[#tooltip + 1] = source
 	end
-	table.sort(names)
-	for _, name in ipairs(names) do
-		local count = st.control[name]
-		local sprite = "virtual-signal/" .. name
-		if util.valid_sprite(sprite) then
-			local proto = prototypes.virtual_signal[name]
-			children[#children + 1] = {
-				type = "sprite-button",
-				sprite = sprite,
-				enabled = false,
-				style = "ltnm_small_slot_button_default",
-				tooltip = { "", "[virtual-signal=" .. name .. "] ", proto and proto.localised_name or name, "\n", { "cybersyn-gui.amount", format.number(count) } },
-				children = {
-					{ type = "label", style = "ltnm_label_signal_count", ignored_by_interaction = true, caption = format_signal_count(count) },
-				},
-			}
+	return {
+		type = "sprite-button",
+		sprite = sprite,
+		enabled = false,
+		style = look.prefix .. "default",
+		tooltip = tooltip,
+		-- The same signal can be on both combinators: each gets its own slot key.
+		tags = { slot_key = (source and "c2:" or "c1:") .. name },
+		children = {
+			{ type = "label", style = look.count, ignored_by_interaction = true, caption = format_signal_count(count) },
+		},
+	}
+end
+
+--- Virtual signals of the station combinator, then of the control combinator, then the control combinator's per-item
+--- thresholds.
+--- @param st SnapshotStation
+--- @param look SlotLook? the small LTNM slots when nil
+--- @return GuiElemDef[]
+function util.slot_table_build_from_control_signals(st, look)
+	look = look or SMALL_SLOTS
+	local children = {}
+	local control2_source = { "cybersyn-gui.control-combinator-signal" }
+	for _, signals in ipairs({ st.control, st.control2 or {} }) do
+		local names = {}
+		for name in pairs(signals) do
+			names[#names + 1] = name
+		end
+		table.sort(names)
+		for _, name in ipairs(names) do
+			children[#children + 1] = virtual_slot(name, signals[name], look,
+				signals ~= st.control and control2_source or nil)
 		end
 	end
 	for _, hash in ipairs(util.hashes_in_item_order(st.thresholds)) do
 		children[#children + 1] = slot_button(hash, st.thresholds[hash], "default", {
 			"\n", { "cybersyn-gui.request-threshold", format.number(st.thresholds[hash]) },
-		}, SMALL_SLOTS)
+		}, look)
 	end
 	return children
 end
