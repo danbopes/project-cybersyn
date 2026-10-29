@@ -1,4 +1,9 @@
 ---------------------------------------------------------------------------------------------------
+Version: 2.2.2
+Date: 2026-10-29
+  Bugfixes:
+    - Includes upstream 2.1.3: the Space Exploration elevator connect switch works again, and an elevator window left open in a save is closed once so its frame is rebuilt
+---------------------------------------------------------------------------------------------------
 Version: 2.2.1
 Date: 2026-10-29
   Features:
