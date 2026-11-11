@@ -2,7 +2,6 @@
 local manager = require("gui.main")
 local picker_dollies_compat = require("scripts.mod-compatibility.picker-dollies")
 local analytics = require("scripts.analytics")
-local utilization_tab = require("scripts.gui.utilization")
 local diag = require("scripts.diag")
 local stats = require("scripts.stats")
 local lint = require("scripts.lint")
@@ -1092,16 +1091,12 @@ local function main()
 	script.on_load(function()
 		ElevatorTravel.setup_se_compat()
 		picker_dollies_compat.setup_picker_dollies_compat()
-		utilization_tab.on_load()
 	end)
 
 	-- Every GUI event is registered here and only here: on_event keeps one handler per event, so each entry is the
 	-- whole chain for its event.
 	local flib_gui = require("__flib__.gui")
 	local manager_hover = require("scripts.gui.utils.hover")
-	local function hover(e)
-		if not utilization_tab.forward_hover(e) then flib_gui.dispatch(e) end
-	end
 	local gui_events = {
 		[defines.events.on_gui_opened] = manager.on_gui_opened,
 		[defines.events.on_gui_closed] = manager.on_gui_closed,
@@ -1109,8 +1104,8 @@ local function main()
 			manager_hover.touch_hover(e)
 			if not flib_gui.dispatch(e) then manager.on_unhandled_click(e) end
 		end,
-		[defines.events.on_gui_hover] = hover,
-		[defines.events.on_gui_leave] = hover,
+		[defines.events.on_gui_hover] = flib_gui.dispatch,
+		[defines.events.on_gui_leave] = flib_gui.dispatch,
 		[defines.events.on_gui_elem_changed] = flib_gui.dispatch,
 		[defines.events.on_gui_selected_tab_changed] = flib_gui.dispatch,
 		[defines.events.on_gui_checked_state_changed] = flib_gui.dispatch,

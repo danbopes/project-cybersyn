@@ -29,34 +29,6 @@ local LEGEND_WIDTH = 150
 local GRAPH_CHROME = 104
 local GRAPH_MIN_WIDTH, GRAPH_MIN_HEIGHT = 400, 300
 local UNSELECTED_COLOR = { r = 0.5, g = 0.5, b = 0.5 }
--- Time-ago labels under the plot. ticks_per_point is left out: analytics.render_chart fills it from the interval
--- shown, so each range button's labels span exactly its caption.
-local X_AXIS = { format = "auto", labels = "auto" }
-local OVERLAY_STYLE = "cybersyn_chart_overlay_button"
-
---- The chart id of interval `i`: one chart per range, shared by every viewer, and the same on every peer and after a
---- reload (the hover buttons carry it; a generated id would differ on a joining client).
---- @param interval_index int
---- @return string
-local function chart_id(interval_index)
-	return "cybersyn-utilization-" .. interval_index
-end
-
---- The crosshair's tooltip: the legend's layout name, the value and its age ("2L-4C / 35.0% - 6.6 minutes ago").
---- @param cell table the hovered cell (series_name, value, seconds_ago)
---- @return LocalisedString
-local function format_tooltip(cell)
-	local layout_id = tonumber(cell.series_name)
-	local layouts = storage.layouts
-	local name = analytics.format_layout_name(layouts and layout_id and layouts[layout_id], layout_id)
-	local text = name .. "\n" .. string.format("%.1f%%", cell.value or 0)
-	if cell.seconds_ago then
-		text = text .. " - " .. charts.format.time_ago(cell.seconds_ago)
-	end
-	return text
-end
-local CHART_CALLBACKS = { format_tooltip = format_tooltip }
-
 --- The graph's size for the player's window: the tab's width beside the legend and its height below the time range.
 --- @param player_data PlayerData
 --- @return int width
@@ -288,7 +260,7 @@ function utilization_tab.build(map_data, player_data)
 	local gw, gh = graph_size(player_data)
 	local camera = refs.utilization_camera
 	-- The constant y term is tuned by eye (0.1 at 1100x700).
-	local resized, camera_info = analytics.sync_chart_view(map_data, interval, player, refs, refs.utilization_camera_frame,
+	local resized = analytics.sync_chart_view(map_data, interval, player, refs, refs.utilization_camera_frame,
 		camera, gw, gh, 0.1)
 	if resized then player_data.cache.utilization = nil end
 	if not interval.chunk then return end
@@ -298,7 +270,6 @@ function utilization_tab.build(map_data, player_data)
 	end
 
 	local selected_series = player_data.tabs.utilization_tab.selected or {}
-	local zoom = camera_info and camera_info.zoom
 	local current_tick = game.tick
 	local cache = player_data.cache.utilization
 	local legend_table = refs.utilization_legend_table
@@ -308,34 +279,15 @@ function utilization_tab.build(map_data, player_data)
 		return
 	end
 	local all_series = utilization_tab.sorted_series(interval)
-	-- One drawing serves every viewer, so line widths follow the zoom of whoever renders it. A fixed {0, 100} keeps the
-	-- library's 5 grid lines (0/25/50/75/100); nice_ticks only rounds auto ranges, so it is not passed.
-	local state = analytics.render_chart(map_data, interval, chart_id(interval_index), {
+	-- factorio-charts 1.1.0 (the last release for Factorio 2.0) has no X axis or crosshair hover.
+	local state = analytics.render_chart(map_data, interval, interval_index, {
 		selected_series = selected_series,
 		y_range = { 0, 100 },
 		label_format = "percent",
-		x_axis = X_AXIS,
-		camera_zoom = zoom,
 		viewport_width = gw,
 		viewport_height = gh,
-	}, CHART_CALLBACKS)
+	})
 	local drawn = state and state.ordered_sums
-	-- The buttons cost milliseconds to build (about 9 ms for 360); a redraw that only renews the lines' ttl keeps them,
-	-- since a region's id is its column and series and both stay put while the data does.
-	if state and camera and camera.valid and camera_info then
-		local hidden = {}
-		for name, shown in pairs(selected_series) do
-			if shown == false then hidden[#hidden + 1] = name end
-		end
-		table.sort(hidden)
-		local key = table.concat({ interval_index, interval.index, gw, gh, zoom, table.concat(hidden, ",") }, ";")
-		if player_data.cache.utilization_hover ~= key or #camera.children == 0 then
-			local configs = charts.interactive.get_hover_buttons(state, camera_info, { player = player })
-			charts.create_overlay_buttons(camera, configs, { button_style = OVERLAY_STYLE, widget_width = gw,
-				widget_height = gh })
-			player_data.cache.utilization_hover = key
-		end
-	end
 	player_data.cache.utilization = {
 		tick = current_tick,
 		interval_index = interval_index,
@@ -351,7 +303,6 @@ end
 ---@param player_data PlayerData
 function utilization_tab.cleanup(map_data, player_data)
 	player_data.cache.utilization = nil
-	player_data.cache.utilization_hover = nil
 	if not map_data.analytics then return end
 	if not player_data.player_index then return end
 
@@ -362,38 +313,10 @@ function utilization_tab.cleanup(map_data, player_data)
 	if player and interval and interval.guis[player.index] then
 		analytics.interval_unregister_gui(map_data, interval, player)
 	end
-	if interval and interval.chart and charts then
-		charts.interactive.clear_hover(interval.chart, player_data.player_index)
-	end
-
 	-- The chart is every viewer's: only the last one to leave destroys it.
 	if interval and interval.viewer_count <= 0 and charts then
 		analytics.destroy_chart(interval)
 	end
-end
-
---- The library's hover registry is module state, not saved: every chart kept in storage is registered again on load
---- (on every peer), or hovering a chart after a reload would do nothing.
-function utilization_tab.on_load()
-	local data = charts and storage.analytics
-	for _, interval in ipairs(data and data.train_utilization or {}) do
-		if interval.chart then
-			charts.interactive.register(interval.chart, CHART_CALLBACKS)
-		end
-	end
-end
-
---- Forwards on_gui_hover / on_gui_leave to factorio-charts. True when the element was a chart hover button, which
---- has no handler of the manager's.
---- @param e EventData.on_gui_hover|EventData.on_gui_leave
---- @return boolean
-function utilization_tab.forward_hover(e)
-	local element = e.element
-	if not (charts and element and element.valid and element.tags.factorio_charts) then return false end
-	if e.name == defines.events.on_gui_hover then
-		return charts.events.handle_gui_hover(e)
-	end
-	return charts.events.handle_gui_leave(e)
 end
 
 utilization_tab.handle = {}

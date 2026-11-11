@@ -209,7 +209,7 @@ How much is recorded is set by the map setting "Diagnostics". **Basic**, the def
 
 ### Utilization and Breakdown
 
-With "Enable analytics" on and factorio-charts installed, **Utilization** charts the share of each train layout that is out on a delivery, with one line per layout, range buttons from 1m to 1000h, a time axis and a crosshair tooltip. The Train types legend gives each layout a checkbox to show or hide its line and its average over the range. **Breakdown** shows the time every delivery spends in each phase and names stuck reasons the same way as the Unserved requests table.
+With "Enable analytics" on and factorio-charts installed, **Utilization** charts the share of each train layout that is out on a delivery, with one line per layout, and range buttons from 1m to 1000h (this Factorio 2.0 build uses factorio-charts 1.1.0, which has no time axis or crosshair tooltip). The Train types legend gives each layout a checkbox to show or hide its line and its average over the range. **Breakdown** shows the time every delivery spends in each phase and names stuck reasons the same way as the Unserved requests table.
 
 ### Stop and train panels
 

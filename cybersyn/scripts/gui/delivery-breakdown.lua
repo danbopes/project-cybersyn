@@ -240,8 +240,8 @@ local function replace_axis(interval, surface, chunk, meta)
 		local y = pos.y + meta.graph_bottom - (t.value / meta.max_total) * meta.graph_height
 		kept[#kept + 1] = rendering.draw_line({ surface = surface, color = line_color, width = line_width,
 			from = { pos.x + meta.graph_left, y }, to = { pos.x + meta.graph_right, y }, time_to_live = AXIS_TTL })
-		kept[#kept + 1] = charts.style.draw_label({ text = t.label, surface = surface,
-			target = { pos.x + meta.graph_left - 0.2, y }, color = text_color,
+		kept[#kept + 1] = rendering.draw_text({ text = t.label, surface = surface,
+			target = { pos.x + meta.graph_left - 0.2, y }, color = text_color, scale = 0.8,
 			alignment = "right", vertical_alignment = "middle", time_to_live = AXIS_TTL })
 	end
 	interval.line_ids = kept

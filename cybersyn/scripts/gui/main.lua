@@ -85,7 +85,6 @@ relative.set_pane_gone(trains_tab.on_pane_gone)
 --- @field failing {fsig: string, parts: {[uint]: int}, errs: {[uint]: int}, counts: table, epoch: int, pos: int}?
 ---   the Overview's failing tile: per-station flags and counts, kept up to date from the collector's change log
 --- @field utilization {tick: uint, interval_index: int, series: int, drawn: int}? the chart drawn last
---- @field utilization_hover string? the chart state the hover buttons were made for
 --- @field breakdown {tick: uint, key: string, filtered: table, stats: table}? Breakdown's filtered deliveries
 --- @field breakdown_stats_of table|false? the stats the Stats rows were written from (false = none)
 --- @field log_cf LogCompiled? the Log's compiled filter, with the inputs it was compiled from

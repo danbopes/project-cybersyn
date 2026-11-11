@@ -248,28 +248,21 @@ function analytics.interval_unregister_gui(map_data, interval, player)
 	interval.viewer_count = interval.viewer_count - 1
 end
 
----Draws one Utilization interval as a factorio-charts interactive line graph kept on the interval (interval.chart),
----so the crosshair can find the drawing. `id` must be the same on every peer and across save/load: the hover buttons
----carry it and the library's registry is rebuilt from storage in on_load.
+---Draws one Utilization interval as a factorio-charts interactive line graph kept on the interval (interval.chart).
+---factorio-charts 1.1.0 generates its own state id, so the chart's range is kept beside it as interval.chart_key.
 ---@param map_data MapData
 ---@param interval table one interval of map_data.analytics.train_utilization
----@param id string
----@param options table line graph options (selected_series, y_range, label_format, x_axis, camera_zoom, viewport_*)
----@param callbacks table? {format_tooltip, on_cell_hover, on_cell_leave} registered with the state
+---@param key any identifies the drawing; a different key redraws from scratch
+---@param options table line graph options (selected_series, y_range, label_format, viewport_*)
 ---@return table? state
-function analytics.render_chart(map_data, interval, id, options, callbacks)
+function analytics.render_chart(map_data, interval, key, options)
 	local chunk = interval.chunk
 	if not chunk then return nil end
-	local opts = { id = id, data = interval.data, index = interval.index, length = interval.length,
+	local opts = { data = interval.data, index = interval.index, length = interval.length,
 		counts = interval.counts, sum = interval.sum, ttl = math.max(interval.ticks * 2, 360) }
 	for k, v in pairs(options) do opts[k] = v end
-	if type(opts.x_axis) == "table" and not opts.x_axis.ticks_per_point then
-		local x_axis = { ticks_per_point = interval.ticks }
-		for k, v in pairs(opts.x_axis) do x_axis[k] = v end
-		opts.x_axis = x_axis
-	end
 	local state = interval.chart
-	if state and (state.chunk ~= chunk or state.id ~= id) then
+	if state and (state.chunk ~= chunk or interval.chart_key ~= key) then
 		charts.interactive.destroy(state)
 		state = nil
 	end
@@ -278,8 +271,8 @@ function analytics.render_chart(map_data, interval, id, options, callbacks)
 	else
 		state = charts.interactive.create_line_graph(map_data.analytics.surface, chunk, opts)
 		interval.chart = state
+		interval.chart_key = key
 	end
-	charts.interactive.register(state, callbacks)
 	return state
 end
 
@@ -289,6 +282,7 @@ function analytics.destroy_chart(interval)
 	local state = interval.chart
 	if state and charts then charts.interactive.destroy(state) end
 	interval.chart = nil
+	interval.chart_key = nil
 end
 
 ---Gives every chart chunk the save holds the factorio-charts 1.3.0 background (black, no lights): chunks allocated

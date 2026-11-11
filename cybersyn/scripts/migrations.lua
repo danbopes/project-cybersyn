@@ -54,7 +54,8 @@ local function run_versioned_migrations(config_change_data, migrations)
 	end
 end
 
-local migrations_table = {
+local migrations_table
+migrations_table = {
 	["1.0.6"] = function()
 		---@type MapData
 		local map_data = storage
@@ -505,6 +506,43 @@ local migrations_table = {
 			pd.cache = {}
 			pd.utilization_cache, pd.breakdown_cache, pd.utilization_registered, pd.visible = nil, nil, nil, nil
 		end
+	end,
+	-- Saves from the danbopes fork (3.0.x / 3.1.x) carry a version above 2.2.0, so the entry above never runs for
+	-- them although their storage is still in the fork's shape. A stock save already ran it on the way here.
+	["3.2.0"] = function()
+		---@type MapData
+		local map_data = storage
+		if map_data.fork_migrated == nil and map_data.fork_schema == nil then return end
+
+		-- The fork kept one station acknowledgement per station (station[id] = ack) and no count; 2.2 keys every kind
+		-- by a sub key (station[id][0]) and keeps the count in n, which sanitize_economy_names decrements.
+		local acks = map_data.acks
+		if acks then
+			acks.request, acks.lint = acks.request or {}, acks.lint or {}
+			local station = {}
+			for id, ack in pairs(acks.station or {}) do
+				if ack.tick then station[id] = { [0] = ack } else station[id] = ack end
+			end
+			acks.station = station
+			local n = 0
+			for _, kind in pairs({ acks.request, acks.station, acks.lint }) do
+				for _, by in pairs(kind) do
+					for _ in pairs(by) do n = n + 1 end
+				end
+			end
+			acks.n = n
+		end
+
+		migrations_table["2.2.0"]()
+
+		-- The fork's own window state that 2.2 keeps elsewhere or not at all.
+		for _, pd in pairs(map_data.manager and map_data.manager.players or {}) do
+			pd.inventory_version, pd.surface_count, pd.trains_orderings, pd.trains_orderings_invert = nil, nil, nil, nil
+			pd.log_badge, pd.log_caps, pd.log_counts, pd.log_filter, pd.log_seen, pd.log_widths = nil, nil, nil, nil, nil, nil
+			pd.overview_period, pd.overview_rendered, pd.overview_widths = nil, nil, nil
+		end
+
+		map_data.fork_migrated, map_data.fork_schema = nil, nil
 	end,
 }
 

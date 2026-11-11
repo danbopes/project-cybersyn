@@ -208,3 +208,72 @@ test("sanitize_economy_names carries renamed items and qualities into deliveries
 	assert_nil(storage.acks.request[8])
 	assert_eq(storage.acks.n, 1)
 end)
+
+local FORK_UPGRADE = { mod_changes = { cybersyn = { old_version = "3.1.0", new_version = "3.2.0" } } }
+
+--- A danbopes fork 3.x save: storage in 2.1.2's shape where 2.2.0 changed it, plus the fork's flags and its
+--- acknowledgement shape (one ack per station, no count).
+local function storage_fork()
+	local s = storage_212()
+	s.fork_migrated, s.fork_schema = true, 7
+	local pd = s.manager.players[1]
+	pd.log_badge, pd.overview_widths, pd.trains_orderings, pd.surface_count = 2, {}, {}, 4
+	s.acks = {
+		request = { [7] = { coal = { tick = 1, player_index = 1 } } },
+		station = { [8] = { tick = 2, player_index = 1 } },
+		lint = { [9] = { [3] = { tick = 3, player_index = 1 } } },
+	}
+	return s
+end
+
+test("fork 3.x -> 3.2.0 runs the 2.2.0 conversion, reshapes the acks and drops the fork flags", function()
+	with_stubs(function()
+		game.tick = 4000
+		storage = storage_fork()
+		on_config_changed(FORK_UPGRADE)
+		assert_nil(storage.recent_external_items)
+		assert_eq(storage.economy, { all_r_stops = {}, all_p_stops = {}, all_names = {}, starved = {} })
+		assert_eq(storage.stations[7].secondary_inv_combs, {})
+		assert_eq(storage.manager.players[1].cache, {})
+		local pd = storage.manager.players[1]
+		assert_nil(pd.log_badge); assert_nil(pd.overview_widths); assert_nil(pd.trains_orderings); assert_nil(pd.surface_count)
+		assert_eq(storage.acks.station, { [8] = { [0] = { tick = 2, player_index = 1 } } })
+		assert_eq(storage.acks.n, 3)
+		assert_nil(storage.fork_migrated)
+		assert_nil(storage.fork_schema)
+	end)
+end)
+
+test("fork 3.x -> 3.2.0 then an item rename keeps the ack count exact", function()
+	with_stubs(function()
+		storage = storage_fork()
+		on_config_changed(FORK_UPGRADE)
+		sanitize_economy_names({ migrations = { item = { coal = "" } } })
+		assert_nil(storage.acks.request[7])
+		assert_eq(storage.acks.n, 2)
+	end)
+end)
+
+test("3.2.0 leaves a stock save's storage to the 2.2.0 entry", function()
+	with_stubs(function()
+		game.tick = 4000
+		storage = storage_212()
+		storage.acks = { request = {}, station = { [8] = { [0] = { tick = 2 } } }, lint = {}, n = 1 }
+		on_config_changed({ mod_changes = { cybersyn = { old_version = "2.0.54", new_version = "3.2.0" } } })
+		assert_nil(storage.recent_external_items, "2.2.0 ran")
+		assert_eq(storage.acks.station, { [8] = { [0] = { tick = 2 } } })
+	end)
+end)
+
+test("fork 3.x -> 3.2.0 is idempotent", function()
+	with_stubs(function()
+		game.tick = 4000
+		storage = storage_fork()
+		on_config_changed(FORK_UPGRADE)
+		local once = H.copy(storage)
+		storage.fork_schema = 7
+		on_config_changed(FORK_UPGRADE)
+		storage.fork_schema = nil
+		assert_eq(storage, once)
+	end)
+end)

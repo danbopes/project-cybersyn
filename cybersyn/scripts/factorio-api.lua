@@ -1116,7 +1116,9 @@ end
 local function send_alert_for_train(train, icon, message, ...)
 	local loco = train.front_stock or train.back_stock
 	if loco then
-		loco.force.add_custom_alert(loco, icon, { message, ... }, true)
+		for _, player in pairs(loco.force.connected_players) do
+			player.add_custom_alert(loco, icon, { message, ... }, true)
+		end
 	end
 end
 
@@ -1125,7 +1127,9 @@ end
 ---@param icon {}
 ---@param message string
 local function send_alert_for_station(station, icon, message)
-	station.force.add_custom_alert(station, icon, { message }, true)
+	for _, player in pairs(station.force.connected_players) do
+		player.add_custom_alert(station, icon, { message }, true)
+	end
 	station.force.play_sound({ path = ALERT_SOUND })
 end
 
@@ -1137,7 +1141,9 @@ local send_alert_about_missing_train_icon = { name = MISSING_TRAIN_NAME, type = 
 ---@return LocalisedString message as sent, for remove_alert_about_missing_train
 function send_alert_about_missing_train(r_stop, p_stop, message)
 	local text = { message, r_stop.backer_name, p_stop.backer_name }
-	r_stop.force.add_custom_alert(r_stop, send_alert_about_missing_train_icon, text, true)
+	for _, player in pairs(r_stop.force.connected_players) do
+		player.add_custom_alert(r_stop, send_alert_about_missing_train_icon, text, true)
+	end
 	return text
 end
 
@@ -1146,8 +1152,11 @@ end
 ---@param stop LuaEntity
 ---@param message LocalisedString? as it was sent
 function remove_alert_about_missing_train(stop, message)
-	stop.force.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
-		message = message })
+	-- Factorio 2.0 has no LuaForce.remove_alert, so each player's copy goes on its own.
+	for _, player in pairs(stop.force.players) do
+		player.remove_alert({ entity = stop, type = defines.alert_type.custom, icon = send_alert_about_missing_train_icon,
+			message = message })
+	end
 end
 
 ---@param train LuaTrain

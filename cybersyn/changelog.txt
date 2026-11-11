@@ -1,4 +1,13 @@
 ---------------------------------------------------------------------------------------------------
+Version: 3.2.0
+Date: 2026-11-11
+  Info:
+    - Cybersyn 2.2.2 for Factorio 2.0, for players who stay on 2.0; Factorio 2.1 players use upstream Cybersyn
+    - Replaces the danbopes fork 3.0.x / 3.1.x: its saves move to 2.2's storage on load (acknowledgements, manager state)
+  Changes:
+    - Uses factorio-charts 1.1.0, the last release for Factorio 2.0: the Utilization chart has no X axis or crosshair hover
+    - Alerts go to each connected player, as Factorio 2.0 has no force-wide custom alerts
+---------------------------------------------------------------------------------------------------
 Version: 2.2.2
 Date: 2026-10-29
   Changes:
